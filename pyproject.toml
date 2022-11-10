@@ -40,10 +40,3 @@ Github = "https://github.com/bastiscode/text-correction-utils"
 [build-system]
 requires = ["maturin>=0.13,<0.14"]
 build-backend = "maturin"
-
-[tool.maturin]
-bindings = "pyo3"
-compatibility = "manylinux2014"
-skip-auditwheel = false
-profile = "release"
-strip = true

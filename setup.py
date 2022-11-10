@@ -1,33 +1,38 @@
 from setuptools import setup, find_packages
+from setuptools_rust import RustExtension
 
 with open("README.md", "r", encoding="utf8") as rdm:
     long_description = rdm.read()
 
-with open("src/text_utils/version.py", "r", encoding="utf8") as vf:
+with open("src/text_correction_utils/version.py", "r", encoding="utf8") as vf:
     version = vf.readlines()[-1].strip().split()[-1].strip("\"'")
 
 setup(
-    name="text_utils",
+    name="text_correction_utils",
     version=version,
-    description="Text utilities for Deep NLP",
+    description="Utilities for text correction tasks using Deep NLP",
     long_description=long_description,
     long_description_content_type="text/markdown",
     project_urls={
-        "Github": "https://github.com/bastiscode/text-utils",
+        "Github": "https://github.com/bastiscode/text-correction-utils",
     },
     author="Sebastian Walter",
     author_email="swalter@cs.uni-freiburg.de",
-    python_requires=">=3.6",
+    python_requires=">=3.8",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
-    scripts=[
-        "bin/wsc"
-    ],
     install_requires=[
         "torch>=1.8.0",
         "einops>=0.3.0",
         "numpy>=1.19.0",
         "pyyaml>=5.4.0",
         "tqdm>=4.49.0"
-    ]
+    ],
+    extras_require={
+        "test": [
+            "pycodestyle>=2.8.0",
+            "pytest>=6.2.0",
+            "pytest-xdist>=2.5.0"
+        ]
+    }
 )

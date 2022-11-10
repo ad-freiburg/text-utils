@@ -1,6 +1,6 @@
 [flake8]
  max-line-length = 120
  show-source = True
- application-import-names = whitespace_correction
+ application-import-names = text_correction_utils
  exclude =
      build

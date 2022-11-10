@@ -1,0 +1,19 @@
+[package]
+publish = false
+name = "text-correction-utils-rs"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.maturin]
+python-source = "python"
+name = "text_correction_utils._internal"
+
+[lib]
+name = "text_correction_utils"
+crate-type = ["cdylib", "rlib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+rayon = "1.5.3"
+indicatif = { version = "0.17.2", features = ["rayon"] }
+pyo3 = { version = "0.17.3", features = ["extension-module", "abi3-py38"] }

@@ -1,14 +1,14 @@
-from setuptools import setup, find_packages
-from setuptools_rust import RustExtension
+from setuptools import setup
+from setuptools_rust import Binding, RustExtension
 
 with open("README.md", "r", encoding="utf8") as rdm:
     long_description = rdm.read()
 
-with open("src/text_correction_utils/version.py", "r", encoding="utf8") as vf:
+with open("text_correction_utils/version.py", "r", encoding="utf8") as vf:
     version = vf.readlines()[-1].strip().split()[-1].strip("\"'")
 
 setup(
-    name="text_correction_utils",
+    name="text-correction-utils",
     version=version,
     description="Utilities for text correction tasks using Deep NLP",
     long_description=long_description,
@@ -19,8 +19,7 @@ setup(
     author="Sebastian Walter",
     author_email="swalter@cs.uni-freiburg.de",
     python_requires=">=3.8",
-    package_dir={"": "src"},
-    packages=find_packages(where="src"),
+    packages=["text_correction_utils"],
     install_requires=[
         "torch>=1.8.0",
         "einops>=0.3.0",
@@ -34,5 +33,14 @@ setup(
             "pytest>=6.2.0",
             "pytest-xdist>=2.5.0"
         ]
-    }
+    },
+    # add rust extensions here
+    # just like c extensions they are not zip safe
+    rust_extensions=[
+        RustExtension(
+            "text_correction_utils.",
+            binding=Binding.PyO3
+        )
+    ],
+    zip_safe=False
 )

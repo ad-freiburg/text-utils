@@ -133,3 +133,9 @@ dmypy.json
 
 # Pycharm
 .idea/
+
+
+# Added by cargo
+
+/target
+/Cargo.lock

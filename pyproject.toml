@@ -1,2 +1,49 @@
+[project]
+name = "text_correction_utils"
+description = "Utilities for text correction tasks using Deep NLP"
+authors = [
+    { name = "Sebastian Walter", email = "swalter@cs.uni-freiburg.de" }
+]
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+
+keywords = ["nlp", "utilities", "text", "correction"]
+
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing",
+    "Topic :: Utilities"
+]
+
+dependencies = [
+    "torch>=1.8.0",
+    "einops>=0.3.0",
+    "numpy>=1.19.0",
+    "pyyaml>=5.4.0",
+    "tqdm>=4.49.0"
+]
+
+[project.optional-dependencies]
+test = [
+    "pycodestyle>=2.8.0",
+    "pytest>=6.2.0",
+    "pytest-xdist>=2.5.0"
+]
+
+[project.urls]
+Github = "https://github.com/bastiscode/text-correction-utils"
+
 [build-system]
-requires = ["setuptools", "wheel", "setuptools-rust"]
+requires = ["maturin>=0.13,<0.14"]
+build-backend = "maturin"
+
+[tool.maturin]
+bindings = "pyo3"
+compatibility = "manylinux2014"
+skip-auditwheel = false
+profile = "release"
+strip = true

@@ -15,4 +15,4 @@ jobs:
           maturin-version: v0.13.7
           manylinux: auto
           command: publish
-          args: --release --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_PASSWORD }}
+          args: --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_PASSWORD }}

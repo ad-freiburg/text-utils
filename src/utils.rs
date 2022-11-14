@@ -1,6 +1,8 @@
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
-pub fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
+pub(crate) type Matrix<T> = Vec<Vec<T>>;
+
+pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
     let pb = ProgressBar::new(size)
         .with_style(ProgressStyle::with_template(
             "{msg}: {wide_bar} [{pos}/{len}] [{elapsed_precise}|{eta_precise}]"

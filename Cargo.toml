@@ -1,6 +1,6 @@
 [package]
 publish = false
-name = "text-correction-utils-rs"
+name = "text-correction-utils"
 version = "0.0.1"
 edition = "2021"
 
@@ -19,3 +19,6 @@ rayon = "1.5.3"
 indicatif = { version = "0.17.2", features = ["rayon"] }
 pyo3 = { version = "0.17.3", features = ["extension-module", "abi3-py38"] }
 pyo3-log = "0.7.0"
+itertools = "0.10.5"
+rand = "0.8.5"
+rand_chacha = "0.3.1"

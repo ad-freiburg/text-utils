@@ -3,6 +3,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit_distance::{edit_distance, edit_operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
+use text_correction_utils::tokenization::{get_tokenizer, TokenizerType, BOS, EOS};
 
 const INPUT_SIZES: [usize; 4] = [16, 32, 64, 128];
 
@@ -114,9 +115,46 @@ fn bench_text(c: &mut Criterion) {
     }
 }
 
+
+fn bench_tokenizer(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tokenizer");
+    let mut rng = ChaCha8Rng::seed_from_u64(22);
+    let char_tok = get_tokenizer(TokenizerType::Character(1, 1));
+    let byte_tok = get_tokenizer(TokenizerType::Byte(1, 1));
+    let prefix = vec![BOS.to_string()];
+    let suffix = vec![EOS.to_string()];
+    for size in INPUT_SIZES.iter() {
+        let mut str: String = (&mut rng)
+            .sample_iter::<char, _>(rand::distributions::Standard)
+            .take(*size)
+            .collect();
+        group.bench_with_input(
+            BenchmarkId::new(
+                "char",
+                format!("{}", size),
+            ),
+            str.as_str(),
+            |b, str| {
+                b.iter(|| char_tok.tokenize(str, &prefix, &suffix));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "byte",
+                format!("{}", size),
+            ),
+            str.as_str(),
+            |b, str| {
+                b.iter(|| byte_tok.tokenize(str, &prefix, &suffix));
+            },
+        );
+    }
+}
+
 criterion_group!(
     benches,
     bench_edit_distance,
-    bench_text
+    bench_text,
+    bench_tokenizer
 );
 criterion_main!(benches);

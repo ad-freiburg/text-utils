@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use itertools::Itertools;
 use crate::unicode::CS;
 
-const UNK: &str = "<unk>";
-const BOS: &str = "<bos>";
-const EOS: &str = "<eos>";
-const PAD: &str = "<pad>";
-const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
+pub const UNK: &str = "<unk>";
+pub const BOS: &str = "<bos>";
+pub const EOS: &str = "<eos>";
+pub const PAD: &str = "<pad>";
+pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
 
 pub enum TokenizerType {
     Character(usize, usize),
@@ -73,8 +73,6 @@ impl CharTokenizer {
         );
         assert_eq!(vocab.len(), reverse_vocab.len());
         assert_eq!(special_vocab.len(), reverse_special_vocab.len());
-        println!("{}, {:?}", vocab.len(), vocab.values().max());
-        println!("{:?}, {:?}, {:?}, {:?}", special_vocab, vocab, vocab.len(), special_vocab.len());
         let unk_token_id = *special_vocab.get(UNK).expect("should not fail");
         CharTokenizer {
             num_prefix_tokens,

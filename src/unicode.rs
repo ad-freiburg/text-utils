@@ -1,11 +1,15 @@
 use std::fmt::{Display, Formatter};
 use unicode_segmentation::{UnicodeSegmentation};
+use crate::utils::accumulate;
 
 #[derive(Debug, Clone)]
-pub struct GraphemeString {
-    s: String,
+pub struct CharString<'a> {
+    pub str: &'a str,
     cum_cluster_lengths: Vec<usize>,
 }
+
+// shorthand for grapheme string for in crate usage
+pub(crate) type CS<'a> = CharString<'a>;
 
 // Rust strings vs. Python
 // -----------------------
@@ -15,17 +19,37 @@ pub struct GraphemeString {
 // GraphemeString::from("नमस्ते").len() -> 4; num grapheme clusters, closest to what
 // humans consider to be characters (in Python available via third party libraries)
 
-impl GraphemeString {
-    pub fn as_str(&self) -> &str {
-        self.s.as_str()
+impl CharString<'_> {
+    fn new(str: &str, use_graphemes: bool) -> CharString {
+        let mut cum_cluster_lengths: Vec<usize>;
+        if use_graphemes {
+            cum_cluster_lengths = str
+                .grapheme_indices(true)
+                .map(|(len, _)| len)
+                .collect();
+            if !str.is_empty() {
+                cum_cluster_lengths.push(str.len());
+                cum_cluster_lengths.remove(0);
+            }
+        } else {
+            cum_cluster_lengths = accumulate(
+                str
+                    .chars()
+                    .map(|c| c.len_utf8())
+            );
+        }
+        CharString {
+            str,
+            cum_cluster_lengths,
+        }
     }
 
-    pub fn byte_len(&self) -> usize {
-        self.s.len()
+    pub fn with_graphemes(str: &str) -> CharString {
+        CharString::new(str, true)
     }
 
-    pub fn byte_lengths(&self) -> &Vec<usize> {
-        &self.cum_cluster_lengths
+    pub fn with_chars(str: &str) -> CharString {
+        CharString::new(str, false)
     }
 
     pub fn len(&self) -> usize {
@@ -35,7 +59,7 @@ impl GraphemeString {
     pub fn get(&self, n: usize) -> &str {
         assert!(n < self.len());
         let start = if n == 0 { 0 } else { self.cum_cluster_lengths[n - 1] };
-        &self.s[start..self.cum_cluster_lengths[n]]
+        &self.str[start..self.cum_cluster_lengths[n]]
     }
 
     pub fn sub(&self, start: usize, end: usize) -> &str {
@@ -45,68 +69,101 @@ impl GraphemeString {
         }
         let start = if start == 0 { 0 } else { self.cum_cluster_lengths[start - 1] };
         let end = self.cum_cluster_lengths[end - 1];
-        &self.s[start..end]
+        &self.str[start..end]
+    }
+
+    pub fn chars(&self) -> Characters {
+        Characters {
+            str: self.str,
+            cum_cluster_lengths: &self.cum_cluster_lengths,
+            idx: 0,
+        }
     }
 }
 
-impl Display for GraphemeString {
+pub struct Characters<'a> {
+    str: &'a str,
+    cum_cluster_lengths: &'a Vec<usize>,
+    idx: usize,
+}
+
+impl<'a> Iterator for Characters<'a> {
+    type Item = Character<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.cum_cluster_lengths.len() {
+            return None;
+        }
+        let start = if self.idx == 0 { 0 } else { self.cum_cluster_lengths[self.idx - 1] };
+        let char = Character {
+            str: &self.str[start..self.cum_cluster_lengths[self.idx]]
+        };
+        self.idx += 1;
+        Some(char)
+    }
+}
+
+pub struct Character<'a> {
+    pub str: &'a str,
+}
+
+impl Character<'_> {
+    pub fn byte_len(&self) -> usize {
+        self.str.len()
+    }
+
+    pub fn is_ascii(&self) -> bool {
+        self.byte_len() == 1
+    }
+
+    pub fn is_whitespace(&self) -> bool {
+        self.str.chars().all(|c| c.is_whitespace())
+    }
+
+    pub fn code_point_len(&self) -> usize {
+        self.str.chars().count()
+    }
+
+    pub fn code_points(&self) -> impl Iterator<Item=char> + '_ {
+        self.str.chars()
+    }
+}
+
+impl Display for CharString<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "GraphemeString(\"{}\", bytes={}, clusters={})",
-            self.s,
-            self.s.len(),
+            self.str,
+            self.str.len(),
             self.len()
         )
     }
 }
 
-impl From<String> for GraphemeString {
-    fn from(s: String) -> Self {
-        let mut cum_cluster_lengths: Vec<usize> = s
-            .grapheme_indices(true)
-            .map(|(len, _)| len)
-            .collect();
-        if !s.is_empty() {
-            cum_cluster_lengths.push(s.len());
-            cum_cluster_lengths.remove(0);
-        }
-        GraphemeString {
-            s,
-            cum_cluster_lengths
-        }
-    }
-}
-
-impl From<&str> for GraphemeString {
-    fn from(s: &str) -> Self {
-        s.to_string().into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::unicode::GraphemeString;
+    use crate::unicode::CS;
 
     #[test]
     fn test_grapheme_string() {
         // test with empty string
-        let s: GraphemeString = "".into();
-        assert_eq!(s.byte_len(), 0);
+        let s = CS::with_chars("");
+        assert_eq!(s.str.len(), 0);
         assert_eq!(s.len(), 0);
         assert_eq!(s.sub(0, s.len()), "");
         assert_eq!(s.cum_cluster_lengths, vec![]);
         // test with ascii string
-        let s: GraphemeString = "this is a test".into();
-        assert_eq!(s.byte_len(), 14);
+        let s = CS::with_chars("this is a test");
+        assert_eq!(s.str.len(), 14);
         assert_eq!(s.len(), 14);
         assert_eq!(s.sub(10, 14), "test");
         assert_eq!(s.sub(10, 10), "");
         let mut cum_cluster_lengths = (1..=s.len()).collect::<Vec<usize>>();
         assert_eq!(s.cum_cluster_lengths, cum_cluster_lengths);
         // test with non ascii string
-        let s: GraphemeString = "this is a täst".into();
-        assert_eq!(s.byte_len(), 15);
+        let s = CS::with_chars("this is a täst");
+        assert_eq!(s.str.len(), 15);
         assert_eq!(s.len(), 14);
         assert_eq!(s.sub(10, 14), "täst");
         cum_cluster_lengths[11] = 13;
@@ -114,13 +171,23 @@ mod tests {
         cum_cluster_lengths[13] = 15;
         assert_eq!(s.cum_cluster_lengths, cum_cluster_lengths);
         assert_eq!(s.get(11), "ä");
+
         // test with string that has more than one code point per character:
-        // the string below should have 18 utf8 bytes, 6 code points, and 4 grapheme
+        // the string "नमस्ते" should have 18 utf8 bytes, 6 code points, and 4 grapheme
         // clusters (characters)
-        let s: GraphemeString = "नमस्ते".into();
-        assert_eq!(s.byte_len(), 18);
+
+        // first test with regular char string, which should behave unexpected
+        let s = CS::with_chars("नमस्ते");
+        assert_eq!(s.str.len(), 18);
+        assert_ne!(s.len(), 4);
+        assert_ne!(s.get(2), "स्");
+        assert_ne!(s.sub(2, 4), "स्ते");
+
+        // now test with grapheme based char string, which should behave as expected
+        let s = CS::with_graphemes("नमस्ते");
+        assert_eq!(s.str.len(), 18);
         assert_eq!(s.len(), 4);
         assert_eq!(s.get(2), "स्");
-        assert_eq!(s.sub(2, s.len()), "स्ते");
+        assert_eq!(s.sub(2, 4), "स्ते");
     }
 }

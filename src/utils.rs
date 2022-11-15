@@ -13,13 +13,27 @@ pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
     pb
 }
 
-pub(crate) fn accumulate<V>(values: &[V]) -> Vec<V>
+pub(crate) fn accumulate<V>(values: impl Iterator<Item=V>) -> Vec<V>
     where V: Num + NumAssignOps + Copy {
     let mut cum_values = Vec::new();
     let mut total_v = V::zero();
     for v in values {
-        total_v += *v;
+        total_v += v;
         cum_values.push(total_v);
     }
     cum_values
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::accumulate;
+
+    #[test]
+    fn test_accumulate() {
+        let accum = accumulate(vec![1, 4, 4, 2].into_iter());
+        assert_eq!(accum, vec![1, 5, 9, 11]);
+        let accum = accumulate(vec![0.5, -0.5, 2.0, 3.5].into_iter());
+        assert_eq!(accum, vec![0.5, 0.0, 2.0, 5.5]);
+        assert_eq!(accumulate::<i32>(vec![].into_iter()), vec![]);
+    }
 }

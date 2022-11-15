@@ -1,12 +1,13 @@
 use indicatif::ParallelProgressIterator;
-use itertools;
+use itertools::Itertools;
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use crate::unicode::CS;
 
 use crate::utils::{get_progress_bar, Matrix};
 
 pub fn clean(s: &str) -> String {
-    itertools::intersperse(s.split_whitespace(), " ").collect()
+    s.split_whitespace().join(" ")
 }
 
 #[pyfunction]
@@ -44,12 +45,21 @@ fn batch_clean_py(
     Ok(batch_clean(&list, batch_size, show_progress))
 }
 
-pub fn word_boundaries(s: &str) -> Vec<(usize, usize)> {
+pub fn word_boundaries(s: &str, graphemes: bool) -> Vec<(usize, usize)> {
+    let cs: CS = if graphemes {
+        CS::with_graphemes(s)
+    } else {
+        CS::with_chars(s)
+    };
+    _word_boundaries(cs.chars().map(|c| c.str))
+}
+
+fn _word_boundaries<'a>(chars: impl Iterator<Item=&'a str>) -> Vec<(usize, usize)> {
     let mut boundaries = vec![];
     let mut start: Option<usize> = None;
-    let mut num_chars = 0;
-    for (idx, char) in s.chars().enumerate() {
-        match (char.is_whitespace(), start) {
+    let mut num_elements = 0;
+    for (idx, char) in chars.enumerate() {
+        match (char.chars().all(char::is_whitespace), start) {
             (true, Some(start_idx)) => {
                 boundaries.push((start_idx, idx));
                 start = None;
@@ -57,23 +67,24 @@ pub fn word_boundaries(s: &str) -> Vec<(usize, usize)> {
             (false, None) => start = Some(idx),
             _ => ()
         }
-        num_chars += 1;
+        num_elements += 1;
     }
     // add potential last word (not captured by the for loop above)
-    if start.is_some() && start.unwrap() < num_chars {
-        boundaries.push((start.unwrap(), num_chars));
+    if start.is_some() && start.unwrap() < num_elements {
+        boundaries.push((start.unwrap(), num_elements));
     }
     boundaries
 }
 
 #[pyfunction]
-fn word_boundaries_py(s: &str) -> PyResult<Vec<(usize, usize)>> {
-    Ok(word_boundaries(s))
+fn word_boundaries_py(s: &str, graphemes: bool) -> PyResult<Vec<(usize, usize)>> {
+    Ok(word_boundaries(s, graphemes))
 }
 
 
 pub fn batch_word_boundaries(
     list: &Vec<&str>,
+    graphemes: bool,
     batch_size: usize,
     show_progress: bool,
 ) -> Vec<Vec<(usize, usize)>> {
@@ -85,8 +96,8 @@ pub fn batch_word_boundaries(
         .par_chunks(batch_size)
         .progress_with(pb)
         .map(|chunk| {
-            chunk.iter().map(|s| {
-                word_boundaries(s)
+            chunk.iter().map(|&s| {
+                word_boundaries(s, graphemes)
             }).collect::<Vec<Vec<(usize, usize)>>>()
         })
         .flatten()
@@ -96,10 +107,13 @@ pub fn batch_word_boundaries(
 #[pyfunction]
 fn batch_word_boundaries_py(
     list: Vec<&str>,
+    graphemes: bool,
     batch_size: usize,
     show_progress: bool,
 ) -> PyResult<Vec<Vec<(usize, usize)>>> {
-    Ok(batch_word_boundaries(&list, batch_size, show_progress))
+    Ok(
+        batch_word_boundaries(&list, graphemes, batch_size, show_progress)
+    )
 }
 
 
@@ -231,7 +245,6 @@ fn batch_match_words_py(
 pub fn substring(s: &str, start: usize, end: usize) {
     let num_chars = s.chars().count();
     assert!(start < num_chars && end < num_chars && start <= end);
-    
 }
 
 pub fn possible_character_substrings(s: &str, max_chars: usize) -> Vec<(usize, usize)> {
@@ -267,9 +280,15 @@ mod tests {
     #[test]
     fn test_word_boundaries() {
         let text = "this is a test sentence";
-        assert_eq!(word_boundaries(text), vec![(0, 4), (5, 7), (8, 9), (10, 14), (15, 23)]);
+        assert_eq!(
+            word_boundaries(text, true),
+            vec![(0, 4), (5, 7), (8, 9), (10, 14), (15, 23)]
+        );
         let text = "  this\t is \n a test sentence  ";
-        assert_eq!(word_boundaries(text), vec![(2, 6), (8, 10), (13, 14), (15, 19), (20, 28)]);
+        assert_eq!(
+            word_boundaries(text, true),
+            vec![(2, 6), (8, 10), (13, 14), (15, 19), (20, 28)]
+        );
     }
 
     #[test]

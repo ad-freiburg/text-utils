@@ -14,7 +14,7 @@ fn clean_py(s: &str) -> PyResult<String> {
 }
 
 pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
-   let mut boundaries = vec![];
+    let mut boundaries = vec![];
     let mut start: Option<usize> = None;
     let mut num_elements = 0;
     for (idx, char) in CS::new(str, use_graphemes)
@@ -134,12 +134,58 @@ fn match_words_py(
 pub fn possible_character_substrings(
     str: &str,
     use_graphemes: bool,
-    max_chars: usize
+    max_chars: usize,
 ) -> Vec<(usize, usize)> {
     let num_chars = CS::new(str, use_graphemes).len();
     (0..1.max(num_chars - max_chars + 1))
         .map(|i| (i, num_chars.min(i + max_chars)))
         .collect()
+}
+
+pub fn possible_byte_substrings(
+    str: &str,
+    use_graphemes: bool,
+    max_bytes: usize,
+) -> Vec<(usize, usize)> {
+    if str.is_empty() {
+        return vec![(0, 0)];
+    }
+    let cs = CS::new(str, use_graphemes);
+    if *cs.cum_cluster_lengths.last().expect("should not happen") <= max_bytes {
+        return vec![(0, cs.len())];
+    }
+    let mut start = 0;
+    while start < cs.len() && cs.cluster_lengths[start] > max_bytes {
+        start += 1;
+    }
+    if start >= cs.len() {
+        return vec![];
+    }
+    let mut end = start;
+    let mut substrings = vec![];
+    while start < cs.len() && end < cs.len() {
+        let next_end_v = if end + 1 < cs.len() { cs.cluster_lengths[end + 1] } else { 0 };
+        if next_end_v > max_bytes {
+            substrings.push((start, end + 1));
+            start = end + 2;
+            end = start;
+        } else {
+            let cum_next_end_v = cs.cum_cluster_lengths[end] + next_end_v;
+            let cum_up_to_start = cs.cum_cluster_lengths[start] - cs.cluster_lengths[start];
+            if cum_next_end_v - cum_up_to_start > max_bytes {
+                if substrings.is_empty() || substrings.last().unwrap().1 < end + 1 {
+                    substrings.push((start, end + 1));
+                }
+                start += 1;
+            } else {
+                end += 1;
+            }
+        }
+    }
+    if start != end {
+        substrings.push((start, end))
+    }
+    substrings
 }
 
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
@@ -190,5 +236,10 @@ mod tests {
             true,
         );
         assert_eq!(matches, vec![(0, 0), (1, 1), (2, 3), (3, 4)]);
+    }
+
+    #[test]
+    fn test_possible_character_substrings() {
+
     }
 }

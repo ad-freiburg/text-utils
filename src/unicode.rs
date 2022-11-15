@@ -5,7 +5,8 @@ use crate::utils::accumulate;
 #[derive(Debug, Clone)]
 pub struct CharString<'a> {
     pub str: &'a str,
-    cum_cluster_lengths: Vec<usize>,
+    pub(crate) cluster_lengths: Vec<usize>,
+    pub(crate) cum_cluster_lengths: Vec<usize>
 }
 
 // shorthand for grapheme string for in crate usage
@@ -21,23 +22,30 @@ pub(crate) type CS<'a> = CharString<'a>;
 
 impl CharString<'_> {
     pub fn new(str: &str, use_graphemes: bool) -> CharString {
-        let cum_cluster_lengths: Vec<usize>;
+        let cluster_lengths: Vec<usize>;
         if use_graphemes {
-            cum_cluster_lengths = str
+            cluster_lengths = str
                 .grapheme_indices(true)
-                .map(|(idx, s)| idx + s.len())
+                .map(|(_, s)| s.len())
                 .collect();
         } else {
-            cum_cluster_lengths = accumulate(
-                str
-                    .chars()
-                    .map(|c| c.len_utf8())
-            );
+            cluster_lengths = str
+                .chars()
+                .map(|c| c.len_utf8())
+                .collect();
         }
+        let cum_cluster_lengths = accumulate(
+            cluster_lengths.iter()
+        );
         CharString {
             str,
+            cluster_lengths,
             cum_cluster_lengths,
         }
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.str.len()
     }
 
     pub fn len(&self) -> usize {
@@ -66,6 +74,14 @@ impl CharString<'_> {
             cum_cluster_lengths: &self.cum_cluster_lengths,
             idx: 0,
         }
+    }
+
+    pub fn char_byte_lengths(&self) -> &Vec<usize> {
+        &self.cluster_lengths
+    }
+
+    pub fn cum_char_byte_lengths(&self) -> &Vec<usize> {
+        &self.cum_cluster_lengths
     }
 }
 

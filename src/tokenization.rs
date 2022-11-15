@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use itertools::Itertools;
+use crate::unicode::CS;
 
 const UNK: &str = "<unk>";
 const BOS: &str = "<bos>";
@@ -173,22 +174,10 @@ impl ByteTokenizer {
     }
 
     fn split(&self, s: &str) -> (Vec<u8>, Vec<usize>) {
-        let mut buf = vec![0; 4];
-        let mut char_groups = vec![];
-        let split = s
-            .chars()
-            .map(|c| {
-                let num_bytes = c.encode_utf8(&mut buf).len();
-                char_groups.push(num_bytes);
-                buf
-                    .iter()
-                    .take(num_bytes)
-                    .copied()
-                    .collect::<Vec<u8>>()
-            })
-            .flatten()
-            .collect();
-        (split, char_groups)
+        (
+            s.as_bytes().into(),
+            CS::new(s, true).cluster_lengths
+        )
     }
 }
 

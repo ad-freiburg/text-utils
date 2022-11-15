@@ -1,8 +1,7 @@
-use indicatif::ParallelProgressIterator;
 use pyo3::prelude::*;
-use rayon::prelude::*;
+use crate::unicode::{Character, CharString, CS};
 
-use crate::utils::{get_progress_bar, Matrix};
+use crate::utils::{Matrix};
 
 #[derive(Copy, Clone, Debug)]
 enum EditOp {
@@ -14,32 +13,30 @@ enum EditOp {
     Swap,
 }
 
-fn calculate_edit_matrices(
-    a: &str,
-    b: &str,
+fn _calculate_edit_matrices(
+    a: CharString,
+    b: CharString,
     with_swap: bool,
     spaces_insert_delete_only: bool,
 ) -> (Matrix<usize>, Matrix<EditOp>) {
-    let a_chars = a.chars().collect::<Vec<char>>();
-    let b_chars = b.chars().collect::<Vec<char>>();
-
-    let mut d: Matrix<usize> = vec![vec![0; b_chars.len() + 1]; a_chars.len() + 1];
-    let mut ops: Matrix<EditOp> = vec![vec![EditOp::None; b_chars.len() + 1]; a_chars.len() + 1];
+    let mut d: Matrix<usize> = vec![vec![0; b.len() + 1]; a.len() + 1];
+    let mut ops: Matrix<EditOp> = vec![vec![EditOp::None; b.len() + 1]; a.len() + 1];
 
     // initialize matrices
     ops[0][0] = EditOp::Keep;
     d[0][0] = 0;
-    for i in 1..=a_chars.len() {
+    for i in 1..=a.len() {
         d[i][0] = i;
         ops[i][0] = EditOp::Delete;
     }
-    for j in 1..=b_chars.len() {
+    for j in 1..=b.len() {
         d[0][j] = j;
         ops[0][j] = EditOp::Insert;
     }
-
-    for (a_idx, &a_char) in a_chars.iter().enumerate() {
-        for (b_idx, &b_char) in b_chars.iter().enumerate() {
+    let a_chars: Vec<Character> = a.chars().collect();
+    let b_chars: Vec<Character> = b.chars().collect();
+    for (a_idx, a_char) in a_chars.iter().enumerate() {
+        for (b_idx, b_char) in b_chars.iter().enumerate() {
             // string indices are offset by -1
             let i = a_idx + 1;
             let j = b_idx + 1;
@@ -58,7 +55,7 @@ fn calculate_edit_matrices(
             }
             // check if we can swap chars, that is if we are allowed to swap
             // and if the chars to swap match
-            if with_swap && i > 1 && j > 1 && a_char == b_chars[j - 2] && a_chars[i - 2] == b_char {
+            if with_swap && i > 1 && j > 1 && a_char == &b_chars[j - 2] && &a_chars[i - 2] == b_char {
                 // we can swap the chars, but only allow swapping if no space is involved
                 // or we are allowed to swap spaces
                 if !spaces_insert_delete_only || (!a_char.is_whitespace() && !a_chars[i - 2].is_whitespace()) {
@@ -79,10 +76,16 @@ fn calculate_edit_matrices(
 pub fn edit_operations(
     a: &str,
     b: &str,
+    use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
 ) -> Vec<(u8, usize, usize)> {
-    let (_, ops) = calculate_edit_matrices(a, b, with_swap, spaces_insert_delete_only);
+    let (_, ops) = _calculate_edit_matrices(
+        CS::new(a, use_graphemes),
+        CS::new(b, use_graphemes),
+        with_swap,
+        spaces_insert_delete_only,
+    );
     // backtrace
     // edit operations => 0 -> insert, 1 -> delete, 2 -> replace, 3 -> swap
     let mut edit_ops = vec![];
@@ -124,64 +127,26 @@ pub fn edit_operations(
 fn edit_operations_py(
     a: &str,
     b: &str,
+    use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
 ) -> PyResult<Vec<(u8, usize, usize)>> {
-    Ok(edit_operations(&a, &b, with_swap, spaces_insert_delete_only))
-}
-
-pub fn batch_edit_operations(
-    a_list: &Vec<&str>,
-    b_list: &Vec<&str>,
-    with_swap: bool,
-    spaces_insert_delete_only: bool,
-    batch_size: usize,
-    show_progress: bool,
-) -> Vec<Vec<(u8, usize, usize)>> {
-    assert_eq!(a_list.len(), b_list.len(), "lists don't have the same length");
-    let pb = get_progress_bar(
-        ((a_list.len() + batch_size - 1) / batch_size).max(1) as u64,
-        !show_progress,
-    );
-    a_list
-        .par_chunks(batch_size)
-        .zip(b_list.par_chunks(batch_size))
-        .progress_with(pb)
-        .map(|(a_chunk, b_chunk)| {
-            a_chunk.iter().zip(b_chunk.iter()).map(|(a, b)| {
-                edit_operations(a, b, with_swap, spaces_insert_delete_only)
-            }).collect::<Vec<Vec<(u8, usize, usize)>>>()
-        })
-        .flatten()
-        .collect()
-}
-
-#[pyfunction]
-fn batch_edit_operations_py(
-    a_list: Vec<&str>,
-    b_list: Vec<&str>,
-    with_swap: bool,
-    spaces_insert_delete_only: bool,
-    batch_size: usize,
-    show_progress: bool,
-) -> PyResult<Vec<Vec<(u8, usize, usize)>>> {
-    Ok(batch_edit_operations(
-        &a_list,
-        &b_list,
-        with_swap,
-        spaces_insert_delete_only,
-        batch_size,
-        show_progress,
-    ))
+    Ok(edit_operations(&a, &b, use_graphemes, with_swap, spaces_insert_delete_only))
 }
 
 pub fn edit_distance(
     a: &str,
     b: &str,
+    use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
 ) -> usize {
-    let (d, _) = calculate_edit_matrices(a, b, with_swap, spaces_insert_delete_only);
+    let (d, _) = _calculate_edit_matrices(
+        CS::new(a, use_graphemes),
+        CS::new(b, use_graphemes),
+        with_swap,
+        spaces_insert_delete_only,
+    );
     d[d.len() - 1][d[0].len() - 1]
 }
 
@@ -189,56 +154,23 @@ pub fn edit_distance(
 fn edit_distance_py(
     a: &str,
     b: &str,
+    use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
 ) -> PyResult<usize> {
-    Ok(edit_distance(a, b, with_swap, spaces_insert_delete_only))
-}
-
-pub fn batch_edit_distance(
-    a_list: &Vec<&str>,
-    b_list: &Vec<&str>,
-    with_swap: bool,
-    spaces_insert_delete_only: bool,
-    batch_size: usize,
-    show_progress: bool,
-) -> Vec<usize> {
-    assert_eq!(a_list.len(), b_list.len(), "lists don't have the same length");
-    let pb = get_progress_bar(
-        ((a_list.len() + batch_size - 1) / batch_size).max(1) as u64,
-        !show_progress,
-    );
-    a_list
-        .par_chunks(batch_size)
-        .zip(b_list.par_chunks(batch_size))
-        .progress_with(pb)
-        .map(|(a_chunk, b_chunk)| {
-            a_chunk.iter().zip(b_chunk.iter()).map(|(a, b)| {
-                edit_distance(a, b, with_swap, spaces_insert_delete_only)
-            }).collect::<Vec<usize>>()
-        })
-        .flatten()
-        .collect()
-}
-
-#[pyfunction]
-fn batch_edit_distance_py(
-    a_list: Vec<&str>,
-    b_list: Vec<&str>,
-    with_swap: bool,
-    spaces_insert_delete_only: bool,
-    batch_size: usize,
-    show_progress: bool,
-) -> PyResult<Vec<usize>> {
-    Ok(batch_edit_distance(&a_list, &b_list, with_swap, spaces_insert_delete_only, batch_size, show_progress))
+    Ok(edit_distance(
+        a,
+        b,
+        use_graphemes,
+        with_swap,
+        spaces_insert_delete_only,
+    ))
 }
 
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "edit_distance")?;
     m.add_function(wrap_pyfunction!(edit_distance_py, m)?)?;
-    m.add_function(wrap_pyfunction!(batch_edit_distance_py, m)?)?;
     m.add_function(wrap_pyfunction!(edit_operations_py, m)?)?;
-    m.add_function(wrap_pyfunction!(batch_edit_operations_py, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())
@@ -253,6 +185,7 @@ mod tests {
         let ed_ops = edit_operations(
             "this is a test",
             "tihsi s a test",
+            false,
             true,
             false,
         );
@@ -260,6 +193,7 @@ mod tests {
         let ed_ops = edit_operations(
             "this is a test",
             "tihsi s a test",
+            false,
             true,
             true,
         );
@@ -269,11 +203,13 @@ mod tests {
             "tihsi s a test",
             false,
             false,
+            false,
         );
         assert_eq!(ed_ops, vec![(0, 1, 1), (0, 2, 3), (1, 3, 5), (1, 5, 6)]);
         let ed_ops = edit_operations(
             "this is a test",
             "tihsi s a test",
+            false,
             false,
             true,
         );
@@ -285,6 +221,7 @@ mod tests {
         let ed = edit_distance(
             "this is a test",
             "tihsi s a test",
+            false,
             true,
             false,
         );
@@ -292,6 +229,7 @@ mod tests {
         let ed = edit_distance(
             "this is a test",
             "tihsi s a test",
+            false,
             true,
             true,
         );
@@ -301,11 +239,13 @@ mod tests {
             "tihsi s a test",
             false,
             false,
+            false,
         );
         assert_eq!(ed, 4);
         let ed = edit_distance(
             "this is a test",
             "tihsi s a test",
+            false,
             false,
             true,
         );

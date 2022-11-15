@@ -20,17 +20,13 @@ pub(crate) type CS<'a> = CharString<'a>;
 // humans consider to be characters (in Python available via third party libraries)
 
 impl CharString<'_> {
-    fn new(str: &str, use_graphemes: bool) -> CharString {
-        let mut cum_cluster_lengths: Vec<usize>;
+    pub fn new(str: &str, use_graphemes: bool) -> CharString {
+        let cum_cluster_lengths: Vec<usize>;
         if use_graphemes {
             cum_cluster_lengths = str
                 .grapheme_indices(true)
-                .map(|(len, _)| len)
+                .map(|(idx, s)| idx + s.len())
                 .collect();
-            if !str.is_empty() {
-                cum_cluster_lengths.push(str.len());
-                cum_cluster_lengths.remove(0);
-            }
         } else {
             cum_cluster_lengths = accumulate(
                 str
@@ -42,14 +38,6 @@ impl CharString<'_> {
             str,
             cum_cluster_lengths,
         }
-    }
-
-    pub fn with_graphemes(str: &str) -> CharString {
-        CharString::new(str, true)
-    }
-
-    pub fn with_chars(str: &str) -> CharString {
-        CharString::new(str, false)
     }
 
     pub fn len(&self) -> usize {
@@ -129,6 +117,12 @@ impl Character<'_> {
     }
 }
 
+impl PartialEq<Self> for Character<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.str == other.str
+    }
+}
+
 impl Display for CharString<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -148,13 +142,13 @@ mod tests {
     #[test]
     fn test_grapheme_string() {
         // test with empty string
-        let s = CS::with_chars("");
+        let s = CS::new("", false);
         assert_eq!(s.str.len(), 0);
         assert_eq!(s.len(), 0);
         assert_eq!(s.sub(0, s.len()), "");
         assert_eq!(s.cum_cluster_lengths, vec![]);
         // test with ascii string
-        let s = CS::with_chars("this is a test");
+        let s = CS::new("this is a test", false);
         assert_eq!(s.str.len(), 14);
         assert_eq!(s.len(), 14);
         assert_eq!(s.sub(10, 14), "test");
@@ -162,7 +156,7 @@ mod tests {
         let mut cum_cluster_lengths = (1..=s.len()).collect::<Vec<usize>>();
         assert_eq!(s.cum_cluster_lengths, cum_cluster_lengths);
         // test with non ascii string
-        let s = CS::with_chars("this is a täst");
+        let s = CS::new("this is a täst", false);
         assert_eq!(s.str.len(), 15);
         assert_eq!(s.len(), 14);
         assert_eq!(s.sub(10, 14), "täst");
@@ -177,14 +171,14 @@ mod tests {
         // clusters (characters)
 
         // first test with regular char string, which should behave unexpected
-        let s = CS::with_chars("नमस्ते");
+        let s = CS::new("नमस्ते", false);
         assert_eq!(s.str.len(), 18);
         assert_ne!(s.len(), 4);
         assert_ne!(s.get(2), "स्");
         assert_ne!(s.sub(2, 4), "स्ते");
 
         // now test with grapheme based char string, which should behave as expected
-        let s = CS::with_graphemes("नमस्ते");
+        let s = CS::new("नमस्ते", true);
         assert_eq!(s.str.len(), 18);
         assert_eq!(s.len(), 4);
         assert_eq!(s.get(2), "स्");

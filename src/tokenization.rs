@@ -23,11 +23,11 @@ pub trait Tokenizer {
 
     fn get_unk_token_id(&self) -> usize;
 
-    fn add_special_tokens(&mut self, special_tokens: &Vec<String>);
+    fn add_special_tokens(&mut self, special_tokens: &[String]);
 
-    fn tokenize(&self, s: &str, prefix: &Vec<String>, suffix: &Vec<String>) -> (Vec<usize>, TokenizationInfo);
+    fn tokenize(&self, s: &str, prefix: &[String], suffix: &[String]) -> (Vec<usize>, TokenizationInfo);
 
-    fn de_tokenize(&self, token_ids: &Vec<usize>) -> String;
+    fn de_tokenize(&self, token_ids: &[usize]) -> String;
 
     fn special_token_to_id(&self, token: &String) -> usize;
 
@@ -95,7 +95,7 @@ impl Tokenizer for CharTokenizer {
         self.unk_token_id
     }
 
-    fn add_special_tokens(&mut self, special_tokens: &Vec<String>) {
+    fn add_special_tokens(&mut self, special_tokens: &[String]) {
         for st in special_tokens {
             let token_id = self.get_vocab_size();
             self.special_vocab.insert(st.clone(), token_id);
@@ -103,21 +103,32 @@ impl Tokenizer for CharTokenizer {
         }
     }
 
-    fn tokenize(&self, s: &str, prefix: &Vec<String>, suffix: &Vec<String>) -> (Vec<usize>, TokenizationInfo) {
+    fn tokenize(&self, s: &str, prefix: &[String], suffix: &[String]) -> (Vec<usize>, TokenizationInfo) {
         assert_eq!(self.num_prefix_tokens, prefix.len());
         assert_eq!(self.num_suffix_tokens, suffix.len());
         (
             prefix
                 .iter()
                 .map(|t| self.special_token_to_id(t))
-                .chain(s.chars().map(|c| self.vocab.get(&c).copied().unwrap_or(self.unk_token_id)))
-                .chain(suffix.iter().map(|t| self.special_token_to_id(t)))
+                .chain(
+                    s
+                        .chars()
+                        .map(|c| self.vocab
+                            .get(&c)
+                            .copied()
+                            .unwrap_or(self.unk_token_id))
+                )
+                .chain(
+                    suffix
+                        .iter()
+                        .map(|t| self.special_token_to_id(t))
+                )
                 .collect(),
             TokenizationInfo::Empty
         )
     }
 
-    fn de_tokenize(&self, token_ids: &Vec<usize>) -> String {
+    fn de_tokenize(&self, token_ids: &[usize]) -> String {
         token_ids
             .iter()
             .filter(|&&i| i < self.vocab.len())
@@ -188,7 +199,7 @@ impl Tokenizer for ByteTokenizer {
         self.unk_token_id
     }
 
-    fn add_special_tokens(&mut self, special_tokens: &Vec<String>) {
+    fn add_special_tokens(&mut self, special_tokens: &[String]) {
         for st in special_tokens {
             let token_id = self.get_vocab_size();
             self.special_vocab.insert(st.clone(), token_id);
@@ -196,7 +207,7 @@ impl Tokenizer for ByteTokenizer {
         }
     }
 
-    fn tokenize(&self, s: &str, prefix: &Vec<String>, suffix: &Vec<String>) -> (Vec<usize>, TokenizationInfo) {
+    fn tokenize(&self, s: &str, prefix: &[String], suffix: &[String]) -> (Vec<usize>, TokenizationInfo) {
         assert_eq!(self.num_prefix_tokens, prefix.len());
         assert_eq!(self.num_suffix_tokens, suffix.len());
         let (bytes, info) = self.split(s);
@@ -205,13 +216,17 @@ impl Tokenizer for ByteTokenizer {
                 .iter()
                 .map(|t| self.special_token_to_id(t))
                 .chain(bytes.into_iter().map(usize::from))
-                .chain(suffix.iter().map(|t| self.special_token_to_id(t)))
+                .chain(
+                    suffix
+                    .iter()
+                    .map(|t| self.special_token_to_id(t))
+                )
                 .collect(),
             TokenizationInfo::TokenGroups(info)
         )
     }
 
-    fn de_tokenize(&self, token_ids: &Vec<usize>) -> String {
+    fn de_tokenize(&self, token_ids: &[usize]) -> String {
         let bytes: Vec<u8> = token_ids
             .iter()
             .filter(|&&t| t < u8::MAX as usize)

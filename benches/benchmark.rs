@@ -124,7 +124,7 @@ fn bench_tokenizer(c: &mut Criterion) {
     let prefix = vec![BOS.to_string()];
     let suffix = vec![EOS.to_string()];
     for size in INPUT_SIZES.iter() {
-        let mut str: String = (&mut rng)
+        let str: String = (&mut rng)
             .sample_iter::<char, _>(rand::distributions::Standard)
             .take(*size)
             .collect();

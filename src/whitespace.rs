@@ -41,7 +41,7 @@ pub fn operations(from: &str, to: &str) -> Vec<usize> {
     operations
 }
 
-pub fn repair(s: &str, operations: &Vec<usize>) -> String {
+pub fn repair(s: &str, operations: &[usize]) -> String {
     let chars: Vec<char> = s.chars().collect();
     assert_eq!(
         chars.len(),

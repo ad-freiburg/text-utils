@@ -1,6 +1,7 @@
 use std::ops::Sub;
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha8Rng};
+use crate::utils::accumulate;
 use crate::whitespace::{full, operations, remove};
 
 pub enum Label {
@@ -36,7 +37,7 @@ pub fn chain_preprocessing_fns(
 
 pub enum Preprocessing {
     // switch between multiple preprocessing functions
-    Switch(Vec<(Preprocessing, f64)>, u64),
+    Switch(Vec<Preprocessing>, Vec<f64>, u64),
     // delete all whitespaces
     NoWhitespaces,
     // insert whitespaces between all characters
@@ -47,16 +48,11 @@ pub enum Preprocessing {
     LabelWhitespaceCorrection,
 }
 
-fn get_switch_fn(mut fns: Vec<(Box<PreprocessingFn>, f64)>, seed: u64) -> Box<PreprocessingFn> {
+fn get_switch_fn(mut fns: Vec<Box<PreprocessingFn>>, probs: Vec<f64>, seed: u64) -> Box<PreprocessingFn> {
     let num_fns = fns.len();
-    assert!(num_fns > 0);
+    assert!(num_fns > 0 && num_fns == probs.len());
     // generate cumulative probabilities
-    let cum_p: Vec<f64> = fns
-        .iter()
-        .scan(0f64, |state, (_, p)| {
-            *state += p;
-            Some(*state)
-        }).collect();
+    let cum_p: Vec<f64> = accumulate(&probs[..]);
     // probabilities should sum to 1
     assert!(cum_p.last().copied().unwrap().sub(1f64).abs() < 1e-5);
 
@@ -71,7 +67,7 @@ fn get_switch_fn(mut fns: Vec<(Box<PreprocessingFn>, f64)>, seed: u64) -> Box<Pr
             while idx < num_fns - 1 && r > cum_p[idx] {
                 idx += 1;
             }
-            fns[idx].0(item)
+            fns[idx](item)
         }
     )
 }
@@ -107,7 +103,7 @@ fn get_label_whitespace_correction_fn() -> Box<PreprocessingFn> {
                 Item::InputAndTarget(from, to) => {
                     let labels = operations(&from, &to);
                     Some(Item::InputAndLabel(from, Label::SeqClassification(labels)))
-                },
+                }
                 _ => panic!("label whitespace correction requires an item with input and target text")
             }
         }
@@ -116,12 +112,13 @@ fn get_label_whitespace_correction_fn() -> Box<PreprocessingFn> {
 
 pub fn get_preprocessing_fn(preprocessing: Preprocessing) -> Box<PreprocessingFn> {
     match preprocessing {
-        Preprocessing::Switch(fns, seed) => get_switch_fn(
+        Preprocessing::Switch(fns, probs, seed) => get_switch_fn(
             fns
                 .into_iter()
-                .map(|(f, p)| (get_preprocessing_fn(f), p))
+                .map(|f| get_preprocessing_fn(f))
                 .collect(),
-            seed
+            probs,
+            seed,
         ),
         // Preprocessing::NoiseWhitespaces(iw_p, dw_p, seed) => {}
         Preprocessing::NoWhitespaces => get_no_whitespace_fn(),

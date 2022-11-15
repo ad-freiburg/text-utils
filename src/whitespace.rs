@@ -1,4 +1,6 @@
 use itertools::Itertools;
+use regex::{escape, Regex};
+use crate::text::clean;
 
 pub fn remove(s: &str) -> String {
     s.split_whitespace().join("")
@@ -41,10 +43,17 @@ pub fn operations(from: &str, to: &str) -> Vec<usize> {
 
 pub fn repair(s: &str, operations: &Vec<usize>) -> String {
     let chars: Vec<char> = s.chars().collect();
-    let num_chars = chars.len();
+    assert_eq!(
+        chars.len(),
+        operations.len(),
+        "expected one operation for every character, but got {} operations and \
+        {} characters",
+        operations.len(),
+        chars.len()
+    );
 
     let mut new_chars = vec![];
-    new_chars.reserve(num_chars);
+    new_chars.reserve(operations.len());
     for (idx, (char, op)) in chars
         .iter()
         .zip(operations.iter())
@@ -54,7 +63,11 @@ pub fn repair(s: &str, operations: &Vec<usize>) -> String {
             "operation should be either 0, 1, or 2, but got {}",
             op
         );
-        let prev_char = if idx == 0 { '#' } else { chars[idx - 1] };
+        let prev_char = if idx > 0 {
+            chars[idx - 1]
+        } else {
+            '#'
+        };
         if *op == 1 && !prev_char.is_whitespace() && !char.is_whitespace() {
             new_chars.push(' ');
             new_chars.push(*char);
@@ -64,12 +77,31 @@ pub fn repair(s: &str, operations: &Vec<usize>) -> String {
             new_chars.push(*char);
         }
     }
-    new_chars.iter().join("")
+    clean(new_chars.iter().join("").as_str())
+}
+
+pub fn find_substring_ignoring_whitespace(
+    s: &str,
+    substring: &str,
+) -> Option<(usize, usize)> {
+    let substring =
+        substring
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| escape(c.to_string().as_str()))
+            .join(r"\s*");
+    let re = Regex::new(substring.as_str())
+        .expect("invalid regex, should not happen");
+    if let Some(pattern_match) = re.find(s) {
+        Some((pattern_match.start(), pattern_match.end()))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::whitespace::{full, operations, remove, repair};
+    use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove, repair};
 
     #[test]
     fn test_remove() {
@@ -100,9 +132,27 @@ mod tests {
         let from = " t h isis a test  ";
         let to = "this is a test";
         assert_eq!(repair(from, &operations(from, to)), to);
-        assert_eq!(repair(to, &operations(to, from)), from);
-        assert_eq!(repair("", &vec![1, 1, 1, 1]), "    ");
+        assert_eq!(repair(to, &operations(to, from)), "t h isis a test");
         assert_eq!(repair("    ", &vec![2, 2, 2, 2]), "");
+        assert_eq!(repair("  t  ", &vec![0, 2, 0, 0, 1]), "t");
         assert_eq!(repair("", &vec![]), "");
+    }
+
+    #[test]
+    fn test_find_substring_ignoring_whitespace() {
+        let s = "this is a test sentence";
+        let sub = "  a te s\n t";
+        let result = find_substring_ignoring_whitespace(s, sub);
+        assert!(result.is_some());
+        let (start, end) = result.unwrap();
+        assert_eq!(start, 8);
+        assert_eq!(end, 14);
+        assert_eq!(&s[start..end], "a test");
+        let result = find_substring_ignoring_whitespace(s, "a täst");
+        assert!(result.is_none());
+        let s = "this is \" a \\w+ test \" sentence";
+        let sub = "\"a \\w+test\"";
+        let result = find_substring_ignoring_whitespace(s, sub);
+        assert!(result.is_some());
     }
 }

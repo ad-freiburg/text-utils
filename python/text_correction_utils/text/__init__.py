@@ -23,7 +23,7 @@ def word_boundaries(s: str) -> List[Tuple[int, int]]:
 
 
 def possible_character_subsequences(s: str, max_chars: int) -> List[Tuple[int, int]]:
-    return [(i, max(len(s), i + max_chars)) for i in range(max(1, len(s) - max_chars + 1))]
+    return [(i, min(len(s), i + max_chars)) for i in range(max(1, len(s) - max_chars + 1))]
 
 
 def random_character_susequence(

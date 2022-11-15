@@ -228,6 +228,19 @@ fn batch_match_words_py(
     Ok(batch_match_words(&a_list, &b_list, ignore_case, batch_size, show_progress))
 }
 
+pub fn substring(s: &str, start: usize, end: usize) {
+    let num_chars = s.chars().count();
+    assert!(start < num_chars && end < num_chars && start <= end);
+    
+}
+
+pub fn possible_character_substrings(s: &str, max_chars: usize) -> Vec<(usize, usize)> {
+    let num_chars = s.chars().count();
+    (0..1.max(num_chars - max_chars + 1))
+        .map(|i| (i, num_chars.min(i + max_chars)))
+        .collect()
+}
+
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "text")?;
     m.add_function(wrap_pyfunction!(word_boundaries_py, m)?)?;

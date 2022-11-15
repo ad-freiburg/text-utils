@@ -49,23 +49,32 @@ fn _calculate_edit_matrices(
             } else {
                 // chars are not equal, only allow replacement if no space is involved
                 // or we are allowed to replace spaces
-                if !spaces_insert_delete_only || (!a_char.is_whitespace() && !b_char.is_whitespace()) {
+                if !spaces_insert_delete_only
+                    || (!a_char.is_whitespace() && !b_char.is_whitespace()) {
                     costs.push((d[i - 1][j - 1] + 1, EditOp::Replace));
                 }
             }
             // check if we can swap chars, that is if we are allowed to swap
             // and if the chars to swap match
-            if with_swap && i > 1 && j > 1 && a_char == &b_chars[j - 2] && &a_chars[i - 2] == b_char {
+            if with_swap
+                && i > 1
+                && j > 1
+                && a_char == &b_chars[j - 2]
+                && &a_chars[i - 2] == b_char {
                 // we can swap the chars, but only allow swapping if no space is involved
                 // or we are allowed to swap spaces
-                if !spaces_insert_delete_only || (!a_char.is_whitespace() && !a_chars[i - 2].is_whitespace()) {
+                if !spaces_insert_delete_only
+                    || (!a_char.is_whitespace() && !a_chars[i - 2].is_whitespace()) {
                     costs.push((d[i - 2][j - 2] + 1, EditOp::Swap));
                 }
             }
 
-            let (min_cost, min_op) = costs.iter().min_by(
-                |(cost_1, _), (cost_2, _)| { cost_1.cmp(cost_2) }
-            ).expect("should not happen");
+            let (min_cost, min_op) = costs.
+                iter()
+                .min_by(|(cost_1, _), (cost_2, _)| {
+                    cost_1.cmp(cost_2)
+                })
+                .expect("should not happen");
             d[i][j] = *min_cost;
             ops[i][j] = *min_op;
         }

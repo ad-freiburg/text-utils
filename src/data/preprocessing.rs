@@ -2,24 +2,14 @@ use std::fs::read_to_string;
 use std::ops::Sub;
 use std::path::Path;
 use rand::{Rng, SeedableRng};
-use rand_chacha::{ChaCha8Rng};
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
+use crate::data::{TextData, Label};
 use crate::utils::accumulate;
 use crate::whitespace::{full, operations, remove};
 
-pub enum Label {
-    SeqClassification(Vec<usize>),
-    Seq2Seq(String),
-}
-
-pub enum Item {
-    Input(String),
-    InputAndTarget(String, String),
-    InputAndLabel(String, Label),
-}
-
-pub type PreprocessingFn = dyn FnMut(Item) -> Option<Item>;
+pub type PreprocessingFn = Box<dyn FnMut(TextData) -> TextData>;
+pub type LabelingFn = Box<dyn FnMut(&TextData) -> Label>;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub enum Preprocessing {
@@ -31,11 +21,15 @@ pub enum Preprocessing {
     FullWhitespaces,
     // delete and insert whitespaces with certain probabilities
     // NoiseWhitespaces(f64, f64, u64),
-    // generate whitespace correction labels given input and target sequence
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub enum Labeling {
+    // generate whitespace correction labels given processed and original sequence
     LabelWhitespaceCorrection,
 }
 
-fn get_switch_fn(fns: Vec<Preprocessing>, probs: Vec<f64>, seed: u64) -> Box<PreprocessingFn> {
+fn switch(fns: Vec<Preprocessing>, probs: Vec<f64>, seed: u64) -> PreprocessingFn {
     let num_fns = fns.len();
     assert!(num_fns > 0 && num_fns == probs.len());
     // generate cumulative probabilities
@@ -44,9 +38,9 @@ fn get_switch_fn(fns: Vec<Preprocessing>, probs: Vec<f64>, seed: u64) -> Box<Pre
     assert!(cum_p.last().copied().unwrap().sub(1f64).abs() < 1e-5);
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let mut fns: Vec<Box<PreprocessingFn>> = fns
+    let mut fns: Vec<PreprocessingFn> = fns
         .into_iter()
-        .map(|f| get_preprocessing_fn(f))
+        .map(|f| preprocessing_fn(f))
         .collect();
 
     // return new function that switches between multiple preprocessing functions
@@ -63,79 +57,74 @@ fn get_switch_fn(fns: Vec<Preprocessing>, probs: Vec<f64>, seed: u64) -> Box<Pre
     )
 }
 
-fn get_apply_to_text_fn(f: fn(&str) -> String) -> Box<PreprocessingFn> {
+fn apply_to_text(f: fn(&str) -> String) -> PreprocessingFn {
     Box::new(
         move |item| {
-            match item {
-                Item::Input(text) => {
-                    Some(Item::InputAndTarget(f(&text), text))
-                }
-                Item::InputAndTarget(text, target) => {
-                    Some(Item::InputAndTarget(f(&text), target))
-                }
-                _ => panic!("input should be a text only or a text and target item")
-            }
+            TextData { processed: f(&item.processed), ..item }
         }
     )
 }
 
-fn get_no_whitespace_fn() -> Box<PreprocessingFn> {
-    get_apply_to_text_fn(remove)
+fn no_whitespace() -> PreprocessingFn {
+    apply_to_text(remove)
 }
 
-fn get_full_whitespace_fn() -> Box<PreprocessingFn> {
-    get_apply_to_text_fn(full)
+fn full_whitespace() -> PreprocessingFn {
+    apply_to_text(full)
 }
 
-fn get_label_whitespace_correction_fn() -> Box<PreprocessingFn> {
+fn whitespace_correction_label() -> LabelingFn {
     Box::new(
         |item| {
-            match item {
-                Item::InputAndTarget(from, to) => {
-                    let labels = operations(&from, &to);
-                    Some(Item::InputAndLabel(from, Label::SeqClassification(labels)))
-                }
-                _ => panic!("label whitespace correction requires an item with input and target text")
-            }
+            Label::SeqClassification(
+                operations(&item.processed, &item.original)
+            )
         }
     )
 }
 
-pub fn get_preprocessing_fn(preprocessing: Preprocessing) -> Box<PreprocessingFn> {
+fn preprocessing_fn(preprocessing: Preprocessing) -> PreprocessingFn {
     match preprocessing {
-        Preprocessing::Switch(fns, probs, seed) => get_switch_fn(fns, probs, seed),
+        Preprocessing::Switch(fns, probs, seed) => switch(fns, probs, seed),
         // Preprocessing::NoiseWhitespaces(iw_p, dw_p, seed) => {}
-        Preprocessing::NoWhitespaces => get_no_whitespace_fn(),
-        Preprocessing::FullWhitespaces => get_full_whitespace_fn(),
-        Preprocessing::LabelWhitespaceCorrection => get_label_whitespace_correction_fn()
+        Preprocessing::NoWhitespaces => no_whitespace(),
+        Preprocessing::FullWhitespaces => full_whitespace(),
     }
 }
 
-pub fn get_preprocessing_fns(
+pub fn preprocessing(
     preprocessing: Vec<Preprocessing>
-) -> Box<PreprocessingFn> {
+) -> PreprocessingFn {
     // return new function that runs all given preprocessing functions
     // in order
-    let mut fns: Vec<Box<PreprocessingFn>> = preprocessing
+    let mut fns: Vec<PreprocessingFn> = preprocessing
         .into_iter()
-        .map(|p| get_preprocessing_fn(p))
+        .map(|p| preprocessing_fn(p))
         .collect();
     Box::new(
         move |mut item| {
             for f in fns.iter_mut() {
-                if let Some(new_item) = f(item) {
-                    item = new_item;
-                } else {
-                    return None;
-                }
+                item = f(item);
             }
-            Some(item)
+            item
         }
     )
 }
 
-pub fn get_preprocessing_fn_from_config(path: &Path) -> Result<Box<PreprocessingFn>> {
-    let raw_yaml = read_to_string(path)?;
-    let fns: Vec<Preprocessing> = serde_yaml::from_str(&raw_yaml)?;
-    Ok(get_preprocessing_fns(fns))
+pub fn preprocessing_from_yaml(path: &Path) -> PreprocessingFn {
+    let raw_yaml = read_to_string(path)
+        .expect(&format!("could not read yaml file at {:?}", path));
+    preprocessing_from_str(&raw_yaml)
+}
+
+pub fn preprocessing_from_str(s: &str) -> PreprocessingFn {
+    let fns: Vec<Preprocessing> = serde_yaml::from_str(s)
+        .expect(&format!("could not deserialize from yaml string\n{}", s));
+    preprocessing(fns)
+}
+
+pub fn labeling(labeling: Labeling) -> LabelingFn {
+    match labeling {
+        Labeling::LabelWhitespaceCorrection => whitespace_correction_label()
+    }
 }

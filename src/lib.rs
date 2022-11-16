@@ -1,3 +1,5 @@
+extern crate core;
+
 use pyo3::prelude::*;
 
 pub mod edit_distance;

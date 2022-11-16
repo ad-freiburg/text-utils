@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::hash::Hash;
 use itertools::Itertools;
+use num::Unsigned as TokenID;
 use crate::unicode::CS;
 
 pub const UNK: &str = "<unk>";
@@ -7,53 +9,121 @@ pub const BOS: &str = "<bos>";
 pub const EOS: &str = "<eos>";
 pub const PAD: &str = "<pad>";
 pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
+pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
+pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
 
-pub enum TokenizerType {
-    Character(usize, usize),
-    Byte(usize, usize),
+/// This trait makes sure that a special token can be converted into a String,
+/// dereferenced into &str, constructed from &str, and hashed (for vocabulary lookups).
+/// One could e.g. just use a regular String, but we define our own special token struct below.
+/// Important: We do not enforce how a regular token should look like since
+/// they should be handled entirely by the tokenizer itself. E.g. a ByteTokenizer
+/// does not need the notion of a regular token at all because it directly uses utf8
+/// encoded bytes.
+pub trait SpecialToken: Hash + Into<String> + AsRef<str> + for<'a> From<&'a str> + Clone {}
+
+/// Our own special token struct (a wrapper around String).
+/// We use this just for the better name.
+#[derive(Hash, Debug, Clone, Eq, PartialEq)]
+pub struct SpecialTok {
+    t: String,
 }
 
+impl AsRef<str> for SpecialTok {
+    fn as_ref(&self) -> &str {
+        &self.t
+    }
+}
+
+impl Into<String> for SpecialTok {
+    fn into(self) -> String {
+        self.t
+    }
+}
+
+impl From<&str> for SpecialTok {
+    fn from(s: &str) -> Self {
+        SpecialTok { t: s.to_string() }
+    }
+}
+
+impl SpecialToken for SpecialTok {}
+
+/// This enum defines all tokenizers that are supported by this crate.
+#[derive(Clone, Debug)]
+pub enum TokenizerType<T: SpecialToken> {
+    Character(Vec<T>, Vec<T>),
+    Byte(Vec<T>, Vec<T>),
+}
+
+/// This enum defines all possible additional infos that can be returned by
+/// a tokenizers tokenize function in addition to the token ids themselves.
+#[derive(Clone, Debug)]
 pub enum TokenizationInfo {
+    /// No additional info.
     Empty,
+    /// Token groups specify which subsequent tokens belong to the same group.
+    /// Useful e.g. when defining a byte tokenizer that should also return
+    /// information about which byte belongs to which character.
     TokenGroups(Vec<usize>),
 }
 
-pub trait Tokenizer {
-    fn get_vocab_size(&self) -> usize;
+/// A tokenization is defined to be a tuple of token ids and some additional information.
+/// This is returned by a tokenizers tokenize function.
+pub type Tokenization<ID> = (Vec<ID>, TokenizationInfo);
+/// A tokenization function in general takes in a &str and return a tokenization.
+pub type TokenizationFn<ID> = Box<dyn FnMut(&str) -> Tokenization<ID>>;
+/// A tokenizer is something that implements the tokenize trait with the
+/// appropriate bounds on tokens and token ids.
+pub type Tokenizer<T, ID> = Box<dyn Tokenize<T, ID>>;
 
-    fn get_unk_token_id(&self) -> usize;
+/// The tokenize trait defines behavior that every tokenizer should support.
+pub trait Tokenize<T: SpecialToken, ID: TokenID> {
+    fn vocab_size(&self) -> usize;
 
-    fn add_special_tokens(&mut self, special_tokens: &[String]);
+    fn unk_token_id(&self) -> ID;
 
-    fn tokenize(&self, s: &str, prefix: &[String], suffix: &[String]) -> (Vec<usize>, TokenizationInfo);
+    fn num_prefix_tokens(&self) -> usize;
 
-    fn de_tokenize(&self, token_ids: &[usize]) -> String;
+    fn num_suffix_tokens(&self) -> usize;
 
-    fn special_token_to_id(&self, token: &String) -> usize;
+    fn add_special_tokens(&mut self, special_tokens: &[T]);
 
-    fn id_to_special_token(&self, token_id: &usize) -> String;
+    fn tokenize(&self, s: &str) -> Tokenization<ID>;
+
+    fn tokenize_with(&self, s: &str, prefix: &[T], suffix: &[T]) -> Tokenization<ID>;
+
+    fn de_tokenize(&self, token_ids: &[ID]) -> String;
+
+    fn special_token_to_id(&self, token: &T) -> ID;
+
+    fn id_to_special_token(&self, token_id: &ID) -> &T;
 }
 
+/// A tokenizer based on the ascii characters, digits, and punctuations marks.
+/// Can e.g. be used to efficiently (meaning small vocab size) represent most
+/// English texts.
 pub struct CharTokenizer {
-    num_prefix_tokens: usize,
-    num_suffix_tokens: usize,
-    vocab: HashMap<char, usize>,
-    reverse_vocab: HashMap<usize, char>,
-    special_vocab: HashMap<String, usize>,
-    reverse_special_vocab: HashMap<usize, String>,
-    unk_token_id: usize,
+    default_prefix_tokens: Vec<SpecialTok>,
+    default_suffix_tokens: Vec<SpecialTok>,
+    vocab: HashMap<char, u16>,
+    reverse_vocab: HashMap<u16, char>,
+    special_vocab: HashMap<SpecialTok, u16>,
+    reverse_special_vocab: HashMap<u16, SpecialTok>,
+    unk_token_id: u16,
+    unk_token: SpecialTok
 }
 
 const CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\"\"!\"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~\"\" ";
 
 impl CharTokenizer {
-    pub fn new(num_prefix_tokens: usize, num_suffix_tokens: usize) -> CharTokenizer {
+    pub fn new(default_prefix_tokens: &[SpecialTok], default_suffix_tokens: &[SpecialTok]) -> Self
+        where Self: Tokenize<SpecialTok, u16> {
         let vocab = HashMap::from_iter(
             CHARS
                 .chars()
                 .unique()
                 .enumerate()
-                .map(|(tok_id, c)| (c, tok_id))
+                .map(|(tok_id, c)| (c, tok_id as u16))
         );
         let reverse_vocab = HashMap::from_iter(
             vocab
@@ -63,49 +133,86 @@ impl CharTokenizer {
         let special_vocab = HashMap::from_iter(
             SPECIAL_TOKENS
                 .iter()
-                .map(|s| s.to_string())
-                .zip(vocab.len()..(vocab.len() + SPECIAL_TOKENS.len()))
+                .map(|&s| SpecialTok::from(s))
+                .zip(vocab.len() as u16..(vocab.len() + SPECIAL_TOKENS.len()) as u16)
         );
         let reverse_special_vocab = HashMap::from_iter(
             special_vocab
                 .iter()
                 .map(|(st, tok_id)| (*tok_id, st.clone()))
         );
-        assert_eq!(vocab.len(), reverse_vocab.len());
-        assert_eq!(special_vocab.len(), reverse_special_vocab.len());
-        let unk_token_id = *special_vocab.get(UNK).expect("should not fail");
+        let unk_token = UNK.into();
+        let unk_token_id = *special_vocab
+            .get(&unk_token)
+            .expect("should not fail");
         CharTokenizer {
-            num_prefix_tokens,
-            num_suffix_tokens,
+            default_prefix_tokens: default_prefix_tokens.into(),
+            default_suffix_tokens: default_suffix_tokens.into(),
             vocab,
             reverse_vocab,
             special_vocab,
             reverse_special_vocab,
             unk_token_id,
+            unk_token
         }
+    }
+
+    pub fn default() -> Self {
+        let pfx: Vec<SpecialTok> = DEFAULT_PREFIX_TOKENS
+            .iter()
+            .map(|&p| p.into())
+            .collect();
+        let sfx: Vec<SpecialTok> = DEFAULT_SUFFIX_TOKENS
+            .iter()
+            .map(|&p| p.into())
+            .collect();
+        Self::new(&pfx, &sfx)
     }
 }
 
-impl Tokenizer for CharTokenizer {
-    fn get_vocab_size(&self) -> usize {
+impl Tokenize<SpecialTok, u16> for CharTokenizer {
+    fn vocab_size(&self) -> usize {
         self.vocab.len() + self.special_vocab.len()
     }
 
-    fn get_unk_token_id(&self) -> usize {
+    fn unk_token_id(&self) -> u16 {
         self.unk_token_id
     }
 
-    fn add_special_tokens(&mut self, special_tokens: &[String]) {
+    fn num_prefix_tokens(&self) -> usize {
+        self.default_prefix_tokens.len()
+    }
+
+    fn num_suffix_tokens(&self) -> usize {
+        self.default_suffix_tokens.len()
+    }
+
+    fn add_special_tokens(&mut self, special_tokens: &[SpecialTok]) {
         for st in special_tokens {
-            let token_id = self.get_vocab_size();
+            let token_id = self.vocab_size();
+            if token_id > u16::MAX as usize {
+                panic!("cannot add more than {} tokens to a character tokenizer", u16::MAX);
+            }
+            let token_id = token_id as u16;
             self.special_vocab.insert(st.clone(), token_id);
             self.reverse_special_vocab.insert(token_id, st.clone());
         }
     }
 
-    fn tokenize(&self, s: &str, prefix: &[String], suffix: &[String]) -> (Vec<usize>, TokenizationInfo) {
-        assert_eq!(self.num_prefix_tokens, prefix.len());
-        assert_eq!(self.num_suffix_tokens, suffix.len());
+    fn tokenize(&self, s: &str) -> Tokenization<u16> {
+        self.tokenize_with(
+            s,
+            &self.default_prefix_tokens,
+            &self.default_suffix_tokens,
+        )
+    }
+
+    fn tokenize_with(
+        &self,
+        s: &str,
+        prefix: &[SpecialTok],
+        suffix: &[SpecialTok],
+    ) -> Tokenization<u16> {
         (
             prefix
                 .iter()
@@ -128,134 +235,170 @@ impl Tokenizer for CharTokenizer {
         )
     }
 
-    fn de_tokenize(&self, token_ids: &[usize]) -> String {
+    fn de_tokenize(&self, token_ids: &[u16]) -> String {
         token_ids
             .iter()
-            .filter(|&&i| i < self.vocab.len())
+            .filter(|&&i| i < self.vocab.len() as u16)
             .map(|i| self.reverse_vocab[i])
             .join("")
     }
 
-    fn special_token_to_id(&self, token: &String) -> usize {
+    fn special_token_to_id(&self, token: &SpecialTok) -> u16 {
         self.special_vocab
-            .get(token)
+            .get(token.into())
             .copied()
             .unwrap_or(self.unk_token_id)
     }
 
-    fn id_to_special_token(&self, token_id: &usize) -> String {
-        self.reverse_special_vocab
-            .get(token_id)
-            .cloned()
-            .unwrap_or(UNK.to_string())
+    fn id_to_special_token(&self, token_id: &u16) -> &SpecialTok {
+        if let Some(token) = self.reverse_special_vocab.get(token_id) {
+            token
+        } else {
+            &self.unk_token
+        }
     }
 }
 
 pub struct ByteTokenizer {
-    num_prefix_tokens: usize,
-    num_suffix_tokens: usize,
-    special_vocab: HashMap<String, usize>,
-    reverse_special_vocab: HashMap<usize, String>,
-    unk_token_id: usize,
+    default_prefix_tokens: Vec<SpecialTok>,
+    default_suffix_tokens: Vec<SpecialTok>,
+    special_vocab: HashMap<SpecialTok, u16>,
+    reverse_special_vocab: HashMap<u16, SpecialTok>,
+    unk_token_id: u16,
+    unk_token: SpecialTok
 }
 
 impl ByteTokenizer {
-    pub fn new(num_prefix_tokens: usize, num_suffix_tokens: usize) -> ByteTokenizer {
-        let special_vocab = HashMap::from_iter(
+    pub fn new(default_prefix_tokens: &[SpecialTok], default_suffix_tokens: &[SpecialTok]) -> Self
+        where Self: Tokenize<SpecialTok, u16> {
+        let special_vocab: HashMap<SpecialTok, u16> = HashMap::from_iter(
             SPECIAL_TOKENS
                 .iter()
-                .zip(u8::MAX as usize..u8::MAX as usize + SPECIAL_TOKENS.len())
-                .map(|(st, tok_id)| (st.to_string(), tok_id))
+                .zip(u8::MAX as u16..u8::MAX as u16 + SPECIAL_TOKENS.len() as u16)
+                .map(|(&st, tok_id)| (st.into(), tok_id))
         );
         let reverse_special_vocab = HashMap::from_iter(
             special_vocab
                 .iter()
                 .map(|(token, token_id)| (*token_id, token.clone()))
         );
-        let unk_token_id = *special_vocab.get(UNK).expect("should not fail");
+        let unk_token = UNK.into();
+        let unk_token_id = *special_vocab
+            .get(&unk_token)
+            .expect("should not fail");
         ByteTokenizer {
-            num_prefix_tokens,
-            num_suffix_tokens,
+            default_prefix_tokens: default_prefix_tokens.into(),
+            default_suffix_tokens: default_suffix_tokens.into(),
             special_vocab,
             reverse_special_vocab,
             unk_token_id,
+            unk_token
         }
     }
 
-    fn split(&self, s: &str) -> (Vec<u8>, Vec<usize>) {
-        (
-            s.as_bytes().into(),
-            CS::new(s, true).cluster_lengths
-        )
+    pub fn default() -> Self {
+        let pfx: Vec<SpecialTok> = DEFAULT_PREFIX_TOKENS
+            .iter()
+            .map(|&p| p.into())
+            .collect();
+        let sfx: Vec<SpecialTok> = DEFAULT_SUFFIX_TOKENS
+            .iter()
+            .map(|&p| p.into())
+            .collect();
+        Self::new(&pfx, &sfx)
+    }
+
+    fn split(&self, s: &str) -> (Vec<u16>, Vec<usize>) {
+        let tokens = s
+            .as_bytes()
+            .iter()
+            .map(|b| *b as u16)
+            .collect();
+        (tokens, CS::new(s, true).cluster_lengths)
     }
 }
 
-impl Tokenizer for ByteTokenizer {
-    fn get_vocab_size(&self) -> usize {
+impl Tokenize<SpecialTok, u16> for ByteTokenizer {
+    fn vocab_size(&self) -> usize {
         u8::MAX as usize + self.special_vocab.len()
     }
 
-    fn get_unk_token_id(&self) -> usize {
+    fn unk_token_id(&self) -> u16 {
         self.unk_token_id
     }
 
-    fn add_special_tokens(&mut self, special_tokens: &[String]) {
+    fn num_prefix_tokens(&self) -> usize {
+        self.default_prefix_tokens.len()
+    }
+
+    fn num_suffix_tokens(&self) -> usize {
+        self.default_suffix_tokens.len()
+    }
+
+    fn add_special_tokens(&mut self, special_tokens: &[SpecialTok]) {
         for st in special_tokens {
-            let token_id = self.get_vocab_size();
+            let token_id = self.vocab_size();
+            if token_id > u16::MAX as usize {
+                panic!("cannot add more than {} tokens to a byte tokenizer", u16::MAX);
+            }
+            let token_id = token_id as u16;
             self.special_vocab.insert(st.clone(), token_id);
             self.reverse_special_vocab.insert(token_id, st.clone());
         }
     }
 
-    fn tokenize(&self, s: &str, prefix: &[String], suffix: &[String]) -> (Vec<usize>, TokenizationInfo) {
-        assert_eq!(self.num_prefix_tokens, prefix.len());
-        assert_eq!(self.num_suffix_tokens, suffix.len());
+    fn tokenize(&self, s: &str) -> Tokenization<u16> {
+        self.tokenize_with(
+            s,
+            &self.default_prefix_tokens,
+            &self.default_suffix_tokens
+        )
+    }
+
+    fn tokenize_with(
+        &self,
+        s: &str,
+        prefix: &[SpecialTok],
+        suffix: &[SpecialTok],
+    ) -> Tokenization<u16> {
         let (bytes, info) = self.split(s);
         (
             prefix
                 .iter()
                 .map(|t| self.special_token_to_id(t))
-                .chain(bytes.into_iter().map(usize::from))
+                .chain(bytes.into_iter())
                 .chain(
                     suffix
-                    .iter()
-                    .map(|t| self.special_token_to_id(t))
+                        .iter()
+                        .map(|t| self.special_token_to_id(t))
                 )
                 .collect(),
             TokenizationInfo::TokenGroups(info)
         )
     }
 
-    fn de_tokenize(&self, token_ids: &[usize]) -> String {
+    fn de_tokenize(&self, token_ids: &[u16]) -> String {
         let bytes: Vec<u8> = token_ids
             .iter()
-            .filter(|&&t| t < u8::MAX as usize)
+            .filter(|&&t| t < u8::MAX as u16)
             .map(|&t| t as u8)
             .collect();
         String::from_utf8(bytes).expect("invalid utf8")
     }
 
-    fn special_token_to_id(&self, token: &String) -> usize {
+    fn special_token_to_id(&self, token: &SpecialTok) -> u16 {
         self.special_vocab
             .get(token)
             .copied()
             .unwrap_or(self.unk_token_id)
     }
 
-    fn id_to_special_token(&self, token_id: &usize) -> String {
-        self.reverse_special_vocab
-            .get(token_id)
-            .cloned()
-            .unwrap_or(UNK.to_string())
-    }
-}
-
-pub fn get_tokenizer(tokenizer: TokenizerType) -> Box<dyn Tokenizer> {
-    match tokenizer {
-        TokenizerType::Character(pfx, sfx) =>
-            Box::new(CharTokenizer::new(pfx, sfx)),
-        TokenizerType::Byte(pfx, sfx) =>
-            Box::new(ByteTokenizer::new(pfx, sfx))
+    fn id_to_special_token(&self, token_id: &u16) -> &SpecialTok {
+        if let Some(token) = self.reverse_special_vocab.get(token_id) {
+            token
+        } else {
+            &self.unk_token
+        }
     }
 }
 
@@ -267,11 +410,13 @@ mod tests {
     fn test_char_tokenizer() {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
-        let tok = get_tokenizer(TokenizerType::Character(1, 1));
+        let tok = get_tokenizer(
+            TokenizerType::Character(pfx, sfx)
+        );
         let text = "a täst";
-        let (tokens, _) = tok.tokenize(text, &pfx, &sfx);
+        let (tokens, _) = tok.tokenize(text, None, None);
         assert_eq!(tokens.len(), 6 + 2);
-        assert_eq!(tokens[4], tok.get_unk_token_id());
+        assert_eq!(tokens[4], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&tokens), String::from("a tst"));
     }
 
@@ -279,9 +424,11 @@ mod tests {
     fn test_byte_tokenizer() {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
-        let tok = get_tokenizer(TokenizerType::Byte(1, 1));
+        let tok = get_tokenizer(
+            TokenizerType::Byte(pfx, sfx)
+        );
         let text = "a täst";
-        let (tokens, _) = tok.tokenize(text, &pfx, &sfx);
+        let (tokens, _) = tok.tokenize(text, None, None);
         assert_eq!(
             tokens[1..tokens.len() - 1].iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes().clone()

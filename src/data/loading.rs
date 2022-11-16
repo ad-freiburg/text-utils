@@ -44,7 +44,7 @@ pub struct TextLoader<I: Iterator<Item=TextData>> {
     size: usize,
     preprocessing_fn: PreprocessingFn,
     label_fn: LabelingFn,
-    tokenization_fn: TokenizationFn<u16>,
+    tokenization_fn: TokenizationFn,
     n_threads: u8,
     seed: u64,
     idx: usize,

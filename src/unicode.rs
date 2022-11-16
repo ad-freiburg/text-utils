@@ -162,7 +162,8 @@ mod tests {
         assert_eq!(s.str.len(), 0);
         assert_eq!(s.len(), 0);
         assert_eq!(s.sub(0, s.len()), "");
-        assert_eq!(s.cum_cluster_lengths, vec![]);
+        let empty: Vec<usize> = Vec::new();
+        assert_eq!(s.cum_cluster_lengths, empty);
         // test with ascii string
         let s = CS::new("this is a test", false);
         assert_eq!(s.str.len(), 14);

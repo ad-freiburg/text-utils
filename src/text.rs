@@ -4,6 +4,7 @@ use crate::unicode::CS;
 
 use crate::utils::Matrix;
 
+#[inline]
 pub fn clean(s: &str) -> String {
     s.split_whitespace().join(" ")
 }
@@ -42,6 +43,7 @@ fn word_boundaries_py(s: &str, use_graphemes: bool) -> PyResult<Vec<(usize, usiz
     Ok(word_boundaries(s, use_graphemes))
 }
 
+#[inline]
 fn str_match(a: &str, b: &str, ignore_case: bool) -> bool {
     a == b || (ignore_case && a.to_lowercase() == b.to_lowercase())
 }
@@ -134,11 +136,21 @@ fn match_words_py(
 pub fn possible_character_substrings(
     str: &str,
     use_graphemes: bool,
-    max_chars: usize,
+    mut max_chars: usize,
 ) -> Vec<(usize, usize)> {
-    let num_chars = CS::new(str, use_graphemes).len();
-    (0..1.max(num_chars - max_chars + 1))
-        .map(|i| (i, num_chars.min(i + max_chars)))
+    if str.is_empty() {
+        return vec![(0, 0)];
+    }
+    let cs = CS::new(str, use_graphemes);
+    let num_chars = cs.len();
+    max_chars = max_chars.min(num_chars);
+    (0..num_chars - max_chars + 1)
+        .map(|start_char| {
+            let end_char = num_chars.min(start_char + max_chars);
+            let start_byte = cs.cum_cluster_lengths[start_char] - cs.cluster_lengths[start_char];
+            let end_byte = cs.cum_cluster_lengths[end_char - 1];
+            (start_byte, end_byte)
+        })
         .collect()
 }
 
@@ -185,7 +197,15 @@ pub fn possible_byte_substrings(
     if start != end {
         substrings.push((start, end))
     }
+    // convert character substrings to byte indices
     substrings
+        .into_iter()
+        .map(|(start_char, end_char)| {
+            let start_byte = cs.cum_cluster_lengths[start_char] - cs.cluster_lengths[start_char];
+            let end_byte = cs.cum_cluster_lengths[end_char - 1];
+            (start_byte, end_byte)
+        })
+        .collect()
 }
 
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
@@ -200,7 +220,7 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
 
 #[cfg(test)]
 mod tests {
-    use crate::text::{clean, match_words, word_boundaries};
+    use crate::text::{clean, match_words, possible_byte_substrings, possible_character_substrings, word_boundaries};
 
     #[test]
     fn test_clean() {
@@ -240,6 +260,41 @@ mod tests {
 
     #[test]
     fn test_possible_character_substrings() {
+        let s = "a test";
+        let v = possible_character_substrings(s, true, 4);
+        assert_eq!(v, vec![(0, 4), (1, 5), (2, 6)]);
+        let v = possible_character_substrings(s, true, 10);
+        assert_eq!(v, vec![(0, 6)]);
+        let s = "a täst";
+        let v = possible_character_substrings(s, true, 4);
+        assert_eq!(v, vec![(0, 5), (1, 6), (2, 7)]);
+        let s = "नमस्ते";
+        let v = possible_character_substrings(s, true, 2);
+        assert_eq!(v, vec![(0, 6), (3, 12), (6, 18)]);
+        let v = possible_character_substrings(s, false, 2);
+        assert_eq!(v, vec![(0, 6), (3, 9), (6, 12), (9, 15), (12, 18)]);
+        let v = possible_character_substrings("", true, 4);
+        assert_eq!(v, vec![(0, 0)]);
+    }
 
+    #[test]
+    fn test_possible_byte_substrings() {
+        let s = "a test";
+        let v = possible_byte_substrings(s, true, 4);
+        assert_eq!(v, vec![(0, 4), (1, 5), (2, 6)]);
+        let v = possible_byte_substrings(s, true, 10);
+        assert_eq!(v, vec![(0, 6)]);
+        let s = "a täst";
+        let v = possible_byte_substrings(s, true, 4);
+        assert_eq!(v, vec![(0, 3), (1, 5), (2, 6), (3, 7)]);
+        let s = "नमस्ते";
+        let v = possible_byte_substrings(s, true, 2);
+        assert_eq!(v, vec![]);
+        let v = possible_byte_substrings(s, true, 6);
+        assert_eq!(v, vec![(0, 6), (6, 12), (12, 18)]);
+        let v = possible_byte_substrings(s, false, 6);
+        assert_eq!(v, vec![(0, 6), (3, 9), (6, 12), (9, 15), (12, 18)]);
+        let v = possible_byte_substrings("", true, 4);
+        assert_eq!(v, vec![(0, 0)]);
     }
 }

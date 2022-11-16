@@ -20,7 +20,7 @@ pub enum Label {
 #[derive(Clone, Debug)]
 pub struct Item {
     data: TextData,
-    tokenization: Tokenization<u16>,
+    tokenization: Tokenization,
     label: Label,
 }
 

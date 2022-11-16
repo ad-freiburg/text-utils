@@ -13,6 +13,7 @@ enum EditOp {
     Swap,
 }
 
+#[inline]
 fn _calculate_edit_matrices(
     a: CharString,
     b: CharString,

@@ -1,6 +1,10 @@
+use std::fs::read_to_string;
 use std::ops::Sub;
+use std::path::Path;
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha8Rng};
+use serde::{Deserialize, Serialize};
+use anyhow::Result;
 use crate::utils::accumulate;
 use crate::whitespace::{full, operations, remove};
 
@@ -17,24 +21,7 @@ pub enum Item {
 
 pub type PreprocessingFn = dyn FnMut(Item) -> Option<Item>;
 
-pub fn chain_preprocessing_fns(
-    mut fs: Vec<Box<PreprocessingFn>>
-) -> Box<PreprocessingFn> {
-    Box::new(
-        move |mut item| {
-            for f in fs.iter_mut() {
-                let new_item = f(item);
-                if new_item.is_none() {
-                    return None;
-                } else {
-                    item = new_item.unwrap();
-                }
-            }
-            Some(item)
-        }
-    )
-}
-
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub enum Preprocessing {
     // switch between multiple preprocessing functions
     Switch(Vec<Preprocessing>, Vec<f64>, u64),
@@ -48,7 +35,7 @@ pub enum Preprocessing {
     LabelWhitespaceCorrection,
 }
 
-fn get_switch_fn(mut fns: Vec<Box<PreprocessingFn>>, probs: Vec<f64>, seed: u64) -> Box<PreprocessingFn> {
+fn get_switch_fn(fns: Vec<Preprocessing>, probs: Vec<f64>, seed: u64) -> Box<PreprocessingFn> {
     let num_fns = fns.len();
     assert!(num_fns > 0 && num_fns == probs.len());
     // generate cumulative probabilities
@@ -57,6 +44,10 @@ fn get_switch_fn(mut fns: Vec<Box<PreprocessingFn>>, probs: Vec<f64>, seed: u64)
     assert!(cum_p.last().copied().unwrap().sub(1f64).abs() < 1e-5);
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut fns: Vec<Box<PreprocessingFn>> = fns
+        .into_iter()
+        .map(|f| get_preprocessing_fn(f))
+        .collect();
 
     // return new function that switches between multiple preprocessing functions
     // based on the given probability distribution
@@ -112,17 +103,39 @@ fn get_label_whitespace_correction_fn() -> Box<PreprocessingFn> {
 
 pub fn get_preprocessing_fn(preprocessing: Preprocessing) -> Box<PreprocessingFn> {
     match preprocessing {
-        Preprocessing::Switch(fns, probs, seed) => get_switch_fn(
-            fns
-                .into_iter()
-                .map(|f| get_preprocessing_fn(f))
-                .collect(),
-            probs,
-            seed,
-        ),
+        Preprocessing::Switch(fns, probs, seed) => get_switch_fn(fns, probs, seed),
         // Preprocessing::NoiseWhitespaces(iw_p, dw_p, seed) => {}
         Preprocessing::NoWhitespaces => get_no_whitespace_fn(),
         Preprocessing::FullWhitespaces => get_full_whitespace_fn(),
         Preprocessing::LabelWhitespaceCorrection => get_label_whitespace_correction_fn()
     }
+}
+
+pub fn get_preprocessing_fns(
+    preprocessing: Vec<Preprocessing>
+) -> Box<PreprocessingFn> {
+    // return new function that runs all given preprocessing functions
+    // in order
+    let mut fns: Vec<Box<PreprocessingFn>> = preprocessing
+        .into_iter()
+        .map(|p| get_preprocessing_fn(p))
+        .collect();
+    Box::new(
+        move |mut item| {
+            for f in fns.iter_mut() {
+                if let Some(new_item) = f(item) {
+                    item = new_item;
+                } else {
+                    return None;
+                }
+            }
+            Some(item)
+        }
+    )
+}
+
+pub fn get_preprocessing_fn_from_config(path: &Path) -> Result<Box<PreprocessingFn>> {
+    let raw_yaml = read_to_string(path)?;
+    let fns: Vec<Preprocessing> = serde_yaml::from_str(&raw_yaml)?;
+    Ok(get_preprocessing_fns(fns))
 }

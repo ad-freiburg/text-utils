@@ -115,7 +115,6 @@ fn bench_text(c: &mut Criterion) {
     }
 }
 
-
 fn bench_tokenizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("tokenizer");
     let mut rng = ChaCha8Rng::seed_from_u64(22);

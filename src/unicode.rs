@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use std::str::Chars;
 use unicode_segmentation::{UnicodeSegmentation};
 use crate::utils::accumulate;
 
@@ -6,7 +7,7 @@ use crate::utils::accumulate;
 pub struct CharString<'a> {
     pub str: &'a str,
     pub(crate) cluster_lengths: Vec<usize>,
-    pub(crate) cum_cluster_lengths: Vec<usize>
+    pub(crate) cum_cluster_lengths: Vec<usize>,
 }
 
 // shorthand for grapheme string for in crate usage
@@ -25,8 +26,8 @@ impl CharString<'_> {
         let cluster_lengths: Vec<usize>;
         if use_graphemes {
             cluster_lengths = str
-                .grapheme_indices(true)
-                .map(|(_, s)| s.len())
+                .graphemes(true)
+                .map(|s| s.len())
                 .collect();
         } else {
             cluster_lengths = str
@@ -34,9 +35,7 @@ impl CharString<'_> {
                 .map(|c| c.len_utf8())
                 .collect();
         }
-        let cum_cluster_lengths = accumulate(
-            cluster_lengths.iter()
-        );
+        let cum_cluster_lengths = accumulate(&cluster_lengths);
         CharString {
             str,
             cluster_lengths,
@@ -128,7 +127,7 @@ impl Character<'_> {
         self.str.chars().count()
     }
 
-    pub fn code_points(&self) -> impl Iterator<Item=char> + '_ {
+    pub fn code_points(&self) -> Chars {
         self.str.chars()
     }
 }

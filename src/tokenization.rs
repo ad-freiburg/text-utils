@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use itertools::Itertools;
+use rayon::prelude::*;
 use crate::unicode::CS;
 
 pub const UNK: &str = "<unk>";
@@ -52,7 +53,29 @@ pub trait Tokenize {
 
     fn tokenize(&self, s: &str) -> Tokenization;
 
+    fn batch_tokenize(&self, s: &[String]) -> Vec<Tokenization>
+        where Self: Sync {
+        s
+            .par_iter()
+            .map(|s| self.tokenize(s))
+            .collect()
+    }
+
     fn tokenize_with(&self, s: &str, prefix: &[String], suffix: &[String]) -> Tokenization;
+
+    fn batch_tokenize_with<'a, S>(
+        &self,
+        s: &[String],
+        prefixes: &[Vec<String>],
+        suffixes: &[Vec<String>],
+    ) -> Vec<Tokenization>
+        where Self: Sync {
+        s
+            .par_iter()
+            .enumerate()
+            .map(|(idx, s)| self.tokenize_with(s, &prefixes[idx], &suffixes[idx]))
+            .collect()
+    }
 
     fn de_tokenize(&self, token_ids: &[u32]) -> String;
 
@@ -387,29 +410,16 @@ impl Tokenize for ByteTokenizer {
     }
 }
 
-pub fn tokenizer(
-    tokenizer_type: TokenizerType
-) -> Box<dyn Tokenize> {
-    match tokenizer_type {
-        TokenizerType::Character(use_g, pfx, sfx) => {
-            Box::new(CharTokenizer::new(use_g, &pfx, &sfx))
-        }
-        TokenizerType::Byte(use_g, pfx, sfx) => {
-            Box::new(ByteTokenizer::new(use_g, &pfx, &sfx))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::tokenization::{TokenizerType, BOS, EOS, tokenizer};
+    use crate::tokenization::{BOS, EOS, CharTokenizer, Tokenize, ByteTokenizer};
 
     #[test]
     fn test_char_tokenizer() {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
-        let tok = tokenizer(
-            TokenizerType::Character(true, pfx, sfx)
+        let tok = CharTokenizer::new(
+            true, &pfx, &sfx,
         );
         let text = "a täst";
         let (tokens, _) = tok.tokenize(text);
@@ -422,8 +432,8 @@ mod tests {
     fn test_byte_tokenizer() {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
-        let tok = tokenizer(
-            TokenizerType::Byte(true, pfx, sfx)
+        let tok = ByteTokenizer::new(
+            true, &pfx, &sfx,
         );
         let text = "a täst";
         let (tokens, _) = tok.tokenize(text);

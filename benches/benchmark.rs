@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit_distance::{edit_distance, edit_operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
-use text_correction_utils::tokenization::{tokenizer, TokenizerType, BOS, EOS};
+use text_correction_utils::tokenization::{BOS, EOS, CharTokenizer, ByteTokenizer, Tokenize, Tokenization};
 
 const INPUT_SIZES: [usize; 4] = [16, 32, 64, 128];
 
@@ -119,17 +119,21 @@ fn bench_tokenizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("tokenizer");
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     let fx: Vec<String> = vec!["test".to_string()];
-    let char_tok = tokenizer(
-        TokenizerType::Character(true, fx.clone(), fx.clone())
+    let char_tok = CharTokenizer::new(
+        true, &fx, &fx
     );
-    let byte_tok = tokenizer(
-        TokenizerType::Byte(true, fx.clone(), fx.clone())
+    let byte_tok = ByteTokenizer::new(
+        true, &fx, &fx
     );
     for size in INPUT_SIZES.iter() {
         let str: String = (&mut rng)
             .sample_iter::<char, _>(rand::distributions::Standard)
             .take(*size)
             .collect();
+        let batch: Vec<String> = (0..1024)
+            .map(|_| str.clone())
+            .collect();
+        let batch_size = batch.len();
         group.bench_with_input(
             BenchmarkId::new(
                 "char",
@@ -142,12 +146,58 @@ fn bench_tokenizer(c: &mut Criterion) {
         );
         group.bench_with_input(
             BenchmarkId::new(
+                "char_serial",
+                format!("{} {}", size, batch_size),
+            ),
+            &batch,
+            |b, batch | {
+                b.iter(|| batch
+                    .iter()
+                    .map(|s| char_tok.tokenize(s.as_str()))
+                    .collect::<Vec<Tokenization>>());
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "char_parallel",
+                format!("{} {}", size, batch_size),
+            ),
+            &batch,
+            |b, batch| {
+                b.iter(|| char_tok.batch_tokenize(batch));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(
                 "byte",
                 format!("{}", size),
             ),
             str.as_str(),
             |b, str| {
                 b.iter(|| byte_tok.tokenize(str));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "byte_serial",
+                format!("{} {}", size, batch_size),
+            ),
+            &batch,
+            |b, batch| {
+                b.iter(|| batch
+                    .iter()
+                    .map(|s| byte_tok.tokenize(s.as_str()))
+                    .collect::<Vec<Tokenization>>());
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "byte_parallel",
+                format!("{} {}", size, batch_size),
+            ),
+            &batch,
+            |b, batch| {
+                b.iter(|| byte_tok.batch_tokenize(batch));
             },
         );
     }

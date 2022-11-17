@@ -14,10 +14,10 @@ pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
 }
 
 #[inline]
-pub(crate) fn accumulate<'a, V>(values: impl Iterator<Item=&'a V>) -> Vec<V>
-    where V: Num + NumAssignOps + Copy + 'a {
+pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
+    where T: Num + NumAssignOps + Copy {
     let mut cum_values = Vec::new();
-    let mut total_v = V::zero();
+    let mut total_v = T::zero();
     for v in values {
         total_v += *v;
         cum_values.push(total_v);
@@ -31,11 +31,11 @@ mod tests {
 
     #[test]
     fn test_accumulate() {
-        let accum = accumulate(vec![1, 4, 4, 2].iter());
+        let accum = accumulate(&vec![1, 4, 4, 2]);
         assert_eq!(accum, vec![1, 5, 9, 11]);
-        let accum = accumulate(vec![0.5, -0.5, 2.0, 3.5].iter());
+        let accum = accumulate(&vec![0.5, -0.5, 2.0, 3.5]);
         assert_eq!(accum, vec![0.5, 0.0, 2.0, 5.5]);
         let empty: Vec<i32> = Vec::new();
-        assert_eq!(accumulate::<i32>(vec![].iter()), empty);
+        assert_eq!(accumulate(&empty), empty);
     }
 }

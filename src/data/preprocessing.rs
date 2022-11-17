@@ -33,7 +33,7 @@ fn switch(fns: Vec<Preprocessing>, probs: Vec<f64>, seed: u64) -> PreprocessingF
     let num_fns = fns.len();
     assert!(num_fns > 0 && num_fns == probs.len());
     // generate cumulative probabilities
-    let cum_p: Vec<f64> = accumulate(probs.iter());
+    let cum_p: Vec<f64> = accumulate(&probs);
     // probabilities should sum to 1
     assert!(cum_p.last().copied().unwrap().sub(1f64).abs() < 1e-5);
 

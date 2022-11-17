@@ -1,9 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Lines, Read};
 use std::path::Path;
-use crate::data::{TextData, Item};
-use crate::data::preprocessing::{LabelingFn, PreprocessingFn};
-use crate::tokenization::{TokenizationFn};
+use crate::data::{TextData, Item, Pipeline};
 
 pub struct JSONLineIterator<R: Read> {
     lines: Lines<BufReader<R>>,
@@ -42,9 +40,7 @@ pub fn jsonl_iterator_from_file(path: &Path) -> JSONLineIterator<File> {
 pub struct TextLoader<I: Iterator<Item=TextData>> {
     iter: I,
     size: usize,
-    preprocessing_fn: PreprocessingFn,
-    label_fn: LabelingFn,
-    tokenization_fn: TokenizationFn,
+    pipeline: Pipeline,
     n_threads: u8,
     seed: u64,
     idx: usize,
@@ -57,13 +53,6 @@ impl<I: Iterator<Item=TextData>> Iterator for TextLoader<I> {
         let Some(item) = self.iter.next() else {
             return None;
         };
-        let data = (self.preprocessing_fn)(item);
-        let label = (self.label_fn)(&data);
-        let tokenization = (self.tokenization_fn)(&data.processed);
-        Some(Item {
-            tokenization,
-            data,
-            label,
-        })
+        Some(self.pipeline.apply(item))
     }
 }

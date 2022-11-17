@@ -3,9 +3,9 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit_distance::{edit_distance, edit_operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
-use text_correction_utils::tokenization::{BOS, EOS, CharTokenizer, ByteTokenizer, Tokenize, Tokenization};
+use text_correction_utils::tokenization::{CharTokenizer, ByteTokenizer, Tokenize, Tokenization};
 
-const INPUT_SIZES: [usize; 4] = [16, 32, 64, 128];
+const INPUT_SIZES: [usize; 3] = [16, 128, 512];
 
 fn bench_edit_distance(c: &mut Criterion) {
     let mut group = c.benchmark_group("edit_distance");

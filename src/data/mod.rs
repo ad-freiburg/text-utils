@@ -1,5 +1,8 @@
-use crate::tokenization::Tokenization;
+use std::fs::read_to_string;
+use std::path::Path;
 use serde::{Deserialize, Serialize};
+use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
+use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
 
 pub mod preprocessing;
 pub mod loading;
@@ -8,6 +11,7 @@ pub mod loading;
 pub struct TextData {
     original: String,
     processed: String,
+    language: String,
 }
 
 #[derive(Clone, Debug)]
@@ -27,4 +31,77 @@ pub struct Item {
 #[derive(Clone, Debug)]
 pub struct Batch {
     items: Vec<Item>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PipelineConfig {
+    preprocessing: Vec<PreprocessingConfig>,
+    labeling: LabelingConfig,
+    tokenizer: TokenizerConfig,
+}
+
+pub struct Pipeline {
+    preprocessing_fn: PreprocessingFn,
+    label_fn: LabelingFn,
+    tokenizer: Tokenizer,
+}
+
+impl Pipeline {
+    pub fn new(cfg: PipelineConfig) -> Self {
+        Pipeline {
+            preprocessing_fn: preprocessing(cfg.preprocessing),
+            label_fn: labeling(cfg.labeling),
+            tokenizer: tokenizer(cfg.tokenizer),
+        }
+    }
+
+    pub fn apply(&mut self, item: TextData) -> Item {
+        let data = (self.preprocessing_fn)(item);
+        let label = (self.label_fn)(&data);
+        let tokenization = self.tokenizer.tokenize(&data.processed);
+        Item {
+            data,
+            label,
+            tokenization,
+        }
+    }
+}
+
+fn read_yaml(path: &Path) -> String {
+    read_to_string(path)
+        .expect(&format!("could not read yaml file at {:?}", path))
+}
+
+fn parse_yaml<'a, T: Deserialize<'a>>(yaml: &'a str) -> T {
+    serde_yaml::from_str(yaml)
+        .expect(&format!("could not deserialize from yaml string\n{}", yaml))
+}
+
+pub fn pipeline_from_yaml(path: &Path) -> Pipeline {
+    pipeline_from_str(&read_yaml(path))
+}
+
+pub fn pipeline_from_str(s: &str) -> Pipeline {
+    let cfg: PipelineConfig = parse_yaml(s);
+    Pipeline::new(cfg)
+}
+
+pub fn preprocessing_from_yaml(path: &Path) -> PreprocessingFn {
+    preprocessing_from_str(&read_yaml(path))
+}
+
+pub fn preprocessing_from_str(s: &str) -> PreprocessingFn {
+    let fns: Vec<PreprocessingConfig> = serde_yaml::from_str(s)
+        .expect(&format!("could not deserialize from yaml string\n{}", s));
+    preprocessing(fns)
+}
+
+pub fn labeling_from_yaml(path: &Path) -> LabelingFn {
+    labeling_from_str(&read_yaml(path))
+}
+
+pub fn labeling_from_str(s: &str) -> LabelingFn {
+    let cfg: LabelingConfig = serde_yaml::from_str(s)
+        .expect(&format!("could not deserialize from yaml string\n{}", s));
+    labeling(cfg)
 }

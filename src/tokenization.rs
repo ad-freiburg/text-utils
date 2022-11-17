@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use itertools::Itertools;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use crate::unicode::CS;
 
 pub const UNK: &str = "<unk>";
@@ -12,8 +13,8 @@ pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
 pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
 
 /// This enum defines all tokenizers that are supported by this crate.
-#[derive(Clone, Debug)]
-pub enum TokenizerType {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum TokenizerConfig {
     Character(bool, Vec<String>, Vec<String>),
     Byte(bool, Vec<String>, Vec<String>),
 }
@@ -53,6 +54,16 @@ pub trait Tokenize {
 
     fn tokenize(&self, s: &str) -> Tokenization;
 
+    fn tokenize_with(&self, s: &str, prefix: &[String], suffix: &[String]) -> Tokenization;
+
+    fn de_tokenize(&self, token_ids: &[u32]) -> String;
+
+    fn special_token_to_id(&self, token: &String) -> u32;
+
+    fn id_to_special_token(&self, token_id: &u32) -> &String;
+}
+
+pub trait BatchTokenize: Tokenize {
     fn batch_tokenize(&self, s: &[String]) -> Vec<Tokenization>
         where Self: Sync {
         s
@@ -61,9 +72,7 @@ pub trait Tokenize {
             .collect()
     }
 
-    fn tokenize_with(&self, s: &str, prefix: &[String], suffix: &[String]) -> Tokenization;
-
-    fn batch_tokenize_with<'a, S>(
+    fn batch_tokenize_with(
         &self,
         s: &[String],
         prefixes: &[Vec<String>],
@@ -76,12 +85,6 @@ pub trait Tokenize {
             .map(|(idx, s)| self.tokenize_with(s, &prefixes[idx], &suffixes[idx]))
             .collect()
     }
-
-    fn de_tokenize(&self, token_ids: &[u32]) -> String;
-
-    fn special_token_to_id(&self, token: &String) -> u32;
-
-    fn id_to_special_token(&self, token_id: &u32) -> &String;
 }
 
 /// A tokenizer based on the ascii characters, digits, and punctuations marks.
@@ -406,6 +409,17 @@ impl Tokenize for ByteTokenizer {
             token
         } else {
             &self.unk_token
+        }
+    }
+}
+
+pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
+    match cfg {
+        TokenizerConfig::Character(use_g, pfx, sfx) => {
+            Box::new(CharTokenizer::new(use_g, &pfx, &sfx))
+        }
+        TokenizerConfig::Byte(use_g, pfx, sfx) => {
+            Box::new(ByteTokenizer::new(use_g, &pfx, &sfx))
         }
     }
 }

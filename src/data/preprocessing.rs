@@ -1,6 +1,4 @@
-use std::fs::read_to_string;
 use std::ops::Sub;
-use std::path::Path;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
@@ -11,10 +9,10 @@ use crate::whitespace::{full, operations, remove};
 pub type PreprocessingFn = Box<dyn FnMut(TextData) -> TextData>;
 pub type LabelingFn = Box<dyn FnMut(&TextData) -> Label>;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub enum Preprocessing {
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub enum PreprocessingConfig {
     // switch between multiple preprocessing functions
-    Switch(Vec<Preprocessing>, Vec<f64>, u64),
+    Switch(Vec<PreprocessingConfig>, Vec<f64>, u64),
     // delete all whitespaces
     NoWhitespaces,
     // insert whitespaces between all characters
@@ -23,13 +21,13 @@ pub enum Preprocessing {
     // NoiseWhitespaces(f64, f64, u64),
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub enum Labeling {
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub enum LabelingConfig {
     // generate whitespace correction labels given processed and original sequence
     LabelWhitespaceCorrection,
 }
 
-fn switch(fns: Vec<Preprocessing>, probs: Vec<f64>, seed: u64) -> PreprocessingFn {
+fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>, seed: u64) -> PreprocessingFn {
     let num_fns = fns.len();
     assert!(num_fns > 0 && num_fns == probs.len());
     // generate cumulative probabilities
@@ -83,17 +81,17 @@ fn whitespace_correction_label() -> LabelingFn {
     )
 }
 
-fn preprocessing_fn(preprocessing: Preprocessing) -> PreprocessingFn {
+fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
     match preprocessing {
-        Preprocessing::Switch(fns, probs, seed) => switch(fns, probs, seed),
+        PreprocessingConfig::Switch(fns, probs, seed) => switch(fns, probs, seed),
         // Preprocessing::NoiseWhitespaces(iw_p, dw_p, seed) => {}
-        Preprocessing::NoWhitespaces => no_whitespace(),
-        Preprocessing::FullWhitespaces => full_whitespace(),
+        PreprocessingConfig::NoWhitespaces => no_whitespace(),
+        PreprocessingConfig::FullWhitespaces => full_whitespace(),
     }
 }
 
 pub fn preprocessing(
-    preprocessing: Vec<Preprocessing>
+    preprocessing: Vec<PreprocessingConfig>
 ) -> PreprocessingFn {
     // return new function that runs all given preprocessing functions
     // in order
@@ -111,20 +109,8 @@ pub fn preprocessing(
     )
 }
 
-pub fn preprocessing_from_yaml(path: &Path) -> PreprocessingFn {
-    let raw_yaml = read_to_string(path)
-        .expect(&format!("could not read yaml file at {:?}", path));
-    preprocessing_from_str(&raw_yaml)
-}
-
-pub fn preprocessing_from_str(s: &str) -> PreprocessingFn {
-    let fns: Vec<Preprocessing> = serde_yaml::from_str(s)
-        .expect(&format!("could not deserialize from yaml string\n{}", s));
-    preprocessing(fns)
-}
-
-pub fn labeling(labeling: Labeling) -> LabelingFn {
+pub fn labeling(labeling: LabelingConfig) -> LabelingFn {
     match labeling {
-        Labeling::LabelWhitespaceCorrection => whitespace_correction_label()
+        LabelingConfig::LabelWhitespaceCorrection => whitespace_correction_label()
     }
 }

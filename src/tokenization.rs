@@ -13,8 +13,8 @@ pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
 /// This enum defines all tokenizers that are supported by this crate.
 #[derive(Clone, Debug)]
 pub enum TokenizerType {
-    Character(Vec<String>, Vec<String>),
-    Byte(Vec<String>, Vec<String>),
+    Character(bool, Vec<String>, Vec<String>),
+    Byte(bool, Vec<String>, Vec<String>),
 }
 
 /// This enum defines all possible additional infos that can be returned by
@@ -73,12 +73,14 @@ pub struct CharTokenizer {
     reverse_special_vocab: HashMap<u32, String>,
     unk_token_id: u32,
     unk_token: String,
+    use_graphemes: bool,
 }
 
 const CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\"\"!\"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~\"\" ";
 
 impl CharTokenizer {
     pub fn new(
+        use_graphemes: bool,
         default_prefix_tokens: &[String],
         default_suffix_tokens: &[String],
     ) -> Self {
@@ -118,6 +120,7 @@ impl CharTokenizer {
             reverse_special_vocab,
             unk_token_id,
             unk_token,
+            use_graphemes,
         }
     }
 
@@ -130,7 +133,7 @@ impl CharTokenizer {
             .iter()
             .map(|&p| p.into())
             .collect();
-        Self::new(&pfx, &sfx)
+        Self::new(true, &pfx, &sfx)
     }
 }
 
@@ -181,12 +184,23 @@ impl Tokenize for CharTokenizer {
                 .iter()
                 .map(|t| self.special_token_to_id(t))
                 .chain(
-                    s
+                    CS::new(s, self.use_graphemes)
                         .chars()
-                        .map(|c| self.vocab
-                            .get(&c)
-                            .copied()
-                            .unwrap_or(self.unk_token_id))
+                        .filter_map(|c| {
+                            // Character always has at least one char so this is safe
+                            let mut c_iter = c.code_points();
+                            let char = c_iter.next().unwrap();
+                            // return unk if Character has another char because
+                            // our tokens in the vocab are all single char tokens
+                            if c_iter.next().is_some() {
+                                Some(self.unk_token_id)
+                            } else {
+                                Some(self.vocab
+                                    .get(&char)
+                                    .copied()
+                                    .unwrap_or(self.unk_token_id))
+                            }
+                        })
                 )
                 .chain(
                     suffix
@@ -228,12 +242,14 @@ pub struct ByteTokenizer {
     reverse_special_vocab: HashMap<u32, String>,
     unk_token_id: u32,
     unk_token: String,
+    use_graphemes: bool,
 }
 
 impl ByteTokenizer {
     pub fn new(
+        use_graphemes: bool,
         default_prefix_tokens: &[String],
-        default_suffix_tokens: &[String]
+        default_suffix_tokens: &[String],
     ) -> Self {
         let special_vocab: HashMap<String, u32> = HashMap::from_iter(
             SPECIAL_TOKENS
@@ -257,6 +273,7 @@ impl ByteTokenizer {
             reverse_special_vocab,
             unk_token_id,
             unk_token,
+            use_graphemes,
         }
     }
 
@@ -269,7 +286,7 @@ impl ByteTokenizer {
             .iter()
             .map(|&p| p.into())
             .collect();
-        Self::new(&pfx, &sfx)
+        Self::new(true, &pfx, &sfx)
     }
 
     fn split(&self, s: &str) -> (Vec<u32>, Vec<usize>) {
@@ -278,7 +295,7 @@ impl ByteTokenizer {
             .iter()
             .map(|b| *b as u32)
             .collect();
-        (tokens, CS::new(s, true).cluster_lengths)
+        (tokens, CS::new(s, self.use_graphemes).cluster_lengths)
     }
 }
 
@@ -374,11 +391,11 @@ pub fn tokenizer(
     tokenizer_type: TokenizerType
 ) -> Box<dyn Tokenize> {
     match tokenizer_type {
-        TokenizerType::Character(pfx, sfx) => {
-           Box::new(CharTokenizer::new(&pfx, &sfx))
+        TokenizerType::Character(use_g, pfx, sfx) => {
+            Box::new(CharTokenizer::new(use_g, &pfx, &sfx))
         }
-        TokenizerType::Byte(pfx, sfx) => {
-           Box::new(ByteTokenizer::new(&pfx, &sfx))
+        TokenizerType::Byte(use_g, pfx, sfx) => {
+            Box::new(ByteTokenizer::new(use_g, &pfx, &sfx))
         }
     }
 }
@@ -392,7 +409,7 @@ mod tests {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
         let tok = tokenizer(
-            TokenizerType::Character(pfx, sfx)
+            TokenizerType::Character(true, pfx, sfx)
         );
         let text = "a täst";
         let (tokens, _) = tok.tokenize(text);
@@ -406,7 +423,7 @@ mod tests {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
         let tok = tokenizer(
-            TokenizerType::Byte(pfx, sfx)
+            TokenizerType::Byte(true, pfx, sfx)
         );
         let text = "a täst";
         let (tokens, _) = tok.tokenize(text);

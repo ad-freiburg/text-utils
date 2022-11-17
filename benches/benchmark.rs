@@ -119,8 +119,12 @@ fn bench_tokenizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("tokenizer");
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     let fx: Vec<String> = vec!["test".to_string()];
-    let char_tok = tokenizer(TokenizerType::Character(fx.clone(), fx.clone()));
-    let byte_tok = tokenizer(TokenizerType::Byte(fx.clone(), fx.clone()));
+    let char_tok = tokenizer(
+        TokenizerType::Character(true, fx.clone(), fx.clone())
+    );
+    let byte_tok = tokenizer(
+        TokenizerType::Byte(true, fx.clone(), fx.clone())
+    );
     for size in INPUT_SIZES.iter() {
         let str: String = (&mut rng)
             .sample_iter::<char, _>(rand::distributions::Standard)

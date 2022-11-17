@@ -63,7 +63,7 @@ impl CharString<'_> {
         if self.len() == 0 || start == end {
             return "";
         }
-        let start = if start == 0 { 0 } else { self.cum_cluster_lengths[start - 1] };
+        let start = self.cum_cluster_lengths[start] - self.cluster_lengths[start];
         let end = self.cum_cluster_lengths[end - 1];
         &self.str[start..end]
     }

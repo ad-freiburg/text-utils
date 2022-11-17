@@ -10,6 +10,7 @@ pub fn clean(s: &str) -> String {
 }
 
 #[pyfunction]
+#[pyo3(name = "clean")]
 fn clean_py(s: &str) -> PyResult<String> {
     Ok(clean(s))
 }
@@ -39,6 +40,7 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
 }
 
 #[pyfunction]
+#[pyo3(name = "word_boundaries")]
 fn word_boundaries_py(s: &str, use_graphemes: bool) -> PyResult<Vec<(usize, usize)>> {
     Ok(word_boundaries(s, use_graphemes))
 }
@@ -125,6 +127,7 @@ enum MatchOp {
 }
 
 #[pyfunction]
+#[pyo3(name = "match_words")]
 fn match_words_py(
     a: &str,
     b: &str,
@@ -137,9 +140,9 @@ pub fn possible_character_substrings(
     str: &str,
     use_graphemes: bool,
     mut max_chars: usize,
-) -> Vec<(usize, usize)> {
+) -> Vec<(usize, usize, usize)> {
     if str.is_empty() {
-        return vec![(0, 0)];
+        return vec![(0, 0, 0)];
     }
     let cs = CS::new(str, use_graphemes);
     let num_chars = cs.len();
@@ -149,7 +152,7 @@ pub fn possible_character_substrings(
             let end_char = num_chars.min(start_char + max_chars);
             let start_byte = cs.cum_cluster_lengths[start_char] - cs.cluster_lengths[start_char];
             let end_byte = cs.cum_cluster_lengths[end_char - 1];
-            (start_byte, end_byte)
+            (start_byte, end_byte, end_char - start_char)
         })
         .collect()
 }
@@ -158,13 +161,13 @@ pub fn possible_byte_substrings(
     str: &str,
     use_graphemes: bool,
     max_bytes: usize,
-) -> Vec<(usize, usize)> {
+) -> Vec<(usize, usize, usize)> {
     if str.is_empty() {
-        return vec![(0, 0)];
+        return vec![(0, 0, 0)];
     }
     let cs = CS::new(str, use_graphemes);
     if *cs.cum_cluster_lengths.last().expect("should not happen") <= max_bytes {
-        return vec![(0, cs.len())];
+        return vec![(0, cs.len(), cs.len())];
     }
     let mut start = 0;
     while start < cs.len() && cs.cluster_lengths[start] > max_bytes {
@@ -203,7 +206,7 @@ pub fn possible_byte_substrings(
         .map(|(start_char, end_char)| {
             let start_byte = cs.cum_cluster_lengths[start_char] - cs.cluster_lengths[start_char];
             let end_byte = cs.cum_cluster_lengths[end_char - 1];
-            (start_byte, end_byte)
+            (start_byte, end_byte, end_char - start_char)
         })
         .collect()
 }
@@ -262,39 +265,39 @@ mod tests {
     fn test_possible_character_substrings() {
         let s = "a test";
         let v = possible_character_substrings(s, true, 4);
-        assert_eq!(v, vec![(0, 4), (1, 5), (2, 6)]);
+        assert_eq!(v, vec![(0, 4, 4), (1, 5, 4), (2, 6, 4)]);
         let v = possible_character_substrings(s, true, 10);
-        assert_eq!(v, vec![(0, 6)]);
+        assert_eq!(v, vec![(0, 6, 6)]);
         let s = "a täst";
         let v = possible_character_substrings(s, true, 4);
-        assert_eq!(v, vec![(0, 5), (1, 6), (2, 7)]);
+        assert_eq!(v, vec![(0, 5, 4), (1, 6, 4), (2, 7, 4)]);
         let s = "नमस्ते";
         let v = possible_character_substrings(s, true, 2);
-        assert_eq!(v, vec![(0, 6), (3, 12), (6, 18)]);
+        assert_eq!(v, vec![(0, 6, 2), (3, 12, 2), (6, 18, 2)]);
         let v = possible_character_substrings(s, false, 2);
-        assert_eq!(v, vec![(0, 6), (3, 9), (6, 12), (9, 15), (12, 18)]);
+        assert_eq!(v, vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]);
         let v = possible_character_substrings("", true, 4);
-        assert_eq!(v, vec![(0, 0)]);
+        assert_eq!(v, vec![(0, 0, 0)]);
     }
 
     #[test]
     fn test_possible_byte_substrings() {
         let s = "a test";
         let v = possible_byte_substrings(s, true, 4);
-        assert_eq!(v, vec![(0, 4), (1, 5), (2, 6)]);
+        assert_eq!(v, vec![(0, 4, 4), (1, 5, 4), (2, 6, 4)]);
         let v = possible_byte_substrings(s, true, 10);
-        assert_eq!(v, vec![(0, 6)]);
+        assert_eq!(v, vec![(0, 6, 6)]);
         let s = "a täst";
         let v = possible_byte_substrings(s, true, 4);
-        assert_eq!(v, vec![(0, 3), (1, 5), (2, 6), (3, 7)]);
+        assert_eq!(v, vec![(0, 3, 3), (1, 5, 3), (2, 6, 3), (3, 7, 3)]);
         let s = "नमस्ते";
         let v = possible_byte_substrings(s, true, 2);
         assert_eq!(v, vec![]);
         let v = possible_byte_substrings(s, true, 6);
-        assert_eq!(v, vec![(0, 6), (6, 12), (12, 18)]);
+        assert_eq!(v, vec![(0, 6, 2), (6, 12, 1), (12, 18, 1)]);
         let v = possible_byte_substrings(s, false, 6);
-        assert_eq!(v, vec![(0, 6), (3, 9), (6, 12), (9, 15), (12, 18)]);
+        assert_eq!(v, vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]);
         let v = possible_byte_substrings("", true, 4);
-        assert_eq!(v, vec![(0, 0)]);
+        assert_eq!(v, vec![(0, 0, 0)]);
     }
 }

@@ -134,6 +134,7 @@ pub fn edit_operations(
 }
 
 #[pyfunction]
+#[pyo3(name = "edit_operations")]
 fn edit_operations_py(
     a: &str,
     b: &str,
@@ -161,6 +162,7 @@ pub fn edit_distance(
 }
 
 #[pyfunction]
+#[pyo3(name = "edit_distance")]
 fn edit_distance_py(
     a: &str,
     b: &str,

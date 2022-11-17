@@ -9,6 +9,7 @@ pub mod tokenization;
 pub mod whitespace;
 pub mod utils;
 pub mod unicode;
+pub mod inference;
 
 #[pymodule]
 fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {

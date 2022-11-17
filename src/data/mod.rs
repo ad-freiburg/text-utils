@@ -8,33 +8,33 @@ use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preproces
 pub mod preprocessing;
 pub mod loading;
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextData {
     original: String,
     processed: String,
     language: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Label {
     Classification(usize),
     SeqClassification(Vec<usize>),
     Seq2Seq(Vec<usize>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     data: TextData,
     tokenization: Tokenization,
     label: Option<Label>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Batch {
     items: Vec<Item>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PipelineConfig {
     preprocessing: Vec<PreprocessingConfig>,
     labeling: Option<LabelingConfig>,

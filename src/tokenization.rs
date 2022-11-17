@@ -13,7 +13,7 @@ pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
 pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
 
 /// This enum defines all tokenizers that are supported by this crate.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum TokenizerConfig {
     Character(bool, Vec<String>, Vec<String>),
     Byte(bool, Vec<String>, Vec<String>),
@@ -21,7 +21,7 @@ pub enum TokenizerConfig {
 
 /// This enum defines all possible additional infos that can be returned by
 /// a tokenizers tokenize function in addition to the token ids themselves.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenizationInfo {
     /// No additional info.
     Empty,

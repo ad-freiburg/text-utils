@@ -4,10 +4,13 @@ use std::{panic, process};
 use std::path::Path;
 use std::sync::{Arc, mpsc, Mutex};
 use std::sync::mpsc::{Receiver};
-use std::thread::{spawn};
+use std::thread::{Builder, JoinHandle};
+use rand::prelude::SliceRandom;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use crate::data::{TextData, Item, Pipeline, Batch};
 
-pub struct TextIterator<R: Read> {
+struct TextIterator<R: Read> {
     org_lines: Lines<BufReader<R>>,
     proc_lines: Option<Lines<BufReader<R>>>,
     counter: usize,
@@ -80,13 +83,13 @@ impl Iterator for TextIterator<File> {
 }
 
 pub struct PipelineIterator {
-    buffer: Receiver<Item>,
-    size_hint: (usize, Option<usize>)
+    rx: Receiver<Item>,
+    size_hint: (usize, Option<usize>),
 }
 
 impl PipelineIterator {
-    pub fn new<I: Iterator<Item=TextData> + Send + Sync + 'static>(
-        iter: I,
+    pub fn new<T: Iterator<Item=TextData> + Send + Sync + 'static>(
+        iter: T,
         pipeline: Pipeline,
         n_threads: u8,
         buffer_size: usize,
@@ -96,34 +99,37 @@ impl PipelineIterator {
         let pipe = Arc::new(Mutex::new(pipeline));
         let num_threads = n_threads.min(num_cpus::get() as u8).max(1) as usize;
         let buffer_size = buffer_size.max(1);
-        let (tx, rx) = mpsc::sync_channel(buffer_size);
         let orig_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             orig_hook(info);
             process::exit(1);
         }));
-        for _ in 0..num_threads {
+        let (tx, rx) = mpsc::sync_channel(buffer_size);
+        for idx in 0..num_threads {
             let iter_arc = iter.clone();
             let tx_clone = tx.clone();
             let pipe_clone = pipe.clone();
-            let _ = spawn(move || {
-                loop {
-                    let v = iter_arc.lock().unwrap().next();
-                    let Some(data) = v else {
-                        // we received none from the underlying iterator,
-                        // stop this sender
-                        return;
-                    };
-                    let item = pipe_clone.lock().unwrap().apply(data);
-                    if let Err(e) = tx_clone.send(item) {
-                        panic!("send error in thread: {}", e)
-                    };
-                }
-            });
+            let _: JoinHandle<()> = Builder::new()
+                .name(format!("pipeline iterator thread {}", idx))
+                .spawn(move || {
+                    loop {
+                        let v = iter_arc.lock().unwrap().next();
+                        let Some(data) = v else {
+                            // we received none from the underlying iterator,
+                            // stop this sender
+                            return;
+                        };
+                        let item = pipe_clone.lock().unwrap().apply(data);
+                        if let Err(e) = tx_clone.send(item) {
+                            panic!("send error in thread {}: {}", idx, e)
+                        };
+                    }
+                })
+                .expect(&format!("failed building thread {}", idx));
         }
         PipelineIterator {
-            buffer: rx,
-            size_hint
+            rx,
+            size_hint,
         }
     }
 }
@@ -132,11 +138,7 @@ impl Iterator for PipelineIterator {
     type Item = Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(item) = self.buffer.recv() {
-            Some(item)
-        } else {
-            None
-        }
+        self.rx.recv().ok()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -144,16 +146,188 @@ impl Iterator for PipelineIterator {
     }
 }
 
-pub struct BatchedPipelineIterator<I: Iterator<Item=Item>> {
-    shuffle: bool,
-    seed: u64,
-    iter: I,
+#[derive(Copy, Clone)]
+pub enum BatchLimitType {
+    BatchSize,
+    NumTokens,
 }
 
-impl<I: Iterator<Item=Item>> Iterator for BatchedPipelineIterator<I> {
+pub struct BatchedPipelineIterator {
+    batch_limit: usize,
+    batch_limit_type: BatchLimitType,
+    rng: ChaCha8Rng,
+    iter: PipelineIterator,
+    shuffle: bool,
+    shuffle_buffer: Vec<Item>,
+    shuffle_prefetch_factor: usize,
+    remainder: Option<Item>,
+}
+
+impl BatchedPipelineIterator {
+    pub fn new(
+        mut iter: PipelineIterator,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        shuffle: bool,
+        shuffle_prefetch_factor: usize,
+        seed: u64,
+    ) -> Self {
+        let shuffle_prefetch_factor = shuffle_prefetch_factor.max(2);
+        // initialize remainder
+        let remainder = iter.next();
+        BatchedPipelineIterator {
+            batch_limit,
+            batch_limit_type,
+            rng: ChaCha8Rng::seed_from_u64(seed),
+            iter,
+            shuffle,
+            shuffle_buffer: Vec::new(),
+            shuffle_prefetch_factor,
+            remainder,
+        }
+    }
+
+    pub fn next_shuffled(&mut self) -> (Option<Batch>, Option<Item>) {
+        // we create a batch in the following way:
+        // 1. fill up the shuffle buffer
+        // 2. shuffle the shuffle buffer
+        // 3. pop from shuffle buffer until we have a maxed out batch
+        let mut buffer_limit = match self.batch_limit_type {
+            BatchLimitType::BatchSize => self.shuffle_buffer.len(),
+            BatchLimitType::NumTokens => self.shuffle_buffer
+                .iter()
+                .map(|item| item.tokenization.0.len())
+                .sum()
+        };
+        // fill buffer until batch limit * some factor is hit
+        while buffer_limit < self.batch_limit * self.shuffle_prefetch_factor {
+            let Some(item) = self.iter.next() else {
+                // we are only done if the shuffle buffer is empty
+                if self.shuffle_buffer.is_empty() {
+                    return (None, None);
+                }
+                break;
+            };
+            match self.batch_limit_type {
+                BatchLimitType::BatchSize => buffer_limit += 1,
+                BatchLimitType::NumTokens => buffer_limit += item.tokenization.0.len()
+            }
+            self.shuffle_buffer.push(item);
+        }
+        // shuffle the buffer
+        self.shuffle_buffer.shuffle(&mut self.rng);
+        // now pop from the back until batch is full
+        Self::batch_from(
+            self.remainder.as_ref().unwrap().clone(),
+            &mut || self.shuffle_buffer.pop(),
+            self.batch_limit,
+            self.batch_limit_type,
+        )
+    }
+
+    fn batch_from(
+        initial: Item,
+        f: &mut dyn FnMut() -> Option<Item>,
+        limit: usize,
+        limit_type: BatchLimitType,
+    ) -> (Option<Batch>, Option<Item>) {
+        let mut batch_limit: usize = 0;
+        let mut items = vec![initial];
+        while batch_limit < limit {
+            let Some(item) = f() else {
+                return if items.is_empty() {
+                    (None, None)
+                } else {
+                    (Some(Batch { items }), None)
+                };
+            };
+            match limit_type {
+                BatchLimitType::BatchSize => batch_limit += 1,
+                BatchLimitType::NumTokens => batch_limit += item.tokenization.0.len()
+            }
+            items.push(item);
+        }
+        let remainder = items.pop();
+        (Some(Batch { items }), remainder)
+    }
+}
+
+impl Iterator for BatchedPipelineIterator {
     type Item = Batch;
 
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        if self.remainder.is_none() {
+            return None;
+        }
+        let (batch, remainder) = if self.shuffle {
+            self.next_shuffled()
+        } else {
+            Self::batch_from(
+                self.remainder.as_ref().unwrap().clone(),
+                &mut || self.iter.next(),
+                self.batch_limit,
+                self.batch_limit_type,
+            )
+        };
+        self.remainder = remainder;
+        batch
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use crate::data::loading::{PipelineIterator, TextIterator};
+    use crate::data::{Pipeline, PipelineConfig, TextData};
+    use crate::tokenization::TokenizerConfig;
+
+    #[test]
+    fn test_text_iterator() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let d = base.clone().join("resources/test/multi30k.txt");
+        let mut it = TextIterator::new(&d, None, None);
+        assert_eq!(it.size_hint(), (0, Some(29000)));
+        let first = "Two young, White males are outside near many bushes.".to_string();
+        let second = "Several men in hard hats are operating a giant pulley system.".to_string();
+        let unk = "[unk]".to_string();
+        assert_eq!(it.next().unwrap(), TextData {
+            original: first.clone(),
+            processed: first.clone(),
+            language: unk.clone(),
+        });
+        assert_eq!(it.next().unwrap(), TextData {
+            original: second.clone(),
+            processed: second.clone(),
+            language: unk.clone(),
+        });
+        let d2 = base.clone().join("resources/test/multi30k_rev.txt");
+        let mut it = TextIterator::new(&d, Some(&d2), None);
+        assert_eq!(it.size_hint(), (0, Some(29000)));
+        let last = "A man in shorts and a Hawaiian shirt leans over the rail of a pilot boat, with fog and mountains in the background.".to_string();
+        let second_last = "An elderly man sits outside a storefront accompanied by a young boy with a cart.".to_string();
+        assert_eq!(it.next().unwrap(), TextData {
+            original: first,
+            processed: last,
+            language: unk.clone(),
+        });
+        assert_eq!(it.next().unwrap(), TextData {
+            original: second,
+            processed: second_last,
+            language: unk.clone(),
+        });
+    }
+
+    #[test]
+    fn test_pipeline_iterator() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let d = base.clone().join("resources/test/multi30k.txt");
+        let it = TextIterator::new(&d, None, None);
+        let pipeline = Pipeline::new(PipelineConfig {
+            preprocessing: vec![],
+            labeling: None,
+            tokenizer: TokenizerConfig::Byte(true, vec![], vec![]),
+        });
+        let mut it = PipelineIterator::new(it, pipeline, 1, 64);
+        // println!("{:?}", it.next().unwrap())
     }
 }

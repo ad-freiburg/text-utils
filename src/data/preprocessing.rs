@@ -6,8 +6,8 @@ use crate::data::{TextData, Label};
 use crate::utils::accumulate;
 use crate::whitespace::{full, operations, remove};
 
-pub type PreprocessingFn = Box<dyn FnMut(TextData) -> TextData>;
-pub type LabelingFn = Box<dyn FnMut(&TextData) -> Label>;
+pub type PreprocessingFn = Box<dyn FnMut(TextData) -> TextData + Send + Sync>;
+pub type LabelingFn = Box<dyn Fn(&TextData) -> Label + Send + Sync>;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {

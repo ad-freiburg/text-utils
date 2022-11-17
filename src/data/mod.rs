@@ -1,5 +1,7 @@
 use std::fs::read_to_string;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
@@ -25,7 +27,7 @@ pub enum Label {
 pub struct Item {
     data: TextData,
     tokenization: Tokenization,
-    label: Label,
+    label: Option<Label>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,33 +38,52 @@ pub struct Batch {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PipelineConfig {
     preprocessing: Vec<PreprocessingConfig>,
-    labeling: LabelingConfig,
+    labeling: Option<LabelingConfig>,
     tokenizer: TokenizerConfig,
 }
 
 pub struct Pipeline {
-    preprocessing_fn: PreprocessingFn,
-    label_fn: LabelingFn,
+    // Preprocessing a FnMut so we have to wrap it here to be thread safe
+    preprocessing_fn: Arc<Mutex<PreprocessingFn>>,
+    label_fn: Option<LabelingFn>,
     tokenizer: Tokenizer,
 }
 
 impl Pipeline {
     pub fn new(cfg: PipelineConfig) -> Self {
         Pipeline {
-            preprocessing_fn: preprocessing(cfg.preprocessing),
-            label_fn: labeling(cfg.labeling),
+            preprocessing_fn: Arc::new(Mutex::new(preprocessing(cfg.preprocessing))),
+            label_fn: if cfg.labeling.is_some() {
+                Some(labeling(cfg.labeling.unwrap()))
+            } else {
+                None
+            },
             tokenizer: tokenizer(cfg.tokenizer),
         }
     }
 
-    pub fn apply(&mut self, item: TextData) -> Item {
-        let data = (self.preprocessing_fn)(item);
-        let label = (self.label_fn)(&data);
+    pub fn apply(&self, item: TextData) -> Item {
+        let data = (self.preprocessing_fn.lock().unwrap())(item);
+        let label = if self.label_fn.is_some() {
+            Some((self.label_fn.as_ref().unwrap())(&data))
+        } else {
+            None
+        };
         let tokenization = self.tokenizer.tokenize(&data.processed);
         Item {
             data,
             label,
             tokenization,
+        }
+    }
+
+    pub fn batch_apply(&self, items: Vec<TextData>) -> Batch
+        where Self: Send + Sync {
+        Batch {
+            items: items
+                .into_par_iter()
+                .map(|item| self.apply(item))
+                .collect()
         }
     }
 }

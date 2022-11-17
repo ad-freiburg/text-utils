@@ -41,7 +41,7 @@ pub type TokenizationFn = Box<dyn FnMut(&str) -> Tokenization>;
 pub type Tokenizer = Box<dyn Tokenize>;
 
 /// The tokenize trait defines behavior that every tokenizer should support.
-pub trait Tokenize {
+pub trait Tokenize: Send + Sync {
     fn vocab_size(&self) -> usize;
 
     fn unk_token_id(&self) -> u32;
@@ -261,6 +261,8 @@ impl Tokenize for CharTokenizer {
     }
 }
 
+impl BatchTokenize for CharTokenizer {}
+
 pub struct ByteTokenizer {
     default_prefix_tokens: Vec<String>,
     default_suffix_tokens: Vec<String>,
@@ -412,6 +414,8 @@ impl Tokenize for ByteTokenizer {
         }
     }
 }
+
+impl BatchTokenize for ByteTokenizer {}
 
 pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
     match cfg {

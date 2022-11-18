@@ -90,6 +90,7 @@ pub trait BatchTokenize: Tokenize {
 /// A tokenizer based on the ascii characters, digits, and punctuations marks.
 /// Can e.g. be used to efficiently (meaning small vocab size) represent most
 /// English texts.
+#[derive(Clone, Debug)]
 pub struct CharTokenizer {
     default_prefix_tokens: Vec<String>,
     default_suffix_tokens: Vec<String>,
@@ -263,6 +264,7 @@ impl Tokenize for CharTokenizer {
 
 impl BatchTokenize for CharTokenizer {}
 
+#[derive(Clone, Debug)]
 pub struct ByteTokenizer {
     default_prefix_tokens: Vec<String>,
     default_suffix_tokens: Vec<String>,

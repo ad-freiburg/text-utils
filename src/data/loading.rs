@@ -3,8 +3,10 @@ use std::io::{BufRead, BufReader, Lines, Read};
 use std::{panic, process};
 use std::path::Path;
 use std::sync::{Arc, mpsc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver};
-use std::thread::{Builder, JoinHandle};
+use std::thread::{Builder, JoinHandle, sleep};
+use std::time::{Duration};
 use rand::prelude::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -91,42 +93,63 @@ impl PipelineIterator {
     pub fn new<T: Iterator<Item=TextData> + Send + Sync + 'static>(
         iter: T,
         pipeline: Pipeline,
-        n_threads: u8,
+        worker_threads: u8,
         buffer_size: usize,
     ) -> Self {
         let size_hint = iter.size_hint();
-        let iter = Arc::new(Mutex::new(iter));
-        let pipe = Arc::new(Mutex::new(pipeline));
-        let num_threads = n_threads.min(num_cpus::get() as u8).max(1) as usize;
+        let iter = Arc::new(Mutex::new(iter.enumerate()));
         let buffer_size = buffer_size.max(1);
+        let num_threads = worker_threads
+            .min(num_cpus::get() as u8)
+            .max(1) as usize;
         let orig_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             orig_hook(info);
             process::exit(1);
         }));
         let (tx, rx) = mpsc::sync_channel(buffer_size);
+        let sent_counter = Arc::new(AtomicU64::new(0));
         for idx in 0..num_threads {
             let iter_arc = iter.clone();
             let tx_clone = tx.clone();
-            let pipe_clone = pipe.clone();
+            let pipe_clone = pipeline.clone();
+            let send_next = sent_counter.clone();
             let _: JoinHandle<()> = Builder::new()
                 .name(format!("pipeline iterator thread {}", idx))
                 .spawn(move || {
                     loop {
-                        let v = iter_arc.lock().unwrap().next();
-                        let Some(data) = v else {
-                            // we received none from the underlying iterator,
-                            // stop this sender
+                        let data;
+                        let idx;
+                        // open new scope for proper mutex unlocking
+                        {
+                            let mut iter_lock = iter_arc.lock().unwrap();
+                            let next = iter_lock.next();
+                            if next.is_some() {
+                                let next = next.unwrap();
+                                idx = next.0 as u64;
+                                data = next.1;
+                            } else {
+                                // we received none from the underlying iterator,
+                                // stop this sender
+                                return;
+                            }
+                        }
+                        let item = pipe_clone.apply(data, Some(idx));
+                        // wait until we are the next to send out item
+                        while send_next.load(Ordering::SeqCst) != idx {
+                            sleep(Duration::from_micros(100));
+                        }
+                        let send_result = tx_clone.send(item);
+                        send_next.swap(idx as u64 + 1, Ordering::SeqCst);
+                        if send_result.is_err() {
+                            // receiver is closed, so we can return this thread
                             return;
-                        };
-                        let item = pipe_clone.lock().unwrap().apply(data);
-                        if let Err(e) = tx_clone.send(item) {
-                            panic!("send error in thread {}: {}", idx, e)
-                        };
+                        }
                     }
                 })
                 .expect(&format!("failed building thread {}", idx));
         }
+
         PipelineIterator {
             rx,
             size_hint,
@@ -277,6 +300,7 @@ impl Iterator for BatchedPipelineIterator {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use log::info;
     use crate::data::loading::{PipelineIterator, TextIterator};
     use crate::data::{Pipeline, PipelineConfig, TextData};
     use crate::tokenization::TokenizerConfig;
@@ -319,6 +343,8 @@ mod tests {
 
     #[test]
     fn test_pipeline_iterator() {
+        env_logger::init();
+
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
         let it = TextIterator::new(&d, None, None);
@@ -327,7 +353,9 @@ mod tests {
             labeling: None,
             tokenizer: TokenizerConfig::Byte(true, vec![], vec![]),
         });
-        let mut it = PipelineIterator::new(it, pipeline, 1, 64);
-        // println!("{:?}", it.next().unwrap())
+        let mut it = PipelineIterator::new(it, pipeline, 2, 2);
+        for (idx, item) in it.take(2).enumerate() {
+
+        }
     }
 }

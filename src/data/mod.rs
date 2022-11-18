@@ -1,6 +1,5 @@
 use std::fs::read_to_string;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
@@ -43,15 +42,23 @@ pub struct PipelineConfig {
 
 pub struct Pipeline {
     // Preprocessing a FnMut so we have to wrap it here to be thread safe
-    preprocessing_fn: Arc<Mutex<PreprocessingFn>>,
+    cfg: PipelineConfig,
+    preprocessing_fn: PreprocessingFn,
     label_fn: Option<LabelingFn>,
     tokenizer: Tokenizer,
+}
+
+impl Clone for Pipeline {
+    fn clone(&self) -> Self {
+        Pipeline::new(self.cfg.clone())
+    }
 }
 
 impl Pipeline {
     pub fn new(cfg: PipelineConfig) -> Self {
         Pipeline {
-            preprocessing_fn: Arc::new(Mutex::new(preprocessing(cfg.preprocessing))),
+            cfg: cfg.clone(),
+            preprocessing_fn: preprocessing(cfg.preprocessing),
             label_fn: if cfg.labeling.is_some() {
                 Some(labeling(cfg.labeling.unwrap()))
             } else {
@@ -61,12 +68,8 @@ impl Pipeline {
         }
     }
 
-    pub fn apply(&self, item: TextData) -> Item {
-        let data;
-        {
-            let mut p_fn = self.preprocessing_fn.lock().unwrap();
-            data = p_fn(item);
-        }
+    pub fn apply(&self, item: TextData, seed: Option<u64>) -> Item {
+        let data = (self.preprocessing_fn)(item, seed);
         let label = if self.label_fn.is_some() {
             Some((self.label_fn.as_ref().unwrap())(&data))
         } else {

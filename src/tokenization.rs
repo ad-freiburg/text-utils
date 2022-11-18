@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::thread::sleep;
+use std::time::Duration;
 use itertools::Itertools;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,7 @@ pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
 pub enum TokenizerConfig {
     Character(bool, Vec<String>, Vec<String>),
     Byte(bool, Vec<String>, Vec<String>),
+    Dummy(Duration),
 }
 
 /// This enum defines all possible additional infos that can be returned by
@@ -84,6 +87,60 @@ pub trait BatchTokenize: Tokenize {
             .enumerate()
             .map(|(idx, s)| self.tokenize_with(s, &prefixes[idx], &suffixes[idx]))
             .collect()
+    }
+}
+
+/// Dummy tokenizer that just waits a specified time in its tokenize function.
+/// Used for testing only.
+struct DummyTokenizer {
+    delay: Duration,
+    dummy_token: String,
+}
+
+impl DummyTokenizer {
+    fn new(delay: Duration) -> Self {
+        DummyTokenizer { delay, dummy_token: "".to_string() }
+    }
+}
+
+impl Tokenize for DummyTokenizer {
+    fn vocab_size(&self) -> usize {
+        0
+    }
+
+    fn unk_token_id(&self) -> u32 {
+        0
+    }
+
+    fn num_prefix_tokens(&self) -> usize {
+        0
+    }
+
+    fn num_suffix_tokens(&self) -> usize {
+        0
+    }
+
+    fn add_special_tokens(&mut self, special_tokens: &[String]) {}
+
+    fn tokenize(&self, s: &str) -> Tokenization {
+        sleep(self.delay.clone());
+        Tokenization::from((vec![], TokenizationInfo::Empty))
+    }
+
+    fn tokenize_with(&self, s: &str, prefix: &[String], suffix: &[String]) -> Tokenization {
+        self.tokenize("")
+    }
+
+    fn de_tokenize(&self, token_ids: &[u32]) -> String {
+        "".to_string()
+    }
+
+    fn special_token_to_id(&self, token: &String) -> u32 {
+        0
+    }
+
+    fn id_to_special_token(&self, token_id: &u32) -> &String {
+        &self.dummy_token
     }
 }
 
@@ -426,6 +483,9 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
         }
         TokenizerConfig::Byte(use_g, pfx, sfx) => {
             Box::new(ByteTokenizer::new(use_g, &pfx, &sfx))
+        }
+        TokenizerConfig::Dummy(d) => {
+            Box::new(DummyTokenizer::new(d))
         }
     }
 }

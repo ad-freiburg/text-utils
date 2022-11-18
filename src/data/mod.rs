@@ -50,12 +50,12 @@ pub struct Pipeline {
 
 impl Clone for Pipeline {
     fn clone(&self) -> Self {
-        Pipeline::new(self.cfg.clone())
+        Pipeline::from_config(self.cfg.clone())
     }
 }
 
 impl Pipeline {
-    pub fn new(cfg: PipelineConfig) -> Self {
+    pub fn from_config(cfg: PipelineConfig) -> Self {
         Pipeline {
             cfg: cfg.clone(),
             preprocessing_fn: preprocessing(cfg.preprocessing),
@@ -100,7 +100,7 @@ pub fn pipeline_from_yaml(path: &Path) -> Pipeline {
 
 pub fn pipeline_from_str(s: &str) -> Pipeline {
     let cfg: PipelineConfig = parse_yaml(s);
-    Pipeline::new(cfg)
+    Pipeline::from_config(cfg)
 }
 
 pub fn preprocessing_from_yaml(path: &Path) -> PreprocessingFn {

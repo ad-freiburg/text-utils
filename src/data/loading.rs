@@ -6,7 +6,8 @@ use std::sync::{Arc, mpsc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver};
 use std::thread::{Builder, JoinHandle, sleep};
-use std::time::{Duration};
+use std::time::{Duration, Instant};
+use log::info;
 use rand::prelude::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -300,10 +301,18 @@ impl Iterator for BatchedPipelineIterator {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::thread::sleep;
+    use std::time::{Duration, Instant};
     use log::info;
     use crate::data::loading::{PipelineIterator, TextIterator};
-    use crate::data::{Pipeline, PipelineConfig, TextData};
-    use crate::tokenization::TokenizerConfig;
+    use crate::data::{Item, Pipeline, PipelineConfig, TextData};
+    use crate::tokenization::{ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizerConfig};
+
+    const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
+    const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
+    const MULTI30K_REV_FIRST: &str = "A man in shorts and a Hawaiian shirt leans over the rail of a pilot boat, with fog and mountains in the background.";
+    const MULTI30K_REV_SECOND: &str = "An elderly man sits outside a storefront accompanied by a young boy with a cart.";
+    const UNK: &str = "[unk]";
 
     #[test]
     fn test_text_iterator() {
@@ -311,33 +320,28 @@ mod tests {
         let d = base.clone().join("resources/test/multi30k.txt");
         let mut it = TextIterator::new(&d, None, None);
         assert_eq!(it.size_hint(), (0, Some(29000)));
-        let first = "Two young, White males are outside near many bushes.".to_string();
-        let second = "Several men in hard hats are operating a giant pulley system.".to_string();
-        let unk = "[unk]".to_string();
         assert_eq!(it.next().unwrap(), TextData {
-            original: first.clone(),
-            processed: first.clone(),
-            language: unk.clone(),
+            original: MULTI30K_FIRST.to_string(),
+            processed: MULTI30K_FIRST.to_string(),
+            language: UNK.to_string(),
         });
         assert_eq!(it.next().unwrap(), TextData {
-            original: second.clone(),
-            processed: second.clone(),
-            language: unk.clone(),
+            original: MULTI30K_SECOND.to_string(),
+            processed: MULTI30K_SECOND.to_string(),
+            language: UNK.to_string(),
         });
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
         let mut it = TextIterator::new(&d, Some(&d2), None);
         assert_eq!(it.size_hint(), (0, Some(29000)));
-        let last = "A man in shorts and a Hawaiian shirt leans over the rail of a pilot boat, with fog and mountains in the background.".to_string();
-        let second_last = "An elderly man sits outside a storefront accompanied by a young boy with a cart.".to_string();
         assert_eq!(it.next().unwrap(), TextData {
-            original: first,
-            processed: last,
-            language: unk.clone(),
+            original: MULTI30K_FIRST.to_string(),
+            processed: MULTI30K_REV_FIRST.to_string(),
+            language: UNK.to_string(),
         });
         assert_eq!(it.next().unwrap(), TextData {
-            original: second,
-            processed: second_last,
-            language: unk.clone(),
+            original: MULTI30K_SECOND.to_string(),
+            processed: MULTI30K_REV_SECOND.to_string(),
+            language: UNK.to_string(),
         });
     }
 
@@ -347,15 +351,46 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let it = TextIterator::new(&d, None, None);
-        let pipeline = Pipeline::new(PipelineConfig {
+        let mut pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
-            tokenizer: TokenizerConfig::Byte(true, vec![], vec![]),
+            tokenizer: TokenizerConfig::Dummy(Duration::from_millis(100))
         });
-        let mut it = PipelineIterator::new(it, pipeline, 2, 2);
-        for (idx, item) in it.take(2).enumerate() {
-
-        }
+        // test if it works with one worker and record the time it took
+        let mut it = PipelineIterator::new(
+            TextIterator::new(&d, None, None),
+            pipeline.clone(),
+            1,
+            2
+        );
+        let now = Instant::now();
+        let n: usize = 20;
+        let _: Vec<Item> = it.take(n).collect();
+        let time = now.elapsed().as_secs_f64();
+        info!("took {:.2}s to fetch {} items", time, n);
+        // test with more workers, check that its faster
+        let mut it = PipelineIterator::new(
+            TextIterator::new(&d, None, None),
+            pipeline.clone(),
+            2,
+            2
+        );
+        let now = Instant::now();
+        let _: Vec<Item> = it.take(n).collect();
+        let time2 = now.elapsed().as_secs_f64();
+        info!("took {:.2}s to fetch {} items", time2, n);
+        assert!(time2 < time);
+        // test with even more workers
+        let mut it = PipelineIterator::new(
+            TextIterator::new(&d, None, None),
+            pipeline,
+            4,
+            4
+        );
+        let now = Instant::now();
+        let _: Vec<Item> = it.take(n).collect();
+        let time3 = now.elapsed().as_secs_f64();
+        info!("took {:.2}s to fetch {} items", time3, n);
+        assert!(time3 < time2);
     }
 }

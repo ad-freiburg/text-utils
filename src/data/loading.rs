@@ -207,6 +207,7 @@ impl<R: Read> Iterator for TextIterator<R> {
             .next()
             .expect("expected original and processed text to have the same number of lines")
             .expect("could not read line");
+        self.next_idx();
         Some(TextData {
             original,
             processed,
@@ -598,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_batched_pipeline_iterator() {
-        env_logger::init();
+        let _ = env_logger::try_init();
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");

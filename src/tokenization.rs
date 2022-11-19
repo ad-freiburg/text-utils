@@ -120,29 +120,31 @@ impl Tokenize for DummyTokenizer {
         0
     }
 
-    fn add_special_tokens(&mut self, special_tokens: &[String]) {}
+    fn add_special_tokens(&mut self, _: &[String]) {}
 
-    fn tokenize(&self, s: &str) -> Tokenization {
+    fn tokenize(&self, _: &str) -> Tokenization {
         sleep(self.delay.clone());
         Tokenization::from((vec![], TokenizationInfo::Empty))
     }
 
-    fn tokenize_with(&self, s: &str, prefix: &[String], suffix: &[String]) -> Tokenization {
+    fn tokenize_with(&self, _: &str, _: &[String], _: &[String]) -> Tokenization {
         self.tokenize("")
     }
 
-    fn de_tokenize(&self, token_ids: &[u32]) -> String {
+    fn de_tokenize(&self, _: &[u32]) -> String {
         "".to_string()
     }
 
-    fn special_token_to_id(&self, token: &String) -> u32 {
+    fn special_token_to_id(&self, _: &String) -> u32 {
         0
     }
 
-    fn id_to_special_token(&self, token_id: &u32) -> &String {
+    fn id_to_special_token(&self, _: &u32) -> &String {
         &self.dummy_token
     }
 }
+
+impl BatchTokenize for DummyTokenizer {}
 
 /// A tokenizer based on the ascii characters, digits, and punctuations marks.
 /// Can e.g. be used to efficiently (meaning small vocab size) represent most

@@ -1,6 +1,8 @@
 use std::fs::read_to_string;
 use std::path::Path;
+use std::vec::IntoIter;
 use serde::{Deserialize, Serialize};
+use crate::data::loading::PipelineIterator;
 use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
 
@@ -31,6 +33,21 @@ pub struct Item {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Batch {
     items: Vec<Item>,
+}
+
+impl Batch {
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
+impl IntoIterator for Batch {
+    type Item = Item;
+    type IntoIter = IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

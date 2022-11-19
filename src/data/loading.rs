@@ -6,8 +6,7 @@ use std::sync::{Arc, mpsc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver};
 use std::thread::{Builder, JoinHandle, sleep};
-use std::time::{Duration, Instant};
-use log::info;
+use std::time::{Duration};
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -29,7 +28,7 @@ impl TextFileDataset {
 
 impl TextFileDataset {
     pub fn sequential_lines(&self) -> TextIterator<File> {
-        TextIterator::new(
+        TextIterator::from_files(
             &self.files,
             TextIterationStrategy::Sequential,
             None,
@@ -37,7 +36,7 @@ impl TextFileDataset {
     }
 
     pub fn interleaved_lines(&self) -> TextIterator<File> {
-        TextIterator::new(
+        TextIterator::from_files(
             &self.files,
             TextIterationStrategy::Interleaved,
             None,
@@ -45,7 +44,7 @@ impl TextFileDataset {
     }
 
     pub fn weighted_lines(&self, seed: Option<u64>) -> TextIterator<File> {
-        TextIterator::new(
+        TextIterator::from_files(
             &self.files,
             TextIterationStrategy::Weighted,
             seed,
@@ -75,26 +74,27 @@ fn open(p: &Path) -> File {
         .expect(&format!("could not open file at {:?}", p))
 }
 
-impl TextIterator<File> {
-    pub fn new(
-        files: &[(PathBuf, Option<PathBuf>, Option<String>)],
+impl<R: Read> TextIterator<R> {
+    fn new<T, OpenFn: Fn(&T) -> R>(
+        readers: &[(T, Option<T>, Option<String>)],
+        open_fn: OpenFn,
         strategy: TextIterationStrategy,
         seed: Option<u64>,
     ) -> Self {
-        assert!(!files.is_empty());
+        assert!(!readers.is_empty());
         let mut org_lines = vec![];
         let mut proc_lines = vec![];
         let mut languages = vec![];
         let mut num_lines = vec![];
-        for (org_file, proc_file, language) in files {
-            let org_num_lines = BufReader::new(open(org_file))
+        for (org, proc, language) in readers {
+            let org_num_lines = BufReader::new(open_fn(org))
                 .lines()
                 .count();
-            let org = BufReader::new(open(org_file))
+            let org_l = BufReader::new(open_fn(org))
                 .lines();
-            let proc = if proc_file.is_some() {
+            let proc_l = if proc.is_some() {
                 let proc_num_lines = BufReader::new(
-                    open(proc_file.as_ref().unwrap())
+                    open_fn(proc.as_ref().unwrap())
                 ).lines().count();
                 assert_eq!(
                     org_num_lines,
@@ -103,12 +103,13 @@ impl TextIterator<File> {
                     org_num_lines,
                     proc_num_lines
                 );
-                BufReader::new(open(proc_file.as_ref().unwrap())).lines()
+                BufReader::new(open_fn(proc.as_ref().unwrap())).lines()
             } else {
-                BufReader::new(open(org_file)).lines()
+                BufReader::new(open_fn(org)).lines()
             };
-            org_lines.push(org);
-            proc_lines.push(proc);
+            org_lines.push(org_l);
+            proc_lines.push(proc_l);
+            num_lines.push(org_num_lines);
             languages.push(language.as_ref().cloned().unwrap_or("[unk]".to_string()));
         }
         let finished = vec![false; org_lines.len()];
@@ -127,9 +128,7 @@ impl TextIterator<File> {
             finished,
         }
     }
-}
 
-impl<R: Read> TextIterator<R> {
     fn next_idx(&mut self) {
         assert!(!self.all_finished());
         match self.strategy {
@@ -168,7 +167,22 @@ impl<R: Read> TextIterator<R> {
     }
 }
 
-impl Iterator for TextIterator<File> {
+impl TextIterator<File> {
+    pub fn from_files(
+        files: &[(PathBuf, Option<PathBuf>, Option<String>)],
+        strategy: TextIterationStrategy,
+        seed: Option<u64>,
+    ) -> Self {
+        Self::new(
+            files,
+            |p| open(p),
+            strategy,
+            seed
+        )
+    }
+}
+
+impl<R: Read> Iterator for TextIterator<R> {
     type Item = TextData;
 
     fn next(&mut self) -> Option<Self::Item> {

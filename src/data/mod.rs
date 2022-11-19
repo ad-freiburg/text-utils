@@ -2,7 +2,6 @@ use std::fs::read_to_string;
 use std::path::Path;
 use std::vec::IntoIter;
 use serde::{Deserialize, Serialize};
-use crate::data::loading::PipelineIterator;
 use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
 

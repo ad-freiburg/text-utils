@@ -14,19 +14,19 @@ use rand_chacha::ChaCha8Rng;
 use crate::data::{TextData, Item, Pipeline, Batch};
 
 #[derive(Clone, Debug)]
-pub struct TextFileDataset {
+pub struct TextFiles {
     files: Vec<(PathBuf, Option<PathBuf>, Option<String>)>,
 }
 
-impl TextFileDataset {
+impl TextFiles {
     pub fn new(files: &[(PathBuf, Option<PathBuf>, Option<String>)]) -> Self {
-        TextFileDataset {
+        TextFiles {
             files: files.iter().cloned().collect()
         }
     }
 }
 
-impl TextFileDataset {
+impl TextFiles {
     pub fn sequential_lines(&self) -> TextIterator<File> {
         TextIterator::from_files(
             &self.files,
@@ -177,7 +177,7 @@ impl TextIterator<File> {
             files,
             |p| open(p),
             strategy,
-            seed
+            seed,
         )
     }
 }
@@ -289,6 +289,24 @@ impl PipelineIterator {
             rx,
             size_hint,
         }
+    }
+
+    pub fn batched(
+        self,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        shuffle: bool,
+        shuffle_prefetch_factor: usize,
+        seed: u64,
+    ) -> BatchedPipelineIterator<PipelineIterator> {
+        BatchedPipelineIterator::new(
+            self,
+            batch_limit,
+            batch_limit_type,
+            shuffle,
+            shuffle_prefetch_factor,
+            seed,
+        )
     }
 }
 
@@ -440,7 +458,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use itertools::Itertools;
     use log::info;
-    use crate::data::loading::{BatchedPipelineIterator, BatchLimitType, open, PipelineIterator, TextIterator};
+    use crate::data::loading::{BatchedPipelineIterator, BatchLimitType, open, PipelineIterator, TextFiles, TextIterator};
     use crate::data::{Item, Pipeline, PipelineConfig, TextData};
     use crate::tokenization::{ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizerConfig};
 
@@ -454,7 +472,8 @@ mod tests {
     fn test_text_iterator() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let mut it = TextIterator::new(&d, None, None);
+        let text_files = TextFiles::new(&[(d.clone(), None, None)]);
+        let mut it = text_files.sequential_lines();
         assert_eq!(it.size_hint(), (0, Some(29000)));
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
@@ -467,7 +486,8 @@ mod tests {
             language: UNK.to_string(),
         });
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let mut it = TextIterator::new(&d, Some(&d2), None);
+        let text_files = TextFiles::new(&[(d.clone(), Some(d2.clone()), None)]);
+        let mut it = text_files.sequential_lines();
         assert_eq!(it.size_hint(), (0, Some(29000)));
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
@@ -479,6 +499,29 @@ mod tests {
             processed: MULTI30K_REV_SECOND.to_string(),
             language: UNK.to_string(),
         });
+        let text_files = TextFiles::new(&[(d, None, None), (d2, None, None)]);
+        let mut it = text_files.interleaved_lines();
+        assert_eq!(it.size_hint(), (0, Some(2 * 29000)));
+        assert_eq!(it.next().unwrap(), TextData {
+            original: MULTI30K_FIRST.to_string(),
+            processed: MULTI30K_FIRST.to_string(),
+            language: UNK.to_string(),
+        });
+        assert_eq!(it.next().unwrap(), TextData {
+            original: MULTI30K_REV_FIRST.to_string(),
+            processed: MULTI30K_REV_FIRST.to_string(),
+            language: UNK.to_string(),
+        });
+        assert_eq!(it.next().unwrap(), TextData {
+            original: MULTI30K_SECOND.to_string(),
+            processed: MULTI30K_SECOND.to_string(),
+            language: UNK.to_string(),
+        });
+        assert_eq!(it.next().unwrap(), TextData {
+            original: MULTI30K_REV_SECOND.to_string(),
+            processed: MULTI30K_REV_SECOND.to_string(),
+            language: UNK.to_string(),
+        });
     }
 
     #[test]
@@ -487,19 +530,21 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
+        let text_files = TextFiles::new(&[(d.clone(), None, None)]);
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
-        let mut pipeline = Pipeline::from_config(PipelineConfig {
+        let pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
             tokenizer: TokenizerConfig::Dummy(Duration::from_millis(100)),
         });
         // test if it works with one worker and record the time it took
-        let mut it = PipelineIterator::new(
-            TextIterator::new(&d, None, None),
-            pipeline.clone(),
+        let mut it = pipeline
+            .clone()
+            .apply_iter(
+            text_files.sequential_lines(),
             1,
-            2,
+            1,
         );
         let now = Instant::now();
         let n: usize = 20;
@@ -507,9 +552,10 @@ mod tests {
         let time = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time, n);
         // test with more workers, check that its faster
-        let mut it = PipelineIterator::new(
-            TextIterator::new(&d, None, None),
-            pipeline.clone(),
+        let mut it = pipeline
+            .clone()
+            .apply_iter(
+            text_files.sequential_lines(),
             2,
             2,
         );
@@ -519,9 +565,8 @@ mod tests {
         info!("took {:.2}s to fetch {} items", time2, n);
         assert!(time2 < time);
         // test with even more workers
-        let mut it = PipelineIterator::new(
-            TextIterator::new(&d, None, None),
-            pipeline.clone(),
+        let mut it = pipeline.apply_iter(
+            text_files.sequential_lines(),
             4,
             4,
         );
@@ -532,14 +577,15 @@ mod tests {
         assert!(time3 < time2);
         // test that all lines of multi30k.txt are returned in order,
         // switch to non blocking tokenizer again
-        let mut pipeline = Pipeline::from_config(PipelineConfig {
+        let pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
             tokenizer: TokenizerConfig::Dummy(Duration::from_micros(0)),
         });
-        let mut it = PipelineIterator::new(
-            TextIterator::new(&d, None, None),
-            pipeline,
+        let mut it = pipeline
+            .clone()
+            .apply_iter(
+            text_files.sequential_lines(),
             4,
             4,
         );
@@ -556,49 +602,29 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
+        let text_files = TextFiles::new(&[(d.clone(), None, None)]);
         let mut pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
             tokenizer: TokenizerConfig::Dummy(Duration::from_millis(0)),
         });
-        let pipe_it = PipelineIterator::new(
-            TextIterator::new(&d, None, None),
-            pipeline.clone(),
-            1,
-            2,
-        );
         // first check the batched iterator with shuffling disabled
-        let it = BatchedPipelineIterator::new(
-            pipe_it,
-            16,
-            BatchLimitType::BatchSize,
-            false,
-            0,
-            0,
-        );
-        let d = base.clone().join("resources/test/multi30k.txt");
+        let mut pipe_it = pipeline
+            .clone()
+            .apply_iter(
+                text_files.sequential_lines(),
+                4,
+                4
+            )
+            .batched(
+                16,
+                BatchLimitType::BatchSize,
+                false,
+                0,
+                0
+            );
         let lines = BufReader::new(open(&d)).lines();
-        for (batch, line_batch) in it
-            .zip(&lines.chunks(16)) {
-            assert!(batch.len() <= 16);
-            for (item, line) in batch
-                .into_iter()
-                .zip(line_batch.into_iter()) {
-                assert_eq!(item.data.original, line.unwrap());
-            }
-        }
-        // first check the batched iterator with shuffling disabled
-        let it = BatchedPipelineIterator::new(
-            pipe_it,
-            16,
-            BatchLimitType::BatchSize,
-            false,
-            0,
-            0,
-        );
-        let d = base.clone().join("resources/test/multi30k.txt");
-        let lines = BufReader::new(open(&d)).lines();
-        for (batch, line_batch) in it
+        for (batch, line_batch) in pipe_it
             .zip(&lines.chunks(16)) {
             assert!(batch.len() <= 16);
             for (item, line) in batch

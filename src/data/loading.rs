@@ -32,7 +32,7 @@ impl TextFileDataset {
         TextIterator::new(
             &self.files,
             TextIterationStrategy::Sequential,
-            None
+            None,
         )
     }
 
@@ -40,7 +40,7 @@ impl TextFileDataset {
         TextIterator::new(
             &self.files,
             TextIterationStrategy::Interleaved,
-            None
+            None,
         )
     }
 
@@ -48,7 +48,7 @@ impl TextFileDataset {
         TextIterator::new(
             &self.files,
             TextIterationStrategy::Weighted,
-            seed
+            seed,
         )
     }
 }
@@ -60,7 +60,6 @@ pub enum TextIterationStrategy {
 }
 
 pub struct TextIterator<R: Read> {
-    files: Vec<(PathBuf, PathBuf)>,
     org_lines: Vec<Lines<BufReader<R>>>,
     proc_lines: Vec<Lines<BufReader<R>>>,
     languages: Vec<String>,
@@ -83,7 +82,6 @@ impl TextIterator<File> {
         seed: Option<u64>,
     ) -> Self {
         assert!(!files.is_empty());
-        let mut file_names = vec![];
         let mut org_lines = vec![];
         let mut proc_lines = vec![];
         let mut languages = vec![];
@@ -111,9 +109,6 @@ impl TextIterator<File> {
             };
             org_lines.push(org);
             proc_lines.push(proc);
-            file_names.push(
-                (org_file.clone(), proc_file.as_ref().unwrap_or(org_file).clone())
-            );
             languages.push(language.as_ref().cloned().unwrap_or("[unk]".to_string()));
         }
         let finished = vec![false; org_lines.len()];
@@ -124,13 +119,12 @@ impl TextIterator<File> {
             languages,
             strategy,
             idx: 0,
-            files: file_names,
             rng: if seed.is_some() {
                 ChaCha8Rng::seed_from_u64(seed.unwrap())
             } else {
                 ChaCha8Rng::from_entropy()
             },
-            finished
+            finished,
         }
     }
 }
@@ -192,18 +186,13 @@ impl Iterator for TextIterator<File> {
             }
             original = maybe_original
                 .unwrap()
-                .expect(&format!("could not read line from {:?}", self.files[self.idx].0));
+                .expect("could not read line");
             break;
         }
         let processed = self.proc_lines[self.idx]
             .next()
-            .expect(&format!(
-                "expected original and processed files {:?} and {:?} to have the same number of lines",
-                self.files[self.idx].0,
-                self.files[self.idx].1
-            )
-            )
-            .expect(&format!("could not read line from {:?}", self.files[self.idx].0));
+            .expect("expected original and processed text to have the same number of lines")
+            .expect("could not read line");
         Some(TextData {
             original,
             processed,

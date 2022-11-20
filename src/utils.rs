@@ -25,6 +25,18 @@ pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
     cum_values
 }
 
+#[inline]
+pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
+    where T: Num + Copy + PartialOrd {
+    if value < min {
+        min
+    } else if value > max {
+        max
+    } else {
+        value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::utils::accumulate;

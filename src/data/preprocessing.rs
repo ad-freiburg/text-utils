@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::data::{TextData, Label};
 use crate::text;
 use crate::unicode::CS;
-use crate::utils::accumulate;
+use crate::utils::{accumulate, constrain};
 use crate::whitespace::{full, operations, remove};
 
 pub type PreprocessingFn = Box<dyn Fn(TextData, Option<u64>) -> TextData + Send + Sync>;
@@ -73,6 +73,12 @@ fn apply_to_text<F: Fn(&str) -> String + Send + Sync + 'static>(f: F) -> Preproc
 }
 
 fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
+    let iw_p = constrain(iw_p, 0., 1.);
+    let dw_p = constrain(dw_p, 0., 1.);
+    assert!(
+        iw_p > 0. || dw_p > 0.,
+        "at least one of insert whitespace or delete whitespace probability must be greater 0"
+    );
     Box::new(
         move |item, seed| {
             let mut rng = if seed.is_some() {

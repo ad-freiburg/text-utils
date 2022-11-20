@@ -5,9 +5,10 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use crate::data::{TextData, Label};
 use crate::text;
+use crate::text::{possible_byte_substrings, possible_character_substrings};
 use crate::unicode::CS;
 use crate::utils::{accumulate, constrain};
-use crate::whitespace::{full, operations, remove};
+use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
 
 pub type PreprocessingFn = Box<dyn Fn(TextData, Option<u64>) -> TextData + Send + Sync>;
 pub type LabelingFn = Box<dyn Fn(&TextData) -> Label + Send + Sync>;
@@ -24,6 +25,9 @@ pub enum PreprocessingConfig {
     FullWhitespaces,
     // delete and insert whitespaces with certain probabilities
     NoiseWhitespaces(f64, f64),
+    // extract substrings from text
+    CharSubstring(usize, bool),
+    ByteSubstring(usize, bool),
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
@@ -110,6 +114,54 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
     )
 }
 
+fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
+    name: String,
+    substring_fn: F,
+) -> PreprocessingFn {
+    Box::new(
+        move |item, seed| {
+            let mut rng = if seed.is_some() {
+                ChaCha8Rng::seed_from_u64(seed.unwrap())
+            } else {
+                ChaCha8Rng::from_entropy()
+            };
+            let possible_substrings = substring_fn(&item.processed);
+            let idx = rng.gen_range(0..possible_substrings.len());
+            let (start, end, _) = possible_substrings[idx];
+            let processed = item.processed[start..end].to_string();
+            let (start, end) = find_substring_ignoring_whitespace(
+                &item.original,
+                &processed,
+            ).expect(&format!("original and processed sequences can only differ in \
+            whitespaces when applying the {} substring preprocessing", name));
+            let original = item.original[start..end].to_string();
+            TextData {
+                original,
+                processed,
+                ..item
+            }
+        }
+    )
+}
+
+fn char_substring(max_chars: usize, use_graphemes: bool) -> PreprocessingFn {
+    substring(
+        "character".to_string(),
+        move |s| {
+            possible_character_substrings(s, use_graphemes, max_chars)
+        },
+    )
+}
+
+fn byte_substring(max_bytes: usize, use_graphemes: bool) -> PreprocessingFn {
+    substring(
+        "byte".to_string(),
+        move |s| {
+            possible_byte_substrings(s, use_graphemes, max_bytes)
+        },
+    )
+}
+
 fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
     match preprocessing {
         PreprocessingConfig::Clean => apply_to_text(text::clean),
@@ -117,6 +169,8 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
         PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => noise_whitespace(iw_p, dw_p),
         PreprocessingConfig::NoWhitespaces => apply_to_text(remove),
         PreprocessingConfig::FullWhitespaces => apply_to_text(full),
+        PreprocessingConfig::CharSubstring(l, use_graphemes) => char_substring(l, use_graphemes),
+        PreprocessingConfig::ByteSubstring(l, use_graphemes) => byte_substring(l, use_graphemes),
     }
 }
 
@@ -153,4 +207,10 @@ pub fn labeling(labeling: LabelingConfig) -> LabelingFn {
     match labeling {
         LabelingConfig::LabelWhitespaceCorrection => whitespace_correction_label()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_something() {}
 }

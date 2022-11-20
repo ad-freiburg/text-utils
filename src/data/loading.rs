@@ -207,12 +207,13 @@ impl<R: Read> Iterator for TextIterator<R> {
             .next()
             .expect("expected original and processed text to have the same number of lines")
             .expect("could not read line");
-        self.next_idx();
-        Some(TextData {
+        let data = TextData {
             original,
             processed,
             language: self.languages[self.idx].clone(),
-        })
+        };
+        self.next_idx();
+        Some(data)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -453,6 +454,8 @@ impl<T: Iterator<Item=Item>> Iterator for BatchedPipelineIterator<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::io;
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
     use std::thread::sleep;
@@ -473,6 +476,7 @@ mod tests {
     fn test_text_iterator() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
+        // first check sequential lines with one file
         let text_files = TextFiles::new(&[(d.clone(), None, None)]);
         let mut it = text_files.sequential_lines();
         assert_eq!(it.size_hint(), (0, Some(29000)));
@@ -486,6 +490,7 @@ mod tests {
             processed: MULTI30K_SECOND.to_string(),
             language: UNK.to_string(),
         });
+        // check sequential lines with two files
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
         let text_files = TextFiles::new(&[(d.clone(), Some(d2.clone()), None)]);
         let mut it = text_files.sequential_lines();
@@ -500,29 +505,39 @@ mod tests {
             processed: MULTI30K_REV_SECOND.to_string(),
             language: UNK.to_string(),
         });
-        let text_files = TextFiles::new(&[(d, None, None), (d2, None, None)]);
+        // check interleaved lines with two files
+        let text_files = TextFiles::new(
+            &[(d, None, Some("1".to_string())),
+                (d2, None, Some("2".to_string()))]
+        );
         let mut it = text_files.interleaved_lines();
         assert_eq!(it.size_hint(), (0, Some(2 * 29000)));
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_FIRST.to_string(),
-            language: UNK.to_string(),
+            language: "1".to_string(),
         });
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_REV_FIRST.to_string(),
             processed: MULTI30K_REV_FIRST.to_string(),
-            language: UNK.to_string(),
+            language: "2".to_string(),
         });
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_SECOND.to_string(),
             processed: MULTI30K_SECOND.to_string(),
-            language: UNK.to_string(),
+            language: "1".to_string(),
         });
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_REV_SECOND.to_string(),
             processed: MULTI30K_REV_SECOND.to_string(),
-            language: UNK.to_string(),
+            language: "2".to_string(),
         });
+        // check that they are indeed interleaved
+        let mut idx: usize = 4;
+        while let Some(data) = it.next() {
+            assert_eq!(&data.language, if idx % 2 == 0 { "1" } else { "2" });
+            idx += 1;
+        }
     }
 
     #[test]
@@ -543,10 +558,10 @@ mod tests {
         let mut it = pipeline
             .clone()
             .apply_iter(
-            text_files.sequential_lines(),
-            1,
-            1,
-        );
+                text_files.sequential_lines(),
+                1,
+                1,
+            );
         let now = Instant::now();
         let n: usize = 20;
         let _: Vec<Item> = it.take(n).collect();
@@ -556,10 +571,10 @@ mod tests {
         let mut it = pipeline
             .clone()
             .apply_iter(
-            text_files.sequential_lines(),
-            2,
-            2,
-        );
+                text_files.sequential_lines(),
+                2,
+                2,
+            );
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
         let time2 = now.elapsed().as_secs_f64();
@@ -586,10 +601,10 @@ mod tests {
         let mut it = pipeline
             .clone()
             .apply_iter(
-            text_files.sequential_lines(),
-            4,
-            4,
-        );
+                text_files.sequential_lines(),
+                4,
+                4,
+            );
         let lines = BufReader::new(open(&d))
             .lines();
         for (idx, (line, item)) in it.zip(lines).enumerate() {
@@ -604,6 +619,10 @@ mod tests {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
         let text_files = TextFiles::new(&[(d.clone(), None, None)]);
+        let lines: Vec<String> = BufReader::new(open(&d))
+            .lines()
+            .collect::<Result<Vec<String>, io::Error>>()
+            .unwrap();
         let mut pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
@@ -615,24 +634,56 @@ mod tests {
             .apply_iter(
                 text_files.sequential_lines(),
                 4,
-                4
+                4,
             )
             .batched(
                 16,
                 BatchLimitType::BatchSize,
                 false,
                 0,
-                0
+                0,
             );
-        let lines = BufReader::new(open(&d)).lines();
         for (batch, line_batch) in pipe_it
-            .zip(&lines.chunks(16)) {
-            assert!(batch.len() <= 16);
+            .zip(&lines.iter().chunks(16)) {
+            assert!(batch.len() > 0 && batch.len() <= 16);
             for (item, line) in batch
                 .into_iter()
                 .zip(line_batch.into_iter()) {
-                assert_eq!(item.data.original, line.unwrap());
+                assert_eq!(item.data.original, *line);
             }
         }
+        // now check the batched iterator with shuffling
+        let mut pipe_it = pipeline
+            .clone()
+            .apply_iter(
+                text_files.sequential_lines(),
+                4,
+                4,
+            )
+            .batched(
+                16,
+                BatchLimitType::BatchSize,
+                true,
+                4,
+                0,
+            );
+        // check that each line was yielded by the batch iterator once or twice
+        // (because some descriptions in multi30k appear twice)
+        let mut line_counter: HashMap<String, usize> = HashMap::from_iter(
+            lines
+                .iter()
+                .cloned()
+                .map(|l| (l, 0))
+        );
+        for (batch, line_batch) in pipe_it
+            .zip(&lines.iter().chunks(16)) {
+            assert!(batch.len() > 0 && batch.len() <= 16);
+            for item in batch {
+                let mut count = line_counter.get_mut(&item.data.original).unwrap();
+                *count += 1;
+            }
+        }
+        assert!(line_counter.iter().all(|(_, c)| *c == 1 || *c == 2)
+            && line_counter.iter().map(|(_, c)| *c).sum::<usize>() == lines.len());
     }
 }

@@ -1,8 +1,11 @@
 use std::ops::Sub;
+use itertools::Itertools;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use crate::data::{TextData, Label};
+use crate::text;
+use crate::unicode::CS;
 use crate::utils::accumulate;
 use crate::whitespace::{full, operations, remove};
 
@@ -11,6 +14,8 @@ pub type LabelingFn = Box<dyn Fn(&TextData) -> Label + Send + Sync>;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {
+    // clean the sequences (remove spurious whitespaces)
+    Clean,
     // switch between multiple preprocessing functions
     Switch(Vec<PreprocessingConfig>, Vec<f64>),
     // delete all whitespaces
@@ -18,7 +23,7 @@ pub enum PreprocessingConfig {
     // insert whitespaces between all characters
     FullWhitespaces,
     // delete and insert whitespaces with certain probabilities
-    // NoiseWhitespaces(f64, f64, u64),
+    NoiseWhitespaces(f64, f64),
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
@@ -59,7 +64,7 @@ fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> PreprocessingFn {
     )
 }
 
-fn apply_to_text(f: fn(&str) -> String) -> PreprocessingFn {
+fn apply_to_text<F: Fn(&str) -> String + Send + Sync + 'static>(f: F) -> PreprocessingFn {
     Box::new(
         move |item, _| {
             TextData { processed: f(&item.processed), ..item }
@@ -67,30 +72,44 @@ fn apply_to_text(f: fn(&str) -> String) -> PreprocessingFn {
     )
 }
 
-fn no_whitespace() -> PreprocessingFn {
-    apply_to_text(remove)
-}
-
-fn full_whitespace() -> PreprocessingFn {
-    apply_to_text(full)
-}
-
-fn whitespace_correction_label() -> LabelingFn {
+fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
     Box::new(
-        |item| {
-            Label::SeqClassification(
-                operations(&item.processed, &item.original)
-            )
+        move |item, seed| {
+            let mut rng = if seed.is_some() {
+                ChaCha8Rng::seed_from_u64(seed.unwrap())
+            } else {
+                ChaCha8Rng::from_entropy()
+            };
+            let cs = CS::new(&item.processed, true);
+            let processed = cs
+                .chars()
+                .map(|c| {
+                    let r: f64 = rng.gen();
+                    if c.is_whitespace() {
+                        if r < dw_p {
+                            "".to_string()
+                        } else {
+                            c.str.to_string()
+                        }
+                    } else if r < iw_p {
+                        " ".to_string() + c.str
+                    } else {
+                        c.str.to_string()
+                    }
+                })
+                .join("");
+            TextData { processed, ..item }
         }
     )
 }
 
 fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
     match preprocessing {
+        PreprocessingConfig::Clean => apply_to_text(text::clean),
         PreprocessingConfig::Switch(fns, probs) => switch(fns, probs),
-        // Preprocessing::NoiseWhitespaces(iw_p, dw_p) => {}
-        PreprocessingConfig::NoWhitespaces => no_whitespace(),
-        PreprocessingConfig::FullWhitespaces => full_whitespace(),
+        PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => noise_whitespace(iw_p, dw_p),
+        PreprocessingConfig::NoWhitespaces => apply_to_text(remove),
+        PreprocessingConfig::FullWhitespaces => apply_to_text(full),
     }
 }
 
@@ -109,6 +128,16 @@ pub fn preprocessing(
                 item = f(item, seed);
             }
             item
+        }
+    )
+}
+
+fn whitespace_correction_label() -> LabelingFn {
+    Box::new(
+        |item| {
+            Label::SeqClassification(
+                operations(&item.processed, &item.original)
+            )
         }
     )
 }

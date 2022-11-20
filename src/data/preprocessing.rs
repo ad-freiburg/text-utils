@@ -89,7 +89,8 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
             let cs = CS::new(&item.processed, true);
             let processed = cs
                 .chars()
-                .map(|c| {
+                .enumerate()
+                .map(|(idx, c)| {
                     let r: f64 = rng.gen();
                     if c.is_whitespace() {
                         if r < dw_p {
@@ -97,7 +98,7 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
                         } else {
                             c.str.to_string()
                         }
-                    } else if r < iw_p {
+                    } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_whitespace() {
                         " ".to_string() + c.str
                     } else {
                         c.str.to_string()

@@ -57,6 +57,10 @@ impl CharString<'_> {
         &self.str[start..self.cum_cluster_lengths[n]]
     }
 
+    pub fn get_char(&self, n: usize) -> Character {
+        Character { str: self.get(n) }
+    }
+
     pub fn sub(&self, start: usize, end: usize) -> &str {
         assert!(start <= end && end <= self.len());
         if self.len() == 0 || start == end {

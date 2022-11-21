@@ -93,11 +93,11 @@ impl<'a> CharString<'a> {
         }
     }
 
-    pub fn char_byte_lengths(&self) -> &Vec<usize> {
+    pub fn char_byte_lengths(&self) -> &[usize] {
         &self.cluster_lengths
     }
 
-    pub fn cum_char_byte_lengths(&self) -> &Vec<usize> {
+    pub fn cum_char_byte_lengths(&self) -> &[usize] {
         &self.cum_cluster_lengths
     }
 }

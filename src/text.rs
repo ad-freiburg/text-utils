@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use itertools::Itertools;
 use pyo3::prelude::*;
-use crate::unicode::CS;
+use rand::Rng;
 
+use crate::unicode::{CS};
 use crate::utils::Matrix;
 
 #[inline]
@@ -213,6 +215,199 @@ pub fn possible_byte_substrings(
             (start_byte, end_byte, end_char - start_char)
         })
         .collect()
+}
+
+#[derive(Clone)]
+pub enum CharEdit {
+    Insert(Vec<String>),
+    Delete,
+    Replace(Vec<String>),
+    Swap,
+}
+
+impl CharEdit {
+    pub fn ascii_edits() -> Vec<Self> {
+        let ascii: Vec<String> = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            .chars()
+            .map(|c| c.to_string())
+            .collect();
+        vec![
+            Self::Insert(ascii.clone()),
+            Self::Delete,
+            Self::Replace(ascii),
+            Self::Swap,
+        ]
+    }
+}
+
+pub fn edit_word<R: Rng>(
+    word: &str,
+    use_graphemes: bool,
+    rng: &mut R,
+    edits: &[CharEdit],
+    exclude_indices: Option<HashSet<usize>>,
+) -> (String, HashSet<usize>) {
+    let mut exclude_indices = exclude_indices.unwrap_or(HashSet::new());
+    let cs = CS::new(word, use_graphemes);
+    assert!(cs.chars().all(|c| !c.is_whitespace()), "edit word should only be called \
+    on strings that do not contain whitespace");
+    if edits.is_empty() || cs.len() == 0 {
+        return (word.to_string(), exclude_indices);
+    }
+    let edit = &edits[rng.gen_range(0..edits.len())];
+    match edit {
+        CharEdit::Insert(insertions) if !insertions.is_empty() => {
+            let insert_indices: Vec<usize> = (0..=cs.len())
+                .filter_map(|idx| {
+                    if exclude_indices.contains(&idx)
+                        || (idx > 0 && exclude_indices.contains(&(idx - 1))) {
+                        None
+                    } else {
+                        Some(idx)
+                    }
+                }).collect();
+            let insert_str = &insertions[rng.gen_range(0..insertions.len())];
+            if insert_indices.is_empty() || insert_str.is_empty() {
+                return (cs.str.to_string(), exclude_indices);
+            }
+            let insert_idx = insert_indices[rng.gen_range(0..insert_indices.len())];
+            let insert_len = CS::new(insert_str, use_graphemes).len();
+            // we inserted some string, so the length of the word changed
+            // adjust excluded indices to the right of the insertion accordingly
+            exclude_indices = exclude_indices
+                .into_iter()
+                .map(|idx| {
+                    if idx >= insert_idx {
+                        idx + insert_len
+                    } else {
+                        idx
+                    }
+                })
+                .collect();
+            // add newly inserted indices to excluded indices
+            for l in 0..insert_len {
+                exclude_indices.insert(insert_idx + l);
+            }
+            (
+                cs.sub(0, insert_idx).to_string()
+                    + insert_str.as_str()
+                    + cs.sub(insert_idx, cs.len()),
+                exclude_indices
+            )
+        }
+        CharEdit::Delete if cs.len() > 1 => {
+            let delete_indices: Vec<usize> = (0..cs.len())
+                .filter_map(|idx| {
+                    if exclude_indices.contains(&idx) {
+                        None
+                    } else {
+                        Some(idx)
+                    }
+                })
+                .collect();
+            if delete_indices.is_empty() {
+                return (cs.str.to_string(), exclude_indices);
+            }
+            let delete_idx = delete_indices[rng.gen_range(0..delete_indices.len())];
+            // we deleted a character, so the length of the word changed
+            // adjust the excluded indices to the right of the delete idx accordingly
+            exclude_indices = exclude_indices
+                .into_iter()
+                .map(|idx| {
+                    if idx > delete_idx {
+                        idx - 1
+                    } else {
+                        idx
+                    }
+                })
+                .collect();
+            (
+                cs.sub(0, delete_idx).to_string()
+                    + cs.sub(delete_idx + 1, cs.len()),
+                exclude_indices
+            )
+        }
+        CharEdit::Replace(replacements) if !replacements.is_empty() => {
+            let replace_indices: Vec<usize> = (0..cs.len())
+                .filter_map(|idx| {
+                    if exclude_indices.contains(&idx) {
+                        None
+                    } else {
+                        Some(idx)
+                    }
+                })
+                .collect();
+            if replace_indices.is_empty() {
+                return (cs.str.to_string(), exclude_indices);
+            }
+            let replace_idx = replace_indices[rng.gen_range(0..replace_indices.len())];
+            // look for a replacement that is not equal to the current character
+            // start at a random idx in the replacement list and go through it at most once
+            let mut replacement_idx = rng.gen_range(0..replacements.len());
+            let mut replacement = cs.get(replace_idx).to_string();
+            for _ in 0..replacements.len() {
+                if cs.get(replace_idx) != &replacements[replacement_idx] {
+                    replacement = replacements[replacement_idx].clone();
+                    break;
+                }
+                replacement_idx = (replacement_idx + 1) % replacements.len();
+            }
+            if replacement.is_empty() {
+                return (cs.str.to_string(), exclude_indices);
+            }
+            let replacement_len = CS::new(&replacement, use_graphemes).len();
+            // shift all indices that come after the replacement by length of the replacement
+            // string - 1
+            exclude_indices = exclude_indices
+                .into_iter()
+                .map(|idx| {
+                    if idx > replace_idx {
+                        idx + replacement_len - 1
+                    } else {
+                        idx
+                    }
+                })
+                .collect();
+            // add replaced indices to the excluded indices
+            for l in 0..replacement_len {
+                exclude_indices.insert(replace_idx + l);
+            }
+            (
+                cs.sub(0, replace_idx).to_string()
+                    + replacement.as_str()
+                    + cs.sub(replace_idx + 1, cs.len()),
+                exclude_indices
+            )
+        }
+        CharEdit::Swap if cs.len() > 1 => {
+            let swap_indices: Vec<usize> = (0..cs.len() - 1)
+                .filter_map(|idx| {
+                    if exclude_indices.contains(&idx)
+                        || exclude_indices.contains(&(idx + 1)) {
+                        None
+                    } else {
+                        Some(idx)
+                    }
+                })
+                .collect();
+            if swap_indices.is_empty() {
+                return (cs.str.to_string(), exclude_indices);
+            }
+            let swap_idx = swap_indices[rng.gen_range(0..swap_indices.len())];
+            // length of word did not change, just add the two swapped indices to
+            // the excluded indices
+            exclude_indices.insert(swap_idx);
+            exclude_indices.insert(swap_idx + 1);
+            (
+                cs.sub(0, swap_idx).to_string()
+                    + cs.get(swap_idx + 1)
+                    + cs.get(swap_idx)
+                    + cs.sub(swap_idx + 2, cs.len()),
+                exclude_indices
+            )
+        }
+        _ => (cs.str.to_string(), exclude_indices)
+    }
 }
 
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {

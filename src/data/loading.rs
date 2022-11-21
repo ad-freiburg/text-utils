@@ -374,7 +374,7 @@ impl<T: Iterator<Item=Item>> BatchedPipelineIterator<T> {
             BatchLimitType::BatchSize => self.shuffle_buffer.len(),
             BatchLimitType::NumTokens => self.shuffle_buffer
                 .iter()
-                .map(|item| item.tokenization.0.len())
+                .map(|item| item.tokenization.token_ids.len())
                 .sum()
         };
         // fill buffer until batch limit * some factor is hit
@@ -388,7 +388,7 @@ impl<T: Iterator<Item=Item>> BatchedPipelineIterator<T> {
             };
             match self.batch_limit_type {
                 BatchLimitType::BatchSize => buffer_limit += 1,
-                BatchLimitType::NumTokens => buffer_limit += item.tokenization.0.len()
+                BatchLimitType::NumTokens => buffer_limit += item.tokenization.token_ids.len()
             }
             self.shuffle_buffer.push(item);
         }
@@ -421,7 +421,7 @@ impl<T: Iterator<Item=Item>> BatchedPipelineIterator<T> {
             };
             match limit_type {
                 BatchLimitType::BatchSize => batch_limit += 1,
-                BatchLimitType::NumTokens => batch_limit += item.tokenization.0.len()
+                BatchLimitType::NumTokens => batch_limit += item.tokenization.token_ids.len()
             }
             items.push(item);
         }

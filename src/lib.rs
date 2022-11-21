@@ -18,6 +18,8 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // add submodules
     edit_distance::add_submodule(py, m)?;
     text::add_submodule(py, m)?;
+    tokenization::add_submodule(py, m)?;
+    data::add_submodule(py, m)?;
 
     Ok(())
 }

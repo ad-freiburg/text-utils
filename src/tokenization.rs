@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::thread::sleep;
 use std::time::Duration;
 use itertools::Itertools;
+use pyo3::exceptions::PyTypeError;
 use rayon::prelude::*;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use serde::{Deserialize, Serialize};
 use crate::unicode::CS;
 
@@ -22,6 +25,53 @@ pub enum TokenizerConfig {
     Dummy(Duration),
 }
 
+impl<'source> FromPyObject<'source> for TokenizerConfig {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let tokenizer_config = if d.contains("character")?
+            || d.contains("byte")? {
+            let character = d.contains("character")?;
+            let config: &PyDict = d.get_item(if character { "character" } else { "byte" })
+                .unwrap()
+                .extract()?;
+            let use_graphemes: bool = if let Some(value) = config.get_item("use_graphemes") {
+                value.extract()?
+            } else {
+                true
+            };
+            let prefix: Vec<String> = if let Some(value) = config.get_item("default_prefix_tokens") {
+                value.extract()?
+            } else {
+                vec![]
+            };
+            let suffix: Vec<String> = if let Some(value) = config.get_item("default_suffix_tokens") {
+                value.extract()?
+            } else {
+                vec![]
+            };
+            if character {
+                TokenizerConfig::Character(use_graphemes, prefix, suffix)
+            } else {
+                TokenizerConfig::Byte(use_graphemes, prefix, suffix)
+            }
+        } else if d.contains("dummy")? {
+            let config: &PyDict = d.get_item("dummy")
+                .unwrap()
+                .extract()?;
+            let millis: u64 = if let Some(value) = config.get_item("delay") {
+                value.extract()?
+            } else {
+                0
+            };
+            TokenizerConfig::Dummy(Duration::from_millis(millis))
+        } else {
+            return Err(PyTypeError::new_err(format!("could not find a valid tokenizer key in \
+            dictionary")));
+        };
+        Ok(tokenizer_config)
+    }
+}
+
 /// This enum defines all possible additional infos that can be returned by
 /// a tokenizers tokenize function in addition to the token ids themselves.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,9 +84,39 @@ pub enum TokenizationInfo {
     TokenGroups(Vec<usize>),
 }
 
+impl IntoPy<PyObject> for TokenizationInfo {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let d = PyDict::new(py);
+        match self {
+            TokenizationInfo::Empty => {}
+            TokenizationInfo::TokenGroups(groups) => {
+                d.set_item("token_groups", groups).unwrap();
+            }
+        }
+        d.into()
+    }
+}
+
 /// A tokenization is defined to be a tuple of token ids and some additional information.
 /// This is returned by a tokenizers tokenize function.
-pub type Tokenization = (Vec<u32>, TokenizationInfo);
+#[derive(Debug, Clone)]
+#[pyclass]
+pub struct Tokenization {
+    #[pyo3(get)]
+    pub token_ids: Vec<u32>,
+    #[pyo3(get)]
+    pub info: TokenizationInfo,
+}
+
+impl Tokenization {
+    pub fn new(token_ids: Vec<u32>, info: TokenizationInfo) -> Self {
+        Tokenization {
+            token_ids,
+            info,
+        }
+    }
+}
+
 /// A tokenization function in general takes in a &str and return a tokenization.
 pub type TokenizationFn = Box<dyn FnMut(&str) -> Tokenization>;
 /// A tokenizer is something that implements the tokenize trait with the
@@ -124,7 +204,7 @@ impl Tokenize for DummyTokenizer {
 
     fn tokenize(&self, _: &str) -> Tokenization {
         sleep(self.delay.clone());
-        Tokenization::from((vec![], TokenizationInfo::Empty))
+        Tokenization::new(vec![], TokenizationInfo::Empty)
     }
 
     fn tokenize_with(&self, _: &str, _: &[String], _: &[String]) -> Tokenization {
@@ -265,7 +345,7 @@ impl Tokenize for CharTokenizer {
         prefix: &[String],
         suffix: &[String],
     ) -> Tokenization {
-        (
+        Tokenization::new(
             prefix
                 .iter()
                 .map(|t| self.special_token_to_id(t))
@@ -294,7 +374,7 @@ impl Tokenize for CharTokenizer {
                         .map(|t| self.special_token_to_id(t))
                 )
                 .collect(),
-            TokenizationInfo::Empty
+            TokenizationInfo::Empty,
         )
     }
 
@@ -431,7 +511,7 @@ impl Tokenize for ByteTokenizer {
         suffix: &[String],
     ) -> Tokenization {
         let (bytes, info) = self.split(s);
-        (
+        Tokenization::new(
             prefix
                 .iter()
                 .map(|t| self.special_token_to_id(t))
@@ -442,7 +522,7 @@ impl Tokenize for ByteTokenizer {
                         .map(|t| self.special_token_to_id(t))
                 )
                 .collect(),
-            TokenizationInfo::TokenGroups(info)
+            TokenizationInfo::TokenGroups(info),
         )
     }
 
@@ -490,6 +570,13 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
             Box::new(DummyTokenizer::new(d))
         }
     }
+}
+
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
+    let m = PyModule::new(py, "tokenization")?;
+    parent_module.add_submodule(m)?;
+
+    Ok(())
 }
 
 #[cfg(test)]

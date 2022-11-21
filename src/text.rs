@@ -3,7 +3,7 @@ use itertools::Itertools;
 use pyo3::prelude::*;
 use rand::Rng;
 
-use crate::unicode::{CS};
+use crate::unicode::CS;
 use crate::utils::Matrix;
 
 #[inline]
@@ -422,7 +422,12 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
 
 #[cfg(test)]
 mod tests {
-    use crate::text::{clean, match_words, possible_byte_substrings, possible_character_substrings, word_boundaries};
+    use std::collections::HashSet;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+    use crate::text::{clean, edit_word, match_words, possible_byte_substrings, possible_character_substrings, word_boundaries};
+    use crate::text::CharEdit::{Delete, Insert, Replace, Swap};
+    use crate::unicode::CS;
 
     #[test]
     fn test_clean() {
@@ -498,5 +503,114 @@ mod tests {
         assert_eq!(v, vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]);
         let v = possible_byte_substrings("", true, 4);
         assert_eq!(v, vec![(0, 0, 0)]);
+    }
+
+    #[test]
+    fn test_edit_word() {
+        let w = "täst";
+        let mut rng = ChaCha8Rng::from_entropy();
+        // test deletion of characters
+        let edits = vec![
+            Delete
+        ];
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            None
+        );
+        assert!(ew.len() < w.len());
+        assert_eq!(excluded.len(), 0);
+        // test with excluded indices --> ä should be removed
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            Some(HashSet::from([0, 2, 3]))
+        );
+        assert_eq!(&ew, "tst");
+        // test deletion for word with 1 or fewer characters
+        let (ew, excluded) = edit_word(
+            "t",
+            true,
+            &mut rng,
+            &edits,
+            None
+        );
+        assert_eq!(ew.len(), 1);
+        assert_eq!(excluded.len(), 0);
+        // test insertion of characters
+        let edits = vec![
+            Insert(vec!["w".to_string()])
+        ];
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            None
+        );
+        assert!(ew.len() > w.len());
+        assert_eq!(excluded.len(), 1);
+        let ex_idx = *excluded.into_iter().collect::<Vec<usize>>().first().unwrap();
+        assert_eq!(CS::new(&ew, true).get(ex_idx), "w");
+        // test with excluded indices --> w should be inserted at beginning
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            Some(HashSet::from([1, 2, 3]))
+        );
+        assert_eq!(&ew, "wtäst");
+        assert_eq!(excluded, HashSet::from([0, 2, 3, 4]));
+        // test swapping of characters
+        let edits = vec![
+            Swap
+        ];
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            None
+        );
+        assert_eq!(ew.len(), w.len());
+        assert_eq!(excluded.len(), 2);
+        // test with excluded indices --> ä should be swapped with s
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            Some(HashSet::from([0, 3]))
+        );
+        assert_eq!(&ew, "tsät");
+        assert_eq!(excluded, HashSet::from([0, 1, 2, 3]));
+        // test replacement of characters
+        let edits = vec![
+            Replace(vec!["bla".to_string()])
+        ];
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            None
+        );
+        assert!(ew.len() > w.len());
+        assert_eq!(excluded.len(), 3);
+        // test with excluded indices --> s should be replaced with bla
+        let (ew, excluded) = edit_word(
+            w,
+            true,
+            &mut rng,
+            &edits,
+            Some(HashSet::from([0, 1, 3]))
+        );
+        assert_eq!(&ew, "täblat");
+        assert_eq!(excluded, HashSet::from([0, 1, 2, 3, 4, 5]));
     }
 }

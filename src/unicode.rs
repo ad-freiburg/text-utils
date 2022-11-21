@@ -7,7 +7,7 @@ use crate::utils::accumulate;
 pub struct CharString<'a> {
     pub str: &'a str,
     pub(crate) cluster_lengths: Vec<usize>,
-    pub(crate) cum_cluster_lengths: Vec<usize>,
+    pub(crate) cum_cluster_lengths: Vec<usize>
 }
 
 // shorthand for grapheme string for in crate usage
@@ -21,7 +21,7 @@ pub(crate) type CS<'a> = CharString<'a>;
 // GraphemeString::from("नमस्ते").len() -> 4; num grapheme clusters, closest to what
 // humans consider to be characters (in Python available via third party libraries)
 
-impl CharString<'_> {
+impl<'a> CharString<'a> {
     pub fn new(str: &str, use_graphemes: bool) -> CharString {
         let cluster_lengths: Vec<usize>;
         if use_graphemes {
@@ -39,7 +39,7 @@ impl CharString<'_> {
         CharString {
             str,
             cluster_lengths,
-            cum_cluster_lengths,
+            cum_cluster_lengths
         }
     }
 
@@ -49,6 +49,13 @@ impl CharString<'_> {
 
     pub fn len(&self) -> usize {
         self.cum_cluster_lengths.len()
+    }
+
+    pub(crate) fn char_range_to_byte_range(&self, start: usize, end: usize) -> (usize, usize) {
+        assert!(start < end && end <= self.len());
+        let start = self.cum_cluster_lengths[start] - self.cluster_lengths[start];
+        let end = self.cum_cluster_lengths[end - 1];
+        (start, end)
     }
 
     pub fn get(&self, n: usize) -> &str {
@@ -66,9 +73,16 @@ impl CharString<'_> {
         if self.len() == 0 || start == end {
             return "";
         }
-        let start = self.cum_cluster_lengths[start] - self.cluster_lengths[start];
-        let end = self.cum_cluster_lengths[end - 1];
+        let (start, end) = self.char_range_to_byte_range(start, end);
         &self.str[start..end]
+    }
+
+    pub fn sub_chars(&self, start: usize, end: usize) -> Characters {
+        Characters {
+            str: self.sub(start, end),
+            cum_cluster_lengths: &self.cum_cluster_lengths[start..end],
+            idx: 0
+        }
     }
 
     pub fn chars(&self) -> Characters {
@@ -90,7 +104,7 @@ impl CharString<'_> {
 
 pub struct Characters<'a> {
     str: &'a str,
-    cum_cluster_lengths: &'a Vec<usize>,
+    cum_cluster_lengths: &'a [usize],
     idx: usize,
 }
 

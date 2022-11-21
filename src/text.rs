@@ -150,8 +150,10 @@ pub fn possible_character_substrings(
     (0..num_chars - max_chars + 1)
         .map(|start_char| {
             let end_char = num_chars.min(start_char + max_chars);
-            let start_byte = cs.cum_cluster_lengths[start_char] - cs.cluster_lengths[start_char];
-            let end_byte = cs.cum_cluster_lengths[end_char - 1];
+            let (
+                start_byte,
+                end_byte
+            ) = cs.char_range_to_byte_range(start_char, end_char);
             (start_byte, end_byte, end_char - start_char)
         })
         .collect()
@@ -204,8 +206,10 @@ pub fn possible_byte_substrings(
     substrings
         .into_iter()
         .map(|(start_char, end_char)| {
-            let start_byte = cs.cum_cluster_lengths[start_char] - cs.cluster_lengths[start_char];
-            let end_byte = cs.cum_cluster_lengths[end_char - 1];
+            let (
+                start_byte,
+                end_byte
+            ) = cs.char_range_to_byte_range(start_char, end_char);
             (start_byte, end_byte, end_char - start_char)
         })
         .collect()

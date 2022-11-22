@@ -6,18 +6,23 @@ use std::sync::{Arc, mpsc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{Builder, JoinHandle, sleep};
 use std::time::{Duration};
+use pyo3::pyclass;
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use crate::data::{TextData, Item, Pipeline, Batch};
 
-pub type BoxedStringIterator = Box<dyn Iterator<Item=String> + Send + 'static>;
+pub type BoxedThreadSafeIter<T> = Box<dyn Iterator<Item=T> + Send + 'static>;
+pub type BoxedStringIter = BoxedThreadSafeIter<String>;
+pub type BoxedTextDataIter = BoxedThreadSafeIter<TextData>;
+pub type BoxedItemIter = BoxedThreadSafeIter<Item>;
+pub type BoxedBatchIter = BoxedThreadSafeIter<Batch>;
 
 pub trait TextGen {
-    fn org_iter(&self) -> BoxedStringIterator;
+    fn org_iter(&self) -> BoxedStringIter;
     fn has_proc(&self) -> bool;
-    fn proc_iter(&self) -> Option<BoxedStringIterator>;
+    fn proc_iter(&self) -> Option<BoxedStringIter>;
     fn has_lang(&self) -> bool;
     fn lang(&self) -> Option<String>;
     fn len(&self) -> usize;
@@ -68,7 +73,7 @@ impl TextFile {
 }
 
 impl TextGen for TextFile {
-    fn org_iter(&self) -> BoxedStringIterator {
+    fn org_iter(&self) -> BoxedStringIter {
         Box::new(BufReader::new(open(&self.original))
             .lines()
             .map(|l| {
@@ -80,7 +85,7 @@ impl TextGen for TextFile {
         self.processed.is_some()
     }
 
-    fn proc_iter(&self) -> Option<BoxedStringIterator> {
+    fn proc_iter(&self) -> Option<BoxedStringIter> {
         if let Some(path) = &self.processed {
             Some(Box::new(BufReader::new(open(path))
                 .lines()
@@ -106,34 +111,46 @@ impl TextGen for TextFile {
 }
 
 #[derive(Clone, Debug)]
-pub struct TextContainer<'a> {
-    original: &'a [String],
-    processed: Option<&'a [String]>,
+pub struct TextContainer {
+    original: Vec<String>,
+    processed: Option<Vec<String>>,
     lang: Option<String>,
 }
 
-impl<'a> TextContainer<'a> {
-    pub fn new(original: &'a [String], processed: Option<&'a [String]>, lang: Option<String>) -> Self {
+impl TextContainer {
+    pub fn new(
+        original: Vec<String>,
+        processed: Option<Vec<String>>,
+        lang: Option<String>
+    ) -> Self {
         TextContainer {
             original,
             processed,
             lang,
         }
     }
+
+    pub fn new_boxed(
+        original: Vec<String>,
+        processed: Option<Vec<String>>,
+        lang: Option<String>
+    ) -> Box<Self> {
+        Box::new(Self::new(original, processed, lang))
+    }
 }
 
-impl TextGen for TextContainer<'_> {
-    fn org_iter(&self) -> BoxedStringIterator {
-        Box::new(Vec::from(self.original).into_iter())
+impl TextGen for TextContainer {
+    fn org_iter(&self) -> BoxedStringIter {
+        Box::new(self.original.clone().into_iter())
     }
 
     fn has_proc(&self) -> bool {
         self.processed.is_some()
     }
 
-    fn proc_iter(&self) -> Option<BoxedStringIterator> {
-        if let Some(data) = self.processed {
-            Some(Box::new(Vec::from(data).into_iter()))
+    fn proc_iter(&self) -> Option<BoxedStringIter> {
+        if let Some(data) = &self.processed {
+            Some(Box::new(data.clone().into_iter()))
         } else {
             None
         }
@@ -188,6 +205,7 @@ impl TextGenerator {
     }
 }
 
+#[pyclass]
 pub enum TextIterationStrategy {
     Sequential,
     Interleaved,
@@ -195,8 +213,8 @@ pub enum TextIterationStrategy {
 }
 
 pub struct TextIterator {
-    org_iters: Vec<BoxedStringIterator>,
-    proc_iters: Vec<BoxedStringIterator>,
+    org_iters: Vec<BoxedStringIter>,
+    proc_iters: Vec<BoxedStringIter>,
     languages: Vec<String>,
     lengths: Vec<usize>,
     strategy: TextIterationStrategy,
@@ -318,13 +336,13 @@ impl Iterator for TextIterator {
 }
 
 pub struct PipelineIterator {
-    iter: Box<dyn Iterator<Item=Item>>,
+    iter: BoxedItemIter,
     size_hint: (usize, Option<usize>),
 }
 
 impl PipelineIterator {
     pub fn new(
-        iter: impl Iterator<Item=TextData> + 'static,
+        iter: impl Iterator<Item=TextData> + Send + 'static,
         pipeline: Pipeline,
     ) -> Self {
         let size_hint = iter.size_hint();
@@ -410,7 +428,7 @@ impl PipelineIterator {
         batch_limit_type: BatchLimitType,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
-        seed: u64,
+        seed: Option<u64>,
     ) -> BatchedIterator<PipelineIterator> {
         BatchedIterator::new(
             self,
@@ -436,12 +454,13 @@ impl Iterator for PipelineIterator {
 }
 
 #[derive(Copy, Clone)]
+#[pyclass]
 pub enum BatchLimitType {
     BatchSize,
     NumTokens,
 }
 
-pub struct BatchedIterator<T: Iterator<Item=Item>> {
+pub struct BatchedIterator<T: Iterator<Item=Item> + Send + 'static> {
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
     rng: ChaCha8Rng,
@@ -452,14 +471,14 @@ pub struct BatchedIterator<T: Iterator<Item=Item>> {
     remainder: Option<Item>,
 }
 
-impl<T: Iterator<Item=Item>> BatchedIterator<T> {
+impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
     pub fn new(
         mut iter: T,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
-        seed: u64,
+        seed: Option<u64>,
     ) -> Self {
         let shuffle_prefetch_factor = shuffle_prefetch_factor.max(2);
         // initialize remainder
@@ -467,7 +486,11 @@ impl<T: Iterator<Item=Item>> BatchedIterator<T> {
         BatchedIterator {
             batch_limit,
             batch_limit_type,
-            rng: ChaCha8Rng::seed_from_u64(seed),
+            rng: if seed.is_some() {
+                ChaCha8Rng::seed_from_u64(seed.unwrap())
+            } else {
+                ChaCha8Rng::from_entropy()
+            },
             iter,
             shuffle,
             shuffle_buffer: Vec::new(),
@@ -541,7 +564,7 @@ impl<T: Iterator<Item=Item>> BatchedIterator<T> {
     }
 }
 
-impl<T: Iterator<Item=Item>> Iterator for BatchedIterator<T> {
+impl<T: Iterator<Item=Item> + Send + 'static> Iterator for BatchedIterator<T> {
     type Item = Batch;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -754,7 +777,7 @@ mod tests {
                 BatchLimitType::BatchSize,
                 false,
                 0,
-                0,
+                None,
             );
         for (batch, line_batch) in pipe_it
             .zip(&lines.iter().chunks(16)) {
@@ -778,7 +801,7 @@ mod tests {
                 BatchLimitType::BatchSize,
                 true,
                 4,
-                0,
+                Some(22),
             );
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)

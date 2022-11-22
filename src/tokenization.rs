@@ -6,7 +6,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::{Deserialize, Serialize};
-use crate::unicode::CS;
+use crate::unicode::{CS};
 
 pub const UNK: &str = "<unk>";
 pub const BOS: &str = "<bos>";
@@ -24,8 +24,8 @@ pub enum TokenizerConfig {
     Dummy(Duration),
 }
 
-impl<'source> FromPyObject<'source> for TokenizerConfig {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'a> FromPyObject<'a> for TokenizerConfig {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
         let tokenizer_config = if d.contains("character")?
             || d.contains("byte")? {
@@ -64,8 +64,8 @@ impl<'source> FromPyObject<'source> for TokenizerConfig {
             };
             TokenizerConfig::Dummy(Duration::from_millis(millis))
         } else {
-            return Err(PyTypeError::new_err(format!("could not find a valid tokenizer key in \
-            dictionary")));
+            return Err(PyTypeError::new_err(format!("could not find a valid tokenizer name in \
+            config")));
         };
         Ok(tokenizer_config)
     }
@@ -140,7 +140,7 @@ pub trait Tokenize: Send {
         &self,
         s: &str,
         prefix: &[String],
-        suffix: &[String]
+        suffix: &[String],
     ) -> Tokenization;
 
     fn de_tokenize(&self, token_ids: &[u32]) -> String;
@@ -547,8 +547,36 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
     }
 }
 
+#[pyclass]
+#[pyo3(name = "Tokenizer")]
+struct PyTokenizer {
+    tokenizer: Tokenizer,
+    #[pyo3(get)]
+    name: String,
+}
+
+#[pymethods]
+impl PyTokenizer {
+    #[staticmethod]
+    fn from_config(config: TokenizerConfig) -> PyResult<Self> {
+        Ok(PyTokenizer {
+            name: match config {
+                TokenizerConfig::Character(_, _, _) => "character",
+                TokenizerConfig::Byte(_, _, _) => "byte",
+                TokenizerConfig::Dummy(_) => "dummy"
+            }.to_string(),
+            tokenizer: tokenizer(config),
+        })
+    }
+
+    fn tokenize(&self, s: &str) -> PyResult<Tokenization> {
+        Ok(self.tokenizer.tokenize(s))
+    }
+}
+
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "tokenization")?;
+    m.add_class::<PyTokenizer>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())
@@ -580,7 +608,7 @@ mod tests {
             true, &pfx, &sfx,
         );
         let text = "a täst";
-        let Tokenization { token_ids, ..} = tok.tokenize(text);
+        let Tokenization { token_ids, .. } = tok.tokenize(text);
         assert_eq!(
             token_ids[1..token_ids.len() - 1]
                 .iter()

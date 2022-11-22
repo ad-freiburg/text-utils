@@ -1,10 +1,11 @@
 use std::fs::read_to_string;
 use std::path::{Path};
 use std::vec::IntoIter;
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict};
 use serde::{Deserialize, Serialize};
-use crate::data::loading::{PipelineIterator};
+use crate::data::loading::{BatchLimitType, PipelineIterator, TextContainer, TextGenerator};
 use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
 
@@ -59,6 +60,13 @@ pub struct Batch {
     items: Vec<Item>,
 }
 
+#[pymethods]
+impl Batch {
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self.len())
+    }
+}
+
 impl Batch {
     pub fn len(&self) -> usize {
         self.items.len()
@@ -75,6 +83,7 @@ impl IntoIterator for Batch {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[pyclass]
 pub struct PipelineConfig {
     preprocessing: Vec<PreprocessingConfig>,
     labeling: Option<LabelingConfig>,
@@ -126,7 +135,7 @@ impl Pipeline {
 
     pub fn apply_iter(
         self,
-        iter: impl Iterator<Item=TextData> + 'static,
+        iter: impl Iterator<Item=TextData> + Send + 'static,
     ) -> PipelineIterator {
         PipelineIterator::new(iter, self.clone())
     }
@@ -187,57 +196,77 @@ pub fn labeling_from_str(s: &str) -> LabelingFn {
 
 #[pyclass]
 struct DataLoader {
-    iter: Box<dyn Iterator<Item=Item> + Send>,
+    iter: Box<dyn Iterator<Item=Batch> + Send + 'static>,
 }
 
-// #[pymethods]
-// impl DataLoader {
-//     #[new]
-//     pub fn from_list(l: &[String]) -> PyResult<Self> {
-//
-//     }
-//
-//     #[new]
-//     pub fn from_files(
-//         f: &[PathBuf],
-//
-//     ) -> PyResult<Self> {
-//         let it = TextGenerators::new(
-//             f
-//                 .iter()
-//                 .map(|p| {
-//                     TextFile::new(p.clone(), None, None)
-//                 })
-//                 .collect()
-//         );
-//         it.sequential()
-//     }
-//
-//     fn new() -> Self {
-//
-//     }
-//
-//     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-//         slf
-//     }
-//
-//     fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<Py<Item>> {
-//         let item = slf.iter.next();
-//         if item.is_some() {
-//             Some(Python::with_gil(|py| {
-//                 let item: Py<Item> = Py::new(py, item.unwrap()).expect("should not fail");
-//                 item
-//             }))
-//         } else {
-//             None
-//         }
-//     }
-// }
+#[pymethods]
+impl DataLoader {
+    #[staticmethod]
+    pub fn from_sequences(
+        sequences: Vec<String>,
+        lang: Option<String>,
+        pipeline_config: PipelineConfig,
+        num_threads: u8,
+        buffer_size: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        shuffle: bool,
+        shuffle_prefetch_factor: usize,
+        seed: Option<u64>
+    ) -> PyResult<Self> {
+        if shuffle && seed.is_none() {
+            return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"))
+        }
+        let cont = TextContainer::new_boxed(
+            sequences,
+            None,
+            lang
+        );
+        let gen = TextGenerator::new(vec![cont]);
+        let pipe = Pipeline::from_config(pipeline_config);
+        let iter = pipe
+            .apply_iter_threaded(gen.sequential(), num_threads, buffer_size)
+            .batched(batch_limit, batch_limit_type, shuffle, shuffle_prefetch_factor, seed);
+        Ok(DataLoader {
+            iter: Box::new(iter)
+        })
+    }
+
+    // #[staticmethod]
+    // pub fn from_files(
+    //     files: Vec<String>,
+    //
+    // ) -> PyResult<Self> {
+    //     let it = TextGenerators::new(
+    //         f
+    //             .iter()
+    //             .map(|p| {
+    //                 TextFile::new(p.clone(), None, None)
+    //             })
+    //             .collect()
+    //     );
+    //     it.sequential()
+    // }
+
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<Py<Batch>> {
+        let item = slf.iter.next();
+        if item.is_some() {
+            Some(Python::with_gil(|py| {
+                let item: Py<Batch> = Py::new(py, item.unwrap()).expect("should not fail");
+                item
+            }))
+        } else {
+            None
+        }
+    }
+}
 
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "data")?;
-    m.add_class::<Item>()?;
-    m.add_class::<Batch>()?;
     m.add_class::<DataLoader>()?;
     parent_module.add_submodule(m)?;
 

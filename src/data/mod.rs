@@ -1,11 +1,11 @@
 use std::fs::read_to_string;
 use std::path::{Path};
 use std::vec::IntoIter;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict};
 use serde::{Deserialize, Serialize};
-use crate::data::loading::{BatchLimitType, PipelineIterator, TextContainer, TextGenerator};
+use crate::data::loading::{BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator, TextIterationStrategy};
 use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
 
@@ -249,21 +249,67 @@ impl DataLoader {
         })
     }
 
-    // #[staticmethod]
-    // pub fn from_files(
-    //     files: Vec<String>,
-    //
-    // ) -> PyResult<Self> {
-    //     let it = TextGenerators::new(
-    //         f
-    //             .iter()
-    //             .map(|p| {
-    //                 TextFile::new(p.clone(), None, None)
-    //             })
-    //             .collect()
-    //     );
-    //     it.sequential()
-    // }
+    #[staticmethod]
+    #[args(
+    strategy = "TextIterationStrategy::Weighted",
+    num_threads = "(num_cpus::get() as u8).min(4)",
+    buffer_size = "32",
+    batch_limit = "16",
+    batch_limit_type = "BatchLimitType::BatchSize",
+    shuffle = "false",
+    shuffle_prefetch_factor = "4",
+    seed = "None"
+    )]
+    pub fn from_files(
+        files: Vec<String>,
+        languages: Vec<Option<String>>,
+        pipeline_config: PipelineConfig,
+        strategy: TextIterationStrategy,
+        num_threads: u8,
+        buffer_size: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        shuffle: bool,
+        shuffle_prefetch_factor: usize,
+        seed: Option<u64>,
+    ) -> PyResult<Self> {
+        if files.is_empty() {
+            return Err(PyTypeError::new_err("files is empty"))
+        }
+        if files.len() != languages.len() {
+            return Err(PyTypeError::new_err(
+                format!("got {} files but {} languages", files.len(), languages.len())
+            ))
+        }
+        if shuffle && seed.is_none() {
+            return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
+        }
+        let cont = files
+            .into_iter()
+            .zip(languages.into_iter())
+            .map(|(file, lang)| {
+                TextFile::new_boxed(
+                    &file.into(), None, lang.as_ref().map(|s| s.as_str())
+                ) as Box<dyn TextGen>
+            })
+            .collect();
+        let gen = TextGenerator::new(cont);
+        let pipe = Pipeline::from_config(pipeline_config);
+        let iter = if num_threads > 0 {
+            pipe.apply_iter_threaded(
+                gen.with_strategy(strategy, seed),
+                num_threads,
+                buffer_size
+            )
+        } else {
+            pipe.apply_iter(gen.with_strategy(strategy, seed))
+        };
+        let batched_iter = iter
+            .batched(batch_limit, batch_limit_type, shuffle, shuffle_prefetch_factor, seed);
+        Ok(DataLoader {
+            iter: Box::new(batched_iter)
+        })
+    }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf

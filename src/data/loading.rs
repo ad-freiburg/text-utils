@@ -180,6 +180,18 @@ impl TextGenerator {
         }
     }
 
+    pub fn with_strategy(
+        &self,
+        strategy: TextIterationStrategy,
+        seed: Option<u64>
+    ) -> TextIterator {
+        match strategy {
+            TextIterationStrategy::Sequential => self.sequential(),
+            TextIterationStrategy::Interleaved => self.interleaved(),
+            TextIterationStrategy::Weighted => self.weighted(seed)
+        }
+    }
+
     pub fn sequential(&self) -> TextIterator {
         TextIterator::new(
             &self.generators,
@@ -205,6 +217,7 @@ impl TextGenerator {
     }
 }
 
+#[derive(Clone, Debug)]
 #[pyclass]
 pub enum TextIterationStrategy {
     Sequential,

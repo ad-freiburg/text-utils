@@ -130,10 +130,6 @@ fn bench_tokenizer(c: &mut Criterion) {
             .sample_iter::<char, _>(rand::distributions::Standard)
             .take(*size)
             .collect();
-        let batch: Vec<String> = (0..1024)
-            .map(|_| str.clone())
-            .collect();
-        let batch_size = batch.len();
         group.bench_with_input(
             BenchmarkId::new(
                 "char",
@@ -146,58 +142,12 @@ fn bench_tokenizer(c: &mut Criterion) {
         );
         group.bench_with_input(
             BenchmarkId::new(
-                "char_serial",
-                format!("{} {}", size, batch_size),
-            ),
-            &batch,
-            |b, batch | {
-                b.iter(|| batch
-                    .iter()
-                    .map(|s| char_tok.tokenize(s.as_str()))
-                    .collect::<Vec<Tokenization>>());
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new(
-                "char_parallel",
-                format!("{} {}", size, batch_size),
-            ),
-            &batch,
-            |b, batch| {
-                b.iter(|| char_tok.batch_tokenize(batch));
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new(
                 "byte",
                 format!("{}", size),
             ),
             str.as_str(),
             |b, str| {
                 b.iter(|| byte_tok.tokenize(str));
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new(
-                "byte_serial",
-                format!("{} {}", size, batch_size),
-            ),
-            &batch,
-            |b, batch| {
-                b.iter(|| batch
-                    .iter()
-                    .map(|s| byte_tok.tokenize(s.as_str()))
-                    .collect::<Vec<Tokenization>>());
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new(
-                "byte_parallel",
-                format!("{} {}", size, batch_size),
-            ),
-            &batch,
-            |b, batch| {
-                b.iter(|| byte_tok.batch_tokenize(batch));
             },
         );
     }

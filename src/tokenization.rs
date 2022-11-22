@@ -3,7 +3,6 @@ use std::thread::sleep;
 use std::time::Duration;
 use itertools::Itertools;
 use pyo3::exceptions::PyTypeError;
-use rayon::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::{Deserialize, Serialize};
@@ -124,7 +123,7 @@ pub type TokenizationFn = Box<dyn FnMut(&str) -> Tokenization>;
 pub type Tokenizer = Box<dyn Tokenize>;
 
 /// The tokenize trait defines behavior that every tokenizer should support.
-pub trait Tokenize: Send + Sync {
+pub trait Tokenize: Send {
     fn vocab_size(&self) -> usize;
 
     fn unk_token_id(&self) -> u32;
@@ -137,37 +136,18 @@ pub trait Tokenize: Send + Sync {
 
     fn tokenize(&self, s: &str) -> Tokenization;
 
-    fn tokenize_with(&self, s: &str, prefix: &[String], suffix: &[String]) -> Tokenization;
+    fn tokenize_with(
+        &self,
+        s: &str,
+        prefix: &[String],
+        suffix: &[String]
+    ) -> Tokenization;
 
     fn de_tokenize(&self, token_ids: &[u32]) -> String;
 
-    fn special_token_to_id(&self, token: &String) -> u32;
+    fn special_token_to_id(&self, token: &str) -> u32;
 
-    fn id_to_special_token(&self, token_id: &u32) -> &String;
-}
-
-pub trait BatchTokenize: Tokenize {
-    fn batch_tokenize(&self, s: &[String]) -> Vec<Tokenization>
-        where Self: Sync {
-        s
-            .par_iter()
-            .map(|s| self.tokenize(s))
-            .collect()
-    }
-
-    fn batch_tokenize_with(
-        &self,
-        s: &[String],
-        prefixes: &[Vec<String>],
-        suffixes: &[Vec<String>],
-    ) -> Vec<Tokenization>
-        where Self: Sync {
-        s
-            .par_iter()
-            .enumerate()
-            .map(|(idx, s)| self.tokenize_with(s, &prefixes[idx], &suffixes[idx]))
-            .collect()
-    }
+    fn id_to_special_token(&self, token_id: &u32) -> &str;
 }
 
 /// Dummy tokenizer that just waits a specified time in its tokenize function.
@@ -216,16 +196,14 @@ impl Tokenize for DummyTokenizer {
         "".to_string()
     }
 
-    fn special_token_to_id(&self, _: &String) -> u32 {
+    fn special_token_to_id(&self, _: &str) -> u32 {
         0
     }
 
-    fn id_to_special_token(&self, _: &u32) -> &String {
+    fn id_to_special_token(&self, _: &u32) -> &str {
         &self.dummy_token
     }
 }
-
-impl BatchTokenize for DummyTokenizer {}
 
 /// A tokenizer based on the ascii characters, digits, and punctuations marks.
 /// Can e.g. be used to efficiently (meaning small vocab size) represent most
@@ -386,14 +364,14 @@ impl Tokenize for CharTokenizer {
             .join("")
     }
 
-    fn special_token_to_id(&self, token: &String) -> u32 {
+    fn special_token_to_id(&self, token: &str) -> u32 {
         self.special_vocab
             .get(token.into())
             .copied()
             .unwrap_or(self.unk_token_id)
     }
 
-    fn id_to_special_token(&self, token_id: &u32) -> &String {
+    fn id_to_special_token(&self, token_id: &u32) -> &str {
         if let Some(token) = self.reverse_special_vocab.get(token_id) {
             token
         } else {
@@ -401,8 +379,6 @@ impl Tokenize for CharTokenizer {
         }
     }
 }
-
-impl BatchTokenize for CharTokenizer {}
 
 #[derive(Clone, Debug)]
 pub struct ByteTokenizer {
@@ -541,14 +517,14 @@ impl Tokenize for ByteTokenizer {
         String::from_utf8(bytes).expect("invalid utf8")
     }
 
-    fn special_token_to_id(&self, token: &String) -> u32 {
+    fn special_token_to_id(&self, token: &str) -> u32 {
         self.special_vocab
             .get(token)
             .copied()
             .unwrap_or(self.unk_token_id)
     }
 
-    fn id_to_special_token(&self, token_id: &u32) -> &String {
+    fn id_to_special_token(&self, token_id: &u32) -> &str {
         if let Some(token) = self.reverse_special_vocab.get(token_id) {
             token
         } else {
@@ -556,8 +532,6 @@ impl Tokenize for ByteTokenizer {
         }
     }
 }
-
-impl BatchTokenize for ByteTokenizer {}
 
 pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
     match cfg {
@@ -582,7 +556,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use crate::tokenization::{BOS, EOS, CharTokenizer, Tokenize, ByteTokenizer};
+    use crate::tokenization::{BOS, EOS, CharTokenizer, Tokenize, ByteTokenizer, Tokenization};
 
     #[test]
     fn test_char_tokenizer() {
@@ -592,10 +566,10 @@ mod tests {
             true, &pfx, &sfx,
         );
         let text = "a täst";
-        let (tokens, _) = tok.tokenize(text);
-        assert_eq!(tokens.len(), 6 + 2);
-        assert_eq!(tokens[4], tok.unk_token_id());
-        assert_eq!(tok.de_tokenize(&tokens), String::from("a tst"));
+        let Tokenization { token_ids, .. } = tok.tokenize(text);
+        assert_eq!(token_ids.len(), 6 + 2);
+        assert_eq!(token_ids[4], tok.unk_token_id());
+        assert_eq!(tok.de_tokenize(&token_ids), "a tst".to_string());
     }
 
     #[test]
@@ -606,12 +580,14 @@ mod tests {
             true, &pfx, &sfx,
         );
         let text = "a täst";
-        let (tokens, _) = tok.tokenize(text);
+        let Tokenization { token_ids, ..} = tok.tokenize(text);
         assert_eq!(
-            tokens[1..tokens.len() - 1].iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
+            token_ids[1..token_ids.len() - 1]
+                .iter()
+                .map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes().clone()
         );
-        assert_eq!(tokens.len(), 7 + 2);
-        assert_eq!(tok.de_tokenize(&tokens), text.to_string());
+        assert_eq!(token_ids.len(), 7 + 2);
+        assert_eq!(tok.de_tokenize(&token_ids), text.to_string());
     }
 }

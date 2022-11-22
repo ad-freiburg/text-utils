@@ -1,17 +1,17 @@
 use std::fs::read_to_string;
-use std::path::Path;
+use std::path::{Path};
 use std::vec::IntoIter;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict};
 use serde::{Deserialize, Serialize};
-use crate::data::loading::PipelineIterator;
+use crate::data::loading::{PipelineIterator};
 use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
 
 pub mod preprocessing;
 pub mod loading;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[pyclass]
 pub struct TextData {
     #[pyo3(get)]
@@ -124,14 +124,21 @@ impl Pipeline {
         }
     }
 
-    pub fn apply_iter<I: Iterator<Item=TextData> + Send + Sync + 'static>(
+    pub fn apply_iter(
         self,
-        iterator: I,
+        iter: impl Iterator<Item=TextData> + 'static,
+    ) -> PipelineIterator {
+        PipelineIterator::new(iter, self.clone())
+    }
+
+    pub fn apply_iter_threaded(
+        self,
+        iter: impl Iterator<Item=TextData> + Send + 'static,
         worker_threads: u8,
         buffer_size: usize,
     ) -> PipelineIterator {
-        PipelineIterator::new(
-            iterator,
+        PipelineIterator::new_threaded(
+            iter,
             self.clone(),
             worker_threads,
             buffer_size,
@@ -183,24 +190,49 @@ struct DataLoader {
     iter: Box<dyn Iterator<Item=Item> + Send>,
 }
 
-#[pymethods]
-impl DataLoader {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<Py<Item>> {
-        let item = slf.iter.next();
-        if item.is_some() {
-            Some(Python::with_gil(|py| {
-                let item: Py<Item> = Py::new(py, item.unwrap()).expect("should not fail");
-                item
-            }))
-        } else {
-            None
-        }
-    }
-}
+// #[pymethods]
+// impl DataLoader {
+//     #[new]
+//     pub fn from_list(l: &[String]) -> PyResult<Self> {
+//
+//     }
+//
+//     #[new]
+//     pub fn from_files(
+//         f: &[PathBuf],
+//
+//     ) -> PyResult<Self> {
+//         let it = TextGenerators::new(
+//             f
+//                 .iter()
+//                 .map(|p| {
+//                     TextFile::new(p.clone(), None, None)
+//                 })
+//                 .collect()
+//         );
+//         it.sequential()
+//     }
+//
+//     fn new() -> Self {
+//
+//     }
+//
+//     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+//         slf
+//     }
+//
+//     fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<Py<Item>> {
+//         let item = slf.iter.next();
+//         if item.is_some() {
+//             Some(Python::with_gil(|py| {
+//                 let item: Py<Item> = Py::new(py, item.unwrap()).expect("should not fail");
+//                 item
+//             }))
+//         } else {
+//             None
+//         }
+//     }
+// }
 
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "data")?;

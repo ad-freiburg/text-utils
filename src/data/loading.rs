@@ -1,10 +1,9 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Lines, Read};
+use std::io::{BufRead, BufReader};
 use std::{panic, process};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver};
 use std::thread::{Builder, JoinHandle, sleep};
 use std::time::{Duration};
 use rand::distributions::WeightedIndex;
@@ -13,39 +12,176 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use crate::data::{TextData, Item, Pipeline, Batch};
 
-#[derive(Clone, Debug)]
-pub struct TextFiles {
-    files: Vec<(PathBuf, Option<PathBuf>, Option<String>)>,
+pub type BoxedStringIterator = Box<dyn Iterator<Item=String> + Send + 'static>;
+
+pub trait TextGen {
+    fn org_iter(&self) -> BoxedStringIterator;
+    fn has_proc(&self) -> bool;
+    fn proc_iter(&self) -> Option<BoxedStringIterator>;
+    fn has_lang(&self) -> bool;
+    fn lang(&self) -> Option<String>;
+    fn len(&self) -> usize;
 }
 
-impl TextFiles {
-    pub fn new(files: &[(PathBuf, Option<PathBuf>, Option<String>)]) -> Self {
-        TextFiles {
-            files: files.iter().cloned().collect()
+
+fn open(p: &Path) -> File {
+    File::open(p)
+        .expect(&format!("could not open file at {:?}", p))
+}
+
+fn count_lines(p: &Path) -> usize {
+    BufReader::new(open(p)).lines().count()
+}
+
+#[derive(Clone, Debug)]
+pub struct TextFile {
+    original: PathBuf,
+    processed: Option<PathBuf>,
+    language: Option<String>,
+    len: usize,
+}
+
+impl TextFile {
+    pub fn new(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<&str>) -> Self {
+        let len = count_lines(&org);
+        if proc.is_some() {
+            let proc_len = count_lines(proc.unwrap());
+            assert_eq!(
+                len,
+                proc_len,
+                "expected same number of lines for {:?} and {:?}",
+                org,
+                proc.unwrap()
+            );
+        }
+        TextFile {
+            original: org.clone(),
+            processed: proc.map(|p| p.clone()),
+            language: lang.map(|l| l.to_string()),
+            len,
+        }
+    }
+
+    pub fn new_boxed(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<&str>) -> Box<Self> {
+        Box::new(Self::new(org, proc, lang))
+    }
+}
+
+impl TextGen for TextFile {
+    fn org_iter(&self) -> BoxedStringIterator {
+        Box::new(BufReader::new(open(&self.original))
+            .lines()
+            .map(|l| {
+                l.expect("failed to read line")
+            }))
+    }
+
+    fn has_proc(&self) -> bool {
+        self.processed.is_some()
+    }
+
+    fn proc_iter(&self) -> Option<BoxedStringIterator> {
+        if let Some(path) = &self.processed {
+            Some(Box::new(BufReader::new(open(path))
+                .lines()
+                .map(|l| {
+                    l.expect("failed to read line")
+                })))
+        } else {
+            None
+        }
+    }
+
+    fn has_lang(&self) -> bool {
+        self.language.is_some()
+    }
+
+    fn lang(&self) -> Option<String> {
+        self.language.clone()
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TextContainer<'a> {
+    original: &'a [String],
+    processed: Option<&'a [String]>,
+    lang: Option<String>,
+}
+
+impl<'a> TextContainer<'a> {
+    pub fn new(original: &'a [String], processed: Option<&'a [String]>, lang: Option<String>) -> Self {
+        TextContainer {
+            original,
+            processed,
+            lang,
         }
     }
 }
 
-impl TextFiles {
-    pub fn sequential_lines(&self) -> TextIterator<File> {
-        TextIterator::from_files(
-            &self.files,
+impl TextGen for TextContainer<'_> {
+    fn org_iter(&self) -> BoxedStringIterator {
+        Box::new(Vec::from(self.original).into_iter())
+    }
+
+    fn has_proc(&self) -> bool {
+        self.processed.is_some()
+    }
+
+    fn proc_iter(&self) -> Option<BoxedStringIterator> {
+        if let Some(data) = self.processed {
+            Some(Box::new(Vec::from(data).into_iter()))
+        } else {
+            None
+        }
+    }
+
+    fn has_lang(&self) -> bool {
+        self.lang.is_some()
+    }
+
+    fn lang(&self) -> Option<String> {
+        self.lang.clone()
+    }
+
+    fn len(&self) -> usize {
+        self.original.len()
+    }
+}
+
+pub struct TextGenerator {
+    generators: Vec<Box<dyn TextGen>>,
+}
+
+impl TextGenerator {
+    pub fn new(generators: Vec<Box<dyn TextGen>>) -> Self {
+        TextGenerator {
+            generators
+        }
+    }
+
+    pub fn sequential(&self) -> TextIterator {
+        TextIterator::new(
+            &self.generators,
             TextIterationStrategy::Sequential,
             None,
         )
     }
 
-    pub fn interleaved_lines(&self) -> TextIterator<File> {
-        TextIterator::from_files(
-            &self.files,
+    pub fn interleaved(&self) -> TextIterator {
+        TextIterator::new(
+            &self.generators,
             TextIterationStrategy::Interleaved,
             None,
         )
     }
 
-    pub fn weighted_lines(&self, seed: Option<u64>) -> TextIterator<File> {
-        TextIterator::from_files(
-            &self.files,
+    pub fn weighted(&self, seed: Option<u64>) -> TextIterator {
+        TextIterator::new(
+            &self.generators,
             TextIterationStrategy::Weighted,
             seed,
         )
@@ -58,65 +194,43 @@ pub enum TextIterationStrategy {
     Weighted,
 }
 
-pub struct TextIterator<R: Read> {
-    org_lines: Vec<Lines<BufReader<R>>>,
-    proc_lines: Vec<Lines<BufReader<R>>>,
+pub struct TextIterator {
+    org_iters: Vec<BoxedStringIterator>,
+    proc_iters: Vec<BoxedStringIterator>,
     languages: Vec<String>,
-    num_lines: Vec<usize>,
+    lengths: Vec<usize>,
     strategy: TextIterationStrategy,
     idx: usize,
     rng: ChaCha8Rng,
     finished: Vec<bool>,
 }
 
-fn open(p: &Path) -> File {
-    File::open(p)
-        .expect(&format!("could not open file at {:?}", p))
-}
-
-impl<R: Read> TextIterator<R> {
-    fn new<T, OpenFn: Fn(&T) -> R>(
-        readers: &[(T, Option<T>, Option<String>)],
-        open_fn: OpenFn,
+impl TextIterator {
+    pub fn new(
+        text_generators: &[Box<dyn TextGen>],
         strategy: TextIterationStrategy,
         seed: Option<u64>,
     ) -> Self {
-        assert!(!readers.is_empty());
-        let mut org_lines = vec![];
-        let mut proc_lines = vec![];
+        assert!(!text_generators.is_empty());
+        let mut org_iters = vec![];
+        let mut proc_iters = vec![];
         let mut languages = vec![];
-        let mut num_lines = vec![];
-        for (org, proc, language) in readers {
-            let org_num_lines = BufReader::new(open_fn(org))
-                .lines()
-                .count();
-            let org_l = BufReader::new(open_fn(org))
-                .lines();
-            let proc_l = if proc.is_some() {
-                let proc_num_lines = BufReader::new(
-                    open_fn(proc.as_ref().unwrap())
-                ).lines().count();
-                assert_eq!(
-                    org_num_lines,
-                    proc_num_lines,
-                    "original and processed text data do not have the same number of lines: {} != {}",
-                    org_num_lines,
-                    proc_num_lines
-                );
-                BufReader::new(open_fn(proc.as_ref().unwrap())).lines()
+        let mut lengths = vec![];
+        for text_reader in text_generators {
+            org_iters.push(text_reader.org_iter());
+            proc_iters.push(if text_reader.has_proc() {
+                text_reader.proc_iter().unwrap()
             } else {
-                BufReader::new(open_fn(org)).lines()
-            };
-            org_lines.push(org_l);
-            proc_lines.push(proc_l);
-            num_lines.push(org_num_lines);
-            languages.push(language.as_ref().cloned().unwrap_or("[unk]".to_string()));
+                text_reader.org_iter()
+            });
+            lengths.push(text_reader.len());
+            languages.push(text_reader.lang().unwrap_or("[unk]".to_string()));
         }
-        let finished = vec![false; org_lines.len()];
+        let finished = vec![false; org_iters.len()];
         TextIterator {
-            org_lines,
-            proc_lines,
-            num_lines,
+            org_iters,
+            proc_iters,
+            lengths,
             languages,
             strategy,
             idx: 0,
@@ -153,7 +267,7 @@ impl<R: Read> TextIterator<R> {
                 let dist = WeightedIndex::new(
                     non_finished_indices
                         .iter()
-                        .map(|&idx| self.num_lines[idx])
+                        .map(|&idx| self.lengths[idx])
                         .collect::<Vec<usize>>()
                 )
                     .expect("could not create line distribution");
@@ -167,22 +281,7 @@ impl<R: Read> TextIterator<R> {
     }
 }
 
-impl TextIterator<File> {
-    pub fn from_files(
-        files: &[(PathBuf, Option<PathBuf>, Option<String>)],
-        strategy: TextIterationStrategy,
-        seed: Option<u64>,
-    ) -> Self {
-        Self::new(
-            files,
-            |p| open(p),
-            strategy,
-            seed,
-        )
-    }
-}
-
-impl<R: Read> Iterator for TextIterator<R> {
+impl Iterator for TextIterator {
     type Item = TextData;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -191,22 +290,19 @@ impl<R: Read> Iterator for TextIterator<R> {
         }
         let original;
         loop {
-            let maybe_original = self.org_lines[self.idx].next();
+            let maybe_original = self.org_iters[self.idx].next();
             if maybe_original.is_none() {
                 self.finished[self.idx] = true;
                 if self.all_finished() { return None; }
                 self.next_idx();
                 continue;
             }
-            original = maybe_original
-                .unwrap()
-                .expect("could not read line");
+            original = maybe_original.unwrap();
             break;
         }
-        let processed = self.proc_lines[self.idx]
+        let processed = self.proc_iters[self.idx]
             .next()
-            .expect("expected original and processed text to have the same number of lines")
-            .expect("could not read line");
+            .unwrap();
         let data = TextData {
             original,
             processed,
@@ -217,18 +313,33 @@ impl<R: Read> Iterator for TextIterator<R> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.num_lines.iter().sum()))
+        (0, Some(self.lengths.iter().sum()))
     }
 }
 
 pub struct PipelineIterator {
-    rx: Receiver<Item>,
+    iter: Box<dyn Iterator<Item=Item>>,
     size_hint: (usize, Option<usize>),
 }
 
 impl PipelineIterator {
-    pub fn new<T: Iterator<Item=TextData> + Send + Sync + 'static>(
-        iter: T,
+    pub fn new(
+        iter: impl Iterator<Item=TextData> + 'static,
+        pipeline: Pipeline,
+    ) -> Self {
+        let size_hint = iter.size_hint();
+        PipelineIterator {
+            iter: Box::new(iter
+                .enumerate()
+                .map(move |(idx, item)| {
+                    pipeline.apply(item, Some(idx as u64))
+                })),
+            size_hint,
+        }
+    }
+
+    pub fn new_threaded(
+        iter: impl Iterator<Item=TextData> + Send + 'static,
         pipeline: Pipeline,
         worker_threads: u8,
         buffer_size: usize,
@@ -288,7 +399,7 @@ impl PipelineIterator {
         }
 
         PipelineIterator {
-            rx,
+            iter: Box::new(rx.into_iter()),
             size_hint,
         }
     }
@@ -300,8 +411,8 @@ impl PipelineIterator {
         shuffle: bool,
         shuffle_prefetch_factor: usize,
         seed: u64,
-    ) -> BatchedPipelineIterator<PipelineIterator> {
-        BatchedPipelineIterator::new(
+    ) -> BatchedIterator<PipelineIterator> {
+        BatchedIterator::new(
             self,
             batch_limit,
             batch_limit_type,
@@ -316,7 +427,7 @@ impl Iterator for PipelineIterator {
     type Item = Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.rx.recv().ok()
+        self.iter.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -330,7 +441,7 @@ pub enum BatchLimitType {
     NumTokens,
 }
 
-pub struct BatchedPipelineIterator<T: Iterator<Item=Item>> {
+pub struct BatchedIterator<T: Iterator<Item=Item>> {
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
     rng: ChaCha8Rng,
@@ -341,7 +452,7 @@ pub struct BatchedPipelineIterator<T: Iterator<Item=Item>> {
     remainder: Option<Item>,
 }
 
-impl<T: Iterator<Item=Item>> BatchedPipelineIterator<T> {
+impl<T: Iterator<Item=Item>> BatchedIterator<T> {
     pub fn new(
         mut iter: T,
         batch_limit: usize,
@@ -353,7 +464,7 @@ impl<T: Iterator<Item=Item>> BatchedPipelineIterator<T> {
         let shuffle_prefetch_factor = shuffle_prefetch_factor.max(2);
         // initialize remainder
         let remainder = iter.next();
-        BatchedPipelineIterator {
+        BatchedIterator {
             batch_limit,
             batch_limit_type,
             rng: ChaCha8Rng::seed_from_u64(seed),
@@ -430,7 +541,7 @@ impl<T: Iterator<Item=Item>> BatchedPipelineIterator<T> {
     }
 }
 
-impl<T: Iterator<Item=Item>> Iterator for BatchedPipelineIterator<T> {
+impl<T: Iterator<Item=Item>> Iterator for BatchedIterator<T> {
     type Item = Batch;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -462,7 +573,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use itertools::Itertools;
     use log::info;
-    use crate::data::loading::{BatchedPipelineIterator, BatchLimitType, open, PipelineIterator, TextFiles, TextIterator};
+    use crate::data::loading::{BatchedIterator, BatchLimitType, open, PipelineIterator, TextFile, TextGenerator, TextIterator};
     use crate::data::{Item, Pipeline, PipelineConfig, TextData};
     use crate::tokenization::{ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizerConfig};
 
@@ -476,41 +587,41 @@ mod tests {
     fn test_text_iterator() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
+        let d2 = base.clone().join("resources/test/multi30k_rev.txt");
+        let multi30k = TextFile::new_boxed(&d, None, Some("1"));
+        let multi30k_rev = TextFile::new_boxed(&d2, None, Some("2"));
+        let text_files = TextGenerator::new(vec![multi30k.clone()]);
         // first check sequential lines with one file
-        let text_files = TextFiles::new(&[(d.clone(), None, None)]);
-        let mut it = text_files.sequential_lines();
+        let mut it = text_files.sequential();
         assert_eq!(it.size_hint(), (0, Some(29000)));
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_FIRST.to_string(),
-            language: UNK.to_string(),
+            language: "1".to_string(),
         });
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_SECOND.to_string(),
             processed: MULTI30K_SECOND.to_string(),
-            language: UNK.to_string(),
+            language: "1".to_string(),
         });
-        // check sequential lines with two files
-        let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let text_files = TextFiles::new(&[(d.clone(), Some(d2.clone()), None)]);
-        let mut it = text_files.sequential_lines();
+        // check sequential lines with original and processed
+        let multi30k_and_rev = TextFile::new_boxed(&d, Some(&d2), Some("1"));
+        let text_files = TextGenerator::new(vec![multi30k_and_rev]);
+        let mut it = text_files.sequential();
         assert_eq!(it.size_hint(), (0, Some(29000)));
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_REV_FIRST.to_string(),
-            language: UNK.to_string(),
+            language: "1".to_string(),
         });
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_SECOND.to_string(),
             processed: MULTI30K_REV_SECOND.to_string(),
-            language: UNK.to_string(),
+            language: "1".to_string(),
         });
         // check interleaved lines with two files
-        let text_files = TextFiles::new(
-            &[(d, None, Some("1".to_string())),
-                (d2, None, Some("2".to_string()))]
-        );
-        let mut it = text_files.interleaved_lines();
+        let text_files = TextGenerator::new(vec![multi30k, multi30k_rev]);
+        let mut it = text_files.interleaved();
         assert_eq!(it.size_hint(), (0, Some(2 * 29000)));
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
@@ -546,7 +657,8 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let text_files = TextFiles::new(&[(d.clone(), None, None)]);
+        let multi30k = TextFile::new_boxed(&d, None, Some("1"));
+        let text_files = TextGenerator::new(vec![multi30k]);
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
         let pipeline = Pipeline::from_config(PipelineConfig {
@@ -557,8 +669,8 @@ mod tests {
         // test if it works with one worker and record the time it took
         let mut it = pipeline
             .clone()
-            .apply_iter(
-                text_files.sequential_lines(),
+            .apply_iter_threaded(
+                text_files.sequential(),
                 1,
                 1,
             );
@@ -570,8 +682,8 @@ mod tests {
         // test with more workers, check that its faster
         let mut it = pipeline
             .clone()
-            .apply_iter(
-                text_files.sequential_lines(),
+            .apply_iter_threaded(
+                text_files.sequential(),
                 2,
                 2,
             );
@@ -581,8 +693,8 @@ mod tests {
         info!("took {:.2}s to fetch {} items", time2, n);
         assert!(time2 < time);
         // test with even more workers
-        let mut it = pipeline.apply_iter(
-            text_files.sequential_lines(),
+        let mut it = pipeline.apply_iter_threaded(
+            text_files.sequential(),
             4,
             4,
         );
@@ -600,8 +712,8 @@ mod tests {
         });
         let mut it = pipeline
             .clone()
-            .apply_iter(
-                text_files.sequential_lines(),
+            .apply_iter_threaded(
+                text_files.sequential(),
                 4,
                 4,
             );
@@ -618,7 +730,8 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let text_files = TextFiles::new(&[(d.clone(), None, None)]);
+        let multi30k = TextFile::new_boxed(&d, None, Some("1"));
+        let text_files = TextGenerator::new(vec![multi30k]);
         let lines: Vec<String> = BufReader::new(open(&d))
             .lines()
             .collect::<Result<Vec<String>, io::Error>>()
@@ -631,8 +744,8 @@ mod tests {
         // first check the batched iterator with shuffling disabled
         let mut pipe_it = pipeline
             .clone()
-            .apply_iter(
-                text_files.sequential_lines(),
+            .apply_iter_threaded(
+                text_files.sequential(),
                 4,
                 4,
             )
@@ -655,8 +768,8 @@ mod tests {
         // now check the batched iterator with shuffling
         let mut pipe_it = pipeline
             .clone()
-            .apply_iter(
-                text_files.sequential_lines(),
+            .apply_iter_threaded(
+                text_files.sequential(),
                 4,
                 4,
             )

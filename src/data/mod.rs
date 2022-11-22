@@ -125,7 +125,11 @@ impl Pipeline {
         } else {
             None
         };
-        let tokenization = self.tokenizer.tokenize(&data.processed);
+        let tokenization = self.tokenizer.tokenize(
+            &data.processed,
+            None,
+            None
+        );
         Item {
             data,
             label,
@@ -202,6 +206,15 @@ struct DataLoader {
 #[pymethods]
 impl DataLoader {
     #[staticmethod]
+    #[args(
+    num_threads = "(num_cpus::get() as u8).min(4)",
+    buffer_size = "32",
+    batch_limit = "16",
+    batch_limit_type = "BatchLimitType::BatchSize",
+    shuffle = "false",
+    shuffle_prefetch_factor = "4",
+    seed = "None"
+    )]
     pub fn from_sequences(
         sequences: Vec<String>,
         lang: Option<String>,

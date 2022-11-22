@@ -41,7 +41,9 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     boundaries
 }
 
-#[pyfunction]
+#[pyfunction(
+use_graphemes = "true"
+)]
 #[pyo3(name = "word_boundaries")]
 fn word_boundaries_py(s: &str, use_graphemes: bool) -> PyResult<Vec<(usize, usize)>> {
     Ok(word_boundaries(s, use_graphemes))
@@ -128,7 +130,9 @@ enum MatchOp {
     NoMatch,
 }
 
-#[pyfunction]
+#[pyfunction(
+ignore_case = "false"
+)]
 #[pyo3(name = "match_words")]
 fn match_words_py(
     a: &str,
@@ -140,8 +144,8 @@ fn match_words_py(
 
 pub fn possible_character_substrings(
     str: &str,
-    use_graphemes: bool,
     mut max_chars: usize,
+    use_graphemes: bool,
 ) -> Vec<(usize, usize, usize)> {
     if str.is_empty() {
         return vec![(0, 0, 0)];
@@ -163,8 +167,8 @@ pub fn possible_character_substrings(
 
 pub fn possible_byte_substrings(
     str: &str,
-    use_graphemes: bool,
     max_bytes: usize,
+    use_graphemes: bool,
 ) -> Vec<(usize, usize, usize)> {
     if str.is_empty() {
         return vec![(0, 0, 0)];
@@ -468,40 +472,40 @@ mod tests {
     #[test]
     fn test_possible_character_substrings() {
         let s = "a test";
-        let v = possible_character_substrings(s, true, 4);
+        let v = possible_character_substrings(s, 4, true);
         assert_eq!(v, vec![(0, 4, 4), (1, 5, 4), (2, 6, 4)]);
-        let v = possible_character_substrings(s, true, 10);
+        let v = possible_character_substrings(s, 10, true);
         assert_eq!(v, vec![(0, 6, 6)]);
         let s = "a täst";
-        let v = possible_character_substrings(s, true, 4);
+        let v = possible_character_substrings(s, 4, true);
         assert_eq!(v, vec![(0, 5, 4), (1, 6, 4), (2, 7, 4)]);
         let s = "नमस्ते";
-        let v = possible_character_substrings(s, true, 2);
+        let v = possible_character_substrings(s, 2, true);
         assert_eq!(v, vec![(0, 6, 2), (3, 12, 2), (6, 18, 2)]);
-        let v = possible_character_substrings(s, false, 2);
+        let v = possible_character_substrings(s, 2, false);
         assert_eq!(v, vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]);
-        let v = possible_character_substrings("", true, 4);
+        let v = possible_character_substrings("", 4, true);
         assert_eq!(v, vec![(0, 0, 0)]);
     }
 
     #[test]
     fn test_possible_byte_substrings() {
         let s = "a test";
-        let v = possible_byte_substrings(s, true, 4);
+        let v = possible_byte_substrings(s, 4, true);
         assert_eq!(v, vec![(0, 4, 4), (1, 5, 4), (2, 6, 4)]);
-        let v = possible_byte_substrings(s, true, 10);
+        let v = possible_byte_substrings(s, 10, true);
         assert_eq!(v, vec![(0, 6, 6)]);
         let s = "a täst";
-        let v = possible_byte_substrings(s, true, 4);
+        let v = possible_byte_substrings(s, 4, true);
         assert_eq!(v, vec![(0, 3, 3), (1, 5, 3), (2, 6, 3), (3, 7, 3)]);
         let s = "नमस्ते";
-        let v = possible_byte_substrings(s, true, 2);
+        let v = possible_byte_substrings(s, 2, true);
         assert_eq!(v, vec![]);
-        let v = possible_byte_substrings(s, true, 6);
+        let v = possible_byte_substrings(s, 6, true);
         assert_eq!(v, vec![(0, 6, 2), (6, 12, 1), (12, 18, 1)]);
-        let v = possible_byte_substrings(s, false, 6);
+        let v = possible_byte_substrings(s, 6, false);
         assert_eq!(v, vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]);
-        let v = possible_byte_substrings("", true, 4);
+        let v = possible_byte_substrings("", 4, true);
         assert_eq!(v, vec![(0, 0, 0)]);
     }
 
@@ -518,7 +522,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            None
+            None,
         );
         assert!(ew.len() < w.len());
         assert_eq!(excluded.len(), 0);
@@ -528,7 +532,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            Some(HashSet::from([0, 2, 3]))
+            Some(HashSet::from([0, 2, 3])),
         );
         assert_eq!(&ew, "tst");
         // test deletion for word with 1 or fewer characters
@@ -537,7 +541,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            None
+            None,
         );
         assert_eq!(ew.len(), 1);
         assert_eq!(excluded.len(), 0);
@@ -550,7 +554,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            None
+            None,
         );
         assert!(ew.len() > w.len());
         assert_eq!(excluded.len(), 1);
@@ -562,7 +566,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            Some(HashSet::from([1, 2, 3]))
+            Some(HashSet::from([1, 2, 3])),
         );
         assert_eq!(&ew, "wtäst");
         assert_eq!(excluded, HashSet::from([0, 2, 3, 4]));
@@ -575,7 +579,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            None
+            None,
         );
         assert_eq!(ew.len(), w.len());
         assert_eq!(excluded.len(), 2);
@@ -585,7 +589,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            Some(HashSet::from([0, 3]))
+            Some(HashSet::from([0, 3])),
         );
         assert_eq!(&ew, "tsät");
         assert_eq!(excluded, HashSet::from([0, 1, 2, 3]));
@@ -598,7 +602,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            None
+            None,
         );
         assert!(ew.len() > w.len());
         assert_eq!(excluded.len(), 3);
@@ -608,7 +612,7 @@ mod tests {
             true,
             &mut rng,
             &edits,
-            Some(HashSet::from([0, 1, 3]))
+            Some(HashSet::from([0, 1, 3])),
         );
         assert_eq!(&ew, "täblat");
         assert_eq!(excluded, HashSet::from([0, 1, 2, 3, 4, 5]));

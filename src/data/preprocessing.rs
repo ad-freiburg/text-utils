@@ -148,7 +148,7 @@ fn char_substring(max_chars: usize, use_graphemes: bool) -> PreprocessingFn {
     substring(
         "character".to_string(),
         move |s| {
-            possible_character_substrings(s, use_graphemes, max_chars)
+            possible_character_substrings(s, max_chars, use_graphemes)
         },
     )
 }
@@ -157,7 +157,7 @@ fn byte_substring(max_bytes: usize, use_graphemes: bool) -> PreprocessingFn {
     substring(
         "byte".to_string(),
         move |s| {
-            possible_byte_substrings(s, use_graphemes, max_bytes)
+            possible_byte_substrings(s, max_bytes, use_graphemes)
         },
     )
 }

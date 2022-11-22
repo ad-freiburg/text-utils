@@ -133,7 +133,11 @@ pub fn edit_operations(
     edit_ops
 }
 
-#[pyfunction]
+#[pyfunction(
+use_graphemes = "true",
+with_swap = "true",
+spaces_insert_delete_only = "false"
+)]
 #[pyo3(name = "edit_operations")]
 fn edit_operations_py(
     a: &str,
@@ -161,7 +165,11 @@ pub fn edit_distance(
     d[d.len() - 1][d[0].len() - 1]
 }
 
-#[pyfunction]
+#[pyfunction(
+use_graphemes = "true",
+with_swap = "true",
+spaces_insert_delete_only = "false"
+)]
 #[pyo3(name = "edit_distance")]
 fn edit_distance_py(
     a: &str,

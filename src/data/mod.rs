@@ -206,6 +206,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     let m = PyModule::new(py, "data")?;
     m.add_class::<Item>()?;
     m.add_class::<Batch>()?;
+    m.add_class::<DataLoader>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

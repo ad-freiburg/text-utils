@@ -172,6 +172,7 @@ pub trait BatchTokenize: Tokenize {
 
 /// Dummy tokenizer that just waits a specified time in its tokenize function.
 /// Used for testing only.
+#[derive(Clone, Debug)]
 struct DummyTokenizer {
     delay: Duration,
     dummy_token: String,

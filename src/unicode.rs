@@ -7,7 +7,7 @@ use crate::utils::accumulate;
 pub struct CharString<'a> {
     pub str: &'a str,
     pub(crate) cluster_lengths: Vec<usize>,
-    pub(crate) cum_cluster_lengths: Vec<usize>
+    pub(crate) cum_cluster_lengths: Vec<usize>,
 }
 
 // shorthand for grapheme string for in crate usage
@@ -39,7 +39,7 @@ impl<'a> CharString<'a> {
         CharString {
             str,
             cluster_lengths,
-            cum_cluster_lengths
+            cum_cluster_lengths,
         }
     }
 
@@ -81,7 +81,7 @@ impl<'a> CharString<'a> {
         Characters {
             str: self.sub(start, end),
             cum_cluster_lengths: &self.cum_cluster_lengths[start..end],
-            idx: 0
+            idx: 0,
         }
     }
 
@@ -156,15 +156,15 @@ impl PartialEq<Self> for Character<'_> {
     }
 }
 
+impl Display for Character<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.str)
+    }
+}
+
 impl Display for CharString<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "GraphemeString(\"{}\", bytes={}, clusters={})",
-            self.str,
-            self.str.len(),
-            self.len()
-        )
+        write!(f, "{}", self.str, )
     }
 }
 

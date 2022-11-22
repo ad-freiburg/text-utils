@@ -22,7 +22,7 @@ pub enum PreprocessingConfig {
     // delete all whitespaces
     NoWhitespaces,
     // insert whitespaces between all characters
-    FullWhitespaces,
+    FullWhitespaces(bool),
     // delete and insert whitespaces with certain probabilities
     NoiseWhitespaces(f64, f64),
     // extract substrings from text
@@ -33,7 +33,7 @@ pub enum PreprocessingConfig {
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum LabelingConfig {
     // generate whitespace correction labels given processed and original sequence
-    LabelWhitespaceCorrection,
+    LabelWhitespaceCorrection(bool),
 }
 
 fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> PreprocessingFn {
@@ -168,7 +168,9 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
         PreprocessingConfig::Switch(fns, probs) => switch(fns, probs),
         PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => noise_whitespace(iw_p, dw_p),
         PreprocessingConfig::NoWhitespaces => apply_to_text(remove),
-        PreprocessingConfig::FullWhitespaces => apply_to_text(full),
+        PreprocessingConfig::FullWhitespaces(use_graphemes) => apply_to_text(move |s| {
+            full(s, use_graphemes)
+        }),
         PreprocessingConfig::CharSubstring(l, use_graphemes) => char_substring(l, use_graphemes),
         PreprocessingConfig::ByteSubstring(l, use_graphemes) => byte_substring(l, use_graphemes),
     }
@@ -193,11 +195,14 @@ pub fn preprocessing(
     )
 }
 
-fn whitespace_correction_label() -> LabelingFn {
+fn whitespace_correction_label(use_graphemes: bool) -> LabelingFn {
     Box::new(
-        |item| {
+        move |item| {
             Label::SeqClassification(
-                operations(&item.processed, &item.original)
+                operations(&item.processed, &item.original, use_graphemes)
+                    .into_iter()
+                    .map(|l| l as usize)
+                    .collect()
             )
         }
     )
@@ -205,7 +210,7 @@ fn whitespace_correction_label() -> LabelingFn {
 
 pub fn labeling(labeling: LabelingConfig) -> LabelingFn {
     match labeling {
-        LabelingConfig::LabelWhitespaceCorrection => whitespace_correction_label()
+        LabelingConfig::LabelWhitespaceCorrection(use_graphemes) => whitespace_correction_label(use_graphemes)
     }
 }
 

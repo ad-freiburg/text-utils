@@ -20,6 +20,7 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     text::add_submodule(py, m)?;
     tokenization::add_submodule(py, m)?;
     data::add_submodule(py, m)?;
+    whitespace::add_submodule(py, m)?;
 
     Ok(())
 }

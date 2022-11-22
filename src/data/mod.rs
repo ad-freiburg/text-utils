@@ -212,23 +212,27 @@ impl DataLoader {
         batch_limit_type: BatchLimitType,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
-        seed: Option<u64>
+        seed: Option<u64>,
     ) -> PyResult<Self> {
         if shuffle && seed.is_none() {
-            return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"))
+            return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
         }
         let cont = TextContainer::new_boxed(
             sequences,
             None,
-            lang
+            lang,
         );
         let gen = TextGenerator::new(vec![cont]);
         let pipe = Pipeline::from_config(pipeline_config);
-        let iter = pipe
-            .apply_iter_threaded(gen.sequential(), num_threads, buffer_size)
+        let iter = if num_threads > 0 {
+            pipe.apply_iter_threaded(gen.sequential(), num_threads, buffer_size)
+        } else {
+            pipe.apply_iter(gen.sequential())
+        };
+        let batched_iter = iter
             .batched(batch_limit, batch_limit_type, shuffle, shuffle_prefetch_factor, seed);
         Ok(DataLoader {
-            iter: Box::new(iter)
+            iter: Box::new(batched_iter)
         })
     }
 

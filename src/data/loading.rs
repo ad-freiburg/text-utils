@@ -338,16 +338,10 @@ impl Iterator for TextIterator {
             break;
         }
         let processed = self.proc_iters[self.idx]
-            .next()
-            .unwrap();
+            .next();
         let language = self.lang_iters[self.idx]
-            .next()
-            .unwrap();
-        let data = TextData {
-            original,
-            processed,
-            language,
-        };
+            .next();
+        let data = TextData::new(original, processed, language);
         self.next_idx();
         Some(data)
     }

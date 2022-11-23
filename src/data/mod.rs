@@ -6,8 +6,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict};
 use serde::{Deserialize, Serialize};
 use crate::data::loading::{BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator, TextIterationStrategy};
-use crate::tokenization::{Tokenization, tokenizer, Tokenizer, TokenizerConfig};
+use crate::tokenization::{LANG_UNK, Tokenization, tokenizer, Tokenizer, TokenizerConfig};
 use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
+use crate::utils::{py_invalid_type_error, py_required_key_error};
 
 pub mod preprocessing;
 pub mod loading;
@@ -23,6 +24,34 @@ pub struct TextData {
     language: String,
 }
 
+impl TextData {
+    pub fn new(original: String, processed: Option<String>, language: Option<String>) -> Self {
+        let processed = processed.unwrap_or(original.clone());
+        let language = language.unwrap_or(LANG_UNK.to_string());
+        TextData {
+            original,
+            processed,
+            language,
+        }
+    }
+}
+
+#[pymethods]
+impl TextData {
+    #[new]
+    #[args(
+    processed = "None",
+    language = "None"
+    )]
+    fn new_py(
+        original: String,
+        processed: Option<String>,
+        language: Option<String>,
+    ) -> PyResult<Self> {
+        Ok(Self::new(original, processed, language))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Label {
     Classification(usize),
@@ -33,12 +62,63 @@ pub enum Label {
 impl IntoPy<PyObject> for Label {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
-        match self {
-            Label::Classification(label) => d.set_item("classification", label).unwrap(),
-            Label::SeqClassification(labels) => d.set_item("sequence_classification", labels).unwrap(),
-            Label::Seq2Seq(labels) => d.set_item("seq2seq", labels).unwrap()
-        }
+        let label_type = match self {
+            Label::Classification(label) => {
+                d.set_item("label", label).unwrap();
+                "classification"
+            }
+            Label::SeqClassification(labels) => {
+                d.set_item("labels", labels).unwrap();
+                "sequence_classification"
+            }
+            Label::Seq2Seq(labels) => {
+                d.set_item("labels", labels).unwrap();
+                "seq2seq"
+            }
+        };
+        d.set_item("type", label_type).unwrap();
         d.into()
+    }
+}
+
+impl<'a> FromPyObject<'a> for Label {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let Some(label_type) = d.get_item("type") else {
+            return Err(py_required_key_error("type", "label"));
+        };
+        let label_type: String = label_type.extract()?;
+        let label = match label_type.as_str() {
+            "classification" => {
+                let Some(label) = d.get_item("label") else {
+                    return Err(py_required_key_error(
+                        "label",
+                        "classification label"));
+                };
+                Label::Classification(label.extract()?)
+            }
+            "sequence_classification" => {
+                let Some(labels) = d.get_item("labels") else {
+                    return Err(py_required_key_error(
+                        "labels",
+                        "sequence classification label"));
+                };
+                Label::SeqClassification(labels.extract()?)
+            }
+            "seq2seq" => {
+                let Some(labels) = d.get_item("labels") else {
+                    return Err(py_required_key_error(
+                        "labels",
+                        "seq2seq label",
+                    ));
+                };
+                Label::Seq2Seq(labels.extract()?)
+            }
+            k => {
+                return Err(py_invalid_type_error(k, "label"));
+            }
+        };
+        Ok(label)
     }
 }
 
@@ -53,8 +133,26 @@ pub struct Item {
     label: Option<Label>,
 }
 
+impl Item {
+    pub fn new(data: TextData, tokenization: Tokenization, label: Option<Label>) -> Self {
+        Item {
+            data,
+            tokenization,
+            label,
+        }
+    }
+}
+
 #[pymethods]
 impl Item {
+    #[new]
+    #[args(
+    label = "None"
+    )]
+    fn py_new(data: TextData, tokenization: Tokenization, label: Option<Label>) -> PyResult<Self> {
+        Ok(Self::new(data, tokenization, label))
+    }
+
     fn __len__(&self) -> PyResult<usize> {
         Ok(self.tokenization.token_ids.len())
     }
@@ -67,16 +165,25 @@ pub struct Batch {
     items: Vec<Item>,
 }
 
-#[pymethods]
 impl Batch {
-    fn __len__(&self) -> PyResult<usize> {
-        Ok(self.len())
+    pub fn new(items: Vec<Item>) -> Self {
+        Batch { items }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
     }
 }
 
+#[pymethods]
 impl Batch {
-    pub fn len(&self) -> usize {
-        self.items.len()
+    #[new]
+    fn py_new(items: Vec<Item>) -> PyResult<Self> {
+        Ok(Self::new(items))
+    }
+
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self.len())
     }
 }
 
@@ -95,6 +202,35 @@ pub struct PipelineConfig {
     preprocessing: Vec<PreprocessingConfig>,
     labeling: Option<LabelingConfig>,
     tokenizer: TokenizerConfig,
+}
+
+impl PipelineConfig {
+    pub fn new(
+        preprocessing: Vec<PreprocessingConfig>,
+        labeling: Option<LabelingConfig>,
+        tokenizer: TokenizerConfig,
+    ) -> Self {
+        PipelineConfig {
+            preprocessing,
+            labeling,
+            tokenizer,
+        }
+    }
+}
+
+#[pymethods]
+impl PipelineConfig {
+    #[new]
+    #[args(
+    labeling = "None"
+    )]
+    fn py_new(
+        preprocessing: Vec<PreprocessingConfig>,
+        tokenizer: TokenizerConfig,
+        labeling: Option<LabelingConfig>,
+    ) -> PyResult<Self> {
+        Ok(Self::new(preprocessing, labeling, tokenizer))
+    }
 }
 
 pub struct Pipeline {

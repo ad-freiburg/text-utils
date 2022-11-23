@@ -1,5 +1,7 @@
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use num::traits::{Num, NumAssignOps};
+use pyo3::exceptions::PyTypeError;
+use pyo3::prelude::*;
 
 pub(crate) type Matrix<T> = Vec<Vec<T>>;
 
@@ -35,6 +37,15 @@ pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
     } else {
         value
     }
+}
+
+pub(crate) fn py_required_key_error(key_name: &str, value_name: &str) -> PyErr {
+    PyTypeError::new_err(format!("could not find required key \"{key_name}\" for \
+            {value_name}"))
+}
+
+pub(crate) fn py_invalid_type_error(name: &str, type_name: &str) -> PyErr {
+    PyTypeError::new_err(format!("\"{name}\" is not a valid {type_name} type"))
 }
 
 #[cfg(test)]

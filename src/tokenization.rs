@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::thread::sleep;
 use std::time::Duration;
 use itertools::Itertools;
-use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::{Deserialize, Serialize};
 use crate::unicode::{CS};
+use crate::utils::{py_invalid_type_error, py_required_key_error};
 
 pub const UNK: &str = "<unk>";
 pub const BOS: &str = "<bos>";
@@ -26,48 +26,73 @@ pub enum TokenizerConfig {
     Dummy(Duration),
 }
 
+impl IntoPy<Py<PyDict>> for TokenizerConfig {
+    fn into_py(self, py: Python<'_>) -> Py<PyDict> {
+        let d: &PyDict = PyDict::new(py);
+        let tokenizer_type = match self {
+            TokenizerConfig::Character(use_g, pfx, sfx) => {
+                d.set_item("use_graphemes", use_g).unwrap();
+                d.set_item("default_prefix_tokens", pfx).unwrap();
+                d.set_item("default_suffix_tokens", sfx).unwrap();
+                "character"
+            },
+            TokenizerConfig::Byte(use_g, pfx, sfx) => {
+                d.set_item("use_graphemes", use_g).unwrap();
+                d.set_item("default_prefix_tokens", pfx).unwrap();
+                d.set_item("default_suffix_tokens", sfx).unwrap();
+                "byte"
+            }
+            TokenizerConfig::Dummy(delay) => {
+                d.set_item("delay", delay.as_millis()).unwrap();
+                "dummy"
+            }
+        };
+        d.set_item("type", tokenizer_type).unwrap();
+        d.into()
+    }
+}
+
 impl<'a> FromPyObject<'a> for TokenizerConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let tokenizer_config = if d.contains("character")?
-            || d.contains("byte")? {
-            let character = d.contains("character")?;
-            let config: &PyDict = d.get_item(if character { "character" } else { "byte" })
-                .unwrap()
-                .extract()?;
-            let use_graphemes: bool = if let Some(value) = config.get_item("use_graphemes") {
-                value.extract()?
-            } else {
-                true
-            };
-            let prefix: Vec<String> = if let Some(value) = config.get_item("default_prefix_tokens") {
-                value.extract()?
-            } else {
-                vec![]
-            };
-            let suffix: Vec<String> = if let Some(value) = config.get_item("default_suffix_tokens") {
-                value.extract()?
-            } else {
-                vec![]
-            };
-            if character {
-                TokenizerConfig::Character(use_graphemes, prefix, suffix)
-            } else {
-                TokenizerConfig::Byte(use_graphemes, prefix, suffix)
+        let Some(tokenizer_type) = d.get_item("type") else {
+            return Err(py_required_key_error("type", "tokenizer config"));
+        };
+        let tokenizer_type: String = tokenizer_type.extract()?;
+        let tokenizer_config = match tokenizer_type.as_str() {
+            "character" | "byte" => {
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                let prefix: Vec<String> = if let Some(value) = d.get_item("default_prefix_tokens") {
+                    value.extract()?
+                } else {
+                    vec![]
+                };
+                let suffix: Vec<String> = if let Some(value) = d.get_item("default_suffix_tokens") {
+                    value.extract()?
+                } else {
+                    vec![]
+                };
+                if tokenizer_type.as_str() == "character" {
+                    TokenizerConfig::Character(use_graphemes, prefix, suffix)
+                } else {
+                    TokenizerConfig::Byte(use_graphemes, prefix, suffix)
+                }
             }
-        } else if d.contains("dummy")? {
-            let config: &PyDict = d.get_item("dummy")
-                .unwrap()
-                .extract()?;
-            let millis: u64 = if let Some(value) = config.get_item("delay") {
-                value.extract()?
-            } else {
-                0
-            };
-            TokenizerConfig::Dummy(Duration::from_millis(millis))
-        } else {
-            return Err(PyTypeError::new_err(format!("could not find a valid tokenizer name in \
-            config")));
+            "dummy" => {
+                let millis: u64 = if let Some(value) = d.get_item("delay") {
+                    value.extract()?
+                } else {
+                    0
+                };
+                TokenizerConfig::Dummy(Duration::from_millis(millis))
+            }
+            k => {
+                return Err(py_invalid_type_error(k, "tokenizer"));
+            }
         };
         Ok(tokenizer_config)
     }

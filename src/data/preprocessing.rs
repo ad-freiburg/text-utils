@@ -1,5 +1,7 @@
 use std::ops::Sub;
 use itertools::Itertools;
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
@@ -7,7 +9,7 @@ use crate::data::{TextData, Label};
 use crate::text;
 use crate::text::{possible_byte_substrings, possible_character_substrings};
 use crate::unicode::CS;
-use crate::utils::{accumulate, constrain};
+use crate::utils::{accumulate, constrain, py_invalid_type_error, py_required_key_error};
 use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
 
 pub type PreprocessingFn = Box<dyn Fn(TextData, Option<u64>) -> TextData + Send + Sync>;
@@ -30,19 +32,189 @@ pub enum PreprocessingConfig {
     ByteSubstring(usize, bool),
 }
 
+impl IntoPy<Py<PyDict>> for PreprocessingConfig {
+    fn into_py(self, py: Python<'_>) -> Py<PyDict> {
+        let d = PyDict::new(py);
+        let preprocessing_type = match self {
+            PreprocessingConfig::Clean => {
+                "clean"
+            }
+            PreprocessingConfig::Switch(configs, probs) => {
+                let py_configs = PyList::empty(py);
+                for config in configs {
+                    py_configs.append(config.into_py(py)).unwrap();
+                }
+                d.set_item("configs", py_configs).unwrap();
+                d.set_item("probabilities", PyList::new(py, probs)).unwrap();
+                "switch"
+            }
+            PreprocessingConfig::NoWhitespaces => {
+                "no_whitespaces"
+            }
+            PreprocessingConfig::FullWhitespaces(use_g) => {
+                d.set_item("use_graphemes", use_g).unwrap();
+                "full_whitespaces"
+            }
+            PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => {
+                d.set_item("insert_whitespace_prob", iw_p).unwrap();
+                d.set_item("delete_whitespace_prob", dw_p).unwrap();
+                "noise_whitespaces"
+            }
+            PreprocessingConfig::CharSubstring(max_chars, use_g) => {
+                d.set_item("max_chars", max_chars).unwrap();
+                d.set_item("use_graphemes", use_g).unwrap();
+                "char_substring"
+            }
+            PreprocessingConfig::ByteSubstring(max_bytes, use_g) => {
+                d.set_item("max_bytes", max_bytes).unwrap();
+                d.set_item("use_graphemes", use_g).unwrap();
+                "byte_substring"
+            }
+        };
+        d.set_item("type", preprocessing_type).unwrap();
+        d.into()
+    }
+}
+
+impl<'a> FromPyObject<'a> for PreprocessingConfig {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let Some(preprocessing_type) = d.get_item("type") else {
+            return Err(py_required_key_error("type", "preprocessing config"));
+        };
+        let preprocessing_type: String = preprocessing_type.extract()?;
+        let preprocessing_config = match preprocessing_type.as_str() {
+            "clean" => PreprocessingConfig::Clean,
+            "no_whitespaces" => PreprocessingConfig::NoWhitespaces,
+            "full_whitespaces" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                PreprocessingConfig::FullWhitespaces(use_graphemes)
+            }
+            "noise_whitespaces" => {
+                let iw_p = if let Some(value) = d.get_item("insert_whitespace_prob") {
+                    value.extract()?
+                } else {
+                    0.
+                };
+                let dw_p = if let Some(value) = d.get_item("delete_whitespace_prob") {
+                    value.extract()?
+                } else {
+                    0.
+                };
+                PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p)
+            }
+            "switch" => {
+                let Some(configs) = d.get_item("configs") else {
+                    return Err(py_required_key_error("configs", "switch config"));
+                };
+                let Some(probs) = d.get_item("probabilities") else {
+                    return Err(py_required_key_error("probabilities", "switch config"));
+                };
+                PreprocessingConfig::Switch(
+                    configs
+                        .extract::<&PyList>()?
+                        .iter()
+                        .map(|any| any.extract())
+                        .collect::<PyResult<Vec<PreprocessingConfig>>>()?,
+                    probs
+                        .extract::<&PyList>()?
+                        .iter()
+                        .map(|any| any.extract())
+                        .collect::<PyResult<Vec<f64>>>()?,
+                )
+            }
+            "char_substring" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                let Some(max_chars) = d.get_item("max_chars") else {
+                    return Err(py_required_key_error("max_chars", "char substring config"));
+                };
+                PreprocessingConfig::CharSubstring(max_chars.extract()?, use_graphemes)
+            }
+            "byte_substring" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                let Some(max_bytes) = d.get_item("max_bytes") else {
+                    return Err(py_required_key_error("max_bytes", "byte substring config"));
+                };
+                PreprocessingConfig::ByteSubstring(max_bytes.extract()?, use_graphemes)
+            }
+            k => {
+                return Err(py_invalid_type_error(k, "preprocessing"));
+            }
+        };
+        Ok(preprocessing_config)
+    }
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum LabelingConfig {
     // generate whitespace correction labels given processed and original sequence
     LabelWhitespaceCorrection(bool),
 }
 
+impl IntoPy<Py<PyDict>> for LabelingConfig {
+    fn into_py(self, py: Python<'_>) -> Py<PyDict> {
+        let d: &PyDict = PyDict::new(py);
+        let labeling_type = match self {
+            LabelingConfig::LabelWhitespaceCorrection(use_g) => {
+                d.set_item("use_graphemes", use_g).unwrap();
+                "whitespace_correction"
+            }
+        };
+        d.set_item("type", labeling_type).unwrap();
+        d.into()
+    }
+}
+
+impl<'a> FromPyObject<'a> for LabelingConfig {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let Some(labeling_type) = d.get_item("type") else {
+            return Err(py_required_key_error("type", "labeling config"));
+        };
+        let labeling_type: String = labeling_type.extract()?;
+        let labeling_config = match labeling_type.as_str() {
+            "whitespace_correction" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                LabelingConfig::LabelWhitespaceCorrection(use_graphemes)
+            }
+            k => {
+                return Err(py_invalid_type_error(k, "labeling"));
+            }
+        };
+        Ok(labeling_config)
+    }
+}
+
 fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> PreprocessingFn {
     let num_fns = fns.len();
-    assert!(num_fns > 0 && num_fns == probs.len());
+    assert!(
+        num_fns > 0 && num_fns == probs.len(),
+        "expected one or more preprocessing for switch preprocessing and the same \
+        number of probabilities"
+    );
     // generate cumulative probabilities
     let cum_p: Vec<f64> = accumulate(&probs);
     // probabilities should sum to 1
-    assert!(cum_p.last().copied().unwrap().sub(1f64).abs() < 1e-5);
+    assert!(
+        cum_p.last().copied().unwrap().sub(1f64).abs() < 1e-5,
+        "all switch probabilities should sum to 1"
+    );
 
     let fns: Vec<PreprocessingFn> = fns
         .into_iter()

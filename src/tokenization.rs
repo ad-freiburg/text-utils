@@ -662,11 +662,12 @@ pub fn char_windows(
         "max length must be larger than 2 times the context \
         length, otherwise there are no tokens left for the window itself"
     );
-    let cs = CS::new(s, use_graphemes);
     let window_length = max_length - 2 * context_length;
+    let cs = CS::new(s, use_graphemes);
     (0..cs.len())
         .step_by(window_length)
         .map(|window_start| {
+            let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
             let ctx_start = window_start.saturating_sub(context_length);
             let ctx_end = cs.len().min(window_start + window_length + context_length);
             let window_end = cs.len().min(window_start + window_length);
@@ -681,6 +682,18 @@ pub fn char_windows(
         .collect()
 }
 
+#[inline]
+fn count_until(mut iter: impl Iterator<Item=usize>, max_length: usize, cs: &CS) -> usize {
+    iter.fold_while(0usize, |acc, idx| {
+        let next_acc = acc + cs.char_byte_len(idx);
+        if next_acc > max_length {
+            Done(acc)
+        } else {
+            Continue(next_acc)
+        }
+    }).into_inner()
+}
+
 pub fn byte_windows(
     s: &str,
     max_length: usize,
@@ -693,20 +706,13 @@ pub fn byte_windows(
         length, otherwise there are no tokens left for the window itself"
     );
     let cs = CS::new(s, use_graphemes);
+
     let mut windows = vec![];
-    let mut window_length = max_length - 2 * context_length;
     let mut window_start = 0;
     while window_start < cs.len() {
+        let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
         let window_end = window_start
-            + (window_start..cs.len())
-            .fold_while(0usize, |acc, idx| {
-                let next_acc = acc + cs.char_byte_len(idx);
-                if next_acc > window_length {
-                    Done(acc)
-                } else {
-                    Continue(next_acc)
-                }
-            }).into_inner();
+            + count_until(window_start..cs.len(), window_length, &cs);
         assert!(
             window_end > window_start,
             "{}",
@@ -718,24 +724,18 @@ pub fn byte_windows(
                 cs.char_byte_len(window_start)
             )
         );
-        let ctx_start = window_start.saturating_sub(0);
+        let ctx_start = window_start.saturating_sub(
+            count_until((0..window_start).rev(), context_length, &cs)
+        );
         let ctx_end = window_end
-            + (window_end..cs.len())
-            .fold_while(0usize, |acc, idx| {
-                let next_acc = acc + cs.char_byte_len(idx);
-                if next_acc > context_length {
-                    Done(acc)
-                } else {
-                    Continue(next_acc)
-                }
-            }).into_inner();
+            + count_until(window_end..cs.len(), context_length, &cs);
 
         windows.push(Window {
             ctx_start,
             ctx_end,
             window_start,
             window_end,
-            str: cs.sub(ctx_start, ctx_end).to_string()
+            str: cs.sub(ctx_start, ctx_end).to_string(),
         });
 
         window_start = window_end;

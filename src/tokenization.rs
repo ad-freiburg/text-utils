@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::thread::sleep;
 use std::time::Duration;
+use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::{Deserialize, Serialize};
 use crate::unicode::{CS};
-use crate::utils::{py_invalid_type_error, py_required_key_error};
+use crate::utils::{py_invalid_type_error, py_required_key_error, run_length_decode};
 
 pub const UNK: &str = "<unk>";
 pub const BOS: &str = "<bos>";
@@ -35,7 +36,7 @@ impl IntoPy<Py<PyDict>> for TokenizerConfig {
                 d.set_item("default_prefix_tokens", pfx).unwrap();
                 d.set_item("default_suffix_tokens", sfx).unwrap();
                 "character"
-            },
+            }
             TokenizerConfig::Byte(use_g, pfx, sfx) => {
                 d.set_item("use_graphemes", use_g).unwrap();
                 d.set_item("default_prefix_tokens", pfx).unwrap();
@@ -455,7 +456,7 @@ impl ByteTokenizer {
             .iter()
             .map(|b| *b as u32)
             .collect();
-        (tokens, CS::new(s, self.use_graphemes).cluster_lengths)
+        (tokens, run_length_decode(&CS::new(s, self.use_graphemes).rle_cluster_lengths))
     }
 }
 
@@ -633,6 +634,113 @@ impl PyTokenizer {
     fn unk_token_id(&self) -> PyResult<u32> {
         Ok(self.tokenizer.unk_token_id())
     }
+}
+
+#[derive(Debug, Clone)]
+#[pyclass]
+pub struct Window {
+    #[pyo3(get)]
+    ctx_start: usize,
+    #[pyo3(get)]
+    ctx_end: usize,
+    #[pyo3(get)]
+    window_start: usize,
+    #[pyo3(get)]
+    window_end: usize,
+    #[pyo3(get)]
+    str: String,
+}
+
+pub fn char_windows(
+    s: &str,
+    max_length: usize,
+    context_length: usize,
+    use_graphemes: bool,
+) -> Vec<Window> {
+    assert!(
+        max_length > 2 * context_length,
+        "max length must be larger than 2 times the context \
+        length, otherwise there are no tokens left for the window itself"
+    );
+    let cs = CS::new(s, use_graphemes);
+    let window_length = max_length - 2 * context_length;
+    (0..cs.len())
+        .step_by(window_length)
+        .map(|window_start| {
+            let ctx_start = window_start.saturating_sub(context_length);
+            let ctx_end = cs.len().min(window_start + window_length + context_length);
+            let window_end = cs.len().min(window_start + window_length);
+            Window {
+                ctx_start,
+                ctx_end,
+                window_start,
+                window_end,
+                str: cs.sub(ctx_start, ctx_end).to_string(),
+            }
+        })
+        .collect()
+}
+
+pub fn byte_windows(
+    s: &str,
+    max_length: usize,
+    context_length: usize,
+    use_graphemes: bool,
+) -> Vec<Window> {
+    assert!(
+        max_length > 2 * context_length,
+        "max length must be larger than 2 times the context \
+        length, otherwise there are no tokens left for the window itself"
+    );
+    let cs = CS::new(s, use_graphemes);
+    let mut windows = vec![];
+    let mut window_length = max_length - 2 * context_length;
+    let mut window_start = 0;
+    while window_start < cs.len() {
+        let window_end = window_start
+            + (window_start..cs.len())
+            .fold_while(0usize, |acc, idx| {
+                let next_acc = acc + cs.char_byte_len(idx);
+                if next_acc > window_length {
+                    Done(acc)
+                } else {
+                    Continue(next_acc)
+                }
+            }).into_inner();
+        assert!(
+            window_end > window_start,
+            "{}",
+            format!(
+                "single character at position {window_start} has more bytes \
+                ({}) than the window length {window_length}, \
+                this suggests that something with your input string is wrong or the window length \
+                is too small",
+                cs.char_byte_len(window_start)
+            )
+        );
+        let ctx_start = window_start.saturating_sub(0);
+        let ctx_end = window_end
+            + (window_end..cs.len())
+            .fold_while(0usize, |acc, idx| {
+                let next_acc = acc + cs.char_byte_len(idx);
+                if next_acc > context_length {
+                    Done(acc)
+                } else {
+                    Continue(next_acc)
+                }
+            }).into_inner();
+
+        windows.push(Window {
+            ctx_start,
+            ctx_end,
+            window_start,
+            window_end,
+            str: cs.sub(ctx_start, ctx_end).to_string()
+        });
+
+        window_start = window_end;
+    }
+    windows
 }
 
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {

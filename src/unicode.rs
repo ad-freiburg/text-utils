@@ -1,13 +1,13 @@
 use std::fmt::{Display, Formatter};
 use std::str::Chars;
 use unicode_segmentation::{UnicodeSegmentation};
-use crate::utils::accumulate;
+use crate::utils::{run_length_encode};
 
 #[derive(Debug, Clone)]
 pub struct CharString<'a> {
     pub str: &'a str,
-    pub(crate) cluster_lengths: Vec<usize>,
-    pub(crate) cum_cluster_lengths: Vec<usize>,
+    pub(crate) rle_cluster_lengths: Vec<(usize, usize)>,
+    len: usize,
 }
 
 // shorthand for grapheme string for in crate usage
@@ -18,28 +18,27 @@ pub(crate) type CS<'a> = CharString<'a>;
 // Example string "नमस्ते" from the Rust documentation
 // "नमस्ते".len() -> 18; num bytes (equal to len("नमस्ते".encode()) in Python)
 // "नमस्ते".chars().count() -> 6; num unicode code units (equal to len("नमस्ते") in Python)
-// GraphemeString::from("नमस्ते").len() -> 4; num grapheme clusters, closest to what
+// CharString::from("नमस्ते").len() -> 4; num grapheme clusters, closest to what
 // humans consider to be characters (in Python available via third party libraries)
 
 impl<'a> CharString<'a> {
     pub fn new(str: &str, use_graphemes: bool) -> CharString {
-        let cluster_lengths: Vec<usize>;
-        if use_graphemes {
-            cluster_lengths = str
+        let cluster_lengths: Vec<usize> = if use_graphemes {
+            str
                 .graphemes(true)
                 .map(|s| s.len())
-                .collect();
+                .collect()
         } else {
-            cluster_lengths = str
+            str
                 .chars()
                 .map(|c| c.len_utf8())
-                .collect();
-        }
-        let cum_cluster_lengths = accumulate(&cluster_lengths);
+                .collect()
+        };
+        let rle_cluster_lengths = run_length_encode(&cluster_lengths);
         CharString {
             str,
-            cluster_lengths,
-            cum_cluster_lengths,
+            rle_cluster_lengths,
+            len: cluster_lengths.len(),
         }
     }
 
@@ -48,20 +47,50 @@ impl<'a> CharString<'a> {
     }
 
     pub fn len(&self) -> usize {
-        self.cum_cluster_lengths.len()
+        self.len
     }
 
-    pub(crate) fn char_range_to_byte_range(&self, start: usize, end: usize) -> (usize, usize) {
+    #[inline]
+    pub(crate) fn byte_start_end(&self, n: usize) -> (usize, usize) {
+        let mut start = 0;
+        let mut total_count = 0;
+        for (num_bytes, count) in &self.rle_cluster_lengths {
+            if n < total_count + *count {
+                start += num_bytes * (n - total_count);
+                let end = start + num_bytes;
+                return (start, end);
+            }
+            start += count * num_bytes;
+            total_count += count;
+        }
+        panic!("should not happen")
+    }
+
+    #[inline]
+    pub(crate) fn char_byte_len(&self, n: usize) -> usize {
+        let (start, end) = self.byte_start_end(n);
+        end - start
+    }
+
+    #[inline]
+    pub(crate) fn char_range_to_byte_range(
+        &self,
+        start: usize,
+        end: usize
+    ) -> (usize, usize) {
         assert!(start < end && end <= self.len());
-        let start = self.cum_cluster_lengths[start] - self.cluster_lengths[start];
-        let end = self.cum_cluster_lengths[end - 1];
-        (start, end)
+        let (start_byte, mut end_byte) = self.byte_start_end(start);
+        if start < end - 1 {
+            let (_, new_end_byte) = self.byte_start_end(end - 1);
+            end_byte = new_end_byte;
+        }
+        (start_byte, end_byte)
     }
 
     pub fn get(&self, n: usize) -> &str {
         assert!(n < self.len());
-        let start = if n == 0 { 0 } else { self.cum_cluster_lengths[n - 1] };
-        &self.str[start..self.cum_cluster_lengths[n]]
+        let (start, end) = self.byte_start_end(n);
+        &self.str[start..end]
     }
 
     pub fn get_char(&self, n: usize) -> Character {
@@ -77,34 +106,16 @@ impl<'a> CharString<'a> {
         &self.str[start..end]
     }
 
-    pub fn sub_chars(&self, start: usize, end: usize) -> Characters {
-        Characters {
-            str: self.sub(start, end),
-            cum_cluster_lengths: &self.cum_cluster_lengths[start..end],
-            idx: 0,
-        }
-    }
-
     pub fn chars(&self) -> Characters {
         Characters {
-            str: self.str,
-            cum_cluster_lengths: &self.cum_cluster_lengths,
+            char_str: self,
             idx: 0,
         }
-    }
-
-    pub fn char_byte_lengths(&self) -> &[usize] {
-        &self.cluster_lengths
-    }
-
-    pub fn cum_char_byte_lengths(&self) -> &[usize] {
-        &self.cum_cluster_lengths
     }
 }
 
 pub struct Characters<'a> {
-    str: &'a str,
-    cum_cluster_lengths: &'a [usize],
+    char_str: &'a CharString<'a>,
     idx: usize,
 }
 
@@ -112,12 +123,12 @@ impl<'a> Iterator for Characters<'a> {
     type Item = Character<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.cum_cluster_lengths.len() {
+        if self.idx >= self.char_str.len {
             return None;
         }
-        let start = if self.idx == 0 { 0 } else { self.cum_cluster_lengths[self.idx - 1] };
+        let (start, end) = self.char_str.byte_start_end(self.idx);
         let char = Character {
-            str: &self.str[start..self.cum_cluster_lengths[self.idx]]
+            str: &self.char_str.str[start..end]
         };
         self.idx += 1;
         Some(char)
@@ -173,31 +184,26 @@ mod tests {
     use crate::unicode::CS;
 
     #[test]
-    fn test_grapheme_string() {
+    fn test_char_string() {
         // test with empty string
         let s = CS::new("", false);
         assert_eq!(s.str.len(), 0);
         assert_eq!(s.len(), 0);
         assert_eq!(s.sub(0, s.len()), "");
-        let empty: Vec<usize> = Vec::new();
-        assert_eq!(s.cum_cluster_lengths, empty);
+        assert_eq!(s.rle_cluster_lengths, vec![]);
         // test with ascii string
         let s = CS::new("this is a test", false);
         assert_eq!(s.str.len(), 14);
         assert_eq!(s.len(), 14);
         assert_eq!(s.sub(10, 14), "test");
         assert_eq!(s.sub(10, 10), "");
-        let mut cum_cluster_lengths = (1..=s.len()).collect::<Vec<usize>>();
-        assert_eq!(s.cum_cluster_lengths, cum_cluster_lengths);
+        assert_eq!(s.rle_cluster_lengths, vec![(1, 14)]);
         // test with non ascii string
         let s = CS::new("this is a täst", false);
         assert_eq!(s.str.len(), 15);
         assert_eq!(s.len(), 14);
         assert_eq!(s.sub(10, 14), "täst");
-        cum_cluster_lengths[11] = 13;
-        cum_cluster_lengths[12] = 14;
-        cum_cluster_lengths[13] = 15;
-        assert_eq!(s.cum_cluster_lengths, cum_cluster_lengths);
+        assert_eq!(s.rle_cluster_lengths, vec![(1, 11), (2, 1), (1, 2)]);
         assert_eq!(s.get(11), "ä");
 
         // test with string that has more than one code point per character:

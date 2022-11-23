@@ -1,5 +1,5 @@
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use num::traits::{Num, NumAssignOps};
+use num::traits::{Num};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
@@ -16,20 +16,29 @@ pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
 }
 
 #[inline]
-pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
-    where T: Num + NumAssignOps + Copy {
-    let mut cum_values = Vec::new();
-    let mut total_v = T::zero();
-    for v in values {
-        total_v += *v;
-        cum_values.push(total_v);
+pub(crate) fn accumulate_with<T, F>(values: &[T], acc_fn: F) -> Vec<T>
+    where T: Clone, F: Fn(&T, &T) -> T {
+    if values.is_empty() {
+        return vec![];
+    }
+    let mut total_v = values.first().unwrap().clone();
+    let mut cum_values = vec![total_v.clone()];
+    for v in &values[1..] {
+        total_v = acc_fn(&total_v, v);
+        cum_values.push(total_v.clone());
     }
     cum_values
 }
 
 #[inline]
+pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
+    where T: Num + Copy {
+    accumulate_with(values, |acc, v| *acc + *v)
+}
+
+#[inline]
 pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
-    where T: Num + Copy + PartialOrd {
+    where T: Num + PartialOrd {
     if value < min {
         min
     } else if value > max {
@@ -37,6 +46,40 @@ pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
     } else {
         value
     }
+}
+
+#[inline]
+pub(crate) fn run_length_encode<T>(values: &[T]) -> Vec<(T, usize)>
+    where T: PartialEq + Clone {
+    if values.is_empty() {
+        return vec![];
+    }
+    let mut rle = vec![];
+    let mut val = values.first().unwrap();
+    let mut count = 1;
+    for v in &values[1..] {
+        if v == val {
+            count += 1;
+        } else {
+            rle.push((val.clone(), count));
+            val = v;
+            count = 1;
+        }
+    }
+    rle.push((val.clone(), count));
+    rle
+}
+
+#[inline]
+pub(crate) fn run_length_decode<T>(values: &[(T, usize)]) -> Vec<T>
+    where T: Clone {
+    let mut decoded = vec![];
+    for (v, count) in values {
+        for _ in 0..*count {
+            decoded.push(v.clone())
+        }
+    }
+    decoded
 }
 
 pub(crate) fn py_required_key_error(key_name: &str, value_name: &str) -> PyErr {

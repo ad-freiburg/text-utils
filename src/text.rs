@@ -174,11 +174,11 @@ pub fn possible_byte_substrings(
         return vec![(0, 0, 0)];
     }
     let cs = CS::new(str, use_graphemes);
-    if *cs.cum_cluster_lengths.last().expect("should not happen") <= max_bytes {
+    if cs.byte_len() <= max_bytes {
         return vec![(0, cs.len(), cs.len())];
     }
     let mut start = 0;
-    while start < cs.len() && cs.cluster_lengths[start] > max_bytes {
+    while start < cs.len() && cs.char_byte_len(start) > max_bytes {
         start += 1;
     }
     if start >= cs.len() {
@@ -187,15 +187,15 @@ pub fn possible_byte_substrings(
     let mut end = start;
     let mut substrings = vec![];
     while start < cs.len() && end < cs.len() {
-        let next_end_v = if end + 1 < cs.len() { cs.cluster_lengths[end + 1] } else { 0 };
-        if next_end_v > max_bytes {
+        let next_end_bytes = if end + 1 < cs.len() { cs.get(end + 1).len() } else { 0 };
+        if next_end_bytes > max_bytes {
             substrings.push((start, end + 1));
             start = end + 2;
             end = start;
         } else {
-            let cum_next_end_v = cs.cum_cluster_lengths[end] + next_end_v;
-            let cum_up_to_start = cs.cum_cluster_lengths[start] - cs.cluster_lengths[start];
-            if cum_next_end_v - cum_up_to_start > max_bytes {
+            let byte_until_next_end = cs.byte_start_end(end).1 + next_end_bytes;
+            let bytes_up_to_start = cs.byte_start_end(start).0;
+            if byte_until_next_end - bytes_up_to_start > max_bytes {
                 if substrings.is_empty() || substrings.last().unwrap().1 < end + 1 {
                     substrings.push((start, end + 1));
                 }

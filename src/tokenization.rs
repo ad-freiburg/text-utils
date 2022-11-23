@@ -230,29 +230,25 @@ impl CharTokenizer {
         default_prefix_tokens: &[String],
         default_suffix_tokens: &[String],
     ) -> Self {
-        let vocab = HashMap::from_iter(
-            CHARS
-                .chars()
-                .unique()
-                .enumerate()
-                .map(|(tok_id, c)| (c, tok_id as u32))
-        );
-        let reverse_vocab = HashMap::from_iter(
-            vocab
-                .iter()
-                .map(|(token, token_id)| (*token_id, *token))
-        );
-        let special_vocab = HashMap::from_iter(
-            SPECIAL_TOKENS
-                .iter()
-                .map(|&s| s.to_string())
-                .zip(vocab.len() as u32..(vocab.len() + SPECIAL_TOKENS.len()) as u32)
-        );
-        let reverse_special_vocab = HashMap::from_iter(
-            special_vocab
-                .iter()
-                .map(|(st, tok_id)| (*tok_id, st.clone()))
-        );
+        let vocab: HashMap<char, u32> = CHARS
+            .chars()
+            .unique()
+            .enumerate()
+            .map(|(tok_id, c)| (c, tok_id as u32))
+            .collect();
+        let reverse_vocab = vocab
+            .iter()
+            .map(|(token, token_id)| (*token_id, *token))
+            .collect();
+        let special_vocab: HashMap<String, u32> = SPECIAL_TOKENS
+            .iter()
+            .map(|&s| s.to_string())
+            .zip(vocab.len() as u32..(vocab.len() + SPECIAL_TOKENS.len()) as u32)
+            .collect();
+        let reverse_special_vocab = special_vocab
+            .iter()
+            .map(|(st, tok_id)| (*tok_id, st.clone()))
+            .collect();
         let unk_token = UNK.to_string();
         let unk_token_id = *special_vocab
             .get(&unk_token)
@@ -392,17 +388,15 @@ impl ByteTokenizer {
         default_prefix_tokens: &[String],
         default_suffix_tokens: &[String],
     ) -> Self {
-        let special_vocab: HashMap<String, u32> = HashMap::from_iter(
-            SPECIAL_TOKENS
-                .iter()
-                .zip(u8::MAX as u32..u8::MAX as u32 + SPECIAL_TOKENS.len() as u32)
-                .map(|(&st, tok_id)| (st.into(), tok_id))
-        );
-        let reverse_special_vocab = HashMap::from_iter(
-            special_vocab
-                .iter()
-                .map(|(token, token_id)| (*token_id, token.clone()))
-        );
+        let special_vocab: HashMap<String, u32> = SPECIAL_TOKENS
+            .iter()
+            .zip(u8::MAX as u32..u8::MAX as u32 + SPECIAL_TOKENS.len() as u32)
+            .map(|(&st, tok_id)| (st.into(), tok_id))
+            .collect();
+        let reverse_special_vocab = special_vocab
+            .iter()
+            .map(|(token, token_id)| (*token_id, token.clone()))
+            .collect();
         let unk_token = UNK.to_string();
         let unk_token_id = *special_vocab
             .get(&unk_token)
@@ -636,7 +630,7 @@ mod tests {
             true, &pfx, &sfx,
         );
         let text = "a täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text);
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None);
         assert_eq!(token_ids.len(), 6 + 2);
         assert_eq!(token_ids[4], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&token_ids), "a tst".to_string());
@@ -650,7 +644,7 @@ mod tests {
             true, &pfx, &sfx,
         );
         let text = "a täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text);
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None);
         assert_eq!(
             token_ids[1..token_ids.len() - 1]
                 .iter()

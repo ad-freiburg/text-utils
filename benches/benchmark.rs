@@ -137,7 +137,7 @@ fn bench_tokenizer(c: &mut Criterion) {
             ),
             str.as_str(),
             |b, str| {
-                b.iter(|| char_tok.tokenize(str));
+                b.iter(|| char_tok.tokenize(str, None, None));
             },
         );
         group.bench_with_input(
@@ -147,7 +147,7 @@ fn bench_tokenizer(c: &mut Criterion) {
             ),
             str.as_str(),
             |b, str| {
-                b.iter(|| byte_tok.tokenize(str));
+                b.iter(|| byte_tok.tokenize(str, None, None));
             },
         );
     }

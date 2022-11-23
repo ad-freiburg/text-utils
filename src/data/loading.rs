@@ -634,7 +634,7 @@ mod tests {
         let text_files = TextGenerator::new(vec![multi30k.clone()]);
         // first check sequential lines with one file
         let mut it = text_files.sequential();
-        assert_eq!(it.size_hint(), (0, Some(29000)));
+        assert_eq!(it.min_len(), 29000);
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_FIRST.to_string(),
@@ -649,7 +649,7 @@ mod tests {
         let multi30k_and_rev = TextFile::new_boxed(&d, Some(&d2), Some("1".to_string()));
         let text_files = TextGenerator::new(vec![multi30k_and_rev]);
         let mut it = text_files.sequential();
-        assert_eq!(it.size_hint(), (0, Some(29000)));
+        assert_eq!(it.min_len(), 29000);
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_REV_FIRST.to_string(),
@@ -663,7 +663,7 @@ mod tests {
         // check interleaved lines with two files
         let text_files = TextGenerator::new(vec![multi30k, multi30k_rev]);
         let mut it = text_files.interleaved();
-        assert_eq!(it.size_hint(), (0, Some(2 * 29000)));
+        assert_eq!(it.min_len(), 2 * 29000);
         assert_eq!(it.next().unwrap(), TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_FIRST.to_string(),
@@ -823,12 +823,11 @@ mod tests {
             );
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
-        let mut line_counter: HashMap<String, usize> = HashMap::from_iter(
-            lines
+        let mut line_counter: HashMap<String, usize> = lines
                 .iter()
                 .cloned()
                 .map(|l| (l, 0))
-        );
+                .collect();
         for (batch, line_batch) in pipe_it
             .zip(&lines.iter().chunks(16)) {
             assert!(batch.len() > 0 && batch.len() <= 16);

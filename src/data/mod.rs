@@ -53,6 +53,13 @@ pub struct Item {
     label: Option<Label>,
 }
 
+#[pymethods]
+impl Item {
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self.tokenization.token_ids.len())
+    }
+}
+
 #[derive(Clone, Debug)]
 #[pyclass]
 pub struct Batch {
@@ -128,7 +135,7 @@ impl Pipeline {
         let tokenization = self.tokenizer.tokenize(
             &data.processed,
             None,
-            None
+            None,
         );
         Item {
             data,
@@ -201,12 +208,14 @@ pub fn labeling_from_str(s: &str) -> LabelingFn {
 #[pyclass]
 struct DataLoader {
     iter: Box<dyn Iterator<Item=Batch> + Send + 'static>,
+    len: usize,
 }
 
 #[pymethods]
 impl DataLoader {
     #[staticmethod]
     #[args(
+    lang = "None",
     num_threads = "(num_cpus::get() as u8).min(4)",
     buffer_size = "32",
     batch_limit = "16",
@@ -217,8 +226,8 @@ impl DataLoader {
     )]
     pub fn from_sequences(
         sequences: Vec<String>,
-        lang: Option<String>,
         pipeline_config: PipelineConfig,
+        languages: Option<Vec<String>>,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -227,25 +236,39 @@ impl DataLoader {
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
     ) -> PyResult<Self> {
+        if sequences.is_empty() {
+            return Err(PyTypeError::new_err("sequences is empty"));
+        }
+        if languages.is_some() && sequences.len() == languages.as_ref().unwrap().len() {
+            return Err(PyTypeError::new_err(
+                format!(
+                    "there must be one language for every sequence if specified, but \
+                    got {} sequences and {} languages",
+                    sequences.len(),
+                    languages.as_ref().unwrap().len())));
+        }
         if shuffle && seed.is_none() {
             return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
         }
         let cont = TextContainer::new_boxed(
             sequences,
             None,
-            lang,
+            languages,
         );
         let gen = TextGenerator::new(vec![cont]);
         let pipe = Pipeline::from_config(pipeline_config);
+        let text_iter = gen.sequential();
+        let len = text_iter.min_len();
         let iter = if num_threads > 0 {
-            pipe.apply_iter_threaded(gen.sequential(), num_threads, buffer_size)
+            pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
         } else {
-            pipe.apply_iter(gen.sequential())
+            pipe.apply_iter(text_iter)
         };
         let batched_iter = iter
             .batched(batch_limit, batch_limit_type, shuffle, shuffle_prefetch_factor, seed);
         Ok(DataLoader {
-            iter: Box::new(batched_iter)
+            iter: Box::new(batched_iter),
+            len,
         })
     }
 
@@ -262,8 +285,8 @@ impl DataLoader {
     )]
     pub fn from_files(
         files: Vec<String>,
-        languages: Vec<Option<String>>,
         pipeline_config: PipelineConfig,
+        languages: Option<Vec<String>>,
         strategy: TextIterationStrategy,
         num_threads: u8,
         buffer_size: usize,
@@ -274,40 +297,51 @@ impl DataLoader {
         seed: Option<u64>,
     ) -> PyResult<Self> {
         if files.is_empty() {
-            return Err(PyTypeError::new_err("files is empty"))
+            return Err(PyTypeError::new_err("files is empty"));
         }
-        if files.len() != languages.len() {
+        if languages.is_some() && files.len() != languages.as_ref().unwrap().len() {
             return Err(PyTypeError::new_err(
-                format!("got {} files but {} languages", files.len(), languages.len())
-            ))
+                format!(
+                    "there must be one language for every file if specified, but \
+                    got {} files and {} languages",
+                    files.len(),
+                    languages.as_ref().unwrap().len())));
         }
         if shuffle && seed.is_none() {
             return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
         }
         let cont = files
             .into_iter()
-            .zip(languages.into_iter())
-            .map(|(file, lang)| {
+            .enumerate()
+            .map(|(idx, file)| {
+                let lang = if languages.is_some() {
+                    Some(languages.as_ref().unwrap()[idx].clone())
+                } else {
+                    None
+                };
                 TextFile::new_boxed(
-                    &file.into(), None, lang.as_ref().map(|s| s.as_str())
+                    &file.into(), None, lang,
                 ) as Box<dyn TextGen>
             })
             .collect();
         let gen = TextGenerator::new(cont);
         let pipe = Pipeline::from_config(pipeline_config);
+        let text_iter = gen.with_strategy(strategy, seed);
+        let len = text_iter.min_len();
         let iter = if num_threads > 0 {
             pipe.apply_iter_threaded(
-                gen.with_strategy(strategy, seed),
+                text_iter,
                 num_threads,
-                buffer_size
+                buffer_size,
             )
         } else {
-            pipe.apply_iter(gen.with_strategy(strategy, seed))
+            pipe.apply_iter(text_iter)
         };
         let batched_iter = iter
             .batched(batch_limit, batch_limit_type, shuffle, shuffle_prefetch_factor, seed);
         Ok(DataLoader {
-            iter: Box::new(batched_iter)
+            iter: Box::new(batched_iter),
+            len,
         })
     }
 
@@ -325,6 +359,10 @@ impl DataLoader {
         } else {
             None
         }
+    }
+
+    fn __len__(&self) -> usize {
+        self.len
     }
 }
 

@@ -15,6 +15,8 @@ pub const PAD: &str = "<pad>";
 pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
 pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
 pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
+// language tokens
+pub const LANG_UNK: &str = "[unk]";
 
 /// This enum defines all tokenizers that are supported by this crate.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

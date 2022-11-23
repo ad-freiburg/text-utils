@@ -12,6 +12,7 @@ use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use crate::data::{TextData, Item, Pipeline, Batch};
+use crate::tokenization::LANG_UNK;
 
 pub type BoxedThreadSafeIter<T> = Box<dyn Iterator<Item=T> + Send + 'static>;
 pub type BoxedStringIter = BoxedThreadSafeIter<String>;
@@ -23,9 +24,8 @@ pub trait TextGen {
     fn org_iter(&self) -> BoxedStringIter;
     fn has_proc(&self) -> bool;
     fn proc_iter(&self) -> Option<BoxedStringIter>;
-    fn has_lang(&self) -> bool;
-    fn lang(&self) -> Option<String>;
-    fn len(&self) -> usize;
+    fn lang_iter(&self) -> BoxedStringIter;
+    fn min_len(&self) -> usize;
 }
 
 
@@ -42,12 +42,12 @@ fn count_lines(p: &Path) -> usize {
 pub struct TextFile {
     original: PathBuf,
     processed: Option<PathBuf>,
-    language: Option<String>,
+    language: String,
     len: usize,
 }
 
 impl TextFile {
-    pub fn new(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<&str>) -> Self {
+    pub fn new(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<String>) -> Self {
         let len = count_lines(&org);
         if proc.is_some() {
             let proc_len = count_lines(proc.unwrap());
@@ -62,12 +62,12 @@ impl TextFile {
         TextFile {
             original: org.clone(),
             processed: proc.map(|p| p.clone()),
-            language: lang.map(|l| l.to_string()),
+            language: lang.unwrap_or(LANG_UNK.to_string()),
             len,
         }
     }
 
-    pub fn new_boxed(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<&str>) -> Box<Self> {
+    pub fn new_boxed(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<String>) -> Box<Self> {
         Box::new(Self::new(org, proc, lang))
     }
 }
@@ -97,15 +97,12 @@ impl TextGen for TextFile {
         }
     }
 
-    fn has_lang(&self) -> bool {
-        self.language.is_some()
+    fn lang_iter(&self) -> BoxedStringIter {
+        let lang = self.language.clone();
+        Box::new((0..).map(move |_| lang.clone()))
     }
 
-    fn lang(&self) -> Option<String> {
-        self.language.clone()
-    }
-
-    fn len(&self) -> usize {
+    fn min_len(&self) -> usize {
         self.len
     }
 }
@@ -114,14 +111,14 @@ impl TextGen for TextFile {
 pub struct TextContainer {
     original: Vec<String>,
     processed: Option<Vec<String>>,
-    lang: Option<String>,
+    lang: Option<Vec<String>>,
 }
 
 impl TextContainer {
     pub fn new(
         original: Vec<String>,
         processed: Option<Vec<String>>,
-        lang: Option<String>
+        lang: Option<Vec<String>>,
     ) -> Self {
         TextContainer {
             original,
@@ -133,7 +130,7 @@ impl TextContainer {
     pub fn new_boxed(
         original: Vec<String>,
         processed: Option<Vec<String>>,
-        lang: Option<String>
+        lang: Option<Vec<String>>,
     ) -> Box<Self> {
         Box::new(Self::new(original, processed, lang))
     }
@@ -156,15 +153,15 @@ impl TextGen for TextContainer {
         }
     }
 
-    fn has_lang(&self) -> bool {
-        self.lang.is_some()
+    fn lang_iter(&self) -> BoxedStringIter {
+        if self.lang.is_some() {
+            Box::new(self.lang.clone().unwrap().into_iter())
+        } else {
+            Box::new((0..).map(|_| LANG_UNK.to_string()))
+        }
     }
 
-    fn lang(&self) -> Option<String> {
-        self.lang.clone()
-    }
-
-    fn len(&self) -> usize {
+    fn min_len(&self) -> usize {
         self.original.len()
     }
 }
@@ -183,7 +180,7 @@ impl TextGenerator {
     pub fn with_strategy(
         &self,
         strategy: TextIterationStrategy,
-        seed: Option<u64>
+        seed: Option<u64>,
     ) -> TextIterator {
         match strategy {
             TextIterationStrategy::Sequential => self.sequential(),
@@ -217,7 +214,7 @@ impl TextGenerator {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[pyclass]
 pub enum TextIterationStrategy {
     Sequential,
@@ -228,7 +225,7 @@ pub enum TextIterationStrategy {
 pub struct TextIterator {
     org_iters: Vec<BoxedStringIter>,
     proc_iters: Vec<BoxedStringIter>,
-    languages: Vec<String>,
+    lang_iters: Vec<BoxedStringIter>,
     lengths: Vec<usize>,
     strategy: TextIterationStrategy,
     idx: usize,
@@ -245,7 +242,7 @@ impl TextIterator {
         assert!(!text_generators.is_empty());
         let mut org_iters = vec![];
         let mut proc_iters = vec![];
-        let mut languages = vec![];
+        let mut lang_iters = vec![];
         let mut lengths = vec![];
         for text_reader in text_generators {
             org_iters.push(text_reader.org_iter());
@@ -254,15 +251,20 @@ impl TextIterator {
             } else {
                 text_reader.org_iter()
             });
-            lengths.push(text_reader.len());
-            languages.push(text_reader.lang().unwrap_or("[unk]".to_string()));
+            lengths.push(text_reader.min_len());
+            lang_iters.push(text_reader.lang_iter())
+        }
+        if strategy == TextIterationStrategy::Weighted {
+            assert!(lengths.iter().all(|&l| l > 0),
+                    "for the weighted iteration strategy all text generators must specify a positive \
+            minimum length, otherwise they would never be iterated");
         }
         let finished = vec![false; org_iters.len()];
         TextIterator {
             org_iters,
             proc_iters,
             lengths,
-            languages,
+            lang_iters,
             strategy,
             idx: 0,
             rng: if seed.is_some() {
@@ -310,6 +312,10 @@ impl TextIterator {
     fn all_finished(&self) -> bool {
         self.finished.iter().all(|&f| f)
     }
+
+    pub fn min_len(&self) -> usize {
+        self.lengths.iter().sum()
+    }
 }
 
 impl Iterator for TextIterator {
@@ -334,17 +340,16 @@ impl Iterator for TextIterator {
         let processed = self.proc_iters[self.idx]
             .next()
             .unwrap();
+        let language = self.lang_iters[self.idx]
+            .next()
+            .unwrap();
         let data = TextData {
             original,
             processed,
-            language: self.languages[self.idx].clone(),
+            language,
         };
         self.next_idx();
         Some(data)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.lengths.iter().sum()))
     }
 }
 
@@ -624,8 +629,8 @@ mod tests {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let multi30k = TextFile::new_boxed(&d, None, Some("1"));
-        let multi30k_rev = TextFile::new_boxed(&d2, None, Some("2"));
+        let multi30k = TextFile::new_boxed(&d, None, Some("1".to_string()));
+        let multi30k_rev = TextFile::new_boxed(&d2, None, Some("2".to_string()));
         let text_files = TextGenerator::new(vec![multi30k.clone()]);
         // first check sequential lines with one file
         let mut it = text_files.sequential();
@@ -641,7 +646,7 @@ mod tests {
             language: "1".to_string(),
         });
         // check sequential lines with original and processed
-        let multi30k_and_rev = TextFile::new_boxed(&d, Some(&d2), Some("1"));
+        let multi30k_and_rev = TextFile::new_boxed(&d, Some(&d2), Some("1".to_string()));
         let text_files = TextGenerator::new(vec![multi30k_and_rev]);
         let mut it = text_files.sequential();
         assert_eq!(it.size_hint(), (0, Some(29000)));
@@ -693,7 +698,7 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = TextFile::new_boxed(&d, None, Some("1"));
+        let multi30k = TextFile::new_boxed(&d, None, Some("1".to_string()));
         let text_files = TextGenerator::new(vec![multi30k]);
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
@@ -766,7 +771,7 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = TextFile::new_boxed(&d, None, Some("1"));
+        let multi30k = TextFile::new_boxed(&d, None, Some("1".to_string()));
         let text_files = TextGenerator::new(vec![multi30k]);
         let lines: Vec<String> = BufReader::new(open(&d))
             .lines()

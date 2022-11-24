@@ -76,7 +76,7 @@ impl<'a> CharString<'a> {
     pub(crate) fn char_range_to_byte_range(
         &self,
         start: usize,
-        end: usize
+        end: usize,
     ) -> (usize, usize) {
         assert!(start < end && end <= self.len());
         let (start_byte, mut end_byte) = self.byte_start_end(start);
@@ -111,6 +111,12 @@ impl<'a> CharString<'a> {
             char_str: self,
             idx: 0,
         }
+    }
+}
+
+impl Display for CharString<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.str, )
     }
 }
 
@@ -170,12 +176,6 @@ impl PartialEq<Self> for Character<'_> {
 impl Display for Character<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.str)
-    }
-}
-
-impl Display for CharString<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.str, )
     }
 }
 

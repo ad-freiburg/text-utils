@@ -30,10 +30,24 @@ pub(crate) fn accumulate_with<T, F>(values: &[T], acc_fn: F) -> Vec<T>
     cum_values
 }
 
+#[cfg(feature = "benchmark-utils")]
+#[inline]
+pub fn accumulate_with_pub<T, F>(values: &[T], acc_fn: F) -> Vec<T>
+    where T: Clone, F: Fn(&T, &T) -> T {
+    accumulate_with(values, acc_fn)
+}
+
 #[inline]
 pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
     where T: Num + Copy {
     accumulate_with(values, |acc, v| *acc + *v)
+}
+
+#[cfg(feature = "benchmark-utils")]
+#[inline]
+pub fn accumulate_pub<T>(values: &[T]) -> Vec<T>
+    where T: Num + Copy {
+    accumulate(values)
 }
 
 #[inline]
@@ -70,6 +84,13 @@ pub(crate) fn run_length_encode<T>(values: &[T]) -> Vec<(T, usize)>
     rle
 }
 
+#[cfg(feature = "benchmark-utils")]
+#[inline]
+pub fn run_length_encode_pub<T>(values: &[T]) -> Vec<(T, usize)>
+    where T: PartialEq + Clone {
+    run_length_encode(values)
+}
+
 #[inline]
 pub(crate) fn run_length_decode<T>(values: &[(T, usize)]) -> Vec<T>
     where T: Clone {
@@ -80,6 +101,13 @@ pub(crate) fn run_length_decode<T>(values: &[(T, usize)]) -> Vec<T>
         }
     }
     decoded
+}
+
+#[cfg(feature = "benchmark-utils")]
+#[inline]
+pub fn run_length_decode_pub<T>(values: &[(T, usize)]) -> Vec<T>
+    where T: Clone {
+    run_length_decode(values)
 }
 
 pub(crate) fn py_required_key_error(key_name: &str, value_name: &str) -> PyErr {

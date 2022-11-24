@@ -1,9 +1,11 @@
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
 use rand::{Rng, SeedableRng};
+use rand::distributions::WeightedIndex;
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit_distance::{edit_distance, edit_operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{CharTokenizer, ByteTokenizer, Tokenize, Tokenization};
+use text_correction_utils::utils::{accumulate_pub, run_length_decode_pub, run_length_encode_pub};
 
 const INPUT_SIZES: [usize; 3] = [16, 128, 512];
 
@@ -120,10 +122,10 @@ fn bench_tokenizer(c: &mut Criterion) {
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     let fx: Vec<String> = vec!["test".to_string()];
     let char_tok = CharTokenizer::new(
-        true, &fx, &fx
+        true, &fx, &fx,
     );
     let byte_tok = ByteTokenizer::new(
-        true, &fx, &fx
+        true, &fx, &fx,
     );
     for size in INPUT_SIZES.iter() {
         let str: String = (&mut rng)
@@ -153,10 +155,56 @@ fn bench_tokenizer(c: &mut Criterion) {
     }
 }
 
+fn bench_utils(c: &mut Criterion) {
+    let mut group = c.benchmark_group("utils");
+    let mut rng = ChaCha8Rng::seed_from_u64(22);
+    let mut dist: WeightedIndex<usize> = WeightedIndex::new([16, 4, 2, 1])
+        .unwrap();
+    for size in INPUT_SIZES.iter() {
+        let input: Vec<usize> = (&mut rng)
+            .sample_iter(&dist)
+            .take(*size)
+            .map(|idx| idx + 1)
+            .collect();
+        let input_encoded = run_length_encode_pub(&input);
+        group.bench_with_input(
+            BenchmarkId::new(
+                "accumulate",
+                format!("{size}"),
+            ),
+            &input,
+            |b, input| {
+                b.iter(|| accumulate_pub(input));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "run_length_encode",
+                format!("{size}"),
+            ),
+            &input,
+            |b, input| {
+                b.iter(|| run_length_encode_pub(input));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "run_length_decode",
+                format!("{size}"),
+            ),
+            &input_encoded,
+            |b, input| {
+                b.iter(|| run_length_decode_pub(input));
+            },
+        );
+    }
+}
+
 criterion_group!(
     benches,
     bench_edit_distance,
     bench_text,
-    bench_tokenizer
+    bench_tokenizer,
+    bench_utils
 );
 criterion_main!(benches);

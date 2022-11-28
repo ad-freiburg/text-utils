@@ -4,7 +4,7 @@ from typing import Callable, Tuple, List, Optional, Union, Dict, Any
 import einops
 import torch
 
-DecodeFn = Callable;
+DecodeFn = Callable[[torch.Tensor, ...], torch.Tensor]
 
 
 class Beam:
@@ -119,74 +119,7 @@ def log_likelihood_score(normalize_by_length: bool = True, alpha: float = 1.0) -
     return score
 
 
-def spelling_correction_score(
-        # if not None, must be one of
-        # {dictionary, diff_from_input}
-        mode: str = "dictionary",
-        # prefix index, to check if a word is a prefix of a word in the dictionary
-        prefix_index: Optional[index.PrefixIndex] = None,
-        # de-tokenization function, to get the predicted string from the predicted tokens
-        de_tok_fn: Optional[DeTokFn] = None,
-        # eos token id, to check if beam is finished
-        eos_token_id: Optional[int] = None,
-        # eos token id, to check if beam is finished
-        unk_token_id: Optional[int] = None
-) -> ReScoreFn:
-    # convert mode to integers for faster comparisons in _re_score
-    if mode == "dictionary":
-        assert (
-                prefix_index is not None
-                and de_tok_fn is not None
-        ), "for dictionary mode you need to pass a prefix index and a de-tokenization function"
-        mode_int = 0
-    elif mode == "diff_from_input":
-        assert (eos_token_id is not None and de_tok_fn is not None and unk_token_id is not None), \
-            "for diff_from_input mode you need to pass a de-tokenization function, the eos token id and unk token id"
-        mode_int = 1
-    else:
-        raise RuntimeError(f"unknown mode {mode}")
-
-    def _re_score(
-            beam: Beam,
-            input_str: Optional[str] = None
-    ) -> float:
-        # get log probability of beam
-        if mode_int == 0:
-            # dictionary mode: check if last word is in dictionary
-            # it is enough to check the last word because we assume that all
-            pred_str = de_tok_fn(beam.decoded_token_ids)
-            pred_str_split = pred_str.split()
-
-            if len(pred_str_split) > 0:
-                # split current predicted word further using regex
-                pred_words, _ = data_utils.tokenize_words_regex(pred_str_split[-1])
-
-                # check if current predicted word is a prefix of at least one dictionary word
-                # if not, add a large negative score so this beam will not be considered
-                prefix_of = prefix_index.retrieve(pred_words[-1])
-                if len(prefix_of) == 0:
-                    return -1_000_000
-
-        elif mode_int == 1:
-            assert input_str is not None, "for diff_from_input score input string must be given"
-            # diff from input mode: check if currently decoded string is different from input string
-            # we can only finally check if decoded string is different if beam is finished (last token is <eos>)
-            if beam.token_ids[-1] == eos_token_id:
-                pred_str = de_tok_fn(beam.decoded_token_ids)
-                if pred_str == input_str:
-                    return -1_000_000
-                # elif any(token_id == unk_token_id for token_id in beam.decoded_token_ids):
-                #     return -1_000_000
-
-        else:
-            raise RuntimeError("should not happen")
-
-        return 0
-
-    return _re_score
-
-
-def sub_select(inputs: Union[torch.Tensor, Dict[str, torch.Tensor]], mask: Union[int, torch.Tensor]) -> \
+def _sub_select(inputs: Union[torch.Tensor, Dict[str, torch.Tensor]], mask: Union[int, torch.Tensor]) -> \
         Union[torch.Tensor, Dict[str, torch.Tensor]]:
     if isinstance(inputs, torch.Tensor):
         return inputs[mask]
@@ -198,7 +131,8 @@ def sub_select(inputs: Union[torch.Tensor, Dict[str, torch.Tensor]], mask: Union
 
 @torch.inference_mode()
 def token_inference(
-        model: DecoderMixin,
+        model: DecodeFn,
+        device: torch.device,
         encoder_outputs: Dict[str, torch.Tensor],
         encoder_lengths: Dict[str, torch.Tensor],
         bos_token_id: int,
@@ -210,9 +144,6 @@ def token_inference(
         tok_fn: Optional[TokFn] = None,
         output_strings: Optional[List[str]] = None
 ) -> List[List[int]]:
-    model.eval()
-    device = utils.device_from_model(model)
-
     batch_size = len(next(iter(encoder_outputs.values())))
 
     log_prob = torch.full((batch_size, max_length + 1), fill_value=-1.0, device=device)
@@ -251,15 +182,15 @@ def token_inference(
         if torch.sum(indices_to_decode) == 0:
             break
 
-        decoder_lengths = sub_select(lengths, indices_to_decode)
+        decoder_lengths = _sub_select(lengths, indices_to_decode)
         max_decoder_length = max(decoder_lengths)
-        decoder_positions = sub_select(positions, indices_to_decode)[:, :max_decoder_length]
+        decoder_positions = _sub_select(positions, indices_to_decode)[:, :max_decoder_length]
 
         decoder_output = model.decode(
-            decoder_inputs=sub_select(token_ids, indices_to_decode)[:, :max_decoder_length],
+            decoder_inputs=_sub_select(token_ids, indices_to_decode)[:, :max_decoder_length],
             decoder_lengths=decoder_lengths,
-            encoder_outputs=sub_select(encoder_outputs, indices_to_decode),
-            encoder_lengths=sub_select(encoder_lengths, indices_to_decode),
+            encoder_outputs=_sub_select(encoder_outputs, indices_to_decode),
+            encoder_lengths=_sub_select(encoder_lengths, indices_to_decode),
             decoder_positions=decoder_positions
         )
 
@@ -320,8 +251,8 @@ def best_first_inference(
 
     for b in range(batch_size):
         # encoder_outputs_b: shape [L, H]
-        encoder_outputs_b = sub_select(encoder_outputs, b)
-        encoder_lengths_b = sub_select(encoder_lengths, b)
+        encoder_outputs_b = _sub_select(encoder_outputs, b)
+        encoder_lengths_b = _sub_select(encoder_lengths, b)
 
         # initialize beams
         beam_queue = []
@@ -482,12 +413,12 @@ def beam_inference(
 
         beam_encoder_lengths = {
             k: torch.repeat_interleave(v, num_beams_tensor, dim=0)
-            for k, v in sub_select(encoder_lengths, decoder_mask_tensor).items()
+            for k, v in _sub_select(encoder_lengths, decoder_mask_tensor).items()
         }
         num_beams_tensor = to(num_beams_tensor, device)
         beam_encoder_outputs = {
             k: torch.repeat_interleave(v, num_beams_tensor, dim=0)
-            for k, v in sub_select(encoder_outputs, decoder_mask_tensor).items()
+            for k, v in _sub_select(encoder_outputs, decoder_mask_tensor).items()
         }
 
         decoder_outputs = model.decode(

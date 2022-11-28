@@ -121,7 +121,7 @@ pub(crate) fn py_invalid_type_error(name: &str, type_name: &str) -> PyErr {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::accumulate;
+    use crate::utils::{accumulate, run_length_decode, run_length_encode};
 
     #[test]
     fn test_accumulate() {
@@ -131,5 +131,13 @@ mod tests {
         assert_eq!(accum, vec![0.5, 0.0, 2.0, 5.5]);
         let empty: Vec<i32> = Vec::new();
         assert_eq!(accumulate(&empty), empty);
+    }
+
+    #[test]
+    fn test_run_length_encoding() {
+        let values = vec![1, 1, 1, 2, 2, 1, 4, 4, 5];
+        let enc = run_length_encode(&values);
+        assert_eq!(enc, vec![(1, 3), (2, 2), (1, 1), (4, 2), (5, 1)]);
+        assert_eq!(values, run_length_decode(&enc));
     }
 }

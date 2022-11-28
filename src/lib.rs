@@ -21,6 +21,7 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     tokenization::add_submodule(py, m)?;
     data::add_submodule(py, m)?;
     whitespace::add_submodule(py, m)?;
+    inference::add_submodule(py, m)?;
 
     Ok(())
 }

@@ -229,7 +229,7 @@ def token_inference(
 
 @torch.inference_mode()
 def best_first_inference(
-        model: DecoderMixin,
+        model: DecodeFn,
         encoder_outputs: Dict[str, torch.Tensor],
         encoder_lengths: Dict[str, torch.Tensor],
         bos_token_id: int,
@@ -241,9 +241,6 @@ def best_first_inference(
         tok_fn: Optional[TokFn] = None,
         output_strings: Optional[List[str]] = None
 ) -> List[List[Beam]]:
-    model.eval()
-    device = utils.device_from_model(model)
-
     all_beams: List[List[Beam]] = []
 
     batch_size = len(next(iter(encoder_outputs.values())))

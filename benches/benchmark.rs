@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId, BatchSize};
 use rand::{Rng, SeedableRng};
 use rand::distributions::WeightedIndex;
 use rand_chacha::ChaCha8Rng;
@@ -166,7 +166,6 @@ fn bench_utils(c: &mut Criterion) {
             .take(*size)
             .map(|idx| idx + 1)
             .collect();
-        let input_encoded = run_length_encode_pub(&input);
         group.bench_with_input(
             BenchmarkId::new(
                 "accumulate",
@@ -184,9 +183,10 @@ fn bench_utils(c: &mut Criterion) {
             ),
             &input,
             |b, input| {
-                b.iter(|| run_length_encode_pub(input));
+                b.iter(|| run_length_encode_pub(input)                );
             },
         );
+        let input_encoded = run_length_encode_pub(&input);
         group.bench_with_input(
             BenchmarkId::new(
                 "run_length_decode",

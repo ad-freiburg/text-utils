@@ -4,13 +4,13 @@ use unicode_segmentation::{UnicodeSegmentation};
 use crate::utils::{run_length_encode};
 
 #[derive(Debug, Clone)]
-pub struct CharString<'a> {
-    pub str: &'a str,
+pub(crate) struct CharString<'a> {
+    pub(crate) str: &'a str,
     pub(crate) rle_cluster_lengths: Vec<(usize, usize)>,
     len: usize,
 }
 
-// shorthand for grapheme string for in crate usage
+// shorthand for char string for in crate usage
 pub(crate) type CS<'a> = CharString<'a>;
 
 // Rust strings vs. Python

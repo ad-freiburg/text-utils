@@ -9,29 +9,37 @@ from torch.nn.modules.transformer import _get_activation_fn
 from torch.nn.utils import rnn
 
 
-# exact copy of pytorch native transformer encoder layer, just with need_weights set to true
+# modified version of pytorch native transformer encoder layer
 class _TransformerEncoderLayer(nn.Module):
     __constants__ = ['batch_first', 'norm_first']
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu,
-                 layer_norm_eps=1e-5, batch_first=False, norm_first=False,
-                 device=None, dtype=None) -> None:
+    def __init__(
+            self,
+            d_model,
+            nhead,
+            with_pos: bool = False,
+            dim_feedforward=2048,
+            dropout=0.1,
+            activation=F.relu,
+            layer_norm_eps=1e-5,
+            device=None,
+            dtype=None
+    ) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(_TransformerEncoderLayer, self).__init__()
         self.self_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=batch_first,
+            d_model, nhead, dropout=dropout, batch_first=True,
             **factory_kwargs
         )
         # Implementation of Feedforward model
         self.linear1 = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout1d(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model, **factory_kwargs)
 
-        self.norm_first = norm_first
         self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
         self.norm2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
+        self.dropout1 = nn.Dropout1d(dropout)
+        self.dropout2 = nn.Dropout1d(dropout)
 
         # Legacy string support for activation function.
         if isinstance(activation, str):
@@ -39,18 +47,24 @@ class _TransformerEncoderLayer(nn.Module):
         else:
             self.activation = activation
 
+        self.with_pos = with_pos
+
     def __setstate__(self, state):
         if 'activation' not in state:
             state['activation'] = F.relu
         super(_TransformerEncoderLayer, self).__setstate__(state)
 
-    def forward(self, src: torch.Tensor, src_mask: Optional[torch.Tensor] = None,
-                src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+            self,
+            src: torch.Tensor,
+            pos: Optional[torch.Tensor] = None,
+            padding_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         r"""Pass the input through the encoder layer.
         Args:
             src: the sequence to the encoder layer (required).
-            src_mask: the mask for the src sequence (optional).
-            src_key_padding_mask: the mask for the src keys per batch (optional).
+            pos: sequence of positional features (optional).
+            padding_mask: the mask for the src keys per batch (optional).
         Shape:
             see the docs in Transformer class.
         """
@@ -58,22 +72,30 @@ class _TransformerEncoderLayer(nn.Module):
         # see Fig. 1 of https://arxiv.org/pdf/2002.04745v1.pdf
 
         x = src
-        if self.norm_first:
-            x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask)
-            x = x + self._ff_block(self.norm2(x))
-        else:
-            x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask))
-            x = self.norm2(x + self._ff_block(x))
-
+        x = self.norm1(x + self._sa_block(x, pos, padding_mask))
+        x = self.norm2(x + self._ff_block(x))
         return x
 
+    def _with_pos(self, x: torch.Tensor, pos: Optional[torch.Tensor]) -> torch.Tensor:
+        if not self.with_pos or pos is None:
+            return x
+        else:
+            return x + pos
+
     # self-attention block
-    def _sa_block(self, x: torch.Tensor,
-                  attn_mask: Optional[torch.Tensor], key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
-        x = self.self_attn(x, x, x,
-                           attn_mask=attn_mask,
-                           key_padding_mask=key_padding_mask,
-                           need_weights=True)[0]
+    def _sa_block(
+            self,
+            x: torch.Tensor,
+            pos: Optional[torch.Tensor],
+            padding_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        x = self.self_attn(
+            self._with_pos(x, pos),
+            self._with_pos(x, pos),
+            x,
+            key_padding_mask=padding_mask,
+            need_weights=True
+        )[0]
         return self.dropout1(x)
 
     # feed forward block
@@ -83,7 +105,7 @@ class _TransformerEncoderLayer(nn.Module):
 
 
 class Encoder(nn.Module):
-    def forward(self, x: torch.Tensor, lengths: List[int]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
         raise NotImplementedError
 
 
@@ -117,13 +139,12 @@ class TransformerEncoder(Encoder):
                 nhead=heads,
                 dim_feedforward=ffw_dim,
                 dropout=dropout,
-                activation=act_fn,
-                batch_first=True
+                activation=act_fn
             ),
             num_layers=1 if self.share_parameters else num_layers
         )
 
-    def forward(self, x: torch.Tensor, lengths: List[int]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
         padding_mask = torch.zeros(x.shape[:2], device=x.device, dtype=torch.bool)
         for i, length in enumerate(lengths):
             padding_mask[i, length:] = True
@@ -167,7 +188,7 @@ class RNNEncoder(Encoder):
         else:
             raise ValueError(f"unknown rnn type {rnn_type}")
 
-    def forward(self, x: torch.Tensor, lengths: List[int]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
         packed = rnn.pack_padded_sequence(
             x,
             torch.as_tensor(lengths, dtype=torch.long),
@@ -232,7 +253,7 @@ class CNNEncoder(Encoder):
             for i in range(num_layers)
         ])
 
-    def forward(self, x: torch.Tensor, lengths: List[int]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
         x = einops.rearrange(x, "b s c -> b c s")
         x = self.cnn(x)
         return einops.rearrange(x, "b c s -> b s c")

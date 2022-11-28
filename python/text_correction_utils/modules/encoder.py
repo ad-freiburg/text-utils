@@ -1,5 +1,5 @@
 import functools
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any, Dict
 
 import einops
 import torch
@@ -7,6 +7,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.modules.transformer import _get_activation_fn
 from torch.nn.utils import rnn
+
+from text_correction_utils.modules.grouping import Grouping
 
 
 # modified version of pytorch native transformer encoder layer
@@ -105,7 +107,13 @@ class _TransformerEncoderLayer(nn.Module):
 
 
 class Encoder(nn.Module):
-    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor,
+            lengths: List[int],
+            pos: Optional[torch.Tensor],
+            **kwargs: Dict[str, Any]
+    ) -> torch.Tensor:
         raise NotImplementedError
 
 
@@ -144,7 +152,13 @@ class TransformerEncoder(Encoder):
             num_layers=1 if self.share_parameters else num_layers
         )
 
-    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor,
+            lengths: List[int],
+            pos: Optional[torch.Tensor],
+            **kwargs: Dict[str, Any]
+    ) -> torch.Tensor:
         padding_mask = torch.zeros(x.shape[:2], device=x.device, dtype=torch.bool)
         for i, length in enumerate(lengths):
             padding_mask[i, length:] = True
@@ -188,7 +202,13 @@ class RNNEncoder(Encoder):
         else:
             raise ValueError(f"unknown rnn type {rnn_type}")
 
-    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor,
+            lengths: List[int],
+            pos: Optional[torch.Tensor],
+            **kwargs: Dict[str, Any]
+    ) -> torch.Tensor:
         packed = rnn.pack_padded_sequence(
             x,
             torch.as_tensor(lengths, dtype=torch.long),
@@ -253,7 +273,42 @@ class CNNEncoder(Encoder):
             for i in range(num_layers)
         ])
 
-    def forward(self, x: torch.Tensor, lengths: List[int], pos: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor,
+            lengths: List[int],
+            pos: Optional[torch.Tensor],
+            **kwargs: Dict[str, Any]
+    ) -> torch.Tensor:
         x = einops.rearrange(x, "b s c -> b c s")
         x = self.cnn(x)
         return einops.rearrange(x, "b c s -> b s c")
+
+
+class GroupingEncoder(Encoder):
+    def __init__(
+            self,
+            encoder: Encoder,
+            group_first: bool,
+            group_aggregation: str = "mean"
+    ):
+        super().__init__()
+        self.encoder = encoder
+        self.grouping = Grouping(group_aggregation)
+        self.group_first = group_first
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            lengths: List[int],
+            pos: Optional[torch.Tensor],
+            groups: Optional[List[List[int]]] = None,
+            **kwargs: Dict[str, Any]
+    ) -> torch.Tensor:
+        assert groups is not None, "grouping encoder expects groups keyword argument"
+        if self.group_first:
+            x, lengths = self.grouping(x, groups)
+        x = self.encoder(x, lengths, pos, **kwargs)
+        if not self.group_first:
+            x, _ = self.grouping(x, groups)
+        return x

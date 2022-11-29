@@ -54,42 +54,38 @@ class Embedding(nn.Module):
             max_length: int
     ):
         super().__init__()
-        self.num_embeddings = num_embeddings
         self.positional_embeddings = positional_embeddings
-        self.embedding_dim = embedding_dim
-        self.pad_token_id = pad_token_id
-        self.dropout = dropout
-        self.max_length = max_length
 
         self.embedding = TokenEmbedding(
-            self.embedding_dim,
-            self.num_embeddings,
-            self.pad_token_id
+            embedding_dim,
+            num_embeddings,
+            pad_token_id
         )
-        nn.init.normal_(self.embedding.weight, mean=0, std=self.embedding_dim ** -0.5)
-        nn.init.constant_(self.embedding.weight[self.pad_token_id], 0)
+        nn.init.normal_(self.embedding.weight, mean=0, std=embedding_dim ** -0.5)
+        nn.init.constant_(self.embedding.weight[pad_token_id], 0)
 
         if self.positional_embeddings == "learned":
             self.pos_embedding = LearnedPositionalEmbedding(
-                self.embedding_dim,
-                self.max_length
+                embedding_dim,
+                max_length
             )
         elif self.positional_embeddings == "sinusoidal":
             self.pos_embedding = SinusoidalPositionalEmbedding(
-                self.embedding_dim,
-                self.max_length
+                embedding_dim,
+                max_length
             )
         else:
             assert self.positional_embeddings, "positional embeddings must be one of learned, sinusoidal, or none, " \
                                                f"but got {self.positional_embeddings}"
 
-        self.token_drop = nn.Dropout1d(self.dropout)
+        self.token_drop = nn.Dropout1d(dropout)
+        self.pos_drop = nn.Dropout1d(dropout)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))
         if self.positional_embeddings != "none":
             positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0)
-            pos_emb = self.token_drop(self.pos_embedding(positions))
+            pos_emb = self.pos_drop(self.pos_embedding(positions))
         else:
             pos_emb = None
         return emb, pos_emb

@@ -8,10 +8,11 @@ from torch.nn import functional as F
 from torch.nn.modules.transformer import _get_activation_fn
 from torch.nn.utils import rnn
 
+from text_correction_utils.modules import utils
 from text_correction_utils.modules.grouping import Grouping
 
 
-# modified version of pytorch native transformer encoder layer
+# modified version of pytorch transformer encoder layer
 class _TransformerEncoderLayer(nn.Module):
     __constants__ = ['batch_first', 'norm_first']
 
@@ -79,10 +80,10 @@ class _TransformerEncoderLayer(nn.Module):
         return x
 
     def _with_pos(self, x: torch.Tensor, pos: Optional[torch.Tensor]) -> torch.Tensor:
-        if not self.with_pos or pos is None:
-            return x
-        else:
+        if self.with_pos and pos is not None:
             return x + pos
+        else:
+            return x
 
     # self-attention block
     def _sa_block(
@@ -125,6 +126,7 @@ class TransformerEncoder(Encoder):
             heads: int,
             ffw_dim: int,
             dropout: float,
+            with_pos: bool,
             activation: str = "gelu_approximate",
             share_parameters: bool = False
     ):
@@ -145,6 +147,7 @@ class TransformerEncoder(Encoder):
             encoder_layer=_TransformerEncoderLayer(
                 d_model=dim,
                 nhead=heads,
+                with_pos=with_pos,
                 dim_feedforward=ffw_dim,
                 dropout=dropout,
                 activation=act_fn
@@ -235,15 +238,7 @@ def _cnn_block(
         nn.Conv1d(dim, dim, k, stride, padding=k // 2)
     ]
     if not no_activation:
-        if activation == "gelu_approximate":
-            act = nn.GELU(approximate="tanh")
-        elif activation == "gelu":
-            act = nn.GELU()
-        elif activation == "relu":
-            act = nn.ReLU()
-        else:
-            raise ValueError(f"unknown activation {activation}")
-        modules.append(act)
+        modules.append(utils.activation(activation))
     modules.append(nn.Dropout(dropout))
     return nn.Sequential(*modules)
 
@@ -289,7 +284,7 @@ class GroupingEncoder(Encoder):
     def __init__(
             self,
             encoder: Encoder,
-            group_first: bool,
+            group_first: bool = False,
             group_aggregation: str = "mean"
     ):
         super().__init__()
@@ -312,3 +307,20 @@ class GroupingEncoder(Encoder):
         if not self.group_first:
             x, _ = self.grouping(x, groups)
         return x
+
+
+def encoder(config: Dict[str, Any]) -> Encoder:
+    encoder_type = config.pop("type")
+    assert encoder_type is not None, "required key type not found in encoder config"
+    if encoder_type == "transformer":
+        return TransformerEncoder(**config)
+    elif encoder_type == "rnn":
+        return RNNEncoder(**config)
+    elif encoder_type == "cnn":
+        return CNNEncoder(**config)
+    elif encoder_type == "grouping":
+        encoder_config = config.pop("encoder")
+        assert encoder_config is not None, "required key encoder not found in grouping encoder config"
+        return GroupingEncoder(encoder(encoder_config), **config)
+    else:
+        raise ValueError(f"unknown encoder type {encoder_type}")

@@ -1,6 +1,9 @@
+use std::collections::hash_map::DefaultHasher;
 use std::fs::read_to_string;
+use std::hash::{Hash, Hasher};
 use std::path::{Path};
 use std::vec::IntoIter;
+use pyo3::basic::CompareOp;
 use pyo3::exceptions::{PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict};
@@ -13,7 +16,7 @@ use crate::utils::{py_invalid_type_error, py_required_key_error};
 pub mod preprocessing;
 pub mod loading;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
 #[pyclass]
 pub struct TextData {
     #[pyo3(get)]
@@ -50,9 +53,19 @@ impl TextData {
     ) -> PyResult<Self> {
         Ok(Self::new(original, processed, language))
     }
+
+    fn __hash__(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
+
+    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
+        op.matches(self.cmp(other))
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Label {
     Classification(usize),
     SeqClassification(Vec<usize>),
@@ -122,7 +135,7 @@ impl<'a> FromPyObject<'a> for Label {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
 #[pyclass]
 pub struct Item {
     #[pyo3(get)]
@@ -153,12 +166,23 @@ impl Item {
         Ok(Self::new(data, tokenization, label))
     }
 
-    fn __len__(&self) -> PyResult<usize> {
-        Ok(self.tokenization.token_ids.len())
+    fn __len__(&self) -> usize {
+        self.tokenization.token_ids.len()
     }
+
+    fn __hash__(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
+
+    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
+        op.matches(self.cmp(other))
+    }
+
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[pyclass]
 pub struct Batch {
     #[pyo3(get)]
@@ -178,12 +202,22 @@ impl Batch {
 #[pymethods]
 impl Batch {
     #[new]
-    fn py_new(items: Vec<Item>) -> PyResult<Self> {
-        Ok(Self::new(items))
+    fn py_new(items: Vec<Item>) -> Self {
+        Self::new(items)
     }
 
-    fn __len__(&self) -> PyResult<usize> {
-        Ok(self.len())
+    fn __len__(&self) -> usize {
+        self.len()
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
+
+    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
+        op.matches(self.cmp(other))
     }
 }
 

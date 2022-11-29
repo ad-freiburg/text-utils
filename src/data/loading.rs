@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::{panic, process};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -380,11 +379,6 @@ impl PipelineIterator {
         let num_threads = worker_threads
             .min(num_cpus::get() as u8)
             .max(1) as usize;
-        let orig_hook = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            orig_hook(info);
-            process::exit(1);
-        }));
         let (tx, rx) = mpsc::sync_channel(buffer_size);
         let sent_counter = Arc::new(AtomicU64::new(0));
         for idx in 0..num_threads {

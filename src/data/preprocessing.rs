@@ -19,6 +19,8 @@ pub type LabelingFn = Box<dyn Fn(&TextData) -> Label + Send + Sync>;
 pub enum PreprocessingConfig {
     // clean the sequences (remove spurious whitespaces)
     Clean,
+    // overwrite original text with processed text
+    Overwrite,
     // switch between multiple preprocessing functions
     Switch(Vec<PreprocessingConfig>, Vec<f64>),
     // delete all whitespaces
@@ -38,6 +40,9 @@ impl IntoPy<PyObject> for PreprocessingConfig {
         let preprocessing_type = match self {
             PreprocessingConfig::Clean => {
                 "clean"
+            }
+            PreprocessingConfig::Overwrite => {
+                "overwrite"
             }
             PreprocessingConfig::Switch(configs, probs) => {
                 let py_configs = PyList::empty(py);
@@ -85,6 +90,7 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
         let preprocessing_type: String = preprocessing_type.extract()?;
         let preprocessing_config = match preprocessing_type.as_str() {
             "clean" => PreprocessingConfig::Clean,
+            "overwrite" => PreprocessingConfig::Overwrite,
             "no_whitespaces" => PreprocessingConfig::NoWhitespaces,
             "full_whitespaces" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
@@ -248,6 +254,14 @@ fn apply_to_text<F: Fn(&str) -> String + Send + Sync + 'static>(f: F) -> Preproc
     )
 }
 
+fn overwrite_original_from_processed() -> PreprocessingFn {
+    Box::new(
+        |item, _| {
+            TextData { original: item.processed.clone(), ..item }
+        }
+    )
+}
+
 fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
     let iw_p = constrain(iw_p, 0., 1.);
     let dw_p = constrain(dw_p, 0., 1.);
@@ -337,6 +351,7 @@ fn byte_substring(max_bytes: usize, use_graphemes: bool) -> PreprocessingFn {
 fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
     match preprocessing {
         PreprocessingConfig::Clean => apply_to_text(text::clean),
+        PreprocessingConfig::Overwrite => overwrite_original_from_processed(),
         PreprocessingConfig::Switch(fns, probs) => switch(fns, probs),
         PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => noise_whitespace(iw_p, dw_p),
         PreprocessingConfig::NoWhitespaces => apply_to_text(remove),

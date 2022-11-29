@@ -1,4 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::thread::sleep;
 use std::time::Duration;
 use itertools::Itertools;
@@ -101,7 +103,7 @@ impl<'a> FromPyObject<'a> for TokenizerConfig {
 
 /// This enum defines all possible additional infos that can be returned by
 /// a tokenizers tokenize function in addition to the token ids themselves.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum TokenizationInfo {
     /// No additional info.
     Empty,
@@ -139,9 +141,9 @@ impl<'a> FromPyObject<'a> for TokenizationInfo {
     }
 }
 
-/// A tokenization is defined to be a tuple of token ids and some additional information.
+/// A tokenization is defined to be a combination of token ids and some additional information.
 /// This is returned by a tokenizers tokenize function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[pyclass]
 pub struct Tokenization {
     #[pyo3(get)]
@@ -156,6 +158,15 @@ impl Tokenization {
             token_ids,
             info,
         }
+    }
+}
+
+#[pymethods]
+impl Tokenization {
+    fn __hash__(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
     }
 }
 

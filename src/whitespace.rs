@@ -62,7 +62,9 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
         } else if from_char.is_whitespace() {
             operations.push(2);
         } else {
-            panic!("should not happen");
+            panic!("should not happen, most likely your inputs contain multiple \
+             consecutive whitespaces, prepare them first using the clean function or \
+             clean preprocessing");
         }
         from_ptr += 1;
     }

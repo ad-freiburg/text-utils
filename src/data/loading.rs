@@ -555,9 +555,12 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         limit: usize,
         limit_type: BatchLimitType,
     ) -> (Option<Batch>, Option<Item>) {
-        let mut batch_limit: usize = 0;
+        let mut batch_limit: usize = match limit_type {
+            BatchLimitType::BatchSize => 1,
+            BatchLimitType::NumTokens => initial.tokenization.token_ids.len()
+        };
         let mut items = vec![initial];
-        while batch_limit < limit {
+        let remainder = loop {
             let Some(item) = f() else {
                 return if items.is_empty() {
                     (None, None)
@@ -565,13 +568,21 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
                     (Some(Batch { items }), None)
                 };
             };
-            match limit_type {
-                BatchLimitType::BatchSize => batch_limit += 1,
-                BatchLimitType::NumTokens => batch_limit += item.tokenization.token_ids.len()
+            let limit_inc = match limit_type {
+                BatchLimitType::BatchSize => 1,
+                BatchLimitType::NumTokens => item.tokenization.token_ids.len()
+            };
+            if batch_limit + limit_inc > limit {
+                // if adding the item would overshoot
+                // just return it as remainder
+                break Some(item);
+            } else {
+                // if adding the item would not overshoot, just add it
+                // and increase the batch limit counter
+                items.push(item);
+                batch_limit += limit_inc;
             }
-            items.push(item);
-        }
-        let remainder = items.pop();
+        };
         (Some(Batch { items }), remainder)
     }
 }
@@ -610,7 +621,9 @@ mod tests {
     use log::info;
     use crate::data::loading::{BatchedIterator, BatchLimitType, open, PipelineIterator, TextFile, TextGenerator, TextIterator};
     use crate::data::{Item, Pipeline, PipelineConfig, TextData};
-    use crate::tokenization::{ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizerConfig};
+    use crate::data::preprocessing::LabelingConfig::LabelWhitespaceCorrection;
+    use crate::data::preprocessing::PreprocessingConfig;
+    use crate::tokenization::{BOS, ByteTokenizer, EOS, Tokenization, TokenizationInfo, Tokenize, TokenizerConfig};
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
     const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
@@ -793,7 +806,11 @@ mod tests {
         let mut pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
-            tokenizer: TokenizerConfig::Dummy(Duration::from_millis(0)),
+            tokenizer: TokenizerConfig::Byte(
+                true,
+                vec![BOS.to_string()],
+                vec![EOS.to_string()],
+            ),
         });
         // first check the batched iterator with shuffling disabled
         let mut pipe_it = pipeline
@@ -801,7 +818,7 @@ mod tests {
             .apply_iter_threaded(
                 text_files.sequential(),
                 4,
-                4,
+                16,
             )
             .batched(
                 16,
@@ -823,7 +840,7 @@ mod tests {
         let mut pipe_it = pipeline
             .clone()
             .apply_iter_threaded(
-                text_files.weighted(None),
+                text_files.weighted(Some(22)),
                 4,
                 4,
             )
@@ -837,18 +854,20 @@ mod tests {
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
         let mut line_counter: HashMap<String, usize> = lines
+            .iter()
+            .cloned()
+            .map(|l| (l, 0))
+            .collect();
+        for batch in pipe_it {
+            let item_lengths: Vec<usize> = batch.items
                 .iter()
-                .cloned()
-                .map(|l| (l, 0))
+                .map(|item| item.tokenization.token_ids.len())
                 .collect();
-        for (batch, line_batch) in pipe_it
-            .zip(&lines.iter().chunks(16)) {
-            assert!(
-                batch.len() > 0
-                && batch.items
-                    .iter()
-                    .map(|item| item.tokenization.token_ids.len())
-                    .sum::<usize>() <= 256);
+            let batch_size: usize = item_lengths.iter().sum();
+            assert!(batch.len() > 0);
+            assert!(batch_size <= 256,
+                    "found invalid batch with size {batch_size} ({:?})",
+                    item_lengths);
             for item in batch {
                 let mut count = line_counter.get_mut(&item.data.original).unwrap();
                 *count += 1;

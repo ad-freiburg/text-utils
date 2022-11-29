@@ -361,19 +361,23 @@ impl DataLoader {
     batch_limit_type = "BatchLimitType::BatchSize",
     shuffle = "false",
     shuffle_prefetch_factor = "4",
-    seed = "None"
+    seed = "None",
+    skip = "0",
+    distributed = "None"
     )]
     pub fn from_sequences(
         sequences: Vec<String>,
         pipeline_config: PipelineConfig,
         languages: Option<Vec<String>>,
         num_threads: u8,
-        buffer_size: usize,
+        mut buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
+        skip: usize,
+        distributed: Option<(usize, usize)>
     ) -> PyResult<Self> {
         if sequences.is_empty() {
             return Err(PyTypeError::new_err("sequences is empty"));
@@ -389,6 +393,9 @@ impl DataLoader {
         if shuffle && seed.is_none() {
             return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
         }
+        if batch_limit_type == BatchLimitType::BatchSize {
+            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
+        }
         let cont = TextContainer::new_boxed(
             sequences,
             None,
@@ -396,8 +403,15 @@ impl DataLoader {
         );
         let gen = TextGenerator::new(vec![cont]);
         let pipe = Pipeline::from_config(pipeline_config);
-        let text_iter = gen.sequential();
-        let len = text_iter.min_len();
+        let text_iter = gen
+            .sequential();
+        // handle distributed arguments
+        let (rank, world_size) = distributed.unwrap_or((0, 1));
+        assert!(rank < world_size, "rank {rank} is invalid given world size {world_size}");
+        let len = text_iter.min_len().saturating_sub(skip) / world_size;
+        let text_iter = text_iter
+            .skip(skip + rank)
+            .step_by(world_size);
         let iter = if num_threads > 0 {
             pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
         } else {
@@ -421,7 +435,9 @@ impl DataLoader {
     batch_limit_type = "BatchLimitType::BatchSize",
     shuffle = "false",
     shuffle_prefetch_factor = "4",
-    seed = "None"
+    seed = "None",
+    skip = "0",
+    distributed = "None"
     )]
     pub fn from_files(
         files: Vec<String>,
@@ -435,6 +451,8 @@ impl DataLoader {
         shuffle: bool,
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
+        skip: usize,
+        distributed: Option<(usize, usize)>
     ) -> PyResult<Self> {
         if files.is_empty() {
             return Err(PyTypeError::new_err("files is empty"));
@@ -451,7 +469,7 @@ impl DataLoader {
             return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
         }
         if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit);
+            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
         }
         let cont = files
             .into_iter()
@@ -469,8 +487,15 @@ impl DataLoader {
             .collect();
         let gen = TextGenerator::new(cont);
         let pipe = Pipeline::from_config(pipeline_config);
-        let text_iter = gen.with_strategy(strategy, seed);
-        let len = text_iter.min_len();
+        let text_iter = gen
+            .with_strategy(strategy, seed);
+        // handle distributed arguments
+        let (rank, world_size) = distributed.unwrap_or((0, 1));
+        let len = text_iter.min_len().saturating_sub(skip) / world_size;
+        assert!(rank < world_size, "rank {rank} is invalid given world size {world_size}");
+        let text_iter = text_iter
+            .skip(skip + rank)
+            .step_by(world_size);
         let iter = if num_threads > 0 {
             pipe.apply_iter_threaded(
                 text_iter,
@@ -503,7 +528,7 @@ impl DataLoader {
         }
     }
 
-    fn __len__(&self) -> usize {
+    fn min_items(&self) -> usize {
         self.len
     }
 }

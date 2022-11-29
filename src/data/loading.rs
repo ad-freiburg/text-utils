@@ -255,7 +255,7 @@ impl TextIterator {
             lang_iters.push(text_reader.lang_iter())
         }
         if strategy == TextIterationStrategy::Weighted {
-            assert!(lengths.iter().all(|&l| l > 0),
+            assert!(lengths.iter().all(|l| *l > 0),
                     "for the weighted iteration strategy all text generators must specify a positive \
             minimum length, otherwise they would never be iterated");
         }
@@ -295,12 +295,12 @@ impl TextIterator {
                 let non_finished_indices: Vec<usize> = self.finished
                     .iter()
                     .enumerate()
-                    .filter_map(|(idx, &f)| if f { Some(idx) } else { None })
+                    .filter_map(|(idx, f)| if !f { Some(idx) } else { None })
                     .collect();
                 let dist = WeightedIndex::new(
                     non_finished_indices
                         .iter()
-                        .map(|&idx| self.lengths[idx])
+                        .map(|idx| self.lengths[*idx])
                         .collect::<Vec<usize>>()
                 )
                     .expect("could not create line distribution");
@@ -310,7 +310,7 @@ impl TextIterator {
     }
 
     fn all_finished(&self) -> bool {
-        self.finished.iter().all(|&f| f)
+        self.finished.iter().all(|f| *f)
     }
 
     pub fn min_len(&self) -> usize {
@@ -465,7 +465,7 @@ impl Iterator for PipelineIterator {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 #[pyclass]
 pub enum BatchLimitType {
     BatchSize,
@@ -655,7 +655,9 @@ mod tests {
             language: "1".to_string(),
         });
         // check interleaved lines with two files
-        let text_files = TextGenerator::new(vec![multi30k, multi30k_rev]);
+        let text_files = TextGenerator::new(
+            vec![multi30k.clone(), multi30k_rev.clone()]
+        );
         let mut it = text_files.interleaved();
         assert_eq!(it.min_len(), 2 * 29000);
         assert_eq!(it.next().unwrap(), TextData {
@@ -684,6 +686,23 @@ mod tests {
             assert_eq!(&data.language, if idx % 2 == 0 { "1" } else { "2" });
             idx += 1;
         }
+        // check weighted lines with two files
+        let text_files = TextGenerator::new(
+            vec![multi30k_rev, multi30k]
+        );
+        let mut it = text_files.weighted(Some(22));
+        assert_eq!(it.min_len(), 2 * 29000);
+        let mut first_count = 0;
+        let mut second_count = 0;
+        while let Some(data) = it.next() {
+            if data.language.as_str() == "1" {
+                first_count += 1;
+            } else {
+                second_count += 1;
+            }
+        }
+        assert_eq!(first_count, 29000);
+        assert_eq!(first_count, second_count);
     }
 
     #[test]
@@ -804,13 +823,13 @@ mod tests {
         let mut pipe_it = pipeline
             .clone()
             .apply_iter_threaded(
-                text_files.sequential(),
+                text_files.weighted(None),
                 4,
                 4,
             )
             .batched(
-                16,
-                BatchLimitType::BatchSize,
+                256,
+                BatchLimitType::NumTokens,
                 true,
                 4,
                 Some(22),
@@ -824,7 +843,12 @@ mod tests {
                 .collect();
         for (batch, line_batch) in pipe_it
             .zip(&lines.iter().chunks(16)) {
-            assert!(batch.len() > 0 && batch.len() <= 16);
+            assert!(
+                batch.len() > 0
+                && batch.items
+                    .iter()
+                    .map(|item| item.tokenization.token_ids.len())
+                    .sum::<usize>() <= 256);
             for item in batch {
                 let mut count = line_counter.get_mut(&item.data.original).unwrap();
                 *count += 1;

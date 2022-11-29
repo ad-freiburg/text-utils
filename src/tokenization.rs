@@ -15,6 +15,7 @@ pub const PAD: &str = "<pad>";
 pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
 pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
 pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
+
 // language tokens
 pub const LANG_UNK: &str = "[unk]";
 
@@ -26,8 +27,8 @@ pub enum TokenizerConfig {
     Dummy(Duration),
 }
 
-impl IntoPy<Py<PyDict>> for TokenizerConfig {
-    fn into_py(self, py: Python<'_>) -> Py<PyDict> {
+impl IntoPy<PyObject> for TokenizerConfig {
+    fn into_py(self, py: Python<'_>) -> PyObject {
         let d: &PyDict = PyDict::new(py);
         let tokenizer_type = match self {
             TokenizerConfig::Character(use_g, pfx, sfx) => {
@@ -48,7 +49,7 @@ impl IntoPy<Py<PyDict>> for TokenizerConfig {
             }
         };
         d.set_item("type", tokenizer_type).unwrap();
-        d.into()
+        d.to_object(py)
     }
 }
 
@@ -123,6 +124,21 @@ impl IntoPy<PyObject> for TokenizationInfo {
     }
 }
 
+impl<'a> FromPyObject<'a> for TokenizationInfo {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let Some(info_type) = d.get_item("type") else {
+          return Err(py_required_key_error("type", "tokenization info"));
+        };
+        let info_type: String = info_type.extract()?;
+        let info = match info_type.as_str() {
+            "empty" => TokenizationInfo::Empty,
+            k => return Err(py_invalid_type_error(k, "tokenization info"))
+        };
+        Ok(info)
+    }
+}
+
 /// A tokenization is defined to be a tuple of token ids and some additional information.
 /// This is returned by a tokenizers tokenize function.
 #[derive(Debug, Clone)]
@@ -154,6 +170,10 @@ pub trait Tokenize: Send {
     fn vocab_size(&self) -> usize;
 
     fn unk_token_id(&self) -> u32;
+
+    fn bos_token_id(&self) -> u32;
+
+    fn eos_token_id(&self) -> u32;
 
     fn pad_token_id(&self) -> u32;
 
@@ -197,6 +217,14 @@ impl Tokenize for DummyTokenizer {
     }
 
     fn unk_token_id(&self) -> u32 {
+        0
+    }
+
+    fn bos_token_id(&self) -> u32 {
+        0
+    }
+
+    fn eos_token_id(&self) -> u32 {
         0
     }
 
@@ -248,8 +276,6 @@ pub struct CharTokenizer {
     reverse_vocab: HashMap<u32, char>,
     special_vocab: HashMap<String, u32>,
     reverse_special_vocab: HashMap<u32, String>,
-    unk_token_id: u32,
-    pad_token_id: u32,
     unk_token: String,
     use_graphemes: bool,
 }
@@ -282,12 +308,6 @@ impl CharTokenizer {
             .map(|(st, tok_id)| (*tok_id, st.clone()))
             .collect();
         let unk_token = UNK.to_string();
-        let unk_token_id = *special_vocab
-            .get(&unk_token)
-            .expect("should not fail");
-        let pad_token_id = *special_vocab
-            .get(PAD)
-            .expect("should not fail");
         CharTokenizer {
             default_prefix_tokens: default_prefix_tokens.into(),
             default_suffix_tokens: default_suffix_tokens.into(),
@@ -295,8 +315,6 @@ impl CharTokenizer {
             reverse_vocab,
             special_vocab,
             reverse_special_vocab,
-            unk_token_id,
-            pad_token_id,
             unk_token,
             use_graphemes,
         }
@@ -321,11 +339,19 @@ impl Tokenize for CharTokenizer {
     }
 
     fn unk_token_id(&self) -> u32 {
-        self.unk_token_id
+        *self.special_vocab.get(UNK).unwrap()
+    }
+
+    fn bos_token_id(&self) -> u32 {
+        *self.special_vocab.get(BOS).unwrap()
+    }
+
+    fn eos_token_id(&self) -> u32 {
+       *self.special_vocab.get(EOS).unwrap()
     }
 
     fn pad_token_id(&self) -> u32 {
-        self.pad_token_id
+        *self.special_vocab.get(PAD).unwrap()
     }
 
     fn num_prefix_tokens(&self) -> usize {
@@ -368,12 +394,12 @@ impl Tokenize for CharTokenizer {
                             // return unk if Character has another char because
                             // our tokens in the vocab are all single char tokens
                             if c_iter.next().is_some() {
-                                Some(self.unk_token_id)
+                                Some(self.unk_token_id())
                             } else {
                                 Some(self.vocab
                                     .get(&char)
                                     .copied()
-                                    .unwrap_or(self.unk_token_id))
+                                    .unwrap_or(self.unk_token_id()))
                             }
                         })
                 )
@@ -399,7 +425,7 @@ impl Tokenize for CharTokenizer {
         self.special_vocab
             .get(token.into())
             .copied()
-            .unwrap_or(self.unk_token_id)
+            .unwrap_or(self.unk_token_id())
     }
 
     fn id_to_special_token(&self, token_id: &u32) -> &str {
@@ -417,8 +443,6 @@ pub struct ByteTokenizer {
     default_suffix_tokens: Vec<String>,
     special_vocab: HashMap<String, u32>,
     reverse_special_vocab: HashMap<u32, String>,
-    unk_token_id: u32,
-    pad_token_id: u32,
     unk_token: String,
     use_graphemes: bool,
 }
@@ -439,19 +463,11 @@ impl ByteTokenizer {
             .map(|(token, token_id)| (*token_id, token.clone()))
             .collect();
         let unk_token = UNK.to_string();
-        let unk_token_id = *special_vocab
-            .get(&unk_token)
-            .expect("should not fail");
-        let pad_token_id = *special_vocab
-            .get(PAD)
-            .expect("should not fail");
         ByteTokenizer {
             default_prefix_tokens: default_prefix_tokens.into(),
             default_suffix_tokens: default_suffix_tokens.into(),
             special_vocab,
             reverse_special_vocab,
-            unk_token_id,
-            pad_token_id,
             unk_token,
             use_graphemes,
         }
@@ -485,11 +501,19 @@ impl Tokenize for ByteTokenizer {
     }
 
     fn unk_token_id(&self) -> u32 {
-        self.unk_token_id
+        *self.special_vocab.get(UNK).unwrap()
+    }
+
+    fn bos_token_id(&self) -> u32 {
+        *self.special_vocab.get(BOS).unwrap()
+    }
+
+    fn eos_token_id(&self) -> u32 {
+       *self.special_vocab.get(EOS).unwrap()
     }
 
     fn pad_token_id(&self) -> u32 {
-        self.pad_token_id
+        *self.special_vocab.get(PAD).unwrap()
     }
 
     fn num_prefix_tokens(&self) -> usize {
@@ -553,7 +577,7 @@ impl Tokenize for ByteTokenizer {
         self.special_vocab
             .get(token)
             .copied()
-            .unwrap_or(self.unk_token_id)
+            .unwrap_or(self.unk_token_id())
     }
 
     fn id_to_special_token(&self, token_id: &u32) -> &str {
@@ -662,6 +686,7 @@ impl PyTokenizer {
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "tokenization")?;
     m.add_class::<PyTokenizer>()?;
+    m.add_class::<Tokenization>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

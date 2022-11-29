@@ -199,8 +199,11 @@ impl IntoIterator for Batch {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[pyclass]
 pub struct PipelineConfig {
+    #[pyo3(get)]
     preprocessing: Vec<PreprocessingConfig>,
+    #[pyo3(get)]
     labeling: Option<LabelingConfig>,
+    #[pyo3(get)]
     tokenizer: TokenizerConfig,
 }
 
@@ -351,7 +354,7 @@ struct DataLoader {
 impl DataLoader {
     #[staticmethod]
     #[args(
-    lang = "None",
+    languages = "None",
     num_threads = "(num_cpus::get() as u8).min(4)",
     buffer_size = "32",
     batch_limit = "16",
@@ -410,7 +413,8 @@ impl DataLoader {
 
     #[staticmethod]
     #[args(
-    strategy = "TextIterationStrategy::Weighted",
+    languages = "None",
+    strategy = "TextIterationStrategy::Sequential",
     num_threads = "(num_cpus::get() as u8).min(4)",
     buffer_size = "32",
     batch_limit = "16",
@@ -425,7 +429,7 @@ impl DataLoader {
         languages: Option<Vec<String>>,
         strategy: TextIterationStrategy,
         num_threads: u8,
-        buffer_size: usize,
+        mut buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
@@ -445,6 +449,9 @@ impl DataLoader {
         }
         if shuffle && seed.is_none() {
             return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
+        }
+        if batch_limit_type == BatchLimitType::BatchSize {
+            buffer_size = buffer_size.max(batch_limit);
         }
         let cont = files
             .into_iter()
@@ -485,11 +492,10 @@ impl DataLoader {
         slf
     }
 
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<Py<Batch>> {
-        let item = slf.iter.next();
-        if item.is_some() {
+    fn __next__(&mut self) -> Option<Py<Batch>> {
+        if let Some(batch) = self.iter.next() {
             Some(Python::with_gil(|py| {
-                let item: Py<Batch> = Py::new(py, item.unwrap()).expect("should not fail");
+                let item: Py<Batch> = Py::new(py, batch).expect("should not fail");
                 item
             }))
         } else {
@@ -505,6 +511,12 @@ impl DataLoader {
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "data")?;
     m.add_class::<DataLoader>()?;
+    m.add_class::<PipelineConfig>()?;
+    m.add_class::<TextData>()?;
+    m.add_class::<Item>()?;
+    m.add_class::<Batch>()?;
+    m.add_class::<TextIterationStrategy>()?;
+    m.add_class::<BatchLimitType>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

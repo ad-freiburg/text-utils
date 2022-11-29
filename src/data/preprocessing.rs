@@ -32,8 +32,8 @@ pub enum PreprocessingConfig {
     ByteSubstring(usize, bool),
 }
 
-impl IntoPy<Py<PyDict>> for PreprocessingConfig {
-    fn into_py(self, py: Python<'_>) -> Py<PyDict> {
+impl IntoPy<PyObject> for PreprocessingConfig {
+    fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
         let preprocessing_type = match self {
             PreprocessingConfig::Clean => {
@@ -72,7 +72,7 @@ impl IntoPy<Py<PyDict>> for PreprocessingConfig {
             }
         };
         d.set_item("type", preprocessing_type).unwrap();
-        d.into()
+        d.to_object(py)
     }
 }
 
@@ -163,8 +163,8 @@ pub enum LabelingConfig {
     LabelWhitespaceCorrection(bool),
 }
 
-impl IntoPy<Py<PyDict>> for LabelingConfig {
-    fn into_py(self, py: Python<'_>) -> Py<PyDict> {
+impl IntoPy<PyObject> for LabelingConfig {
+    fn into_py(self, py: Python<'_>) -> PyObject {
         let d: &PyDict = PyDict::new(py);
         let labeling_type = match self {
             LabelingConfig::LabelWhitespaceCorrection(use_g) => {
@@ -173,7 +173,7 @@ impl IntoPy<Py<PyDict>> for LabelingConfig {
             }
         };
         d.set_item("type", labeling_type).unwrap();
-        d.into()
+        d.to_object(py)
     }
 }
 

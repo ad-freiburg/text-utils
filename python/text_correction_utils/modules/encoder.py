@@ -132,7 +132,7 @@ class TransformerEncoder(Encoder):
     ):
         super().__init__()
         self.num_layers = num_layers
-        self.share_paramters = share_parameters
+        self.share_parameters = share_parameters
 
         if activation == "gelu_approximate":
             act_fn = functools.partial(F.gelu, approximate="tanh")
@@ -165,7 +165,7 @@ class TransformerEncoder(Encoder):
         padding_mask = torch.zeros(x.shape[:2], device=x.device, dtype=torch.bool)
         for i, length in enumerate(lengths):
             padding_mask[i, length:] = True
-        if self.share_paramters:
+        if self.share_parameters:
             enc = x
             for _ in range(self.num_layers):
                 enc = self.transformer(enc, src_key_padding_mask=padding_mask)

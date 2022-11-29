@@ -553,6 +553,7 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         )
     }
 
+    #[inline]
     fn limit_inc(item: &Item, limit_type: &BatchLimitType) -> usize {
         match limit_type {
             BatchLimitType::BatchSize => 1,
@@ -560,6 +561,7 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         }
     }
 
+    #[inline]
     fn batch_from(
         initial: Item,
         f: &mut dyn FnMut() -> Option<Item>,

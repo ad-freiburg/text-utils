@@ -492,6 +492,7 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
     ) -> Self {
+        let batch_limit = batch_limit.max(1);
         let shuffle_prefetch_factor = shuffle_prefetch_factor.max(2);
         // initialize remainder
         let remainder = iter.next();
@@ -526,17 +527,20 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         // fill buffer until batch limit * some factor is hit
         while buffer_limit < self.batch_limit * self.shuffle_prefetch_factor {
             let Some(item) = self.iter.next() else {
-                // we are only done if the shuffle buffer is empty
-                if self.shuffle_buffer.is_empty() {
-                    return (None, None);
-                }
                 break;
             };
-            match self.batch_limit_type {
-                BatchLimitType::BatchSize => buffer_limit += 1,
-                BatchLimitType::NumTokens => buffer_limit += item.tokenization.token_ids.len()
-            }
+            let limit_inc = Self::limit_inc(&item, &self.batch_limit_type);
+            buffer_limit += limit_inc;
             self.shuffle_buffer.push(item);
+        }
+        // we are only done if the shuffle buffer is empty
+        if self.shuffle_buffer.is_empty() {
+            // return remainder as final batch if we still have one
+            return (if self.remainder.is_none() {
+                None
+            } else {
+                Some(Batch { items: vec![self.remainder.as_ref().unwrap().clone()] })
+            }, None);
         }
         // shuffle the buffer
         self.shuffle_buffer.shuffle(&mut self.rng);
@@ -549,29 +553,28 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         )
     }
 
+    fn limit_inc(item: &Item, limit_type: &BatchLimitType) -> usize {
+        match limit_type {
+            BatchLimitType::BatchSize => 1,
+            BatchLimitType::NumTokens => item.tokenization.token_ids.len()
+        }
+    }
+
     fn batch_from(
         initial: Item,
         f: &mut dyn FnMut() -> Option<Item>,
         limit: usize,
         limit_type: BatchLimitType,
     ) -> (Option<Batch>, Option<Item>) {
-        let mut batch_limit: usize = match limit_type {
-            BatchLimitType::BatchSize => 1,
-            BatchLimitType::NumTokens => initial.tokenization.token_ids.len()
-        };
+        let mut batch_limit: usize = Self::limit_inc(&initial, &limit_type);
+        // the implementation makes sure that always at least 1 item is returned
+        // in the batch, even if the item solely exceeds the specified limit
         let mut items = vec![initial];
         let remainder = loop {
             let Some(item) = f() else {
-                return if items.is_empty() {
-                    (None, None)
-                } else {
-                    (Some(Batch { items }), None)
-                };
+                return (Some(Batch { items }), None);
             };
-            let limit_inc = match limit_type {
-                BatchLimitType::BatchSize => 1,
-                BatchLimitType::NumTokens => item.tokenization.token_ids.len()
-            };
+            let limit_inc = Self::limit_inc(&item, &limit_type);
             if batch_limit + limit_inc > limit {
                 // if adding the item would overshoot
                 // just return it as remainder

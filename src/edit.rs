@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use crate::unicode::{CharString, Character, CS};
 use pyo3::prelude::*;
+use crate::text::word_boundaries;
 
 use crate::utils::Matrix;
 
@@ -86,7 +88,7 @@ use_graphemes = "true",
 with_swap = "true",
 spaces_insert_delete_only = "false"
 )]
-pub fn edit_operations(
+pub fn operations(
     a: &str,
     b: &str,
     use_graphemes: bool,
@@ -143,7 +145,7 @@ use_graphemes = "true",
 with_swap = "true",
 spaces_insert_delete_only = "false"
 )]
-pub fn edit_distance(
+pub fn distance(
     a: &str,
     b: &str,
     use_graphemes: bool,
@@ -159,12 +161,88 @@ pub fn edit_distance(
     d[d.len() - 1][d[0].len() - 1]
 }
 
+#[pyfunction(
+use_graphemes = "true"
+)]
+pub fn edited_words(
+    a: &str,
+    b: &str,
+    use_graphemes: bool,
+) -> (HashSet<usize>, HashSet<usize>) {
+    let a_cs = CS::new(a, use_graphemes);
+    let b_cs = CS::new(b, use_graphemes);
+    let a_words = word_boundaries(a, use_graphemes);
+    let b_words = word_boundaries(b, use_graphemes);
+    let mut a_edited = HashSet::new();
+    let mut b_edited = HashSet::new();
+    for (op, a_idx, b_idx) in operations(
+        a,
+        b,
+        use_graphemes,
+        false,
+        true,
+    ) {
+        let mut a_word_idx = 0;
+        for (word_start, word_end) in &a_words {
+            if *word_start <= a_idx && a_idx < *word_end {
+                a_edited.insert(a_word_idx);
+                break;
+            } else if a_idx == *word_end {
+                match op {
+                    0 => {
+                        a_edited.insert(a_word_idx);
+                    },
+                    1 if a_cs.get_char(a_idx).is_whitespace() => {
+                        a_edited.insert(a_word_idx);
+                        a_edited.insert(a_word_idx + 1);
+                    }
+                    _ => panic!(
+                        "an edited char at a word end should either be an insertion or \
+                        a deletion of a whitespace, but got op code {op} and character \"{}\"",
+                        a_cs.get(a_idx)
+                    )
+                }
+                break;
+            }
+            a_word_idx += 1;
+        }
+        assert!(a_word_idx < a_words.len());
+        let mut b_word_idx = 0;
+        for (word_start, word_end) in &b_words {
+            if *word_start <= b_idx && b_idx < *word_end {
+                b_edited.insert(b_word_idx);
+                break;
+            } else if b_idx == *word_end {
+                match op {
+                    1 => {
+                        b_edited.insert(b_word_idx);
+                    },
+                    0 if b_cs.get_char(b_idx).is_whitespace() => {
+                        b_edited.insert(b_word_idx);
+                        b_edited.insert(b_word_idx + 1);
+                    },
+                    _ => panic!(
+                        "an edited char at a word end should either be an insertion of \
+                        a whitespace or a deletion, but got op code {op} and character \"{}\"",
+                        b_cs.get(b_idx)
+                    )
+                }
+                break;
+            }
+            b_word_idx += 1;
+        }
+        assert!(b_word_idx < b_words.len());
+    }
+    (a_edited, b_edited)
+}
+
 /// A submodule for calculating the edit distance and operations between strings.
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
-    let m_name = "edit_distance";
+    let m_name = "edit";
     let m = PyModule::new(py, m_name)?;
-    m.add_function(wrap_pyfunction!(edit_distance, m)?)?;
-    m.add_function(wrap_pyfunction!(edit_operations, m)?)?;
+    m.add_function(wrap_pyfunction!(distance, m)?)?;
+    m.add_function(wrap_pyfunction!(operations, m)?)?;
+    m.add_function(wrap_pyfunction!(edited_words, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())
@@ -172,29 +250,29 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
 
 #[cfg(test)]
 mod tests {
-    use crate::edit_distance::{edit_distance, edit_operations};
+    use crate::edit::{distance, operations};
 
     #[test]
     fn test_edit_operations() {
-        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, true, false);
+        let ed_ops = operations("this is a test", "tihsi s a test", false, true, false);
         assert_eq!(ed_ops, vec![(3, 1, 1), (3, 4, 4)]);
-        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, true, true);
+        let ed_ops = operations("this is a test", "tihsi s a test", false, true, true);
         assert_eq!(ed_ops, vec![(3, 1, 1), (0, 4, 4), (1, 5, 6)]);
-        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, false, false);
+        let ed_ops = operations("this is a test", "tihsi s a test", false, false, false);
         assert_eq!(ed_ops, vec![(0, 1, 1), (0, 2, 3), (1, 3, 5), (1, 5, 6)]);
-        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, false, true);
+        let ed_ops = operations("this is a test", "tihsi s a test", false, false, true);
         assert_eq!(ed_ops, vec![(0, 1, 1), (0, 2, 3), (1, 3, 5), (1, 5, 6)]);
     }
 
     #[test]
     fn test_edit_distance() {
-        let ed = edit_distance("this is a test", "tihsi s a test", false, true, false);
+        let ed = distance("this is a test", "tihsi s a test", false, true, false);
         assert_eq!(ed, 2);
-        let ed = edit_distance("this is a test", "tihsi s a test", false, true, true);
+        let ed = distance("this is a test", "tihsi s a test", false, true, true);
         assert_eq!(ed, 3);
-        let ed = edit_distance("this is a test", "tihsi s a test", false, false, false);
+        let ed = distance("this is a test", "tihsi s a test", false, false, false);
         assert_eq!(ed, 4);
-        let ed = edit_distance("this is a test", "tihsi s a test", false, false, true);
+        let ed = distance("this is a test", "tihsi s a test", false, false, true);
         assert_eq!(ed, 4);
     }
 }

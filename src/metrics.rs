@@ -1,8 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Add;
 use pyo3::prelude::*;
 use rayon::prelude::*;
-use crate::edit_distance::edit_distance;
+use crate::edit;
+use crate::edit::{distance, edited_words};
+use crate::text::{clean, match_words, word_boundaries};
+use crate::unicode::CS;
 use crate::utils::constrain;
 use crate::whitespace::operations;
 
@@ -23,7 +26,7 @@ fn _mean_edit_distance(
             } else {
                 1.0
             };
-            edit_distance(
+            distance(
                 s,
                 ts,
                 use_graphemes,
@@ -210,13 +213,155 @@ fn binary_f1_py(
     binary_f1(&predictions, &targets, beta)
 }
 
+fn _correction_f1(
+    input_sequences: &[String],
+    predicted_sequences: &[String],
+    target_sequences: &[String],
+    beta: f64,
+    sequence_averaged: bool,
+    f: impl Fn(&str, &str, &str) -> (TpFpFn, bool) + Sync,
+) -> F1PrecRec {
+    assert!(
+        input_sequences.len() == target_sequences.len()
+            && input_sequences.len() == predicted_sequences.len(),
+        "expected the same number of input, target, and predicted sequences"
+    );
+    let values: Vec<(TpFpFn, bool)> = (0..input_sequences.len())
+        .into_par_iter()
+        .map(|idx| {
+            let input = &input_sequences[idx];
+            let predicted = &predicted_sequences[idx];
+            let target = &target_sequences[idx];
+            f(&clean(input), &clean(predicted), &clean(target))
+        })
+        .collect();
+    if sequence_averaged {
+        let (f1_sum, prec_sum, rec_sum) = values
+            .into_iter()
+            .map(|(tp_fp_fn, empty)| {
+                if empty {
+                    (1.0, 1.0, 1.0)
+                } else {
+                    tp_fp_fn.f1(beta)
+                }
+            })
+            .fold(
+                (0.0, 0.0, 0.0),
+                |(f1_sum, prec_sum, rec_sum), (f1, prec, rec)| {
+                    (f1_sum + f1, prec_sum + prec, rec_sum + rec)
+                });
+        let num_values = input_sequences.len().max(1) as f64;
+        (f1_sum / num_values, prec_sum / num_values, rec_sum / num_values)
+    } else {
+        let tp_fp_fn = values
+            .into_iter()
+            .fold(
+                TpFpFn::default(),
+                |total, (tp_fp_fn, _)| {
+                    total + tp_fp_fn
+                });
+        tp_fp_fn.f1(beta)
+    }
+}
+
+#[inline]
+fn _group_words(
+    input: &str,
+    predicted: &str,
+    matching_in_pred: &HashSet<usize>,
+    use_graphemes: bool,
+) -> HashSet<usize> {
+    let input_cs = CS::new(input, use_graphemes);
+    let pred_cs = CS::new(predicted, use_graphemes);
+    let ops = edit::operations(input, predicted, use_graphemes, false, true);
+    let input_words = word_boundaries(input, use_graphemes);
+    let mut merged_with_next = HashSet::new();
+    let mut num_whitespaces_inserted = HashMap::new();
+    for (op, input_idx, pred_idx) in ops {
+        let mut word_idx = 0;
+        while word_idx < input_words.len() {
+            if input_idx <= input_words[word_idx].1 {
+                break;
+            }
+            word_idx += 1;
+        }
+
+        if op == 1 && input_cs.get_char(input_idx).is_whitespace() {
+            merged_with_next.insert(word_idx);
+        }
+
+        if op == 0 && pred_cs.get_char(pred_idx).is_whitespace() {
+            num_whitespaces_inserted.insert(
+                word_idx,
+                num_whitespaces_inserted
+                    .get(&word_idx)
+                    .copied()
+                    .unwrap_or(0usize)
+                    + 1,
+            );
+        }
+    }
+
+    let mut correct = HashSet::new();
+    let mut input_idx = 0;
+    let mut pred_idx = 0;
+    while input_idx < input_words.len() {
+        let mut merged_word = HashSet::from([input_idx]);
+        let mut total_spaces_inserted = num_whitespaces_inserted
+            .get(&input_idx)
+            .copied()
+            .unwrap_or(0);
+        while merged_with_next.contains(&input_idx) {
+            input_idx += 1;
+            merged_word.insert(input_idx);
+            total_spaces_inserted += num_whitespaces_inserted
+                .get(&input_idx)
+                .copied()
+                .unwrap_or(0);
+        }
+
+        if (pred_idx..=pred_idx + total_spaces_inserted)
+            .all(|idx| matching_in_pred.contains(&idx)) {
+            for word_idx in merged_word {
+                correct.insert(word_idx);
+            }
+        }
+
+        input_idx += 1;
+        pred_idx += total_spaces_inserted + 1;
+    }
+    assert!(
+        input_idx == input_words.len()
+            && pred_idx == word_boundaries(predicted, use_graphemes).len()
+    );
+    correct
+}
+
+#[inline]
 fn _spelling_correction_tp_fp_fn(
     input: &str,
     predicted: &str,
     target: &str,
     use_graphemes: bool,
-) -> TpFpFn {
-    TpFpFn::default()
+) -> (TpFpFn, bool) {
+    let (_, misspelled) = edited_words(input, target, use_graphemes);
+    let (changed, _) = edited_words(input, predicted, use_graphemes);
+    let matching_indices = match_words(predicted, target, false);
+    let matching_in_pred: HashSet<usize> = matching_indices
+        .iter()
+        .map(|(pred_idx, _)| *pred_idx)
+        .collect();
+    let restored: HashSet<usize> = matching_indices
+        .iter()
+        .map(|(_, tgt_idx)| *tgt_idx)
+        .collect();
+    let correct = _group_words(input, predicted, &matching_in_pred, use_graphemes);
+    let tp_fp_fn = TpFpFn::new(
+        misspelled.intersection(&restored).count(),
+        changed.difference(&correct).count(),
+        misspelled.difference(&restored).count()
+    );
+    (tp_fp_fn, misspelled.is_empty() && changed.is_empty())
 }
 
 pub fn spelling_correction_f1(
@@ -227,7 +372,21 @@ pub fn spelling_correction_f1(
     sequence_averaged: bool,
     use_graphemes: bool,
 ) -> F1PrecRec {
-    (0.0, 0.0, 0.0)
+    _correction_f1(
+        input_sequences,
+        predicted_sequences,
+        target_sequences,
+        beta,
+        sequence_averaged,
+        |input, predicted, target| {
+            _spelling_correction_tp_fp_fn(
+                input,
+                predicted,
+                target,
+                use_graphemes,
+            )
+        },
+    )
 }
 
 #[pyclass]
@@ -274,7 +433,7 @@ fn _whitespace_correction_tp_fp_fn(
     let tp_fp_fn = TpFpFn::new(
         gt_ops.intersection(&pred_ops).count(),
         pred_ops.difference(&gt_ops).count(),
-        gt_ops.difference(&pred_ops).count()
+        gt_ops.difference(&pred_ops).count(),
     );
     (tp_fp_fn, gt_ops.is_empty() && pred_ops.is_empty())
 }
@@ -288,17 +447,13 @@ pub fn whitespace_correction_f1(
     mode: WhitespaceCorrectionMode,
     use_graphemes: bool,
 ) -> F1PrecRec {
-    assert!(
-        input_sequences.len() == target_sequences.len()
-            && input_sequences.len() == predicted_sequences.len(),
-        "expected the same number of input, target, and predicted sequences"
-    );
-    let values: Vec<(TpFpFn, bool)> = (0..input_sequences.len())
-        .into_par_iter()
-        .map(|idx| {
-            let input = &input_sequences[idx];
-            let predicted = &predicted_sequences[idx];
-            let target = &target_sequences[idx];
+    _correction_f1(
+        input_sequences,
+        predicted_sequences,
+        target_sequences,
+        beta,
+        sequence_averaged,
+        |input, predicted, target| {
             _whitespace_correction_tp_fp_fn(
                 input,
                 predicted,
@@ -306,35 +461,8 @@ pub fn whitespace_correction_f1(
                 &mode,
                 use_graphemes,
             )
-        })
-        .collect();
-    if sequence_averaged {
-        let (f1_sum, prec_sum, rec_sum) = values
-            .into_iter()
-            .map(|(tp_fp_fn, empty)| {
-                if empty {
-                    (1.0, 1.0, 1.0)
-                } else {
-                    tp_fp_fn.f1(beta)
-                }
-            })
-            .fold(
-                (0.0, 0.0, 0.0),
-                |(f1_sum, prec_sum, rec_sum), (f1, prec, rec)| {
-                (f1_sum + f1, prec_sum + prec, rec_sum + rec)
-            });
-        let num_values = input_sequences.len().max(1) as f64;
-        (f1_sum / num_values, prec_sum / num_values, rec_sum / num_values)
-    } else {
-        let tp_fp_fn = values
-            .into_iter()
-            .fold(
-                TpFpFn::default(),
-                |total, (tp_fp_fn, _)| {
-                total + tp_fp_fn
-            });
-        tp_fp_fn.f1(beta)
-    }
+        },
+    )
 }
 
 /// A submodule containing functions to calculate various text correction metrics.

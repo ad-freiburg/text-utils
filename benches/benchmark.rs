@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criteri
 use rand::distributions::WeightedIndex;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use text_correction_utils::edit_distance::{edit_distance, edit_operations};
+use text_correction_utils::edit::{distance, operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{ByteTokenizer, CharTokenizer, Tokenization, Tokenize};
 use text_correction_utils::utils::{accumulate_pub, run_length_decode_pub, run_length_encode_pub};
@@ -26,14 +26,14 @@ fn bench_edit_distance(c: &mut Criterion) {
                 BenchmarkId::new("edit_distance", format!("{} -> {}", from_size, to_size)),
                 &(from_str.as_str(), to_str.as_str()),
                 |b, &(from, to)| {
-                    b.iter(|| edit_distance(from, to, true, true, false));
+                    b.iter(|| distance(from, to, true, true, false));
                 },
             );
             group.bench_with_input(
                 BenchmarkId::new("edit_operations", format!("{} -> {}", from_size, to_size)),
                 &(from_str.as_str(), to_str.as_str()),
                 |b, &(from, to)| {
-                    b.iter(|| edit_operations(from, to, true, true, false));
+                    b.iter(|| operations(from, to, true, true, false));
                 },
             );
         }

@@ -1,9 +1,7 @@
-extern crate core;
-
 use pyo3::prelude::*;
 
 pub mod data;
-pub mod edit_distance;
+pub mod edit;
 pub mod windows;
 pub mod text;
 pub mod tokenization;
@@ -17,7 +15,7 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     let _ = pyo3_log::try_init();
 
     // add submodules
-    edit_distance::add_submodule(py, m)?;
+    edit::add_submodule(py, m)?;
     text::add_submodule(py, m)?;
     tokenization::add_submodule(py, m)?;
     data::add_submodule(py, m)?;

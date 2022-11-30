@@ -1,20 +1,20 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::{panic, process};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread::{Builder, JoinHandle, sleep};
-use std::time::{Duration};
+use crate::data::{Batch, Item, Pipeline, TextData};
+use crate::tokenization::LANG_UNK;
 use pyo3::pyclass;
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use crate::data::{TextData, Item, Pipeline, Batch};
-use crate::tokenization::LANG_UNK;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{sleep, Builder, JoinHandle};
+use std::time::Duration;
+use std::{panic, process};
 
-pub type BoxedThreadSafeIter<T> = Box<dyn Iterator<Item=T> + Send + 'static>;
+pub type BoxedThreadSafeIter<T> = Box<dyn Iterator<Item = T> + Send + 'static>;
 pub type BoxedStringIter = BoxedThreadSafeIter<String>;
 pub type BoxedTextDataIter = BoxedThreadSafeIter<TextData>;
 pub type BoxedItemIter = BoxedThreadSafeIter<Item>;
@@ -28,10 +28,8 @@ pub trait TextGen {
     fn min_len(&self) -> usize;
 }
 
-
 fn open(p: &Path) -> File {
-    File::open(p)
-        .expect(&format!("could not open file at {:?}", p))
+    File::open(p).expect(&format!("could not open file at {:?}", p))
 }
 
 fn count_lines(p: &Path) -> usize {
@@ -74,11 +72,11 @@ impl TextFile {
 
 impl TextGen for TextFile {
     fn org_iter(&self) -> BoxedStringIter {
-        Box::new(BufReader::new(open(&self.original))
-            .lines()
-            .map(|l| {
-                l.expect("failed to read line")
-            }))
+        Box::new(
+            BufReader::new(open(&self.original))
+                .lines()
+                .map(|l| l.expect("failed to read line")),
+        )
     }
 
     fn has_proc(&self) -> bool {
@@ -87,11 +85,11 @@ impl TextGen for TextFile {
 
     fn proc_iter(&self) -> Option<BoxedStringIter> {
         if let Some(path) = &self.processed {
-            Some(Box::new(BufReader::new(open(path))
-                .lines()
-                .map(|l| {
-                    l.expect("failed to read line")
-                })))
+            Some(Box::new(
+                BufReader::new(open(path))
+                    .lines()
+                    .map(|l| l.expect("failed to read line")),
+            ))
         } else {
             None
         }
@@ -172,9 +170,7 @@ pub struct TextGenerator {
 
 impl TextGenerator {
     pub fn new(generators: Vec<Box<dyn TextGen>>) -> Self {
-        TextGenerator {
-            generators
-        }
+        TextGenerator { generators }
     }
 
     pub fn with_strategy(
@@ -185,32 +181,20 @@ impl TextGenerator {
         match strategy {
             TextIterationStrategy::Sequential => self.sequential(),
             TextIterationStrategy::Interleaved => self.interleaved(),
-            TextIterationStrategy::Weighted => self.weighted(seed)
+            TextIterationStrategy::Weighted => self.weighted(seed),
         }
     }
 
     pub fn sequential(&self) -> TextIterator {
-        TextIterator::new(
-            &self.generators,
-            TextIterationStrategy::Sequential,
-            None,
-        )
+        TextIterator::new(&self.generators, TextIterationStrategy::Sequential, None)
     }
 
     pub fn interleaved(&self) -> TextIterator {
-        TextIterator::new(
-            &self.generators,
-            TextIterationStrategy::Interleaved,
-            None,
-        )
+        TextIterator::new(&self.generators, TextIterationStrategy::Interleaved, None)
     }
 
     pub fn weighted(&self, seed: Option<u64>) -> TextIterator {
-        TextIterator::new(
-            &self.generators,
-            TextIterationStrategy::Weighted,
-            seed,
-        )
+        TextIterator::new(&self.generators, TextIterationStrategy::Weighted, seed)
     }
 }
 
@@ -255,9 +239,11 @@ impl TextIterator {
             lang_iters.push(text_reader.lang_iter())
         }
         if strategy == TextIterationStrategy::Weighted {
-            assert!(lengths.iter().all(|l| *l > 0),
-                    "for the weighted iteration strategy all text generators must specify a positive \
-            minimum length, otherwise they would never be iterated");
+            assert!(
+                lengths.iter().all(|l| *l > 0),
+                "for the weighted iteration strategy all text generators must specify a positive \
+            minimum length, otherwise they would never be iterated"
+            );
         }
         let finished = vec![false; org_iters.len()];
         TextIterator {
@@ -292,7 +278,8 @@ impl TextIterator {
                 self.idx = idx;
             }
             TextIterationStrategy::Weighted => {
-                let non_finished_indices: Vec<usize> = self.finished
+                let non_finished_indices: Vec<usize> = self
+                    .finished
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, f)| if !f { Some(idx) } else { None })
@@ -301,9 +288,9 @@ impl TextIterator {
                     non_finished_indices
                         .iter()
                         .map(|idx| self.lengths[*idx])
-                        .collect::<Vec<usize>>()
+                        .collect::<Vec<usize>>(),
                 )
-                    .expect("could not create line distribution");
+                .expect("could not create line distribution");
                 self.idx = non_finished_indices[self.rng.sample(dist)];
             }
         };
@@ -330,17 +317,17 @@ impl Iterator for TextIterator {
             let maybe_original = self.org_iters[self.idx].next();
             if maybe_original.is_none() {
                 self.finished[self.idx] = true;
-                if self.all_finished() { return None; }
+                if self.all_finished() {
+                    return None;
+                }
                 self.next_idx();
                 continue;
             }
             original = maybe_original.unwrap();
             break;
         }
-        let processed = self.proc_iters[self.idx]
-            .next();
-        let language = self.lang_iters[self.idx]
-            .next();
+        let processed = self.proc_iters[self.idx].next();
+        let language = self.lang_iters[self.idx].next();
         let data = TextData::new(original, processed, language);
         self.next_idx();
         Some(data)
@@ -353,23 +340,19 @@ pub struct PipelineIterator {
 }
 
 impl PipelineIterator {
-    pub fn new(
-        iter: impl Iterator<Item=TextData> + Send + 'static,
-        pipeline: Pipeline,
-    ) -> Self {
+    pub fn new(iter: impl Iterator<Item = TextData> + Send + 'static, pipeline: Pipeline) -> Self {
         let size_hint = iter.size_hint();
         PipelineIterator {
-            iter: Box::new(iter
-                .enumerate()
-                .map(move |(idx, item)| {
-                    pipeline.apply(item, Some(idx as u64))
-                })),
+            iter: Box::new(
+                iter.enumerate()
+                    .map(move |(idx, item)| pipeline.apply(item, Some(idx as u64))),
+            ),
             size_hint,
         }
     }
 
     pub fn new_threaded(
-        iter: impl Iterator<Item=TextData> + Send + 'static,
+        iter: impl Iterator<Item = TextData> + Send + 'static,
         pipeline: Pipeline,
         worker_threads: u8,
         buffer_size: usize,
@@ -377,9 +360,7 @@ impl PipelineIterator {
         let size_hint = iter.size_hint();
         let iter = Arc::new(Mutex::new(iter.enumerate()));
         let buffer_size = buffer_size.max(1);
-        let num_threads = worker_threads
-            .min(num_cpus::get() as u8)
-            .max(1) as usize;
+        let num_threads = worker_threads.min(num_cpus::get() as u8).max(1) as usize;
         let (tx, rx) = mpsc::sync_channel(buffer_size);
         let sent_counter = Arc::new(AtomicU64::new(0));
         panic::set_hook(Box::new(move |info| {
@@ -471,7 +452,7 @@ pub enum BatchLimitType {
     NumTokens,
 }
 
-pub struct BatchedIterator<T: Iterator<Item=Item> + Send + 'static> {
+pub struct BatchedIterator<T: Iterator<Item = Item> + Send + 'static> {
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
     rng: ChaCha8Rng,
@@ -482,7 +463,7 @@ pub struct BatchedIterator<T: Iterator<Item=Item> + Send + 'static> {
     remainder: Option<Item>,
 }
 
-impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
+impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
     pub fn new(
         mut iter: T,
         batch_limit: usize,
@@ -518,10 +499,11 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         // 3. pop from shuffle buffer until we have a maxed out batch
         let mut buffer_limit = match self.batch_limit_type {
             BatchLimitType::BatchSize => self.shuffle_buffer.len(),
-            BatchLimitType::NumTokens => self.shuffle_buffer
+            BatchLimitType::NumTokens => self
+                .shuffle_buffer
                 .iter()
                 .map(|item| item.tokenization.token_ids.len())
-                .sum()
+                .sum(),
         };
         // fill buffer until batch limit * some factor is hit
         while buffer_limit < self.batch_limit * self.shuffle_prefetch_factor {
@@ -535,11 +517,16 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
         // we are only done if the shuffle buffer is empty
         if self.shuffle_buffer.is_empty() {
             // return remainder as final batch if we still have one
-            return (if self.remainder.is_none() {
-                None
-            } else {
-                Some(Batch { items: vec![self.remainder.as_ref().unwrap().clone()] })
-            }, None);
+            return (
+                if self.remainder.is_none() {
+                    None
+                } else {
+                    Some(Batch {
+                        items: vec![self.remainder.as_ref().unwrap().clone()],
+                    })
+                },
+                None,
+            );
         }
         // shuffle the buffer
         self.shuffle_buffer.shuffle(&mut self.rng);
@@ -556,7 +543,7 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
     fn limit_inc(item: &Item, limit_type: &BatchLimitType) -> usize {
         match limit_type {
             BatchLimitType::BatchSize => 1,
-            BatchLimitType::NumTokens => item.tokenization.token_ids.len()
+            BatchLimitType::NumTokens => item.tokenization.token_ids.len(),
         }
     }
 
@@ -591,7 +578,7 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
     }
 }
 
-impl<T: Iterator<Item=Item> + Send + 'static> Iterator for BatchedIterator<T> {
+impl<T: Iterator<Item = Item> + Send + 'static> Iterator for BatchedIterator<T> {
     type Item = Batch;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -615,24 +602,30 @@ impl<T: Iterator<Item=Item> + Send + 'static> Iterator for BatchedIterator<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::data::loading::{
+        open, BatchLimitType, BatchedIterator, PipelineIterator, TextFile, TextGenerator,
+        TextIterator,
+    };
+    use crate::data::preprocessing::LabelingConfig::LabelWhitespaceCorrection;
+    use crate::data::preprocessing::PreprocessingConfig;
+    use crate::data::{Item, Pipeline, PipelineConfig, TextData};
+    use crate::tokenization::{
+        ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizerConfig, BOS, EOS,
+    };
+    use itertools::Itertools;
+    use log::info;
     use std::collections::HashMap;
     use std::io;
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
     use std::thread::sleep;
     use std::time::{Duration, Instant};
-    use itertools::Itertools;
-    use log::info;
-    use crate::data::loading::{BatchedIterator, BatchLimitType, open, PipelineIterator, TextFile, TextGenerator, TextIterator};
-    use crate::data::{Item, Pipeline, PipelineConfig, TextData};
-    use crate::data::preprocessing::LabelingConfig::LabelWhitespaceCorrection;
-    use crate::data::preprocessing::PreprocessingConfig;
-    use crate::tokenization::{BOS, ByteTokenizer, EOS, Tokenization, TokenizationInfo, Tokenize, TokenizerConfig};
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
     const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
     const MULTI30K_REV_FIRST: &str = "A man in shorts and a Hawaiian shirt leans over the rail of a pilot boat, with fog and mountains in the background.";
-    const MULTI30K_REV_SECOND: &str = "An elderly man sits outside a storefront accompanied by a young boy with a cart.";
+    const MULTI30K_REV_SECOND: &str =
+        "An elderly man sits outside a storefront accompanied by a young boy with a cart.";
     const UNK: &str = "[unk]";
 
     #[test]
@@ -646,57 +639,79 @@ mod tests {
         // first check sequential lines with one file
         let mut it = text_files.sequential();
         assert_eq!(it.min_len(), 29000);
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_FIRST.to_string(),
-            processed: MULTI30K_FIRST.to_string(),
-            language: "1".to_string(),
-        });
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_SECOND.to_string(),
-            processed: MULTI30K_SECOND.to_string(),
-            language: "1".to_string(),
-        });
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_FIRST.to_string(),
+                processed: MULTI30K_FIRST.to_string(),
+                language: "1".to_string(),
+            }
+        );
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_SECOND.to_string(),
+                processed: MULTI30K_SECOND.to_string(),
+                language: "1".to_string(),
+            }
+        );
         // check sequential lines with original and processed
         let multi30k_and_rev = TextFile::new_boxed(&d, Some(&d2), Some("1".to_string()));
         let text_files = TextGenerator::new(vec![multi30k_and_rev]);
         let mut it = text_files.sequential();
         assert_eq!(it.min_len(), 29000);
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_FIRST.to_string(),
-            processed: MULTI30K_REV_FIRST.to_string(),
-            language: "1".to_string(),
-        });
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_SECOND.to_string(),
-            processed: MULTI30K_REV_SECOND.to_string(),
-            language: "1".to_string(),
-        });
-        // check interleaved lines with two files
-        let text_files = TextGenerator::new(
-            vec![multi30k.clone(), multi30k_rev.clone()]
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_FIRST.to_string(),
+                processed: MULTI30K_REV_FIRST.to_string(),
+                language: "1".to_string(),
+            }
         );
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_SECOND.to_string(),
+                processed: MULTI30K_REV_SECOND.to_string(),
+                language: "1".to_string(),
+            }
+        );
+        // check interleaved lines with two files
+        let text_files = TextGenerator::new(vec![multi30k.clone(), multi30k_rev.clone()]);
         let mut it = text_files.interleaved();
         assert_eq!(it.min_len(), 2 * 29000);
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_FIRST.to_string(),
-            processed: MULTI30K_FIRST.to_string(),
-            language: "1".to_string(),
-        });
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_REV_FIRST.to_string(),
-            processed: MULTI30K_REV_FIRST.to_string(),
-            language: "2".to_string(),
-        });
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_SECOND.to_string(),
-            processed: MULTI30K_SECOND.to_string(),
-            language: "1".to_string(),
-        });
-        assert_eq!(it.next().unwrap(), TextData {
-            original: MULTI30K_REV_SECOND.to_string(),
-            processed: MULTI30K_REV_SECOND.to_string(),
-            language: "2".to_string(),
-        });
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_FIRST.to_string(),
+                processed: MULTI30K_FIRST.to_string(),
+                language: "1".to_string(),
+            }
+        );
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_REV_FIRST.to_string(),
+                processed: MULTI30K_REV_FIRST.to_string(),
+                language: "2".to_string(),
+            }
+        );
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_SECOND.to_string(),
+                processed: MULTI30K_SECOND.to_string(),
+                language: "1".to_string(),
+            }
+        );
+        assert_eq!(
+            it.next().unwrap(),
+            TextData {
+                original: MULTI30K_REV_SECOND.to_string(),
+                processed: MULTI30K_REV_SECOND.to_string(),
+                language: "2".to_string(),
+            }
+        );
         // check that they are indeed interleaved
         let mut idx: usize = 4;
         while let Some(data) = it.next() {
@@ -704,9 +719,7 @@ mod tests {
             idx += 1;
         }
         // check weighted lines with two files
-        let text_files = TextGenerator::new(
-            vec![multi30k_rev, multi30k]
-        );
+        let text_files = TextGenerator::new(vec![multi30k_rev, multi30k]);
         let mut it = text_files.weighted(Some(22));
         assert_eq!(it.min_len(), 2 * 29000);
         let mut first_count = 0;
@@ -740,11 +753,7 @@ mod tests {
         // test if it works with one worker and record the time it took
         let mut it = pipeline
             .clone()
-            .apply_iter_threaded(
-                text_files.sequential(),
-                1,
-                1,
-            );
+            .apply_iter_threaded(text_files.sequential(), 1, 1);
         let now = Instant::now();
         let n: usize = 20;
         let _: Vec<Item> = it.take(n).collect();
@@ -753,22 +762,14 @@ mod tests {
         // test with more workers, check that its faster
         let mut it = pipeline
             .clone()
-            .apply_iter_threaded(
-                text_files.sequential(),
-                2,
-                2,
-            );
+            .apply_iter_threaded(text_files.sequential(), 2, 2);
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
         let time2 = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time2, n);
         assert!(time2 < time);
         // test with even more workers
-        let mut it = pipeline.apply_iter_threaded(
-            text_files.sequential(),
-            4,
-            4,
-        );
+        let mut it = pipeline.apply_iter_threaded(text_files.sequential(), 4, 4);
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
         let time3 = now.elapsed().as_secs_f64();
@@ -783,13 +784,8 @@ mod tests {
         });
         let mut it = pipeline
             .clone()
-            .apply_iter_threaded(
-                text_files.sequential(),
-                4,
-                4,
-            );
-        let lines = BufReader::new(open(&d))
-            .lines();
+            .apply_iter_threaded(text_files.sequential(), 4, 4);
+        let lines = BufReader::new(open(&d)).lines();
         for (idx, (line, item)) in it.zip(lines).enumerate() {
             assert_eq!(line.data.original, item.unwrap())
         }
@@ -810,74 +806,49 @@ mod tests {
         let mut pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
-            tokenizer: TokenizerConfig::Byte(
-                true,
-                vec![BOS.to_string()],
-                vec![EOS.to_string()],
-            ),
+            tokenizer: TokenizerConfig::Byte(true, vec![BOS.to_string()], vec![EOS.to_string()]),
         });
         // first check the batched iterator with shuffling disabled
         let mut pipe_it = pipeline
             .clone()
-            .apply_iter_threaded(
-                text_files.sequential(),
-                4,
-                16,
-            )
-            .batched(
-                16,
-                BatchLimitType::BatchSize,
-                false,
-                0,
-                None,
-            );
-        for (batch, line_batch) in pipe_it
-            .zip(&lines.iter().chunks(16)) {
+            .apply_iter_threaded(text_files.sequential(), 4, 16)
+            .batched(16, BatchLimitType::BatchSize, false, 0, None);
+        for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(16)) {
             assert!(batch.len() > 0 && batch.len() <= 16);
-            for (item, line) in batch
-                .into_iter()
-                .zip(line_batch.into_iter()) {
+            for (item, line) in batch.into_iter().zip(line_batch.into_iter()) {
                 assert_eq!(item.data.original, *line);
             }
         }
         // now check the batched iterator with shuffling
         let mut pipe_it = pipeline
             .clone()
-            .apply_iter_threaded(
-                text_files.weighted(Some(22)),
-                4,
-                4,
-            )
-            .batched(
-                256,
-                BatchLimitType::NumTokens,
-                true,
-                4,
-                Some(22),
-            );
+            .apply_iter_threaded(text_files.weighted(Some(22)), 4, 4)
+            .batched(256, BatchLimitType::NumTokens, true, 4, Some(22));
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
-        let mut line_counter: HashMap<String, usize> = lines
-            .iter()
-            .cloned()
-            .map(|l| (l, 0))
-            .collect();
+        let mut line_counter: HashMap<String, usize> =
+            lines.iter().cloned().map(|l| (l, 0)).collect();
         for batch in pipe_it {
-            let item_lengths: Vec<usize> = batch.items
+            let item_lengths: Vec<usize> = batch
+                .items
                 .iter()
                 .map(|item| item.tokenization.token_ids.len())
                 .collect();
             let batch_size: usize = item_lengths.iter().sum();
             assert!(batch.len() > 0);
-            assert!(batch_size <= 256,
-                    "found invalid batch with size {batch_size} ({:?})",
-                    item_lengths);
+            assert!(
+                batch_size <= 256,
+                "found invalid batch with size {batch_size} ({:?})",
+                item_lengths
+            );
             for item in batch {
                 let mut count = line_counter.get_mut(&item.data.original).unwrap();
                 *count += 1;
             }
         }
-        assert!(line_counter.iter().all(|(_, c)| *c == 1 || *c == 2)
-            && line_counter.iter().map(|(_, c)| *c).sum::<usize>() == lines.len());
+        assert!(
+            line_counter.iter().all(|(_, c)| *c == 1 || *c == 2)
+                && line_counter.iter().map(|(_, c)| *c).sum::<usize>() == lines.len()
+        );
     }
 }

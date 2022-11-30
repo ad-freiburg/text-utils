@@ -1,20 +1,25 @@
+use crate::data::loading::{
+    BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator,
+    TextIterationStrategy,
+};
+use crate::data::preprocessing::{
+    labeling, preprocessing, LabelingConfig, LabelingFn, PreprocessingConfig, PreprocessingFn,
+};
+use crate::tokenization::{tokenizer, Tokenization, Tokenizer, TokenizerConfig, LANG_UNK};
+use crate::utils::{py_invalid_type_error, py_required_key_error};
+use pyo3::basic::CompareOp;
+use pyo3::exceptions::PyTypeError;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::fs::read_to_string;
 use std::hash::{Hash, Hasher};
-use std::path::{Path};
+use std::path::Path;
 use std::vec::IntoIter;
-use pyo3::basic::CompareOp;
-use pyo3::exceptions::{PyTypeError};
-use pyo3::prelude::*;
-use pyo3::types::{PyDict};
-use serde::{Deserialize, Serialize};
-use crate::data::loading::{BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator, TextIterationStrategy};
-use crate::tokenization::{LANG_UNK, Tokenization, tokenizer, Tokenizer, TokenizerConfig};
-use crate::data::preprocessing::{labeling, LabelingConfig, LabelingFn, preprocessing, PreprocessingConfig, PreprocessingFn};
-use crate::utils::{py_invalid_type_error, py_required_key_error};
 
-pub mod preprocessing;
 pub mod loading;
+pub mod preprocessing;
 
 #[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
 #[pyclass]
@@ -42,10 +47,7 @@ impl TextData {
 #[pymethods]
 impl TextData {
     #[new]
-    #[args(
-    processed = "None",
-    language = "None"
-    )]
+    #[args(processed = "None", language = "None")]
     fn new_py(
         original: String,
         processed: Option<String>,
@@ -159,9 +161,7 @@ impl Item {
 #[pymethods]
 impl Item {
     #[new]
-    #[args(
-    label = "None"
-    )]
+    #[args(label = "None")]
     fn py_new(data: TextData, tokenization: Tokenization, label: Option<Label>) -> PyResult<Self> {
         Ok(Self::new(data, tokenization, label))
     }
@@ -179,7 +179,6 @@ impl Item {
     fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
         op.matches(self.cmp(other))
     }
-
 }
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -258,9 +257,7 @@ impl PipelineConfig {
 #[pymethods]
 impl PipelineConfig {
     #[new]
-    #[args(
-    labeling = "None"
-    )]
+    #[args(labeling = "None")]
     fn py_new(
         preprocessing: Vec<PreprocessingConfig>,
         tokenizer: TokenizerConfig,
@@ -305,11 +302,7 @@ impl Pipeline {
         } else {
             None
         };
-        let tokenization = self.tokenizer.tokenize(
-            &data.processed,
-            None,
-            None,
-        );
+        let tokenization = self.tokenizer.tokenize(&data.processed, None, None);
         Item {
             data,
             label,
@@ -319,34 +312,27 @@ impl Pipeline {
 
     pub fn apply_iter(
         self,
-        iter: impl Iterator<Item=TextData> + Send + 'static,
+        iter: impl Iterator<Item = TextData> + Send + 'static,
     ) -> PipelineIterator {
         PipelineIterator::new(iter, self.clone())
     }
 
     pub fn apply_iter_threaded(
         self,
-        iter: impl Iterator<Item=TextData> + Send + 'static,
+        iter: impl Iterator<Item = TextData> + Send + 'static,
         worker_threads: u8,
         buffer_size: usize,
     ) -> PipelineIterator {
-        PipelineIterator::new_threaded(
-            iter,
-            self.clone(),
-            worker_threads,
-            buffer_size,
-        )
+        PipelineIterator::new_threaded(iter, self.clone(), worker_threads, buffer_size)
     }
 }
 
 fn read_yaml(path: &Path) -> String {
-    read_to_string(path)
-        .expect(&format!("could not read yaml file at {:?}", path))
+    read_to_string(path).expect(&format!("could not read yaml file at {:?}", path))
 }
 
 fn parse_yaml<'a, T: Deserialize<'a>>(yaml: &'a str) -> T {
-    serde_yaml::from_str(yaml)
-        .expect(&format!("could not deserialize from yaml string\n{}", yaml))
+    serde_yaml::from_str(yaml).expect(&format!("could not deserialize from yaml string\n{}", yaml))
 }
 
 pub fn pipeline_from_yaml(path: &Path) -> Pipeline {
@@ -363,8 +349,8 @@ pub fn preprocessing_from_yaml(path: &Path) -> PreprocessingFn {
 }
 
 pub fn preprocessing_from_str(s: &str) -> PreprocessingFn {
-    let fns: Vec<PreprocessingConfig> = serde_yaml::from_str(s)
-        .expect(&format!("could not deserialize from yaml string\n{}", s));
+    let fns: Vec<PreprocessingConfig> =
+        serde_yaml::from_str(s).expect(&format!("could not deserialize from yaml string\n{}", s));
     preprocessing(fns)
 }
 
@@ -373,14 +359,14 @@ pub fn labeling_from_yaml(path: &Path) -> LabelingFn {
 }
 
 pub fn labeling_from_str(s: &str) -> LabelingFn {
-    let cfg: LabelingConfig = serde_yaml::from_str(s)
-        .expect(&format!("could not deserialize from yaml string\n{}", s));
+    let cfg: LabelingConfig =
+        serde_yaml::from_str(s).expect(&format!("could not deserialize from yaml string\n{}", s));
     labeling(cfg)
 }
 
 #[pyclass]
 struct DataLoader {
-    iter: Box<dyn Iterator<Item=Batch> + Send + 'static>,
+    iter: Box<dyn Iterator<Item = Batch> + Send + 'static>,
     len: usize,
 }
 
@@ -388,16 +374,16 @@ struct DataLoader {
 impl DataLoader {
     #[staticmethod]
     #[args(
-    languages = "None",
-    num_threads = "(num_cpus::get() as u8).min(4)",
-    buffer_size = "32",
-    batch_limit = "16",
-    batch_limit_type = "BatchLimitType::BatchSize",
-    shuffle = "false",
-    shuffle_prefetch_factor = "4",
-    seed = "None",
-    skip = "0",
-    distributed = "None"
+        languages = "None",
+        num_threads = "(num_cpus::get() as u8).min(4)",
+        buffer_size = "32",
+        batch_limit = "16",
+        batch_limit_type = "BatchLimitType::BatchSize",
+        shuffle = "false",
+        shuffle_prefetch_factor = "4",
+        seed = "None",
+        skip = "0",
+        distributed = "None"
     )]
     pub fn from_sequences(
         sequences: Vec<String>,
@@ -411,48 +397,51 @@ impl DataLoader {
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
         skip: usize,
-        distributed: Option<(usize, usize)>
+        distributed: Option<(usize, usize)>,
     ) -> PyResult<Self> {
         if sequences.is_empty() {
             return Err(PyTypeError::new_err("sequences is empty"));
         }
         if languages.is_some() && sequences.len() == languages.as_ref().unwrap().len() {
-            return Err(PyTypeError::new_err(
-                format!(
-                    "there must be one language for every sequence if specified, but \
+            return Err(PyTypeError::new_err(format!(
+                "there must be one language for every sequence if specified, but \
                     got {} sequences and {} languages",
-                    sequences.len(),
-                    languages.as_ref().unwrap().len())));
+                sequences.len(),
+                languages.as_ref().unwrap().len()
+            )));
         }
         if shuffle && seed.is_none() {
-            return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
+            return Err(PyTypeError::new_err(
+                "seed cannot be None if shuffle is true",
+            ));
         }
         if batch_limit_type == BatchLimitType::BatchSize {
             buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
         }
-        let cont = TextContainer::new_boxed(
-            sequences,
-            None,
-            languages,
-        );
+        let cont = TextContainer::new_boxed(sequences, None, languages);
         let gen = TextGenerator::new(vec![cont]);
         let pipe = Pipeline::from_config(pipeline_config);
-        let text_iter = gen
-            .sequential();
+        let text_iter = gen.sequential();
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
-        assert!(rank < world_size, "rank {rank} is invalid given world size {world_size}");
+        assert!(
+            rank < world_size,
+            "rank {rank} is invalid given world size {world_size}"
+        );
         let len = text_iter.min_len().saturating_sub(skip) / world_size;
-        let text_iter = text_iter
-            .skip(skip + rank)
-            .step_by(world_size);
+        let text_iter = text_iter.skip(skip + rank).step_by(world_size);
         let iter = if num_threads > 0 {
             pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
         } else {
             pipe.apply_iter(text_iter)
         };
-        let batched_iter = iter
-            .batched(batch_limit, batch_limit_type, shuffle, shuffle_prefetch_factor, seed);
+        let batched_iter = iter.batched(
+            batch_limit,
+            batch_limit_type,
+            shuffle,
+            shuffle_prefetch_factor,
+            seed,
+        );
         Ok(DataLoader {
             iter: Box::new(batched_iter),
             len,
@@ -461,17 +450,17 @@ impl DataLoader {
 
     #[staticmethod]
     #[args(
-    languages = "None",
-    strategy = "TextIterationStrategy::Sequential",
-    num_threads = "(num_cpus::get() as u8).min(4)",
-    buffer_size = "32",
-    batch_limit = "16",
-    batch_limit_type = "BatchLimitType::BatchSize",
-    shuffle = "false",
-    shuffle_prefetch_factor = "4",
-    seed = "None",
-    skip = "0",
-    distributed = "None"
+        languages = "None",
+        strategy = "TextIterationStrategy::Sequential",
+        num_threads = "(num_cpus::get() as u8).min(4)",
+        buffer_size = "32",
+        batch_limit = "16",
+        batch_limit_type = "BatchLimitType::BatchSize",
+        shuffle = "false",
+        shuffle_prefetch_factor = "4",
+        seed = "None",
+        skip = "0",
+        distributed = "None"
     )]
     pub fn from_files(
         files: Vec<String>,
@@ -486,21 +475,23 @@ impl DataLoader {
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
         skip: usize,
-        distributed: Option<(usize, usize)>
+        distributed: Option<(usize, usize)>,
     ) -> PyResult<Self> {
         if files.is_empty() {
             return Err(PyTypeError::new_err("files is empty"));
         }
         if languages.is_some() && files.len() != languages.as_ref().unwrap().len() {
-            return Err(PyTypeError::new_err(
-                format!(
-                    "there must be one language for every file if specified, but \
+            return Err(PyTypeError::new_err(format!(
+                "there must be one language for every file if specified, but \
                     got {} files and {} languages",
-                    files.len(),
-                    languages.as_ref().unwrap().len())));
+                files.len(),
+                languages.as_ref().unwrap().len()
+            )));
         }
         if shuffle && seed.is_none() {
-            return Err(PyTypeError::new_err("seed cannot be None if shuffle is true"));
+            return Err(PyTypeError::new_err(
+                "seed cannot be None if shuffle is true",
+            ));
         }
         if batch_limit_type == BatchLimitType::BatchSize {
             buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
@@ -514,33 +505,32 @@ impl DataLoader {
                 } else {
                     None
                 };
-                TextFile::new_boxed(
-                    &file.into(), None, lang,
-                ) as Box<dyn TextGen>
+                TextFile::new_boxed(&file.into(), None, lang) as Box<dyn TextGen>
             })
             .collect();
         let gen = TextGenerator::new(cont);
         let pipe = Pipeline::from_config(pipeline_config);
-        let text_iter = gen
-            .with_strategy(strategy, seed);
+        let text_iter = gen.with_strategy(strategy, seed);
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         let len = text_iter.min_len().saturating_sub(skip) / world_size;
-        assert!(rank < world_size, "rank {rank} is invalid given world size {world_size}");
-        let text_iter = text_iter
-            .skip(skip + rank)
-            .step_by(world_size);
+        assert!(
+            rank < world_size,
+            "rank {rank} is invalid given world size {world_size}"
+        );
+        let text_iter = text_iter.skip(skip + rank).step_by(world_size);
         let iter = if num_threads > 0 {
-            pipe.apply_iter_threaded(
-                text_iter,
-                num_threads,
-                buffer_size,
-            )
+            pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
         } else {
             pipe.apply_iter(text_iter)
         };
-        let batched_iter = iter
-            .batched(batch_limit, batch_limit_type, shuffle, shuffle_prefetch_factor, seed);
+        let batched_iter = iter.batched(
+            batch_limit,
+            batch_limit_type,
+            shuffle,
+            shuffle_prefetch_factor,
+            seed,
+        );
         Ok(DataLoader {
             iter: Box::new(batched_iter),
             len,

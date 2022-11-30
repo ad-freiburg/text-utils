@@ -1,16 +1,16 @@
-use std::ops::Sub;
+use crate::data::{Label, TextData};
+use crate::text;
+use crate::text::{possible_byte_substrings, possible_character_substrings};
+use crate::unicode::CS;
+use crate::utils::{accumulate, constrain, py_invalid_type_error, py_required_key_error};
+use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
 use itertools::Itertools;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use crate::data::{TextData, Label};
-use crate::text;
-use crate::text::{possible_byte_substrings, possible_character_substrings};
-use crate::unicode::CS;
-use crate::utils::{accumulate, constrain, py_invalid_type_error, py_required_key_error};
-use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
+use std::ops::Sub;
 
 pub type PreprocessingFn = Box<dyn Fn(TextData, Option<u64>) -> TextData + Send + Sync>;
 pub type LabelingFn = Box<dyn Fn(&TextData) -> Label + Send + Sync>;
@@ -38,12 +38,8 @@ impl IntoPy<PyObject> for PreprocessingConfig {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
         let preprocessing_type = match self {
-            PreprocessingConfig::Clean => {
-                "clean"
-            }
-            PreprocessingConfig::Overwrite => {
-                "overwrite"
-            }
+            PreprocessingConfig::Clean => "clean",
+            PreprocessingConfig::Overwrite => "overwrite",
             PreprocessingConfig::Switch(configs, probs) => {
                 let py_configs = PyList::empty(py);
                 for config in configs {
@@ -53,9 +49,7 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("probabilities", PyList::new(py, probs)).unwrap();
                 "switch"
             }
-            PreprocessingConfig::NoWhitespaces => {
-                "no_whitespaces"
-            }
+            PreprocessingConfig::NoWhitespaces => "no_whitespaces",
             PreprocessingConfig::FullWhitespaces(use_g) => {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "full_whitespaces"
@@ -222,44 +216,37 @@ fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> PreprocessingFn {
         "all switch probabilities should sum to 1"
     );
 
-    let fns: Vec<PreprocessingFn> = fns
-        .into_iter()
-        .map(|f| preprocessing_fn(f))
-        .collect();
+    let fns: Vec<PreprocessingFn> = fns.into_iter().map(|f| preprocessing_fn(f)).collect();
 
     // return new function that switches between multiple preprocessing functions
     // based on the given probability distribution
-    Box::new(
-        move |item, seed| {
-            let mut rng = if seed.is_some() {
-                ChaCha8Rng::seed_from_u64(seed.unwrap())
-            } else {
-                ChaCha8Rng::from_entropy()
-            };
-            let r: f64 = rng.gen();
-            let mut idx = 0;
-            while idx < num_fns - 1 && r > cum_p[idx] {
-                idx += 1;
-            }
-            fns[idx](item, seed)
+    Box::new(move |item, seed| {
+        let mut rng = if seed.is_some() {
+            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        } else {
+            ChaCha8Rng::from_entropy()
+        };
+        let r: f64 = rng.gen();
+        let mut idx = 0;
+        while idx < num_fns - 1 && r > cum_p[idx] {
+            idx += 1;
         }
-    )
+        fns[idx](item, seed)
+    })
 }
 
 fn apply_to_text<F: Fn(&str) -> String + Send + Sync + 'static>(f: F) -> PreprocessingFn {
-    Box::new(
-        move |item, _| {
-            TextData { processed: f(&item.processed), ..item }
-        }
-    )
+    Box::new(move |item, _| TextData {
+        processed: f(&item.processed),
+        ..item
+    })
 }
 
 fn overwrite_original_from_processed() -> PreprocessingFn {
-    Box::new(
-        |item, _| {
-            TextData { original: item.processed.clone(), ..item }
-        }
-    )
+    Box::new(|item, _| TextData {
+        original: item.processed.clone(),
+        ..item
+    })
 }
 
 fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
@@ -269,83 +256,74 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
         iw_p > 0. || dw_p > 0.,
         "at least one of insert whitespace or delete whitespace probability must be greater 0"
     );
-    Box::new(
-        move |item, seed| {
-            let mut rng = if seed.is_some() {
-                ChaCha8Rng::seed_from_u64(seed.unwrap())
-            } else {
-                ChaCha8Rng::from_entropy()
-            };
-            let cs = CS::new(&item.processed, true);
-            let processed = cs
-                .chars()
-                .enumerate()
-                .map(|(idx, c)| {
-                    let r: f64 = rng.gen();
-                    if c.is_whitespace() {
-                        if r < dw_p {
-                            "".to_string()
-                        } else {
-                            c.str.to_string()
-                        }
-                    } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_whitespace() {
-                        " ".to_string() + c.str
+    Box::new(move |item, seed| {
+        let mut rng = if seed.is_some() {
+            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        } else {
+            ChaCha8Rng::from_entropy()
+        };
+        let cs = CS::new(&item.processed, true);
+        let processed = cs
+            .chars()
+            .enumerate()
+            .map(|(idx, c)| {
+                let r: f64 = rng.gen();
+                if c.is_whitespace() {
+                    if r < dw_p {
+                        "".to_string()
                     } else {
                         c.str.to_string()
                     }
-                })
-                .join("");
-            TextData { processed, ..item }
-        }
-    )
+                } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_whitespace() {
+                    " ".to_string() + c.str
+                } else {
+                    c.str.to_string()
+                }
+            })
+            .join("");
+        TextData { processed, ..item }
+    })
 }
 
 fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
     name: String,
     substring_fn: F,
 ) -> PreprocessingFn {
-    Box::new(
-        move |item, seed| {
-            let mut rng = if seed.is_some() {
-                ChaCha8Rng::seed_from_u64(seed.unwrap())
-            } else {
-                ChaCha8Rng::from_entropy()
-            };
-            let possible_substrings = substring_fn(&item.processed);
-            let idx = rng.gen_range(0..possible_substrings.len());
-            let (start, end, _) = possible_substrings[idx];
-            let processed = item.processed[start..end].to_string();
-            let (start, end) = find_substring_ignoring_whitespace(
-                &item.original,
-                &processed,
-            ).expect(&format!("original and processed sequences can only differ in \
-            whitespaces when applying the {} substring preprocessing", name));
-            let original = item.original[start..end].to_string();
-            TextData {
-                original,
-                processed,
-                ..item
-            }
+    Box::new(move |item, seed| {
+        let mut rng = if seed.is_some() {
+            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        } else {
+            ChaCha8Rng::from_entropy()
+        };
+        let possible_substrings = substring_fn(&item.processed);
+        let idx = rng.gen_range(0..possible_substrings.len());
+        let (start, end, _) = possible_substrings[idx];
+        let processed = item.processed[start..end].to_string();
+        let (start, end) =
+            find_substring_ignoring_whitespace(&item.original, &processed).expect(&format!(
+                "original and processed sequences can only differ in \
+            whitespaces when applying the {} substring preprocessing",
+                name
+            ));
+        let original = item.original[start..end].to_string();
+        TextData {
+            original,
+            processed,
+            ..item
         }
-    )
+    })
 }
 
 fn char_substring(max_chars: usize, use_graphemes: bool) -> PreprocessingFn {
-    substring(
-        "character".to_string(),
-        move |s| {
-            possible_character_substrings(s, max_chars, use_graphemes)
-        },
-    )
+    substring("character".to_string(), move |s| {
+        possible_character_substrings(s, max_chars, use_graphemes)
+    })
 }
 
 fn byte_substring(max_bytes: usize, use_graphemes: bool) -> PreprocessingFn {
-    substring(
-        "byte".to_string(),
-        move |s| {
-            possible_byte_substrings(s, max_bytes, use_graphemes)
-        },
-    )
+    substring("byte".to_string(), move |s| {
+        possible_byte_substrings(s, max_bytes, use_graphemes)
+    })
 }
 
 fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
@@ -355,49 +333,45 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
         PreprocessingConfig::Switch(fns, probs) => switch(fns, probs),
         PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => noise_whitespace(iw_p, dw_p),
         PreprocessingConfig::NoWhitespaces => apply_to_text(remove),
-        PreprocessingConfig::FullWhitespaces(use_graphemes) => apply_to_text(move |s| {
-            full(s, use_graphemes)
-        }),
+        PreprocessingConfig::FullWhitespaces(use_graphemes) => {
+            apply_to_text(move |s| full(s, use_graphemes))
+        }
         PreprocessingConfig::CharSubstring(l, use_graphemes) => char_substring(l, use_graphemes),
         PreprocessingConfig::ByteSubstring(l, use_graphemes) => byte_substring(l, use_graphemes),
     }
 }
 
-pub fn preprocessing(
-    preprocessing: Vec<PreprocessingConfig>
-) -> PreprocessingFn {
+pub fn preprocessing(preprocessing: Vec<PreprocessingConfig>) -> PreprocessingFn {
     // return new function that runs all given preprocessing functions
     // in order
     let fns: Vec<PreprocessingFn> = preprocessing
         .into_iter()
         .map(|p| preprocessing_fn(p))
         .collect();
-    Box::new(
-        move |mut item, seed| {
-            for f in fns.iter() {
-                item = f(item, seed);
-            }
-            item
+    Box::new(move |mut item, seed| {
+        for f in fns.iter() {
+            item = f(item, seed);
         }
-    )
+        item
+    })
 }
 
 fn whitespace_correction_label(use_graphemes: bool) -> LabelingFn {
-    Box::new(
-        move |item| {
-            Label::SeqClassification(
-                operations(&item.processed, &item.original, use_graphemes)
-                    .into_iter()
-                    .map(|l| l as usize)
-                    .collect()
-            )
-        }
-    )
+    Box::new(move |item| {
+        Label::SeqClassification(
+            operations(&item.processed, &item.original, use_graphemes)
+                .into_iter()
+                .map(|l| l as usize)
+                .collect(),
+        )
+    })
 }
 
 pub fn labeling(labeling: LabelingConfig) -> LabelingFn {
     match labeling {
-        LabelingConfig::LabelWhitespaceCorrection(use_graphemes) => whitespace_correction_label(use_graphemes)
+        LabelingConfig::LabelWhitespaceCorrection(use_graphemes) => {
+            whitespace_correction_label(use_graphemes)
+        }
     }
 }
 

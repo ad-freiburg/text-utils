@@ -1,13 +1,13 @@
+use crate::unicode::CS;
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use crate::unicode::CS;
 
 #[derive(Debug, Clone)]
 pub enum InferenceResult {
     SequenceClassification(Vec<usize>),
-    SequenceGeneration(Vec<usize>)
+    SequenceGeneration(Vec<usize>),
 }
 
 impl IntoPy<Py<PyDict>> for InferenceResult {
@@ -69,9 +69,7 @@ pub fn char_windows(
         .collect()
 }
 
-#[pyfunction(
-use_graphemes = "true"
-)]
+#[pyfunction(use_graphemes = "true")]
 #[pyo3(name = "char_windows")]
 fn char_windows_py(
     s: &str,
@@ -83,7 +81,7 @@ fn char_windows_py(
 }
 
 #[inline]
-fn count_until(mut iter: impl Iterator<Item=usize>, max_length: usize, cs: &CS) -> usize {
+fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS) -> usize {
     iter.fold_while(0usize, |acc, idx| {
         let next_acc = acc + cs.char_byte_len(idx);
         if next_acc > max_length {
@@ -91,7 +89,8 @@ fn count_until(mut iter: impl Iterator<Item=usize>, max_length: usize, cs: &CS) 
         } else {
             Continue(next_acc)
         }
-    }).into_inner()
+    })
+    .into_inner()
 }
 
 pub fn byte_windows(
@@ -111,8 +110,7 @@ pub fn byte_windows(
     let mut window_start = 0;
     while window_start < cs.len() {
         let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
-        let window_end = window_start
-            + count_until(window_start..cs.len(), window_length, &cs);
+        let window_end = window_start + count_until(window_start..cs.len(), window_length, &cs);
         assert!(
             window_end > window_start,
             "{}",
@@ -124,11 +122,9 @@ pub fn byte_windows(
                 cs.char_byte_len(window_start)
             )
         );
-        let ctx_start = window_start.saturating_sub(
-            count_until((0..window_start).rev(), context_length, &cs)
-        );
-        let ctx_end = window_end
-            + count_until(window_end..cs.len(), context_length, &cs);
+        let ctx_start =
+            window_start.saturating_sub(count_until((0..window_start).rev(), context_length, &cs));
+        let ctx_end = window_end + count_until(window_end..cs.len(), context_length, &cs);
 
         windows.push(InferenceWindow {
             ctx_start,
@@ -143,9 +139,7 @@ pub fn byte_windows(
     windows
 }
 
-#[pyfunction(
-use_graphemes = "true"
-)]
+#[pyfunction(use_graphemes = "true")]
 #[pyo3(name = "byte_windows")]
 fn byte_windows_py(
     s: &str,

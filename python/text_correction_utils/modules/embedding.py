@@ -45,13 +45,13 @@ class LearnedPositionalEmbedding(TokenEmbedding):
 
 class Embedding(nn.Module):
     def __init__(
-            self,
-            num_embeddings: int,
-            embedding_dim: int,
-            pad_token_id: int,
-            dropout: float,
-            positional_embeddings: str,
-            max_length: int
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        pad_token_id: int,
+        dropout: float,
+        positional_embeddings: str,
+        max_length: int
     ):
         super().__init__()
         self.positional_embeddings = positional_embeddings

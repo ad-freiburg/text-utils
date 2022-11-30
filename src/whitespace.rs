@@ -1,8 +1,8 @@
-use itertools::Itertools;
-use regex::{escape, Regex};
-use pyo3::prelude::*;
 use crate::text::clean;
 use crate::unicode::{Character, CS};
+use itertools::Itertools;
+use pyo3::prelude::*;
+use regex::{escape, Regex};
 
 pub fn remove(s: &str) -> String {
     s.split_whitespace().join("")
@@ -10,25 +10,19 @@ pub fn remove(s: &str) -> String {
 
 #[pyfunction]
 #[pyo3(name = "remove")]
-fn remove_py(
-    s: &str
-) -> PyResult<String> {
+fn remove_py(s: &str) -> PyResult<String> {
     Ok(remove(s))
 }
 
 pub fn full(s: &str, use_graphemes: bool) -> String {
-    s
-        .split_whitespace()
+    s.split_whitespace()
         .map(|w| CS::new(w, use_graphemes).chars().join(" "))
         .join(" ")
 }
 
 #[pyfunction]
 #[pyo3(name = "full")]
-fn full_py(
-    s: &str,
-    use_graphemes: bool,
-) -> PyResult<String> {
+fn full_py(s: &str, use_graphemes: bool) -> PyResult<String> {
     Ok(full(s, use_graphemes))
 }
 
@@ -62,9 +56,11 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
         } else if from_char.is_whitespace() {
             operations.push(2);
         } else {
-            panic!("should not happen, most likely your inputs contain multiple \
+            panic!(
+                "should not happen, most likely your inputs contain multiple \
              consecutive whitespaces, prepare them first using the clean function:\n\
-             from: \"{from}\"\nto  : \"{to}\"");
+             from: \"{from}\"\nto  : \"{to}\""
+            );
         }
         from_ptr += 1;
     }
@@ -73,11 +69,7 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
 
 #[pyfunction]
 #[pyo3(name = "operations")]
-fn operations_py(
-    from: &str,
-    to: &str,
-    use_graphemes: bool,
-) -> PyResult<Vec<u8>> {
+fn operations_py(from: &str, to: &str, use_graphemes: bool) -> PyResult<Vec<u8>> {
     Ok(operations(from, to, use_graphemes))
 }
 
@@ -95,14 +87,13 @@ pub fn repair(s: &str, operations: &[u8], use_graphemes: bool) -> String {
 
     let mut new_chars = vec![];
     new_chars.reserve(operations.len());
-    for (idx, (char, op)) in chars
-        .iter()
-        .zip(operations.iter())
-        .enumerate() {
-        assert!(*op <= 2, "operation should be either 0, 1, or 2, but got {}", op);
-        if *op == 1
-            && !char.is_whitespace()
-            && (idx == 0 || !chars[idx - 1].is_whitespace()) {
+    for (idx, (char, op)) in chars.iter().zip(operations.iter()).enumerate() {
+        assert!(
+            *op <= 2,
+            "operation should be either 0, 1, or 2, but got {}",
+            op
+        );
+        if *op == 1 && !char.is_whitespace() && (idx == 0 || !chars[idx - 1].is_whitespace()) {
             new_chars.push(" ");
             new_chars.push(char.str);
         } else if *op == 2 && char.is_whitespace() {
@@ -116,26 +107,17 @@ pub fn repair(s: &str, operations: &[u8], use_graphemes: bool) -> String {
 
 #[pyfunction]
 #[pyo3(name = "repair")]
-fn repair_py(
-    s: &str,
-    operations: Vec<u8>,
-    use_graphemes: bool,
-) -> PyResult<String> {
+fn repair_py(s: &str, operations: Vec<u8>, use_graphemes: bool) -> PyResult<String> {
     Ok(repair(s, &operations, use_graphemes))
 }
 
-pub fn find_substring_ignoring_whitespace(
-    s: &str,
-    substring: &str,
-) -> Option<(usize, usize)> {
-    let substring =
-        substring
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .map(|c| escape(c.to_string().as_str()))
-            .join(r"\s*");
-    let re = Regex::new(substring.as_str())
-        .expect("invalid regex, should not happen");
+pub fn find_substring_ignoring_whitespace(s: &str, substring: &str) -> Option<(usize, usize)> {
+    let substring = substring
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| escape(c.to_string().as_str()))
+        .join(r"\s*");
+    let re = Regex::new(substring.as_str()).expect("invalid regex, should not happen");
     if let Some(pattern_match) = re.find(s) {
         Some((pattern_match.start(), pattern_match.end()))
     } else {
@@ -176,7 +158,10 @@ mod tests {
 
     #[test]
     fn test_full() {
-        assert_eq!(full(" t   h is is \n\t a tes    t ", true), "t h i s i s a t e s t");
+        assert_eq!(
+            full(" t   h is is \n\t a tes    t ", true),
+            "t h i s i s a t e s t"
+        );
         assert_eq!(full("", true), "");
     }
 
@@ -196,26 +181,14 @@ mod tests {
     fn test_repair() {
         let from = " t h isis a test  ";
         let to = "this is a test";
-        assert_eq!(
-            repair(from, &operations(from, to, true), true),
-            to
-        );
+        assert_eq!(repair(from, &operations(from, to, true), true), to);
         assert_eq!(
             repair(to, &operations(to, from, true), true),
             "t h isis a test"
         );
-        assert_eq!(
-            repair("    ", &vec![2, 2, 2, 2], true),
-            ""
-        );
-        assert_eq!(
-            repair("  t  ", &vec![0, 2, 0, 0, 1], true),
-            "t"
-        );
-        assert_eq!(
-            repair("", &vec![], true),
-            ""
-        );
+        assert_eq!(repair("    ", &vec![2, 2, 2, 2], true), "");
+        assert_eq!(repair("  t  ", &vec![0, 2, 0, 0, 1], true), "t");
+        assert_eq!(repair("", &vec![], true), "");
     }
 
     #[test]

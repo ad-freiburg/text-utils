@@ -1,7 +1,7 @@
+use crate::unicode::{CharString, Character, CS};
 use pyo3::prelude::*;
-use crate::unicode::{Character, CharString, CS};
 
-use crate::utils::{Matrix};
+use crate::utils::Matrix;
 
 #[derive(Copy, Clone, Debug)]
 enum EditOp {
@@ -43,7 +43,8 @@ fn _calculate_edit_matrices(
             let j = b_idx + 1;
 
             let mut costs = vec![
-                (d[i - 1][j] + 1, EditOp::Delete), (d[i][j - 1] + 1, EditOp::Insert),
+                (d[i - 1][j] + 1, EditOp::Delete),
+                (d[i][j - 1] + 1, EditOp::Insert),
             ];
             if a_char == b_char {
                 costs.push((d[i - 1][j - 1], EditOp::Keep));
@@ -51,30 +52,27 @@ fn _calculate_edit_matrices(
                 // chars are not equal, only allow replacement if no space is involved
                 // or we are allowed to replace spaces
                 if !spaces_insert_delete_only
-                    || (!a_char.is_whitespace() && !b_char.is_whitespace()) {
+                    || (!a_char.is_whitespace() && !b_char.is_whitespace())
+                {
                     costs.push((d[i - 1][j - 1] + 1, EditOp::Replace));
                 }
             }
             // check if we can swap chars, that is if we are allowed to swap
             // and if the chars to swap match
-            if with_swap
-                && i > 1
-                && j > 1
-                && a_char == &b_chars[j - 2]
-                && &a_chars[i - 2] == b_char {
+            if with_swap && i > 1 && j > 1 && a_char == &b_chars[j - 2] && &a_chars[i - 2] == b_char
+            {
                 // we can swap the chars, but only allow swapping if no space is involved
                 // or we are allowed to swap spaces
                 if !spaces_insert_delete_only
-                    || (!a_char.is_whitespace() && !a_chars[i - 2].is_whitespace()) {
+                    || (!a_char.is_whitespace() && !a_chars[i - 2].is_whitespace())
+                {
                     costs.push((d[i - 2][j - 2] + 1, EditOp::Swap));
                 }
             }
 
-            let (min_cost, min_op) = costs.
-                iter()
-                .min_by(|(cost_1, _), (cost_2, _)| {
-                    cost_1.cmp(cost_2)
-                })
+            let (min_cost, min_op) = costs
+                .iter()
+                .min_by(|(cost_1, _), (cost_2, _)| cost_1.cmp(cost_2))
                 .expect("should not happen");
             d[i][j] = *min_cost;
             ops[i][j] = *min_op;
@@ -104,7 +102,9 @@ pub fn edit_operations(
     while i > 0 || j > 0 {
         let op = &ops[i][j];
         match op {
-            EditOp::None => { panic!("should not happen") }
+            EditOp::None => {
+                panic!("should not happen")
+            }
             EditOp::Keep => {
                 i -= 1;
                 j -= 1;
@@ -134,9 +134,9 @@ pub fn edit_operations(
 }
 
 #[pyfunction(
-use_graphemes = "true",
-with_swap = "true",
-spaces_insert_delete_only = "false"
+    use_graphemes = "true",
+    with_swap = "true",
+    spaces_insert_delete_only = "false"
 )]
 #[pyo3(name = "edit_operations")]
 fn edit_operations_py(
@@ -146,7 +146,13 @@ fn edit_operations_py(
     with_swap: bool,
     spaces_insert_delete_only: bool,
 ) -> PyResult<Vec<(u8, usize, usize)>> {
-    Ok(edit_operations(&a, &b, use_graphemes, with_swap, spaces_insert_delete_only))
+    Ok(edit_operations(
+        &a,
+        &b,
+        use_graphemes,
+        with_swap,
+        spaces_insert_delete_only,
+    ))
 }
 
 pub fn edit_distance(
@@ -166,9 +172,9 @@ pub fn edit_distance(
 }
 
 #[pyfunction(
-use_graphemes = "true",
-with_swap = "true",
-spaces_insert_delete_only = "false"
+    use_graphemes = "true",
+    with_swap = "true",
+    spaces_insert_delete_only = "false"
 )]
 #[pyo3(name = "edit_distance")]
 fn edit_distance_py(
@@ -202,73 +208,25 @@ mod tests {
 
     #[test]
     fn test_edit_operations() {
-        let ed_ops = edit_operations(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            true,
-            false,
-        );
+        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, true, false);
         assert_eq!(ed_ops, vec![(3, 1, 1), (3, 4, 4)]);
-        let ed_ops = edit_operations(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            true,
-            true,
-        );
+        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, true, true);
         assert_eq!(ed_ops, vec![(3, 1, 1), (0, 4, 4), (1, 5, 6)]);
-        let ed_ops = edit_operations(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            false,
-            false,
-        );
+        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, false, false);
         assert_eq!(ed_ops, vec![(0, 1, 1), (0, 2, 3), (1, 3, 5), (1, 5, 6)]);
-        let ed_ops = edit_operations(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            false,
-            true,
-        );
+        let ed_ops = edit_operations("this is a test", "tihsi s a test", false, false, true);
         assert_eq!(ed_ops, vec![(0, 1, 1), (0, 2, 3), (1, 3, 5), (1, 5, 6)]);
     }
 
     #[test]
     fn test_edit_distance() {
-        let ed = edit_distance(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            true,
-            false,
-        );
+        let ed = edit_distance("this is a test", "tihsi s a test", false, true, false);
         assert_eq!(ed, 2);
-        let ed = edit_distance(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            true,
-            true,
-        );
+        let ed = edit_distance("this is a test", "tihsi s a test", false, true, true);
         assert_eq!(ed, 3);
-        let ed = edit_distance(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            false,
-            false,
-        );
+        let ed = edit_distance("this is a test", "tihsi s a test", false, false, false);
         assert_eq!(ed, 4);
-        let ed = edit_distance(
-            "this is a test",
-            "tihsi s a test",
-            false,
-            false,
-            true,
-        );
+        let ed = edit_distance("this is a test", "tihsi s a test", false, false, true);
         assert_eq!(ed, 4);
     }
 }

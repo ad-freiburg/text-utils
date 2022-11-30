@@ -1,7 +1,7 @@
+use crate::utils::run_length_encode;
 use std::fmt::{Display, Formatter};
 use std::str::Chars;
-use unicode_segmentation::{UnicodeSegmentation};
-use crate::utils::{run_length_encode};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CharString<'a> {
@@ -24,15 +24,9 @@ pub(crate) type CS<'a> = CharString<'a>;
 impl<'a> CharString<'a> {
     pub fn new(str: &str, use_graphemes: bool) -> CharString {
         let cluster_lengths: Vec<usize> = if use_graphemes {
-            str
-                .graphemes(true)
-                .map(|s| s.len())
-                .collect()
+            str.graphemes(true).map(|s| s.len()).collect()
         } else {
-            str
-                .chars()
-                .map(|c| c.len_utf8())
-                .collect()
+            str.chars().map(|c| c.len_utf8()).collect()
         };
         let rle_cluster_lengths = run_length_encode(&cluster_lengths);
         CharString {
@@ -73,11 +67,7 @@ impl<'a> CharString<'a> {
     }
 
     #[inline]
-    pub(crate) fn char_range_to_byte_range(
-        &self,
-        start: usize,
-        end: usize,
-    ) -> (usize, usize) {
+    pub(crate) fn char_range_to_byte_range(&self, start: usize, end: usize) -> (usize, usize) {
         assert!(start < end && end <= self.len());
         let (start_byte, mut end_byte) = self.byte_start_end(start);
         if start < end - 1 {
@@ -116,7 +106,7 @@ impl<'a> CharString<'a> {
 
 impl Display for CharString<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.str, )
+        write!(f, "{}", self.str,)
     }
 }
 
@@ -134,7 +124,7 @@ impl<'a> Iterator for Characters<'a> {
         }
         let (start, end) = self.char_str.byte_start_end(self.idx);
         let char = Character {
-            str: &self.char_str.str[start..end]
+            str: &self.char_str.str[start..end],
         };
         self.idx += 1;
         Some(char)

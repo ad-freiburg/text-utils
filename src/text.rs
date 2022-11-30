@@ -1,7 +1,7 @@
-use std::collections::HashSet;
 use itertools::Itertools;
 use pyo3::prelude::*;
 use rand::Rng;
+use std::collections::HashSet;
 
 use crate::unicode::CS;
 use crate::utils::Matrix;
@@ -21,16 +21,14 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     let mut boundaries = vec![];
     let mut start: Option<usize> = None;
     let mut num_elements = 0;
-    for (idx, char) in CS::new(str, use_graphemes)
-        .chars()
-        .enumerate() {
+    for (idx, char) in CS::new(str, use_graphemes).chars().enumerate() {
         match (char.is_whitespace(), start) {
             (true, Some(start_idx)) => {
                 boundaries.push((start_idx, idx));
                 start = None;
             }
             (false, None) => start = Some(idx),
-            _ => ()
+            _ => (),
         }
         num_elements += 1;
     }
@@ -41,9 +39,7 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     boundaries
 }
 
-#[pyfunction(
-use_graphemes = "true"
-)]
+#[pyfunction(use_graphemes = "true")]
 #[pyo3(name = "word_boundaries")]
 fn word_boundaries_py(s: &str, use_graphemes: bool) -> PyResult<Vec<(usize, usize)>> {
     Ok(word_boundaries(s, use_graphemes))
@@ -54,11 +50,7 @@ fn str_match(a: &str, b: &str, ignore_case: bool) -> bool {
     a == b || (ignore_case && a.to_lowercase() == b.to_lowercase())
 }
 
-pub fn match_words(
-    a: &str,
-    b: &str,
-    ignore_case: bool,
-) -> Vec<(usize, usize)> {
+pub fn match_words(a: &str, b: &str, ignore_case: bool) -> Vec<(usize, usize)> {
     let a_words = a.split_whitespace().collect::<Vec<&str>>();
     let b_words = b.split_whitespace().collect::<Vec<&str>>();
 
@@ -84,13 +76,20 @@ pub fn match_words(
             let values = vec![
                 (d[i - 1][j], MatchOp::Delete),
                 (d[i][j - 1], MatchOp::Insert),
-                (d[i - 1][j - 1] + (matching as usize),
-                 if matching { MatchOp::Match } else { MatchOp::NoMatch }),
+                (
+                    d[i - 1][j - 1] + (matching as usize),
+                    if matching {
+                        MatchOp::Match
+                    } else {
+                        MatchOp::NoMatch
+                    },
+                ),
             ];
 
-            let (max_value, max_op) = values.iter().max_by(|(v_1, _), (v_2, _)| {
-                v_1.cmp(v_2)
-            }).expect("should not happen");
+            let (max_value, max_op) = values
+                .iter()
+                .max_by(|(v_1, _), (v_2, _)| v_1.cmp(v_2))
+                .expect("should not happen");
             d[i][j] = *max_value;
             ops[i][j] = *max_op;
         }
@@ -103,9 +102,15 @@ pub fn match_words(
     while i > 0 || j > 0 {
         let op = &ops[i][j];
         match op {
-            MatchOp::None => { panic!("should not happen") }
-            MatchOp::Delete => { i -= 1; }
-            MatchOp::Insert => { j -= 1; }
+            MatchOp::None => {
+                panic!("should not happen")
+            }
+            MatchOp::Delete => {
+                i -= 1;
+            }
+            MatchOp::Insert => {
+                j -= 1;
+            }
             MatchOp::Match => {
                 i -= 1;
                 j -= 1;
@@ -130,15 +135,9 @@ enum MatchOp {
     NoMatch,
 }
 
-#[pyfunction(
-ignore_case = "false"
-)]
+#[pyfunction(ignore_case = "false")]
 #[pyo3(name = "match_words")]
-fn match_words_py(
-    a: &str,
-    b: &str,
-    ignore_case: bool,
-) -> PyResult<Vec<(usize, usize)>> {
+fn match_words_py(a: &str, b: &str, ignore_case: bool) -> PyResult<Vec<(usize, usize)>> {
     Ok(match_words(a, b, ignore_case))
 }
 
@@ -156,10 +155,7 @@ pub fn possible_character_substrings(
     (0..num_chars - max_chars + 1)
         .map(|start_char| {
             let end_char = num_chars.min(start_char + max_chars);
-            let (
-                start_byte,
-                end_byte
-            ) = cs.char_range_to_byte_range(start_char, end_char);
+            let (start_byte, end_byte) = cs.char_range_to_byte_range(start_char, end_char);
             (start_byte, end_byte, end_char - start_char)
         })
         .collect()
@@ -187,7 +183,11 @@ pub fn possible_byte_substrings(
     let mut end = start;
     let mut substrings = vec![];
     while start < cs.len() && end < cs.len() {
-        let next_end_bytes = if end + 1 < cs.len() { cs.get(end + 1).len() } else { 0 };
+        let next_end_bytes = if end + 1 < cs.len() {
+            cs.get(end + 1).len()
+        } else {
+            0
+        };
         if next_end_bytes > max_bytes {
             substrings.push((start, end + 1));
             start = end + 2;
@@ -212,10 +212,7 @@ pub fn possible_byte_substrings(
     substrings
         .into_iter()
         .map(|(start_char, end_char)| {
-            let (
-                start_byte,
-                end_byte
-            ) = cs.char_range_to_byte_range(start_char, end_char);
+            let (start_byte, end_byte) = cs.char_range_to_byte_range(start_char, end_char);
             (start_byte, end_byte, end_char - start_char)
         })
         .collect()
@@ -253,8 +250,11 @@ pub fn edit_word<R: Rng>(
 ) -> (String, HashSet<usize>) {
     let mut exclude_indices = exclude_indices.unwrap_or(HashSet::new());
     let cs = CS::new(word, use_graphemes);
-    assert!(cs.chars().all(|c| !c.is_whitespace()), "edit word should only be called \
-    on strings that do not contain whitespace");
+    assert!(
+        cs.chars().all(|c| !c.is_whitespace()),
+        "edit word should only be called \
+    on strings that do not contain whitespace"
+    );
     if edits.is_empty() || cs.len() == 0 {
         return (word.to_string(), exclude_indices);
     }
@@ -264,12 +264,14 @@ pub fn edit_word<R: Rng>(
             let insert_indices: Vec<usize> = (0..=cs.len())
                 .filter_map(|idx| {
                     if exclude_indices.contains(&idx)
-                        || (idx > 0 && exclude_indices.contains(&(idx - 1))) {
+                        || (idx > 0 && exclude_indices.contains(&(idx - 1)))
+                    {
                         None
                     } else {
                         Some(idx)
                     }
-                }).collect();
+                })
+                .collect();
             let insert_str = &insertions[rng.gen_range(0..insertions.len())];
             if insert_indices.is_empty() || insert_str.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
@@ -296,7 +298,7 @@ pub fn edit_word<R: Rng>(
                 cs.sub(0, insert_idx).to_string()
                     + insert_str.as_str()
                     + cs.sub(insert_idx, cs.len()),
-                exclude_indices
+                exclude_indices,
             )
         }
         CharEdit::Delete if cs.len() > 1 => {
@@ -317,18 +319,11 @@ pub fn edit_word<R: Rng>(
             // adjust the excluded indices to the right of the delete idx accordingly
             exclude_indices = exclude_indices
                 .into_iter()
-                .map(|idx| {
-                    if idx > delete_idx {
-                        idx - 1
-                    } else {
-                        idx
-                    }
-                })
+                .map(|idx| if idx > delete_idx { idx - 1 } else { idx })
                 .collect();
             (
-                cs.sub(0, delete_idx).to_string()
-                    + cs.sub(delete_idx + 1, cs.len()),
-                exclude_indices
+                cs.sub(0, delete_idx).to_string() + cs.sub(delete_idx + 1, cs.len()),
+                exclude_indices,
             )
         }
         CharEdit::Replace(replacements) if !replacements.is_empty() => {
@@ -380,14 +375,13 @@ pub fn edit_word<R: Rng>(
                 cs.sub(0, replace_idx).to_string()
                     + replacement.as_str()
                     + cs.sub(replace_idx + 1, cs.len()),
-                exclude_indices
+                exclude_indices,
             )
         }
         CharEdit::Swap if cs.len() > 1 => {
             let swap_indices: Vec<usize> = (0..cs.len() - 1)
                 .filter_map(|idx| {
-                    if exclude_indices.contains(&idx)
-                        || exclude_indices.contains(&(idx + 1)) {
+                    if exclude_indices.contains(&idx) || exclude_indices.contains(&(idx + 1)) {
                         None
                     } else {
                         Some(idx)
@@ -407,10 +401,10 @@ pub fn edit_word<R: Rng>(
                     + cs.get(swap_idx + 1)
                     + cs.get(swap_idx)
                     + cs.sub(swap_idx + 2, cs.len()),
-                exclude_indices
+                exclude_indices,
             )
         }
-        _ => (cs.str.to_string(), exclude_indices)
+        _ => (cs.str.to_string(), exclude_indices),
     }
 }
 
@@ -426,12 +420,15 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use crate::text::CharEdit::{Delete, Insert, Replace, Swap};
+    use crate::text::{
+        clean, edit_word, match_words, possible_byte_substrings, possible_character_substrings,
+        word_boundaries,
+    };
+    use crate::unicode::CS;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
-    use crate::text::{clean, edit_word, match_words, possible_byte_substrings, possible_character_substrings, word_boundaries};
-    use crate::text::CharEdit::{Delete, Insert, Replace, Swap};
-    use crate::unicode::CS;
+    use std::collections::HashSet;
 
     #[test]
     fn test_clean() {
@@ -455,17 +452,9 @@ mod tests {
 
     #[test]
     fn test_match_words() {
-        let matches = match_words(
-            "this is a test",
-            "This is also a test",
-            false,
-        );
+        let matches = match_words("this is a test", "This is also a test", false);
         assert_eq!(matches, vec![(1, 1), (2, 3), (3, 4)]);
-        let matches = match_words(
-            "this is a test",
-            "This is also a test",
-            true,
-        );
+        let matches = match_words("this is a test", "This is also a test", true);
         assert_eq!(matches, vec![(0, 0), (1, 1), (2, 3), (3, 4)]);
     }
 
@@ -483,7 +472,10 @@ mod tests {
         let v = possible_character_substrings(s, 2, true);
         assert_eq!(v, vec![(0, 6, 2), (3, 12, 2), (6, 18, 2)]);
         let v = possible_character_substrings(s, 2, false);
-        assert_eq!(v, vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]);
+        assert_eq!(
+            v,
+            vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]
+        );
         let v = possible_character_substrings("", 4, true);
         assert_eq!(v, vec![(0, 0, 0)]);
     }
@@ -504,7 +496,10 @@ mod tests {
         let v = possible_byte_substrings(s, 6, true);
         assert_eq!(v, vec![(0, 6, 2), (6, 12, 1), (12, 18, 1)]);
         let v = possible_byte_substrings(s, 6, false);
-        assert_eq!(v, vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]);
+        assert_eq!(
+            v,
+            vec![(0, 6, 2), (3, 9, 2), (6, 12, 2), (9, 15, 2), (12, 18, 2)]
+        );
         let v = possible_byte_substrings("", 4, true);
         assert_eq!(v, vec![(0, 0, 0)]);
     }
@@ -514,106 +509,48 @@ mod tests {
         let w = "täst";
         let mut rng = ChaCha8Rng::from_entropy();
         // test deletion of characters
-        let edits = vec![
-            Delete
-        ];
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            None,
-        );
+        let edits = vec![Delete];
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, None);
         assert!(ew.len() < w.len());
         assert_eq!(excluded.len(), 0);
         // test with excluded indices --> ä should be removed
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            Some(HashSet::from([0, 2, 3])),
-        );
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, Some(HashSet::from([0, 2, 3])));
         assert_eq!(&ew, "tst");
         // test deletion for word with 1 or fewer characters
-        let (ew, excluded) = edit_word(
-            "t",
-            true,
-            &mut rng,
-            &edits,
-            None,
-        );
+        let (ew, excluded) = edit_word("t", true, &mut rng, &edits, None);
         assert_eq!(ew.len(), 1);
         assert_eq!(excluded.len(), 0);
         // test insertion of characters
-        let edits = vec![
-            Insert(vec!["w".to_string()])
-        ];
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            None,
-        );
+        let edits = vec![Insert(vec!["w".to_string()])];
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, None);
         assert!(ew.len() > w.len());
         assert_eq!(excluded.len(), 1);
-        let ex_idx = *excluded.into_iter().collect::<Vec<usize>>().first().unwrap();
+        let ex_idx = *excluded
+            .into_iter()
+            .collect::<Vec<usize>>()
+            .first()
+            .unwrap();
         assert_eq!(CS::new(&ew, true).get(ex_idx), "w");
         // test with excluded indices --> w should be inserted at beginning
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            Some(HashSet::from([1, 2, 3])),
-        );
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, Some(HashSet::from([1, 2, 3])));
         assert_eq!(&ew, "wtäst");
         assert_eq!(excluded, HashSet::from([0, 2, 3, 4]));
         // test swapping of characters
-        let edits = vec![
-            Swap
-        ];
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            None,
-        );
+        let edits = vec![Swap];
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, None);
         assert_eq!(ew.len(), w.len());
         assert_eq!(excluded.len(), 2);
         // test with excluded indices --> ä should be swapped with s
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            Some(HashSet::from([0, 3])),
-        );
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, Some(HashSet::from([0, 3])));
         assert_eq!(&ew, "tsät");
         assert_eq!(excluded, HashSet::from([0, 1, 2, 3]));
         // test replacement of characters
-        let edits = vec![
-            Replace(vec!["bla".to_string()])
-        ];
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            None,
-        );
+        let edits = vec![Replace(vec!["bla".to_string()])];
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, None);
         assert!(ew.len() > w.len());
         assert_eq!(excluded.len(), 3);
         // test with excluded indices --> s should be replaced with bla
-        let (ew, excluded) = edit_word(
-            w,
-            true,
-            &mut rng,
-            &edits,
-            Some(HashSet::from([0, 1, 3])),
-        );
+        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, Some(HashSet::from([0, 1, 3])));
         assert_eq!(&ew, "täblat");
         assert_eq!(excluded, HashSet::from([0, 1, 2, 3, 4, 5]));
     }

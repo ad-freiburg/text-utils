@@ -1,14 +1,14 @@
+use crate::unicode::CS;
+use crate::utils::{py_invalid_type_error, py_required_key_error, run_length_decode};
+use itertools::Itertools;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::thread::sleep;
 use std::time::Duration;
-use itertools::Itertools;
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use serde::{Deserialize, Serialize};
-use crate::unicode::{CS};
-use crate::utils::{py_invalid_type_error, py_required_key_error, run_length_decode};
 
 pub const UNK: &str = "<unk>";
 pub const BOS: &str = "<bos>";
@@ -135,7 +135,7 @@ impl<'a> FromPyObject<'a> for TokenizationInfo {
         let info_type: String = info_type.extract()?;
         let info = match info_type.as_str() {
             "empty" => TokenizationInfo::Empty,
-            k => return Err(py_invalid_type_error(k, "tokenization info"))
+            k => return Err(py_invalid_type_error(k, "tokenization info")),
         };
         Ok(info)
     }
@@ -154,10 +154,7 @@ pub struct Tokenization {
 
 impl Tokenization {
     pub fn new(token_ids: Vec<u32>, info: TokenizationInfo) -> Self {
-        Tokenization {
-            token_ids,
-            info,
-        }
+        Tokenization { token_ids, info }
     }
 }
 
@@ -218,7 +215,10 @@ struct DummyTokenizer {
 
 impl DummyTokenizer {
     fn new(delay: Duration) -> Self {
-        DummyTokenizer { delay, dummy_token: "".to_string() }
+        DummyTokenizer {
+            delay,
+            dummy_token: "".to_string(),
+        }
     }
 }
 
@@ -253,12 +253,7 @@ impl Tokenize for DummyTokenizer {
 
     fn add_special_tokens(&mut self, _: &[String]) {}
 
-    fn tokenize(
-        &self,
-        _: &str,
-        _: Option<&[String]>,
-        _: Option<&[String]>,
-    ) -> Tokenization {
+    fn tokenize(&self, _: &str, _: Option<&[String]>, _: Option<&[String]>) -> Tokenization {
         sleep(self.delay.clone());
         Tokenization::new(vec![], TokenizationInfo::Empty)
     }
@@ -332,14 +327,8 @@ impl CharTokenizer {
     }
 
     pub fn default() -> Self {
-        let pfx: Vec<String> = DEFAULT_PREFIX_TOKENS
-            .iter()
-            .map(|&p| p.into())
-            .collect();
-        let sfx: Vec<String> = DEFAULT_SUFFIX_TOKENS
-            .iter()
-            .map(|&p| p.into())
-            .collect();
+        let pfx: Vec<String> = DEFAULT_PREFIX_TOKENS.iter().map(|&p| p.into()).collect();
+        let sfx: Vec<String> = DEFAULT_SUFFIX_TOKENS.iter().map(|&p| p.into()).collect();
         Self::new(true, &pfx, &sfx)
     }
 }
@@ -358,7 +347,7 @@ impl Tokenize for CharTokenizer {
     }
 
     fn eos_token_id(&self) -> u32 {
-       *self.special_vocab.get(EOS).unwrap()
+        *self.special_vocab.get(EOS).unwrap()
     }
 
     fn pad_token_id(&self) -> u32 {
@@ -395,30 +384,28 @@ impl Tokenize for CharTokenizer {
                 .unwrap_or(&self.default_prefix_tokens)
                 .iter()
                 .map(|t| self.special_token_to_id(t))
-                .chain(
-                    CS::new(s, self.use_graphemes)
-                        .chars()
-                        .filter_map(|c| {
-                            // Character always has at least one char so this is safe
-                            let mut c_iter = c.code_points();
-                            let char = c_iter.next().unwrap();
-                            // return unk if Character has another char because
-                            // our tokens in the vocab are all single char tokens
-                            if c_iter.next().is_some() {
-                                Some(self.unk_token_id())
-                            } else {
-                                Some(self.vocab
-                                    .get(&char)
-                                    .copied()
-                                    .unwrap_or(self.unk_token_id()))
-                            }
-                        })
-                )
+                .chain(CS::new(s, self.use_graphemes).chars().filter_map(|c| {
+                    // Character always has at least one char so this is safe
+                    let mut c_iter = c.code_points();
+                    let char = c_iter.next().unwrap();
+                    // return unk if Character has another char because
+                    // our tokens in the vocab are all single char tokens
+                    if c_iter.next().is_some() {
+                        Some(self.unk_token_id())
+                    } else {
+                        Some(
+                            self.vocab
+                                .get(&char)
+                                .copied()
+                                .unwrap_or(self.unk_token_id()),
+                        )
+                    }
+                }))
                 .chain(
                     suffix
                         .unwrap_or(&self.default_suffix_tokens)
                         .iter()
-                        .map(|t| self.special_token_to_id(t))
+                        .map(|t| self.special_token_to_id(t)),
                 )
                 .collect(),
             TokenizationInfo::Empty,
@@ -485,24 +472,17 @@ impl ByteTokenizer {
     }
 
     pub fn default() -> Self {
-        let pfx: Vec<String> = DEFAULT_PREFIX_TOKENS
-            .iter()
-            .map(|&p| p.into())
-            .collect();
-        let sfx: Vec<String> = DEFAULT_SUFFIX_TOKENS
-            .iter()
-            .map(|&p| p.into())
-            .collect();
+        let pfx: Vec<String> = DEFAULT_PREFIX_TOKENS.iter().map(|&p| p.into()).collect();
+        let sfx: Vec<String> = DEFAULT_SUFFIX_TOKENS.iter().map(|&p| p.into()).collect();
         Self::new(true, &pfx, &sfx)
     }
 
     fn split(&self, s: &str) -> (Vec<u32>, Vec<usize>) {
-        let tokens = s
-            .as_bytes()
-            .iter()
-            .map(|b| *b as u32)
-            .collect();
-        (tokens, run_length_decode(&CS::new(s, self.use_graphemes).rle_cluster_lengths))
+        let tokens = s.as_bytes().iter().map(|b| *b as u32).collect();
+        (
+            tokens,
+            run_length_decode(&CS::new(s, self.use_graphemes).rle_cluster_lengths),
+        )
     }
 }
 
@@ -520,7 +500,7 @@ impl Tokenize for ByteTokenizer {
     }
 
     fn eos_token_id(&self) -> u32 {
-       *self.special_vocab.get(EOS).unwrap()
+        *self.special_vocab.get(EOS).unwrap()
     }
 
     fn pad_token_id(&self) -> u32 {
@@ -563,7 +543,7 @@ impl Tokenize for ByteTokenizer {
                     suffix
                         .unwrap_or(&self.default_suffix_tokens)
                         .iter()
-                        .map(|t| self.special_token_to_id(t))
+                        .map(|t| self.special_token_to_id(t)),
                 )
                 .collect(),
             TokenizationInfo::TokenGroups(info),
@@ -573,13 +553,7 @@ impl Tokenize for ByteTokenizer {
     fn de_tokenize(&self, token_ids: &[u32]) -> String {
         let bytes: Vec<u8> = token_ids
             .iter()
-            .filter_map(|t| {
-                if *t < 256u32 {
-                    Some(*t as u8)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|t| if *t < 256u32 { Some(*t as u8) } else { None })
             .collect();
         String::from_utf8(bytes).expect("invalid utf8")
     }
@@ -605,12 +579,8 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
         TokenizerConfig::Character(use_g, pfx, sfx) => {
             Box::new(CharTokenizer::new(use_g, &pfx, &sfx))
         }
-        TokenizerConfig::Byte(use_g, pfx, sfx) => {
-            Box::new(ByteTokenizer::new(use_g, &pfx, &sfx))
-        }
-        TokenizerConfig::Dummy(d) => {
-            Box::new(DummyTokenizer::new(d))
-        }
+        TokenizerConfig::Byte(use_g, pfx, sfx) => Box::new(ByteTokenizer::new(use_g, &pfx, &sfx)),
+        TokenizerConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
     }
 }
 
@@ -630,16 +600,14 @@ impl PyTokenizer {
             name: match config {
                 TokenizerConfig::Character(_, _, _) => "character",
                 TokenizerConfig::Byte(_, _, _) => "byte",
-                TokenizerConfig::Dummy(_) => "dummy"
-            }.to_string(),
+                TokenizerConfig::Dummy(_) => "dummy",
+            }
+            .to_string(),
             tokenizer: tokenizer(config),
         })
     }
 
-    #[args(
-    prefix = "None",
-    suffix = "None"
-    )]
+    #[args(prefix = "None", suffix = "None")]
     fn tokenize(
         &self,
         s: &str,
@@ -657,7 +625,8 @@ impl PyTokenizer {
                 Some(suffix.as_ref().unwrap())
             } else {
                 None
-            }))
+            },
+        ))
     }
 
     fn special_token_to_id(&self, token: &str) -> PyResult<u32> {
@@ -705,15 +674,13 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use crate::tokenization::{BOS, EOS, CharTokenizer, Tokenize, ByteTokenizer, Tokenization};
+    use crate::tokenization::{ByteTokenizer, CharTokenizer, Tokenization, Tokenize, BOS, EOS};
 
     #[test]
     fn test_char_tokenizer() {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
-        let tok = CharTokenizer::new(
-            true, &pfx, &sfx,
-        );
+        let tok = CharTokenizer::new(true, &pfx, &sfx);
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None);
         assert_eq!(token_ids.len(), 6 + 2);
@@ -725,15 +692,14 @@ mod tests {
     fn test_byte_tokenizer() {
         let pfx = vec![BOS.to_string()];
         let sfx = vec![EOS.to_string()];
-        let tok = ByteTokenizer::new(
-            true, &pfx, &sfx,
-        );
+        let tok = ByteTokenizer::new(true, &pfx, &sfx);
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None);
         assert_eq!(
             token_ids[1..token_ids.len() - 1]
                 .iter()
-                .map(|tok| *tok as u8).collect::<Vec<u8>>(),
+                .map(|tok| *tok as u8)
+                .collect::<Vec<u8>>(),
             text.as_bytes().clone()
         );
         assert_eq!(token_ids.len(), 7 + 2);

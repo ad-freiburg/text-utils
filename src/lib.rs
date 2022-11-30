@@ -3,14 +3,14 @@ extern crate core;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-pub mod edit_distance;
-pub mod text;
 pub mod data;
-pub mod tokenization;
-pub mod whitespace;
-pub mod utils;
-pub mod unicode;
+pub mod edit_distance;
 pub mod inference;
+pub mod text;
+pub mod tokenization;
+pub mod unicode;
+pub mod utils;
+pub mod whitespace;
 
 #[pymodule]
 fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {

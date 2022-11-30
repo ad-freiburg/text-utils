@@ -17,16 +17,16 @@ class _TransformerEncoderLayer(nn.Module):
     __constants__ = ['batch_first', 'norm_first']
 
     def __init__(
-            self,
-            d_model,
-            nhead,
-            with_pos: bool = False,
-            dim_feedforward=2048,
-            dropout=0.1,
-            activation=F.relu,
-            layer_norm_eps=1e-5,
-            device=None,
-            dtype=None
+        self,
+        d_model,
+        nhead,
+        with_pos: bool = False,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation=F.relu,
+        layer_norm_eps=1e-5,
+        device=None,
+        dtype=None
     ) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(_TransformerEncoderLayer, self).__init__()
@@ -58,10 +58,10 @@ class _TransformerEncoderLayer(nn.Module):
         super(_TransformerEncoderLayer, self).__setstate__(state)
 
     def forward(
-            self,
-            src: torch.Tensor,
-            pos: Optional[torch.Tensor] = None,
-            padding_mask: Optional[torch.Tensor] = None
+        self,
+        src: torch.Tensor,
+        pos: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         r"""Pass the input through the encoder layer.
         Args:
@@ -87,10 +87,10 @@ class _TransformerEncoderLayer(nn.Module):
 
     # self-attention block
     def _sa_block(
-            self,
-            x: torch.Tensor,
-            pos: Optional[torch.Tensor],
-            padding_mask: Optional[torch.Tensor]
+        self,
+        x: torch.Tensor,
+        pos: Optional[torch.Tensor],
+        padding_mask: Optional[torch.Tensor]
     ) -> torch.Tensor:
         x = self.self_attn(
             self._with_pos(x, pos),
@@ -109,26 +109,26 @@ class _TransformerEncoderLayer(nn.Module):
 
 class Encoder(nn.Module):
     def forward(
-            self,
-            x: torch.Tensor,
-            lengths: List[int],
-            pos: Optional[torch.Tensor],
-            **kwargs: Dict[str, Any]
+        self,
+        x: torch.Tensor,
+        lengths: List[int],
+        pos: Optional[torch.Tensor],
+        **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         raise NotImplementedError
 
 
 class TransformerEncoder(Encoder):
     def __init__(
-            self,
-            dim: int,
-            num_layers: int,
-            heads: int,
-            ffw_dim: int,
-            dropout: float,
-            with_pos: bool,
-            activation: str = "gelu_approximate",
-            share_parameters: bool = False
+        self,
+        dim: int,
+        num_layers: int,
+        heads: int,
+        ffw_dim: int,
+        dropout: float,
+        with_pos: bool,
+        activation: str = "gelu_approximate",
+        share_parameters: bool = False
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -156,11 +156,11 @@ class TransformerEncoder(Encoder):
         )
 
     def forward(
-            self,
-            x: torch.Tensor,
-            lengths: List[int],
-            pos: Optional[torch.Tensor],
-            **kwargs: Dict[str, Any]
+        self,
+        x: torch.Tensor,
+        lengths: List[int],
+        pos: Optional[torch.Tensor],
+        **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         padding_mask = torch.zeros(x.shape[:2], device=x.device, dtype=torch.bool)
         for i, length in enumerate(lengths):
@@ -176,12 +176,12 @@ class TransformerEncoder(Encoder):
 
 class RNNEncoder(Encoder):
     def __init__(
-            self,
-            dim: int,
-            num_layers: int,
-            rnn_type: str,
-            dropout: float,
-            bidirectional: bool = True
+        self,
+        dim: int,
+        num_layers: int,
+        rnn_type: str,
+        dropout: float,
+        bidirectional: bool = True
     ):
         super().__init__()
         self.bidirectional = bidirectional
@@ -206,11 +206,11 @@ class RNNEncoder(Encoder):
             raise ValueError(f"unknown rnn type {rnn_type}")
 
     def forward(
-            self,
-            x: torch.Tensor,
-            lengths: List[int],
-            pos: Optional[torch.Tensor],
-            **kwargs: Dict[str, Any]
+        self,
+        x: torch.Tensor,
+        lengths: List[int],
+        pos: Optional[torch.Tensor],
+        **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         packed = rnn.pack_padded_sequence(
             x,
@@ -227,12 +227,12 @@ class RNNEncoder(Encoder):
 
 
 def _cnn_block(
-        dim: int,
-        k: int,
-        stride: int,
-        dropout: float,
-        activation: str,
-        no_activation: bool
+    dim: int,
+    k: int,
+    stride: int,
+    dropout: float,
+    activation: str,
+    no_activation: bool
 ) -> nn.Sequential:
     modules = [
         nn.Conv1d(dim, dim, k, stride, padding=k // 2)
@@ -245,13 +245,13 @@ def _cnn_block(
 
 class CNNEncoder(Encoder):
     def __init__(
-            self,
-            dim: int,
-            num_layers: int,
-            dropout: float,
-            kernel_sizes: Optional[Tuple[int, ...]] = None,
-            strides: Optional[Tuple[int, ...]] = None,
-            activation: str = "gelu_approximate"
+        self,
+        dim: int,
+        num_layers: int,
+        dropout: float,
+        kernel_sizes: Optional[Tuple[int, ...]] = None,
+        strides: Optional[Tuple[int, ...]] = None,
+        activation: str = "gelu_approximate"
     ):
         super().__init__()
         if kernel_sizes is None:
@@ -269,11 +269,11 @@ class CNNEncoder(Encoder):
         ])
 
     def forward(
-            self,
-            x: torch.Tensor,
-            lengths: List[int],
-            pos: Optional[torch.Tensor],
-            **kwargs: Dict[str, Any]
+        self,
+        x: torch.Tensor,
+        lengths: List[int],
+        pos: Optional[torch.Tensor],
+        **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         x = einops.rearrange(x, "b s c -> b c s")
         x = self.cnn(x)
@@ -282,10 +282,10 @@ class CNNEncoder(Encoder):
 
 class GroupingEncoder(Encoder):
     def __init__(
-            self,
-            encoder: Encoder,
-            group_first: bool = False,
-            group_aggregation: str = "mean"
+        self,
+        encoder: Encoder,
+        group_first: bool = False,
+        group_aggregation: str = "mean"
     ):
         super().__init__()
         self.encoder = encoder
@@ -293,12 +293,12 @@ class GroupingEncoder(Encoder):
         self.group_first = group_first
 
     def forward(
-            self,
-            x: torch.Tensor,
-            lengths: List[int],
-            pos: Optional[torch.Tensor],
-            groups: Optional[List[List[int]]] = None,
-            **kwargs: Dict[str, Any]
+        self,
+        x: torch.Tensor,
+        lengths: List[int],
+        pos: Optional[torch.Tensor],
+        groups: Optional[List[List[int]]] = None,
+        **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         assert groups is not None, "grouping encoder expects groups keyword argument"
         if self.group_first:

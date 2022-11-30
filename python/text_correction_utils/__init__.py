@@ -5,7 +5,8 @@ from text_correction_utils._internal import (
     text,
     whitespace,
     data,
-    tokenization
+    tokenization,
+    windows
 )
 
 from text_correction_utils import (

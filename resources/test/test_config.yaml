@@ -1,0 +1,6 @@
+test:
+  - 123
+  - "123"
+  - env(TEST_ENV_VAR)
+  - env(TEST_ENV_VAR_WITH_DEFAULT:123)
+subconfig: file(sub_dir/sub_config.yaml)

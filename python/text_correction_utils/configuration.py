@@ -8,13 +8,13 @@ YamlConfig = Union[List[Any], Dict[str, Any]]
 
 
 def _replace_files(s: YamlConfig, base_dir: str) -> YamlConfig:
-    file_ref_regex = re.compile(r"\s*FILE\((.+\.yaml)\)\s*")
+    file_ref_regex = re.compile(r"file\((.+\.yaml)\)")
 
     if isinstance(s, list):
         new_s = []
         for v in s:
-            if isinstance(s, str):
-                match = file_ref_regex.fullmatch(s)
+            if isinstance(v, str):
+                match = file_ref_regex.fullmatch(v)
                 if match is not None:
                     v = load_config(os.path.join(base_dir, match.group(1)))
             new_s.append(v)
@@ -34,7 +34,7 @@ def _replace_files(s: YamlConfig, base_dir: str) -> YamlConfig:
 
 def _replace_env_vars(s: str) -> str:
     orig_len = len(s)
-    env_var_regex = re.compile(r"\s*ENV\(([A-Z_]+):?(.*?)\)\s*")
+    env_var_regex = re.compile(r"env\(([A-Z_]+):?(.*?)\)")
 
     length_change = 0
     for match in re.finditer(env_var_regex, s):
@@ -54,6 +54,22 @@ def _replace_env_vars(s: str) -> str:
 
 
 def load_config(yaml_path: str) -> YamlConfig:
+    """
+
+    Loads a yaml config.
+    Supports the following special operators:
+        - env(ENV_VAR:default) for using environment variables with optional default values
+        - file(relative/path/file.yaml) for loading other yaml files relative to current file
+
+    :param yaml_path: path to config file
+    :return: fully resolved yaml configuration
+
+    >>> import os
+    >>> os.environ["TEST_ENV_VAR"] = "123"
+    >>> load_config("resources/test/test_config.yaml") # doctest: +NORMALIZE_WHITESPACE
+    {'test': [123, '123', 123, 123],
+    'subconfig': ['item1', 'item2', 'item3', {'test': 123}]}
+    """
     with open(yaml_path, "r", encoding="utf8") as inf:
         raw_yaml = inf.read()
 

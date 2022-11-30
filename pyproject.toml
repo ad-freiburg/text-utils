@@ -29,7 +29,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "pycodestyle>=2.8.0",
     "pytest>=6.2.0",
     "pytest-xdist>=2.5.0"
 ]

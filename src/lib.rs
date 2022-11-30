@@ -1,7 +1,6 @@
 extern crate core;
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 
 pub mod data;
 pub mod edit_distance;

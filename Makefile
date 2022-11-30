@@ -1,13 +1,14 @@
 .PHONY: all
-all: checkstyle tests
+all: checkstyle test
 
 .PHONY: checkstyle
 checkstyle:
-	flake8 text_correction_utils
+	flake8 python
 
-.PHONY: tests
-tests:
-	pytest pytests -n auto --disable-pytest-warnings
+.PHONY: test
+test:
+	cargo test
+	pytest -n auto
 
 # preferred build command for local installation
 

@@ -13,9 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
-use std::fs::read_to_string;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
 use std::vec::IntoIter;
 
 pub mod loading;
@@ -325,43 +323,6 @@ impl Pipeline {
     ) -> PipelineIterator {
         PipelineIterator::new_threaded(iter, self.clone(), worker_threads, buffer_size)
     }
-}
-
-fn read_yaml(path: &Path) -> String {
-    read_to_string(path).expect(&format!("could not read yaml file at {:?}", path))
-}
-
-fn parse_yaml<'a, T: Deserialize<'a>>(yaml: &'a str) -> T {
-    serde_yaml::from_str(yaml).expect(&format!("could not deserialize from yaml string\n{}", yaml))
-}
-
-pub fn pipeline_from_yaml(path: &Path) -> Pipeline {
-    pipeline_from_str(&read_yaml(path))
-}
-
-pub fn pipeline_from_str(s: &str) -> Pipeline {
-    let cfg: PipelineConfig = parse_yaml(s);
-    Pipeline::from_config(cfg)
-}
-
-pub fn preprocessing_from_yaml(path: &Path) -> PreprocessingFn {
-    preprocessing_from_str(&read_yaml(path))
-}
-
-pub fn preprocessing_from_str(s: &str) -> PreprocessingFn {
-    let fns: Vec<PreprocessingConfig> =
-        serde_yaml::from_str(s).expect(&format!("could not deserialize from yaml string\n{}", s));
-    preprocessing(fns)
-}
-
-pub fn labeling_from_yaml(path: &Path) -> LabelingFn {
-    labeling_from_str(&read_yaml(path))
-}
-
-pub fn labeling_from_str(s: &str) -> LabelingFn {
-    let cfg: LabelingConfig =
-        serde_yaml::from_str(s).expect(&format!("could not deserialize from yaml string\n{}", s));
-    labeling(cfg)
 }
 
 #[pyclass]

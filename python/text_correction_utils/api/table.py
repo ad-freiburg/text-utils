@@ -1,13 +1,14 @@
 from typing import List, Optional, Set, Tuple
 
+
 def generate_table(
-        headers: List[List[str]],
-        data: List[List[str]],
-        alignments: Optional[List[str]] = None,
-        horizontal_lines: Optional[List[int]] = None,
-        bold_cells: Optional[Set[Tuple[int, int]]] = None,
-        vertical_lines: bool = False,
-        fmt: str = "markdown"
+    headers: List[List[str]],
+    data: List[List[str]],
+    alignments: Optional[List[str]] = None,
+    horizontal_lines: Optional[List[int]] = None,
+    bold_cells: Optional[Set[Tuple[int, int]]] = None,
+    vertical_lines: bool = False,
+    fmt: str = "markdown"
 ) -> str:
     assert fmt in {"markdown", "latex"}
 

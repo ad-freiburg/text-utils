@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from torch.nn.modules.transformer import _get_activation_fn
 from torch.nn.utils import rnn
 
+from text_correction_utils import mask
 from text_correction_utils.modules import utils
 from text_correction_utils.modules.grouping import Grouping
 
@@ -162,9 +163,7 @@ class TransformerEncoder(Encoder):
         pos: Optional[torch.Tensor],
         **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
-        padding_mask = torch.zeros(x.shape[:2], device=x.device, dtype=torch.bool)
-        for i, length in enumerate(lengths):
-            padding_mask[i, length:] = True
+        padding_mask = mask.padding_mask(lengths, x.device)
         if self.share_parameters:
             enc = x
             for _ in range(self.num_layers):

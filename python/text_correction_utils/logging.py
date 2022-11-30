@@ -6,6 +6,13 @@ __all__ = ["setup_logging", "add_file_log", "get_logger", "eta_minutes_message",
 
 
 def setup_logging(level: int = logging.INFO) -> None:
+    """
+
+    Sets up logging with a custom log format and level.
+
+    :param level: log level
+    :return: None
+    """
     logging.basicConfig(format=_LOG_FORMAT)
     logging.getLogger().setLevel(level)
 
@@ -44,15 +51,28 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     return logger
 
 
-def _eta(dur: float, num_iter: int, total_iter: int) -> float:
+def eta(dur: float, num_iter: int, total_iter: int) -> float:
+    """
+
+    Calculate remaining time to reach total_iter iterations.
+
+    :param dur: time spent for num_iter iterations
+    :param num_iter: number of iterations so far
+    :param total_iter: number of total iterations
+    :return: time remaining
+
+    >>> eta(10, 2, 10)
+    40.0
+
+    """
     return (dur / num_iter) * total_iter - dur
 
 
 def eta_minutes_message(num_minutes: float, num_iter: int, total_iter: int) -> str:
-    _eta_minutes = _eta(num_minutes, num_iter, total_iter)
-    return f"{num_minutes:.2f} minutes since start, {_eta_minutes:.2f} minutes to go"
+    eta_minutes = eta(num_minutes, num_iter, total_iter)
+    return f"{num_minutes:.2f} minutes since start, {eta_minutes:.2f} minutes to go"
 
 
 def eta_seconds_message(num_sec: float, num_iter: int, total_iter: int) -> str:
-    _eta_seconds = _eta(num_sec, num_iter, total_iter)
-    return f"{num_sec:.2f} seconds since start, {_eta_seconds:.2f} seconds to go"
+    eta_seconds = eta(num_sec, num_iter, total_iter)
+    return f"{num_sec:.2f} seconds since start, {eta_seconds:.2f} seconds to go"

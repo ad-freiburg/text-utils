@@ -1,6 +1,5 @@
 use crate::unicode::{CharString, Character, CS};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 
 use crate::utils::Matrix;
 

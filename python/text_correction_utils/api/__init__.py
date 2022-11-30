@@ -10,8 +10,6 @@ import requests
 import torch
 from tqdm import tqdm
 
-from text_correction_utils.api.table import generate_table
-
 
 def _unpack_zip(
         zip_file_path: str,

@@ -4,28 +4,23 @@ use itertools::Itertools;
 use pyo3::prelude::*;
 use regex::{escape, Regex};
 
+#[pyfunction]
 pub fn remove(s: &str) -> String {
     s.split_whitespace().join("")
 }
 
-#[pyfunction]
-#[pyo3(name = "remove")]
-fn remove_py(s: &str) -> PyResult<String> {
-    Ok(remove(s))
-}
-
+#[pyfunction(
+use_graphemes = "true"
+)]
 pub fn full(s: &str, use_graphemes: bool) -> String {
     s.split_whitespace()
         .map(|w| CS::new(w, use_graphemes).chars().join(" "))
         .join(" ")
 }
 
-#[pyfunction]
-#[pyo3(name = "full")]
-fn full_py(s: &str, use_graphemes: bool) -> PyResult<String> {
-    Ok(full(s, use_graphemes))
-}
-
+#[pyfunction(
+use_graphemes = "true"
+)]
 pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
     assert_eq!(
         remove(from),
@@ -67,12 +62,6 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
     operations
 }
 
-#[pyfunction]
-#[pyo3(name = "operations")]
-fn operations_py(from: &str, to: &str, use_graphemes: bool) -> PyResult<Vec<u8>> {
-    Ok(operations(from, to, use_graphemes))
-}
-
 pub fn repair(s: &str, operations: &[u8], use_graphemes: bool) -> String {
     let cs = CS::new(s, use_graphemes);
     let chars: Vec<Character> = cs.chars().collect();
@@ -107,10 +96,11 @@ pub fn repair(s: &str, operations: &[u8], use_graphemes: bool) -> String {
 
 #[pyfunction]
 #[pyo3(name = "repair")]
-fn repair_py(s: &str, operations: Vec<u8>, use_graphemes: bool) -> PyResult<String> {
-    Ok(repair(s, &operations, use_graphemes))
+fn repair_py(s: &str, operations: Vec<u8>, use_graphemes: bool) -> String {
+    repair(s, &operations, use_graphemes)
 }
 
+#[pyfunction]
 pub fn find_substring_ignoring_whitespace(s: &str, substring: &str) -> Option<(usize, usize)> {
     let substring = substring
         .chars()
@@ -125,23 +115,14 @@ pub fn find_substring_ignoring_whitespace(s: &str, substring: &str) -> Option<(u
     }
 }
 
-#[pyfunction]
-#[pyo3(name = "find_substring_ignoring_whitespace")]
-fn find_substring_ignoring_whitespace_py(
-    s: &str,
-    substring: &str,
-) -> PyResult<Option<(usize, usize)>> {
-    Ok(find_substring_ignoring_whitespace(s, substring))
-}
-
 /// A submodule containing functionality specific to handle whitespaces in text.
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "whitespace")?;
-    m.add_function(wrap_pyfunction!(find_substring_ignoring_whitespace_py, m)?)?;
+    m.add_function(wrap_pyfunction!(find_substring_ignoring_whitespace, m)?)?;
     m.add_function(wrap_pyfunction!(repair_py, m)?)?;
-    m.add_function(wrap_pyfunction!(operations_py, m)?)?;
-    m.add_function(wrap_pyfunction!(full_py, m)?)?;
-    m.add_function(wrap_pyfunction!(remove_py, m)?)?;
+    m.add_function(wrap_pyfunction!(operations, m)?)?;
+    m.add_function(wrap_pyfunction!(full, m)?)?;
+    m.add_function(wrap_pyfunction!(remove, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())

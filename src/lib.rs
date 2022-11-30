@@ -10,6 +10,7 @@ pub mod tokenization;
 pub mod unicode;
 pub mod utils;
 pub mod whitespace;
+pub mod metrics;
 
 #[pymodule]
 fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
@@ -22,6 +23,7 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     data::add_submodule(py, m)?;
     whitespace::add_submodule(py, m)?;
     windows::add_submodule(py, m)?;
+    metrics::add_submodule(py, m)?;
 
     Ok(())
 }

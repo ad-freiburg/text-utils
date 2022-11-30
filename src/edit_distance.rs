@@ -81,6 +81,11 @@ fn _calculate_edit_matrices(
     (d, ops)
 }
 
+#[pyfunction(
+use_graphemes = "true",
+with_swap = "true",
+spaces_insert_delete_only = "false"
+)]
 pub fn edit_operations(
     a: &str,
     b: &str,
@@ -134,27 +139,10 @@ pub fn edit_operations(
 }
 
 #[pyfunction(
-    use_graphemes = "true",
-    with_swap = "true",
-    spaces_insert_delete_only = "false"
+use_graphemes = "true",
+with_swap = "true",
+spaces_insert_delete_only = "false"
 )]
-#[pyo3(name = "edit_operations")]
-fn edit_operations_py(
-    a: &str,
-    b: &str,
-    use_graphemes: bool,
-    with_swap: bool,
-    spaces_insert_delete_only: bool,
-) -> PyResult<Vec<(u8, usize, usize)>> {
-    Ok(edit_operations(
-        &a,
-        &b,
-        use_graphemes,
-        with_swap,
-        spaces_insert_delete_only,
-    ))
-}
-
 pub fn edit_distance(
     a: &str,
     b: &str,
@@ -171,34 +159,12 @@ pub fn edit_distance(
     d[d.len() - 1][d[0].len() - 1]
 }
 
-#[pyfunction(
-    use_graphemes = "true",
-    with_swap = "true",
-    spaces_insert_delete_only = "false"
-)]
-#[pyo3(name = "edit_distance")]
-fn edit_distance_py(
-    a: &str,
-    b: &str,
-    use_graphemes: bool,
-    with_swap: bool,
-    spaces_insert_delete_only: bool,
-) -> PyResult<usize> {
-    Ok(edit_distance(
-        a,
-        b,
-        use_graphemes,
-        with_swap,
-        spaces_insert_delete_only,
-    ))
-}
-
 /// A submodule for calculating the edit distance and operations between strings.
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m_name = "edit_distance";
     let m = PyModule::new(py, m_name)?;
-    m.add_function(wrap_pyfunction!(edit_distance_py, m)?)?;
-    m.add_function(wrap_pyfunction!(edit_operations_py, m)?)?;
+    m.add_function(wrap_pyfunction!(edit_distance, m)?)?;
+    m.add_function(wrap_pyfunction!(edit_operations, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())

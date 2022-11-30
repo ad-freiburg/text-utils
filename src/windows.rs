@@ -38,6 +38,7 @@ pub struct InferenceWindow {
     str: String,
 }
 
+#[pyfunction(use_graphemes = "true")]
 pub fn char_windows(
     s: &str,
     max_length: usize,
@@ -69,19 +70,8 @@ pub fn char_windows(
         .collect()
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "char_windows")]
-fn char_windows_py(
-    s: &str,
-    max_length: usize,
-    context_length: usize,
-    use_graphemes: bool,
-) -> PyResult<Vec<InferenceWindow>> {
-    Ok(char_windows(s, max_length, context_length, use_graphemes))
-}
-
 #[inline]
-fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS) -> usize {
+fn count_until(mut iter: impl Iterator<Item=usize>, max_length: usize, cs: &CS) -> usize {
     iter.fold_while(0usize, |acc, idx| {
         let next_acc = acc + cs.char_byte_len(idx);
         if next_acc > max_length {
@@ -90,9 +80,10 @@ fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS
             Continue(next_acc)
         }
     })
-    .into_inner()
+        .into_inner()
 }
 
+#[pyfunction(use_graphemes = "true")]
 pub fn byte_windows(
     s: &str,
     max_length: usize,
@@ -139,24 +130,13 @@ pub fn byte_windows(
     windows
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "byte_windows")]
-fn byte_windows_py(
-    s: &str,
-    max_bytes: usize,
-    context_length: usize,
-    use_graphemes: bool,
-) -> PyResult<Vec<InferenceWindow>> {
-    Ok(byte_windows(s, max_bytes, context_length, use_graphemes))
-}
-
 /// A submodule containing helper functions needed for splitting long strings
 /// into multiple windows (useful for text correction inference).
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "windows")?;
     m.add_class::<InferenceWindow>()?;
-    m.add_function(wrap_pyfunction!(char_windows_py, m)?)?;
-    m.add_function(wrap_pyfunction!(byte_windows_py, m)?)?;
+    m.add_function(wrap_pyfunction!(char_windows, m)?)?;
+    m.add_function(wrap_pyfunction!(byte_windows, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())

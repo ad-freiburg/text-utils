@@ -6,17 +6,13 @@ use std::collections::HashSet;
 use crate::unicode::CS;
 use crate::utils::Matrix;
 
+#[pyfunction]
 #[inline]
 pub fn clean(s: &str) -> String {
     s.split_whitespace().join(" ")
 }
 
-#[pyfunction]
-#[pyo3(name = "clean")]
-fn clean_py(s: &str) -> PyResult<String> {
-    Ok(clean(s))
-}
-
+#[pyfunction(use_graphemes = "true")]
 pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     let mut boundaries = vec![];
     let mut start: Option<usize> = None;
@@ -39,17 +35,12 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     boundaries
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "word_boundaries")]
-fn word_boundaries_py(s: &str, use_graphemes: bool) -> PyResult<Vec<(usize, usize)>> {
-    Ok(word_boundaries(s, use_graphemes))
-}
-
 #[inline]
 fn str_match(a: &str, b: &str, ignore_case: bool) -> bool {
     a == b || (ignore_case && a.to_lowercase() == b.to_lowercase())
 }
 
+#[pyfunction(ignore_case = "false")]
 pub fn match_words(a: &str, b: &str, ignore_case: bool) -> Vec<(usize, usize)> {
     let a_words = a.split_whitespace().collect::<Vec<&str>>();
     let b_words = b.split_whitespace().collect::<Vec<&str>>();
@@ -133,12 +124,6 @@ enum MatchOp {
     Insert,
     Match,
     NoMatch,
-}
-
-#[pyfunction(ignore_case = "false")]
-#[pyo3(name = "match_words")]
-fn match_words_py(a: &str, b: &str, ignore_case: bool) -> PyResult<Vec<(usize, usize)>> {
-    Ok(match_words(a, b, ignore_case))
 }
 
 pub fn possible_character_substrings(
@@ -241,10 +226,10 @@ impl CharEdit {
     }
 }
 
-pub fn edit_word<R: Rng>(
+pub fn edit_word(
     word: &str,
     use_graphemes: bool,
-    rng: &mut R,
+    rng: &mut impl Rng,
     edits: &[CharEdit],
     exclude_indices: Option<HashSet<usize>>,
 ) -> (String, HashSet<usize>) {
@@ -412,9 +397,9 @@ pub fn edit_word<R: Rng>(
 /// calculating word boundaries of all words in a text.
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "text")?;
-    m.add_function(wrap_pyfunction!(word_boundaries_py, m)?)?;
-    m.add_function(wrap_pyfunction!(clean_py, m)?)?;
-    m.add_function(wrap_pyfunction!(match_words_py, m)?)?;
+    m.add_function(wrap_pyfunction!(word_boundaries, m)?)?;
+    m.add_function(wrap_pyfunction!(clean, m)?)?;
+    m.add_function(wrap_pyfunction!(match_words, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())

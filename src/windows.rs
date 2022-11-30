@@ -150,8 +150,10 @@ fn byte_windows_py(
     Ok(byte_windows(s, max_bytes, context_length, use_graphemes))
 }
 
+/// A submodule containing helper functions needed for splitting long strings
+/// into multiple windows (useful for text correction inference).
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "inference")?;
+    let m = PyModule::new(py, "windows")?;
     m.add_class::<InferenceWindow>()?;
     m.add_function(wrap_pyfunction!(char_windows_py, m)?)?;
     m.add_function(wrap_pyfunction!(byte_windows_py, m)?)?;

@@ -1,11 +1,11 @@
 from text_correction_utils.version import __version__
 
-from text_correction_utils.internal import (
-    text,
+from text_correction_utils._internal import (
     edit_distance,
+    text,
+    whitespace,
     data,
-    tokenization,
-    whitespace
+    tokenization
 )
 
 from text_correction_utils import (

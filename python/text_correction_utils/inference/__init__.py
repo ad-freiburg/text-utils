@@ -4,7 +4,7 @@ from typing import Callable, Tuple, List, Optional, Union, Dict
 import einops
 import torch
 
-from text_correction_utils.internal import *
+from text_correction_utils._internal import inference as windows
 from torch.nn.utils import rnn
 
 

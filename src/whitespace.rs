@@ -134,6 +134,7 @@ fn find_substring_ignoring_whitespace_py(
     Ok(find_substring_ignoring_whitespace(s, substring))
 }
 
+/// A submodule containing functionality specific to handle whitespaces in text.
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "whitespace")?;
     m.add_function(wrap_pyfunction!(find_substring_ignoring_whitespace_py, m)?)?;

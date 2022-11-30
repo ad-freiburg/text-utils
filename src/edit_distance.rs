@@ -1,5 +1,6 @@
 use crate::unicode::{CharString, Character, CS};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use crate::utils::Matrix;
 
@@ -193,8 +194,10 @@ fn edit_distance_py(
     ))
 }
 
+/// A submodule for calculating the edit distance and operations between strings.
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "edit_distance")?;
+    let m_name = "edit_distance";
+    let m = PyModule::new(py, m_name)?;
     m.add_function(wrap_pyfunction!(edit_distance_py, m)?)?;
     m.add_function(wrap_pyfunction!(edit_operations_py, m)?)?;
     parent_module.add_submodule(m)?;

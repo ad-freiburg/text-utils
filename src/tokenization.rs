@@ -663,6 +663,10 @@ impl PyTokenizer {
     }
 }
 
+/// A submodule containing functionality to tokenize text into tokens.
+/// Currently supported tokenization schemes are:
+/// - character level tokenization
+/// - byte level tokenization
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "tokenization")?;
     m.add_class::<PyTokenizer>()?;

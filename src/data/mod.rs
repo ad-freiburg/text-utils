@@ -557,6 +557,14 @@ impl DataLoader {
     }
 }
 
+/// A submodule containing functionality for text data loading.
+/// Currently supported:
+/// - loading text files
+/// - loading in memory lists of strings
+/// - several loading strategies (sequential, interleaved, weighted)
+/// - single or multi-threaded preprocessing
+/// - batched loading (limited by a max batch size or a max number of tokens)
+/// - distributed loading (distribute work across multiple processes or machines)
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "data")?;
     m.add_class::<DataLoader>()?;

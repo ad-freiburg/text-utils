@@ -408,6 +408,8 @@ pub fn edit_word<R: Rng>(
     }
 }
 
+/// A submodule containing useful functions on text, like cleaning text or
+/// calculating word boundaries of all words in a text.
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "text")?;
     m.add_function(wrap_pyfunction!(word_boundaries_py, m)?)?;

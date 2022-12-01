@@ -390,9 +390,14 @@ impl DataLoader {
             rank < world_size,
             "rank {rank} is invalid given world size {world_size}"
         );
-        let len = text_iter.min_len().saturating_sub(skip) / world_size;
+        let limit = limit.unwrap_or(usize::MAX);
+        let len = text_iter
+            .min_len()
+            .saturating_sub(skip)
+            .min(limit)
+            / world_size;
         let text_iter = text_iter
-            .take(limit.unwrap_or(usize::MAX))
+            .take(limit)
             .skip(skip + rank)
             .step_by(world_size);
         let iter = if num_threads > 0 {
@@ -480,13 +485,18 @@ impl DataLoader {
         let text_iter = gen.with_strategy(strategy, seed);
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
-        let len = text_iter.min_len().saturating_sub(skip) / world_size;
+        let limit = limit.unwrap_or(usize::MAX);
+        let len = text_iter
+            .min_len()
+            .saturating_sub(skip)
+            .min(limit)
+            / world_size;
         assert!(
             rank < world_size,
             "rank {rank} is invalid given world size {world_size}"
         );
         let text_iter = text_iter
-            .take(limit.unwrap_or(usize::MAX))
+            .take(limit)
             .skip(skip + rank)
             .step_by(world_size);
         let iter = if num_threads > 0 {

@@ -22,15 +22,15 @@ def glob_safe(pattern: str, error_on_empty: bool = True) -> List[str]:
 
 
 def save_checkpoint(
-        checkpoint_path: str,
-        model: nn.Module,
-        step: int,
-        epoch: int,
-        epoch_step: int,
-        val_loss: float,
-        optimizer: Optional[optim.Optimizer] = None,
-        lr_scheduler: Optional[Any] = None,
-        grad_scaler: Optional[amp.GradScaler] = None
+    checkpoint_path: str,
+    model: nn.Module,
+    step: int,
+    epoch: int,
+    epoch_step: int,
+    val_loss: float,
+    optimizer: Optional[optim.Optimizer] = None,
+    lr_scheduler: Optional[Any] = None,
+    grad_scaler: Optional[amp.GradScaler] = None
 ) -> None:
     """
     Saves a checkpoint to a file.
@@ -64,7 +64,17 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-        checkpoint_path: str,
-        device: torch.device = torch.device("cpu")
+    checkpoint_path: str,
+    device: torch.device = torch.device("cpu")
 ) -> Dict[str, Any]:
     return torch.load(checkpoint_path, map_location=device)
+
+
+def load_text_file(
+    path: str
+) -> List[str]:
+    text = []
+    with open(path, "r", encoding="utf8") as inf:
+        for line in inf:
+            text.append(line.strip())
+    return text

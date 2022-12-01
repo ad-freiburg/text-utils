@@ -1,40 +1,35 @@
 import os
 import re
-from typing import Any, Dict, Union, List
+from typing import Any
 
 import yaml
 
-YamlConfig = Union[List[Any], Dict[str, Any]]
 
-
-def _replace_files(s: YamlConfig, base_dir: str) -> YamlConfig:
+def _replace_files(s: Any, base_dir: str) -> Any:
     file_ref_regex = re.compile(r"file\((.+\.yaml)\)")
 
     if isinstance(s, list):
         new_s = []
         for v in s:
-            if isinstance(v, str):
-                match = file_ref_regex.fullmatch(v)
-                if match is not None:
-                    v = load_config(os.path.join(base_dir, match.group(1)))
-            new_s.append(v)
+            new_s.append(_replace_files(v, base_dir))
         return new_s
     elif isinstance(s, dict):
         new_dict = {}
         for k, v in s.items():
-            if isinstance(v, str):
-                match = file_ref_regex.fullmatch(v)
-                if match is not None:
-                    v = load_config(os.path.join(base_dir, match.group(1)))
-            new_dict[k] = v
+            new_dict[k] = _replace_files(v, base_dir)
         return new_dict
+    elif isinstance(s, str):
+        match = file_ref_regex.fullmatch(s)
+        if match is not None:
+            s = load_config(os.path.join(base_dir, match.group(1)))
+        return s
     else:
         return s
 
 
 def _replace_env_vars(s: str) -> str:
     orig_len = len(s)
-    env_var_regex = re.compile(r"env\(([A-Z_]+):?(.*?)\)")
+    env_var_regex = re.compile(r"env\(([A-Z0-9_]+):?(.*?)\)")
 
     length_change = 0
     for match in re.finditer(env_var_regex, s):
@@ -68,7 +63,7 @@ def _replace_abs_paths(s: str) -> str:
     return s
 
 
-def load_config(yaml_path: str) -> YamlConfig:
+def load_config(yaml_path: str) -> Any:
     """
 
     Loads a yaml config.
@@ -92,5 +87,6 @@ def load_config(yaml_path: str) -> YamlConfig:
     raw_yaml = _replace_env_vars(raw_yaml)
     raw_yaml = _replace_abs_paths(raw_yaml)
     parsed_yaml = yaml.load(raw_yaml, Loader=yaml.FullLoader)
-    parsed_yaml = _replace_files(parsed_yaml, os.path.abspath(os.path.dirname(yaml_path)))
+    base_dir = os.path.abspath(os.path.dirname(yaml_path))
+    parsed_yaml = _replace_files(parsed_yaml, base_dir)
     return parsed_yaml

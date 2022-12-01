@@ -61,8 +61,6 @@ class Embedding(nn.Module):
             num_embeddings,
             pad_token_id
         )
-        nn.init.normal_(self.embedding.weight, mean=0, std=embedding_dim ** -0.5)
-        nn.init.constant_(self.embedding.weight[pad_token_id], 0)
 
         if self.positional_embeddings == "learned":
             self.pos_embedding = LearnedPositionalEmbedding(

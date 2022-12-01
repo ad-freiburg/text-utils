@@ -9,13 +9,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use serde::{Deserialize, Serialize};
 use std::ops::Sub;
 
 pub type PreprocessingFn = Box<dyn Fn(TextData, Option<u64>) -> TextData + Send + Sync>;
 pub type LabelingFn = Box<dyn Fn(&TextData) -> Label + Send + Sync>;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {
     // clean the sequences (remove spurious whitespaces)
     Clean,
@@ -157,7 +156,7 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum LabelingConfig {
     // generate whitespace correction labels given processed and original sequence
     LabelWhitespaceCorrection(bool),

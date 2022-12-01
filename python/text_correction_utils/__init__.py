@@ -3,7 +3,7 @@ from text_correction_utils.version import __version__
 
 # import rust modules
 from text_correction_utils._internal import (
-    edit_distance,
+    edit,
     text,
     whitespace,
     data,

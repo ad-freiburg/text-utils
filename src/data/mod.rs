@@ -11,7 +11,6 @@ use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::vec::IntoIter;
@@ -227,7 +226,7 @@ impl IntoIterator for Batch {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[pyclass]
 pub struct PipelineConfig {
     #[pyo3(get)]

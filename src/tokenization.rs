@@ -3,7 +3,6 @@ use crate::utils::{py_invalid_type_error, py_required_key_error, run_length_deco
 use itertools::Itertools;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -22,7 +21,7 @@ pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
 pub const LANG_UNK: &str = "[unk]";
 
 /// This enum defines all tokenizers that are supported by this crate.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenizerConfig {
     Character(bool, Vec<String>, Vec<String>),
     Byte(bool, Vec<String>, Vec<String>),

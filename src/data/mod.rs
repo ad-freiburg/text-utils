@@ -330,6 +330,69 @@ struct DataLoader {
     len: usize,
 }
 
+impl DataLoader {
+    fn new(
+        generators: Vec<Box<dyn TextGen>>,
+        pipeline_config: PipelineConfig,
+        strategy: TextIterationStrategy,
+        num_threads: u8,
+        mut buffer_size: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        shuffle: bool,
+        shuffle_prefetch_factor: usize,
+        seed: Option<u64>,
+        skip: usize,
+        limit: Option<usize>,
+        distributed: Option<(usize, usize)>,
+    ) -> PyResult<Self> {
+        if shuffle && seed.is_none() {
+            return Err(PyTypeError::new_err(
+                "seed cannot be None if shuffle is true",
+            ));
+        }
+        if batch_limit_type == BatchLimitType::BatchSize {
+            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
+        }
+        let gen = TextGenerator::new(generators);
+        let pipe = Pipeline::from_config(pipeline_config);
+        let text_iter = gen.with_strategy(strategy, seed);
+        // handle distributed arguments
+        let (rank, world_size) = distributed.unwrap_or((0, 1));
+        assert!(
+            rank < world_size,
+            "rank {rank} is invalid given world size {world_size}"
+        );
+        let limit = limit.unwrap_or(usize::MAX);
+        let len = text_iter
+            .min_len()
+            .min(limit)
+            .saturating_sub(skip)
+            / world_size;
+        let text_iter = text_iter
+            .take(limit)
+            .skip(skip)
+            .skip(rank)
+            .step_by(world_size);
+        let iter = if num_threads > 0 {
+            pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
+        } else {
+            pipe.apply_iter(text_iter)
+        };
+        let batched_iter = iter.batched(
+            batch_limit,
+            batch_limit_type,
+            shuffle,
+            shuffle_prefetch_factor,
+            seed,
+        );
+        Ok(DataLoader {
+            iter: Box::new(batched_iter),
+            len,
+        })
+    }
+}
+
 #[pymethods]
 impl DataLoader {
     #[staticmethod]
@@ -351,7 +414,7 @@ impl DataLoader {
         pipeline_config: PipelineConfig,
         languages: Option<Vec<String>>,
         num_threads: u8,
-        mut buffer_size: usize,
+        buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
@@ -372,50 +435,26 @@ impl DataLoader {
                 languages.as_ref().unwrap().len()
             )));
         }
-        if shuffle && seed.is_none() {
-            return Err(PyTypeError::new_err(
-                "seed cannot be None if shuffle is true",
-            ));
-        }
-        if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
-        }
-        let cont = TextContainer::new_boxed(sequences, None, languages);
-        let gen = TextGenerator::new(vec![cont]);
-        let pipe = Pipeline::from_config(pipeline_config);
-        let text_iter = gen.sequential();
-        // handle distributed arguments
-        let (rank, world_size) = distributed.unwrap_or((0, 1));
-        assert!(
-            rank < world_size,
-            "rank {rank} is invalid given world size {world_size}"
+        let generators = TextContainer::new_boxed(
+            sequences,
+            None,
+            languages
         );
-        let limit = limit.unwrap_or(usize::MAX);
-        let len = text_iter
-            .min_len()
-            .saturating_sub(skip)
-            .min(limit)
-            / world_size;
-        let text_iter = text_iter
-            .take(limit)
-            .skip(skip + rank)
-            .step_by(world_size);
-        let iter = if num_threads > 0 {
-            pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
-        } else {
-            pipe.apply_iter(text_iter)
-        };
-        let batched_iter = iter.batched(
+        Self::new(
+            vec![generators],
+            pipeline_config,
+            TextIterationStrategy::Sequential,
+            num_threads,
+            buffer_size,
             batch_limit,
             batch_limit_type,
             shuffle,
             shuffle_prefetch_factor,
             seed,
-        );
-        Ok(DataLoader {
-            iter: Box::new(batched_iter),
-            len,
-        })
+            skip,
+            limit,
+            distributed
+        )
     }
 
     #[staticmethod]
@@ -439,7 +478,7 @@ impl DataLoader {
         languages: Option<Vec<String>>,
         strategy: TextIterationStrategy,
         num_threads: u8,
-        mut buffer_size: usize,
+        buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
@@ -460,15 +499,7 @@ impl DataLoader {
                 languages.as_ref().unwrap().len()
             )));
         }
-        if shuffle && seed.is_none() {
-            return Err(PyTypeError::new_err(
-                "seed cannot be None if shuffle is true",
-            ));
-        }
-        if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
-        }
-        let cont = files
+        let generators = files
             .into_iter()
             .enumerate()
             .map(|(idx, file)| {
@@ -480,41 +511,21 @@ impl DataLoader {
                 TextFile::new_boxed(&file.into(), None, lang) as Box<dyn TextGen>
             })
             .collect();
-        let gen = TextGenerator::new(cont);
-        let pipe = Pipeline::from_config(pipeline_config);
-        let text_iter = gen.with_strategy(strategy, seed);
-        // handle distributed arguments
-        let (rank, world_size) = distributed.unwrap_or((0, 1));
-        let limit = limit.unwrap_or(usize::MAX);
-        let len = text_iter
-            .min_len()
-            .saturating_sub(skip)
-            .min(limit)
-            / world_size;
-        assert!(
-            rank < world_size,
-            "rank {rank} is invalid given world size {world_size}"
-        );
-        let text_iter = text_iter
-            .take(limit)
-            .skip(skip + rank)
-            .step_by(world_size);
-        let iter = if num_threads > 0 {
-            pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
-        } else {
-            pipe.apply_iter(text_iter)
-        };
-        let batched_iter = iter.batched(
+        Self::new(
+            generators,
+            pipeline_config,
+            strategy,
+            num_threads,
+            buffer_size,
             batch_limit,
             batch_limit_type,
             shuffle,
             shuffle_prefetch_factor,
             seed,
-        );
-        Ok(DataLoader {
-            iter: Box::new(batched_iter),
-            len,
-        })
+            skip,
+            limit,
+            distributed
+        )
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {

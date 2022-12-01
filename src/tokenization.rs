@@ -115,12 +115,14 @@ pub enum TokenizationInfo {
 impl IntoPy<PyObject> for TokenizationInfo {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
-        match self {
-            TokenizationInfo::Empty => {}
+        let info_type = match self {
+            TokenizationInfo::Empty => "empty",
             TokenizationInfo::TokenGroups(groups) => {
-                d.set_item("token_groups", groups).unwrap();
+                d.set_item("groups", groups).unwrap();
+                "token_groups"
             }
-        }
+        };
+        d.set_item("type", info_type).unwrap();
         d.into()
     }
 }
@@ -134,6 +136,14 @@ impl<'a> FromPyObject<'a> for TokenizationInfo {
         let info_type: String = info_type.extract()?;
         let info = match info_type.as_str() {
             "empty" => TokenizationInfo::Empty,
+            "token_groups" => {
+                let Some(groups) = d.get_item("groups") else {
+                    return Err(py_required_key_error(
+                        "groups",
+                        "token groups tokenization info"));
+                };
+                TokenizationInfo::TokenGroups(groups.extract()?)
+            },
             k => return Err(py_invalid_type_error(k, "tokenization info")),
         };
         Ok(info)

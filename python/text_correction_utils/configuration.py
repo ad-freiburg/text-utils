@@ -53,6 +53,21 @@ def _replace_env_vars(s: str) -> str:
     return s
 
 
+def _replace_abs_paths(s: str) -> str:
+    orig_len = len(s)
+    path_regex = re.compile(r"abspath\((.+)\)")
+
+    length_change = 0
+    for match in re.finditer(path_regex, s):
+        path = match.group(1)
+        path = os.path.abspath(path)
+        lower_idx = match.start() + length_change
+        upper_idx = match.end() + length_change
+        s = s[:lower_idx] + path + s[upper_idx:]
+        length_change = len(s) - orig_len
+    return s
+
+
 def load_config(yaml_path: str) -> YamlConfig:
     """
 
@@ -60,6 +75,7 @@ def load_config(yaml_path: str) -> YamlConfig:
     Supports the following special operators:
         - env(ENV_VAR:default) for using environment variables with optional default values
         - file(relative/path/file.yaml) for loading other yaml files relative to current file
+        - abspath(some/path) for turning paths into absolute paths
 
     :param yaml_path: path to config file
     :return: fully resolved yaml configuration
@@ -74,6 +90,7 @@ def load_config(yaml_path: str) -> YamlConfig:
         raw_yaml = inf.read()
 
     raw_yaml = _replace_env_vars(raw_yaml)
+    raw_yaml = _replace_abs_paths(raw_yaml)
     parsed_yaml = yaml.load(raw_yaml, Loader=yaml.FullLoader)
     parsed_yaml = _replace_files(parsed_yaml, os.path.abspath(os.path.dirname(yaml_path)))
     return parsed_yaml

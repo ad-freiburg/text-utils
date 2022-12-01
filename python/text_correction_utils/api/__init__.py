@@ -4,10 +4,11 @@ import platform
 import re
 import shutil
 import zipfile
-from typing import Union
+from typing import Union, Dict
 
 import requests
 import torch
+from torch import nn
 from tqdm import tqdm
 
 
@@ -105,6 +106,24 @@ def _gpu_info(device: Union[torch.device, str, int]) -> str:
 
 def device_info(device: torch.device) -> str:
     return _gpu_info(device) if device.type == "cuda" else _cpu_info()
+
+
+def num_parameters(module: nn.Module) -> Dict[str, int]:
+    """
+
+    Get the number of trainable, fixed and total parameters of a pytorch module.
+
+    :param module: pytorch module
+    :return: dict containing number of parameters
+    """
+    trainable = 0
+    fixed = 0
+    for p in module.parameters():
+        if p.requires_grad:
+            trainable += p.numel()
+        else:
+            fixed += p.numel()
+    return {"trainable": trainable, "fixed": fixed, "total": trainable + fixed}
 
 
 def byte_progress_bar(desc: str, total: int) -> tqdm:

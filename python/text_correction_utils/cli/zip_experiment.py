@@ -45,9 +45,9 @@ def zip_experiment(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        "Script for zipping text correction experiments for easy distribution."
+        "Script for zipping text correction experiments for easy distribution. "
         "A experiment should be a directory that contains a 'checkpoints' subdirectory with a "
-        "'checkpoint_best.pt' file in it and a 'config.yaml' configuration file. The best checkpoint"
+        "'checkpoint_best.pt' file in it and a 'config.yaml' configuration file. The best checkpoint "
         "will be loaded and trimmed to only contain the 'model_state_dict' key to save space."
     )
     parser.add_argument("--experiment", type=str, required=True)

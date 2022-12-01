@@ -6,17 +6,24 @@ use crate::edit;
 use crate::edit::{distance, edited_words, EditOperation};
 use crate::text::{clean, match_words, word_boundaries};
 use crate::unicode::CS;
-use crate::utils::constrain;
+use crate::utils::{as_ref_slice_to_vec, constrain};
 use crate::whitespace::{operations, WhitespaceOperation};
 
 #[inline]
 fn _mean_edit_distance(
-    sequences: &[String],
-    target_sequences: &[String],
+    sequences: &[impl AsRef<str>],
+    target_sequences: &[impl AsRef<str>],
     length: usize,
     use_graphemes: bool,
     normalize: bool,
 ) -> f64 {
+    let sequences = as_ref_slice_to_vec(&sequences);
+    let target_sequences = as_ref_slice_to_vec(&target_sequences);
+    assert_eq!(
+        sequences.len(),
+        target_sequences.len(),
+        "expected the same number of sequences and target sequences"
+    );
     sequences
         .into_par_iter()
         .zip(target_sequences)
@@ -38,15 +45,10 @@ fn _mean_edit_distance(
 }
 
 pub fn mean_edit_distance(
-    sequences: &[String],
-    target_sequences: &[String],
+    sequences: &[impl AsRef<str>],
+    target_sequences: &[impl AsRef<str>],
     use_graphemes: bool,
 ) -> f64 {
-    assert_eq!(
-        sequences.len(),
-        target_sequences.len(),
-        "expected the same number of sequences and target sequences"
-    );
     _mean_edit_distance(
         sequences,
         target_sequences,
@@ -69,15 +71,10 @@ fn mean_edit_distance_py(
 }
 
 pub fn mean_normalized_edit_distance(
-    sequences: &[String],
-    target_sequences: &[String],
+    sequences: &[impl AsRef<str>],
+    target_sequences: &[impl AsRef<str>],
     use_graphemes: bool,
 ) -> f64 {
-    assert_eq!(
-        sequences.len(),
-        target_sequences.len(),
-        "expected the same number of sequences and target sequences"
-    );
     _mean_edit_distance(
         sequences,
         target_sequences,
@@ -214,13 +211,16 @@ fn binary_f1_py(
 }
 
 fn _correction_f1(
-    input_sequences: &[String],
-    predicted_sequences: &[String],
-    target_sequences: &[String],
+    input_sequences: &[impl AsRef<str>],
+    predicted_sequences: &[impl AsRef<str>],
+    target_sequences: &[impl AsRef<str>],
     beta: f64,
     sequence_averaged: bool,
     f: impl Fn(&str, &str, &str) -> (TpFpFn, bool) + Sync,
 ) -> F1PrecRec {
+    let input_sequences = as_ref_slice_to_vec(&input_sequences);
+    let predicted_sequences = as_ref_slice_to_vec(&predicted_sequences);
+    let target_sequences = as_ref_slice_to_vec(&target_sequences);
     assert!(
         input_sequences.len() == target_sequences.len()
             && input_sequences.len() == predicted_sequences.len(),
@@ -365,17 +365,20 @@ fn _spelling_correction_tp_fp_fn(
 }
 
 pub fn spelling_correction_f1(
-    input_sequences: &[String],
-    predicted_sequences: &[String],
-    target_sequences: &[String],
+    input_sequences: &[impl AsRef<str>],
+    predicted_sequences: &[impl AsRef<str>],
+    target_sequences: &[impl AsRef<str>],
     beta: f64,
     sequence_averaged: bool,
     use_graphemes: bool,
 ) -> F1PrecRec {
+    let input_sequences = as_ref_slice_to_vec(&input_sequences);
+    let predicted_sequences = as_ref_slice_to_vec(&predicted_sequences);
+    let target_sequences = as_ref_slice_to_vec(&target_sequences);
     _correction_f1(
-        input_sequences,
-        predicted_sequences,
-        target_sequences,
+        &input_sequences,
+        &predicted_sequences,
+        &target_sequences,
         beta,
         sequence_averaged,
         |input, predicted, target| {
@@ -439,9 +442,9 @@ fn _whitespace_correction_tp_fp_fn(
 }
 
 pub fn whitespace_correction_f1(
-    input_sequences: &[String],
-    predicted_sequences: &[String],
-    target_sequences: &[String],
+    input_sequences: &[impl AsRef<str>],
+    predicted_sequences: &[impl AsRef<str>],
+    target_sequences: &[impl AsRef<str>],
     beta: f64,
     sequence_averaged: bool,
     mode: WhitespaceCorrectionMode,
@@ -479,7 +482,9 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use crate::metrics::{accuracy, binary_f1};
+    use crate::metrics::{accuracy, binary_f1, mean_edit_distance, mean_normalized_edit_distance, spelling_correction_f1, whitespace_correction_f1, WhitespaceCorrectionMode};
+
+    const EPS: f64 = 1e-8;
 
     #[test]
     fn test_binary_f1() {
@@ -488,30 +493,24 @@ mod tests {
             &[true, false, true, false],
             1.0,
         );
-        assert!((f1 - 0.5).abs() < 1e-8);
-        assert!((prec - 0.5).abs() < 1e-8);
-        assert!((rec - 0.5).abs() < 1e-8);
+        assert!((f1 - 0.5).abs() < EPS);
+        assert!((prec - 0.5).abs() < EPS);
+        assert!((rec - 0.5).abs() < EPS);
     }
 
-    #[test]
-    fn test_accuracy() {
-        let acc = accuracy(&[true, false, true], &[true, false, false]);
-        assert!((acc - 0.666).abs() < 1e-3);
-    }
-
-    const SC_INPUT_SEQUENCES: [&str; 4] = [
+    const INPUT_SEQUENCES: [&str; 4] = [
         "this is a tset",
         "we do nod match",
         "just a rwong sequence",
         "one last examples"
     ];
-    const SC_PRED_SEQUENCES: [&str; 4] = [
+    const PRED_SEQUENCES: [&str; 4] = [
         "this is a test",
         "we do no match",
         "Just a wrong sequence",
         "one last examples"
     ];
-    const SC_TARGET_SEQUENCES: [&str; 4] = [
+    const TARGET_SEQUENCES: [&str; 4] = [
         "this is a test",
         "we do not match",
         "just a wrong sequence",
@@ -520,7 +519,51 @@ mod tests {
 
     #[test]
     fn test_spelling_correction_f1() {
+        // this test case is taken from Matthias Hertel's masters thesis
+        // https://ad-publications.cs.uni-freiburg.de/theses/Master_Matthias_Hertel_2019.pdf
+        let ipt = "Te cute cteats delicious fi sh.";
+        let tgt = "The cute cat eats delicious fish.";
+        let pred = "The cute act eats delicate fi sh.";
 
+        let (f1, prec, rec) = spelling_correction_f1(
+            &[ipt],
+            &[pred],
+            &[tgt],
+            1.0,
+            false,
+            true
+        );
+        assert!((f1 - 0.5).abs() < EPS);
+        assert!((prec - 0.5).abs() < EPS);
+        assert!((rec - 0.5).abs() < EPS);
+    }
+
+    #[test]
+    fn test_mean_edit_distance() {
+        let med = mean_edit_distance(
+            &PRED_SEQUENCES,
+            &TARGET_SEQUENCES,
+            true,
+        );
+        assert!((med - (1.0 + 1.0 + 1.0 + 0.0) / 4.0).abs() < EPS);
+    }
+
+    #[test]
+    fn test_mean_normalized_edit_distance() {
+        let mned = mean_normalized_edit_distance(
+            &PRED_SEQUENCES,
+            &TARGET_SEQUENCES,
+            true,
+        );
+        assert!((mned - (1.0 / 15.0 + 1.0 / 21.0 + 1.0 / 17.0 + 0.0) / 4.0).abs() < EPS);
+    }
+
+    #[test]
+    fn test_accuracy() {
+        let acc = accuracy(&[true, false, true], &[true, false, false]);
+        assert!((acc - 0.666).abs() < 1e-3);
+        let acc = accuracy(&PRED_SEQUENCES, &TARGET_SEQUENCES);
+        assert!((acc - 0.25).abs() < EPS);
     }
 
     const WC_INPUT_SEQUENCES: [&str; 4] = [
@@ -544,6 +587,29 @@ mod tests {
 
     #[test]
     fn test_whitespace_correction_f1() {
-
+        let (f1, prec, rec) = whitespace_correction_f1(
+            &WC_INPUT_SEQUENCES,
+            &WC_PRED_SEQUENCES,
+            &WC_TARGET_SEQUENCES,
+            1.0,
+            false,
+            WhitespaceCorrectionMode::InsertionsAndDeletions,
+            true
+        );
+        assert!((f1 - 0.9444).abs() < 1e-4);
+        assert!((prec - (3.0 + 1.0 + 2.0 + 11.0) / (3.0 + 1.0 + 3.0 + 12.0)).abs() < EPS);
+        assert!((rec - 1.0).abs() < EPS);
+        let (f1, prec, rec) = whitespace_correction_f1(
+            &WC_INPUT_SEQUENCES,
+            &WC_PRED_SEQUENCES,
+            &WC_TARGET_SEQUENCES,
+            1.0,
+            true,
+            WhitespaceCorrectionMode::InsertionsAndDeletions,
+            true
+        );
+        assert!((f1 - 0.9391).abs() < 1e-4);
+        assert!((prec - 0.8958).abs() < 1e-4);
+        assert!((rec - 1.0).abs() < EPS);
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use crate::unicode::{CharString, Character, CS};
 use pyo3::prelude::*;
-use crate::text::{match_words, word_boundaries};
+use crate::text::match_words;
 
 use crate::utils::Matrix;
 

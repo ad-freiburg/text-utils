@@ -36,11 +36,11 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
 }
 
 #[inline]
-fn str_match(a: &str, b: &str, ignore_case: bool) -> bool {
+fn str_match_fn(ignore_case: bool) -> impl Fn(&str, &str) -> bool {
     if ignore_case {
-        a.to_lowercase() == b.to_lowercase()
+        |a: &str, b: &str| a.to_lowercase() == b.to_lowercase()
     } else {
-        a == b
+        |a: &str, b: &str| a == b
     }
 }
 
@@ -48,8 +48,8 @@ fn str_match(a: &str, b: &str, ignore_case: bool) -> bool {
 pub fn match_words_with(
     a: &str,
     b: &str,
-    word_match_fn: &dyn Fn(&str, &str) -> bool
-) -> (Vec<(usize, usize)>, usize, usize){
+    word_match_fn: impl Fn(&str, &str) -> bool,
+) -> (Vec<(usize, usize)>, usize, usize) {
     let a_words = a.split_whitespace().collect::<Vec<&str>>();
     let b_words = b.split_whitespace().collect::<Vec<&str>>();
 
@@ -127,7 +127,7 @@ pub fn match_words_with(
 
 #[pyfunction(ignore_case = "false")]
 pub fn match_words(a: &str, b: &str, ignore_case: bool) -> (Vec<(usize, usize)>, usize, usize) {
-    match_words_with(a, b, &|a, b| str_match(a, b, ignore_case))
+    match_words_with(a, b, str_match_fn(ignore_case))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -455,7 +455,7 @@ mod tests {
         let (matches, a_len, b_len) = match_words(
             "this is a test",
             "This is also a test",
-            false
+            false,
         );
         assert_eq!(matches, vec![(1, 1), (2, 3), (3, 4)]);
         assert_eq!(a_len, 4);
@@ -463,7 +463,7 @@ mod tests {
         let (matches, a_len, b_len) = match_words(
             "this is a test",
             "This is also a test",
-            true
+            true,
         );
         assert_eq!(matches, vec![(0, 0), (1, 1), (2, 3), (3, 4)]);
         assert_eq!(a_len, 4);

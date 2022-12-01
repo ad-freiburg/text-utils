@@ -135,6 +135,11 @@ where
     run_length_decode(values)
 }
 
+#[inline]
+pub(crate) fn as_ref_slice_to_vec(values: &[impl AsRef<str>]) -> Vec<&str> {
+    values.iter().map(|s| s.as_ref()).collect()
+}
+
 pub(crate) fn py_required_key_error(key_name: &str, value_name: &str) -> PyErr {
     PyTypeError::new_err(format!(
         "could not find required key \"{key_name}\" for \

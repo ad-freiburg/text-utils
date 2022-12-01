@@ -18,10 +18,18 @@ pub fn full(s: &str, use_graphemes: bool) -> String {
         .join(" ")
 }
 
+#[derive(Debug, Clone, Copy, Hash, Ord, PartialOrd, Eq, PartialEq)]
+#[pyclass]
+pub enum WhitespaceOperation {
+    Keep,
+    Insert,
+    Delete,
+}
+
 #[pyfunction(
 use_graphemes = "true"
 )]
-pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
+pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOperation> {
     assert_eq!(
         remove(from),
         remove(to),
@@ -43,13 +51,13 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
             None
         };
         if to_char.is_some() && from_char == to_char.unwrap() {
-            operations.push(0);
+            operations.push(WhitespaceOperation::Keep);
             to_ptr += 1;
         } else if to_char.is_some() && to_char.unwrap().is_whitespace() {
-            operations.push(1);
+            operations.push(WhitespaceOperation::Insert);
             to_ptr += 2;
         } else if from_char.is_whitespace() {
-            operations.push(2);
+            operations.push(WhitespaceOperation::Delete);
         } else {
             panic!(
                 "should not happen, most likely your inputs contain multiple \
@@ -62,7 +70,7 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<u8> {
     operations
 }
 
-pub fn repair(s: &str, operations: &[u8], use_graphemes: bool) -> String {
+pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) -> String {
     let cs = CS::new(s, use_graphemes);
     let chars: Vec<Character> = cs.chars().collect();
     assert_eq!(
@@ -77,15 +85,12 @@ pub fn repair(s: &str, operations: &[u8], use_graphemes: bool) -> String {
     let mut new_chars = vec![];
     new_chars.reserve(operations.len());
     for (idx, (char, op)) in chars.iter().zip(operations.iter()).enumerate() {
-        assert!(
-            *op <= 2,
-            "operation should be either 0, 1, or 2, but got {}",
-            op
-        );
-        if *op == 1 && !char.is_whitespace() && (idx == 0 || !chars[idx - 1].is_whitespace()) {
+        if *op == WhitespaceOperation::Insert
+            && !char.is_whitespace()
+            && (idx == 0 || !chars[idx - 1].is_whitespace()) {
             new_chars.push(" ");
             new_chars.push(char.str);
-        } else if *op == 2 && char.is_whitespace() {
+        } else if *op == WhitespaceOperation::Delete && char.is_whitespace() {
             continue;
         } else {
             new_chars.push(char.str);
@@ -96,7 +101,7 @@ pub fn repair(s: &str, operations: &[u8], use_graphemes: bool) -> String {
 
 #[pyfunction]
 #[pyo3(name = "repair")]
-fn repair_py(s: &str, operations: Vec<u8>, use_graphemes: bool) -> String {
+fn repair_py(s: &str, operations: Vec<WhitespaceOperation>, use_graphemes: bool) -> String {
     repair(s, &operations, use_graphemes)
 }
 
@@ -130,7 +135,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove, repair};
+    use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove, repair, WhitespaceOperation};
 
     #[test]
     fn test_remove() {
@@ -151,10 +156,19 @@ mod tests {
     fn test_operations() {
         let from = " t  h isis a test  ";
         let to = "this is a test";
-        assert_eq!(operations(from, from, true), vec![0; from.chars().count()]);
-        assert_eq!(operations(to, to, true), vec![0; to.chars().count()]);
         assert_eq!(
-            operations(from, to, true),
+            operations(from, from, true),
+            vec![WhitespaceOperation::Keep; from.chars().count()]
+        );
+        assert_eq!(
+            operations(to, to, true),
+            vec![WhitespaceOperation::Keep; to.chars().count()]
+        );
+        assert_eq!(
+            operations(from, to, true)
+                .into_iter()
+                .map(|op| op as u8)
+                .collect::<Vec<u8>>(),
             vec![2, 0, 2, 2, 0, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2]
         );
     }
@@ -168,8 +182,27 @@ mod tests {
             repair(to, &operations(to, from, true), true),
             "t h isis a test"
         );
-        assert_eq!(repair("    ", &vec![2, 2, 2, 2], true), "");
-        assert_eq!(repair("  t  ", &vec![0, 2, 0, 0, 1], true), "t");
+        assert_eq!(
+            repair(
+                "    ",
+                &vec![WhitespaceOperation::Delete; 4],
+                true),
+            ""
+        );
+        assert_eq!(
+            repair(
+                "  t  ",
+                &vec![
+                    WhitespaceOperation::Keep,
+                    WhitespaceOperation::Delete,
+                    WhitespaceOperation::Keep,
+                    WhitespaceOperation::Keep,
+                    WhitespaceOperation::Insert,
+                ],
+                true,
+            ),
+            "t"
+        );
         assert_eq!(repair("", &vec![], true), "");
     }
 

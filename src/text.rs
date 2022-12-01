@@ -37,11 +37,19 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
 
 #[inline]
 fn str_match(a: &str, b: &str, ignore_case: bool) -> bool {
-    a == b || (ignore_case && a.to_lowercase() == b.to_lowercase())
+    if ignore_case {
+        a.to_lowercase() == b.to_lowercase()
+    } else {
+        a == b
+    }
 }
 
-#[pyfunction(ignore_case = "false")]
-pub fn match_words(a: &str, b: &str, ignore_case: bool) -> Vec<(usize, usize)> {
+#[inline]
+pub fn match_words_with(
+    a: &str,
+    b: &str,
+    word_match_fn: &dyn Fn(&str, &str) -> bool
+) -> (Vec<(usize, usize)>, usize, usize){
     let a_words = a.split_whitespace().collect::<Vec<&str>>();
     let b_words = b.split_whitespace().collect::<Vec<&str>>();
 
@@ -63,7 +71,7 @@ pub fn match_words(a: &str, b: &str, ignore_case: bool) -> Vec<(usize, usize)> {
             let i = a_idx + 1;
             let j = b_idx + 1;
 
-            let matching = str_match(a_word, b_word, ignore_case);
+            let matching = word_match_fn(a_word, b_word);
             let values = vec![
                 (d[i - 1][j], MatchOp::Delete),
                 (d[i][j - 1], MatchOp::Insert),
@@ -114,7 +122,12 @@ pub fn match_words(a: &str, b: &str, ignore_case: bool) -> Vec<(usize, usize)> {
         }
     }
     matches.reverse();
-    matches
+    (matches, a_words.len(), b_words.len())
+}
+
+#[pyfunction(ignore_case = "false")]
+pub fn match_words(a: &str, b: &str, ignore_case: bool) -> (Vec<(usize, usize)>, usize, usize) {
+    match_words_with(a, b, &|a, b| str_match(a, b, ignore_case))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -439,10 +452,22 @@ mod tests {
 
     #[test]
     fn test_match_words() {
-        let matches = match_words("this is a test", "This is also a test", false);
+        let (matches, a_len, b_len) = match_words(
+            "this is a test",
+            "This is also a test",
+            false
+        );
         assert_eq!(matches, vec![(1, 1), (2, 3), (3, 4)]);
-        let matches = match_words("this is a test", "This is also a test", true);
+        assert_eq!(a_len, 4);
+        assert_eq!(b_len, 5);
+        let (matches, a_len, b_len) = match_words(
+            "this is a test",
+            "This is also a test",
+            true
+        );
         assert_eq!(matches, vec![(0, 0), (1, 1), (2, 3), (3, 4)]);
+        assert_eq!(a_len, 4);
+        assert_eq!(b_len, 5);
     }
 
     #[test]

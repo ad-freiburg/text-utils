@@ -3,11 +3,11 @@ use std::ops::Add;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use crate::edit;
-use crate::edit::{distance, edited_words};
+use crate::edit::{distance, edited_words, EditOperation};
 use crate::text::{clean, match_words, word_boundaries};
 use crate::unicode::CS;
 use crate::utils::constrain;
-use crate::whitespace::operations;
+use crate::whitespace::{operations, WhitespaceOperation};
 
 #[inline]
 fn _mean_edit_distance(
@@ -286,11 +286,11 @@ fn _group_words(
             word_idx += 1;
         }
 
-        if op == 1 && input_cs.get_char(input_idx).is_whitespace() {
+        if op == EditOperation::Delete && input_cs.get_char(input_idx).is_whitespace() {
             merged_with_next.insert(word_idx);
         }
 
-        if op == 0 && pred_cs.get_char(pred_idx).is_whitespace() {
+        if op == EditOperation::Insert && pred_cs.get_char(pred_idx).is_whitespace() {
             num_whitespaces_inserted.insert(
                 word_idx,
                 num_whitespaces_inserted
@@ -344,9 +344,9 @@ fn _spelling_correction_tp_fp_fn(
     target: &str,
     use_graphemes: bool,
 ) -> (TpFpFn, bool) {
-    let (_, misspelled) = edited_words(input, target, use_graphemes);
-    let (changed, _) = edited_words(input, predicted, use_graphemes);
-    let matching_indices = match_words(predicted, target, false);
+    let (_, misspelled) = edited_words(input, target);
+    let (changed, _) = edited_words(input, predicted);
+    let (matching_indices, _, _) = match_words(predicted, target, false);
     let matching_in_pred: HashSet<usize> = matching_indices
         .iter()
         .map(|(pred_idx, _)| *pred_idx)
@@ -359,7 +359,7 @@ fn _spelling_correction_tp_fp_fn(
     let tp_fp_fn = TpFpFn::new(
         misspelled.intersection(&restored).count(),
         changed.difference(&correct).count(),
-        misspelled.difference(&restored).count()
+        misspelled.difference(&restored).count(),
     );
     (tp_fp_fn, misspelled.is_empty() && changed.is_empty())
 }
@@ -398,19 +398,19 @@ pub enum WhitespaceCorrectionMode {
 
 #[inline]
 fn _whitespace_ops_to_set(
-    ops: &[u8],
+    ops: &[WhitespaceOperation],
     mode: &WhitespaceCorrectionMode,
-) -> HashSet<(usize, u8)> {
+) -> HashSet<(usize, WhitespaceOperation)> {
     ops
         .iter()
         .enumerate()
         .filter_map(|(idx, op)| {
             match (*op, mode) {
-                (0, _) => None,
-                (1 | 2, WhitespaceCorrectionMode::InsertionsAndDeletions)
-                | (1, WhitespaceCorrectionMode::Insertions)
-                | (2, WhitespaceCorrectionMode::Deletions) => Some((idx, *op)),
-                _ => panic!("should not happen, op should be either 0, 1, or 2, but got {op}")
+                (WhitespaceOperation::Keep, _) => None,
+                (WhitespaceOperation::Insert | WhitespaceOperation::Delete, WhitespaceCorrectionMode::InsertionsAndDeletions)
+                | (WhitespaceOperation::Insert, WhitespaceCorrectionMode::Insertions)
+                | (WhitespaceOperation::Delete, WhitespaceCorrectionMode::Deletions) => Some((idx, *op)),
+                _ => panic!("should not happen, op should be either 0, 1, or 2, but got {op:?}")
             }
         })
         .collect()
@@ -497,5 +497,53 @@ mod tests {
     fn test_accuracy() {
         let acc = accuracy(&[true, false, true], &[true, false, false]);
         assert!((acc - 0.666).abs() < 1e-3);
+    }
+
+    const SC_INPUT_SEQUENCES: [&str; 4] = [
+        "this is a tset",
+        "we do nod match",
+        "just a rwong sequence",
+        "one last examples"
+    ];
+    const SC_PRED_SEQUENCES: [&str; 4] = [
+        "this is a test",
+        "we do no match",
+        "Just a wrong sequence",
+        "one last examples"
+    ];
+    const SC_TARGET_SEQUENCES: [&str; 4] = [
+        "this is a test",
+        "we do not match",
+        "just a wrong sequence",
+        "one last example"
+    ];
+
+    #[test]
+    fn test_spelling_correction_f1() {
+
+    }
+
+    const WC_INPUT_SEQUENCES: [&str; 4] = [
+        "thisisatest",
+        "we do not ma tch",
+        "just awrong seq uence",
+        "o n e l a s t e x a m p l e"
+    ];
+    const WC_PRED_SEQUENCES: [&str; 4] = [
+        "this is a test",
+        "we do not match",
+        "justa wrong sequence",
+        "onelast example"
+    ];
+    const WC_TARGET_SEQUENCES: [&str; 4] = [
+        "this is a test",
+        "we do not match",
+        "just a wrong sequence",
+        "one last example"
+    ];
+
+    #[test]
+    fn test_whitespace_correction_f1() {
+
     }
 }

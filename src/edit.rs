@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use crate::unicode::{CharString, Character, CS};
 use pyo3::prelude::*;
-use crate::text::word_boundaries;
+use crate::text::{match_words, word_boundaries};
 
 use crate::utils::Matrix;
 
@@ -83,6 +83,15 @@ fn _calculate_edit_matrices(
     (d, ops)
 }
 
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[pyclass]
+pub enum EditOperation {
+    Insert,
+    Delete,
+    Replace,
+    Swap,
+}
+
 #[pyfunction(
 use_graphemes = "true",
 with_swap = "true",
@@ -94,7 +103,7 @@ pub fn operations(
     use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
-) -> Vec<(u8, usize, usize)> {
+) -> Vec<(EditOperation, usize, usize)> {
     let (_, ops) = _calculate_edit_matrices(
         CS::new(a, use_graphemes),
         CS::new(b, use_graphemes),
@@ -118,21 +127,21 @@ pub fn operations(
             }
             EditOp::Insert => {
                 j -= 1;
-                edit_ops.push((0, i, j));
+                edit_ops.push((EditOperation::Insert, i, j));
             }
             EditOp::Delete => {
                 i -= 1;
-                edit_ops.push((1, i, j));
+                edit_ops.push((EditOperation::Delete, i, j));
             }
             EditOp::Replace => {
                 i -= 1;
                 j -= 1;
-                edit_ops.push((2, i, j));
+                edit_ops.push((EditOperation::Replace, i, j));
             }
             EditOp::Swap => {
                 i -= 2;
                 j -= 2;
-                edit_ops.push((3, i, j));
+                edit_ops.push((EditOperation::Swap, i, j));
             }
         }
     }
@@ -161,79 +170,26 @@ pub fn distance(
     d[d.len() - 1][d[0].len() - 1]
 }
 
-#[pyfunction(
-use_graphemes = "true"
-)]
+#[pyfunction]
 pub fn edited_words(
     a: &str,
-    b: &str,
-    use_graphemes: bool,
+    b: &str
 ) -> (HashSet<usize>, HashSet<usize>) {
-    let a_cs = CS::new(a, use_graphemes);
-    let b_cs = CS::new(b, use_graphemes);
-    let a_words = word_boundaries(a, use_graphemes);
-    let b_words = word_boundaries(b, use_graphemes);
-    let mut a_edited = HashSet::new();
-    let mut b_edited = HashSet::new();
-    for (op, a_idx, b_idx) in operations(
-        a,
-        b,
-        use_graphemes,
-        false,
-        true,
-    ) {
-        let mut a_word_idx = 0;
-        for (word_start, word_end) in &a_words {
-            if *word_start <= a_idx && a_idx < *word_end {
-                a_edited.insert(a_word_idx);
-                break;
-            } else if a_idx == *word_end {
-                match op {
-                    0 => {
-                        a_edited.insert(a_word_idx);
-                    },
-                    1 if a_cs.get_char(a_idx).is_whitespace() => {
-                        a_edited.insert(a_word_idx);
-                        a_edited.insert(a_word_idx + 1);
-                    }
-                    _ => panic!(
-                        "an edited char at a word end should either be an insertion or \
-                        a deletion of a whitespace, but got op code {op} and character \"{}\"",
-                        a_cs.get(a_idx)
-                    )
-                }
-                break;
-            }
-            a_word_idx += 1;
-        }
-        assert!(a_word_idx < a_words.len());
-        let mut b_word_idx = 0;
-        for (word_start, word_end) in &b_words {
-            if *word_start <= b_idx && b_idx < *word_end {
-                b_edited.insert(b_word_idx);
-                break;
-            } else if b_idx == *word_end {
-                match op {
-                    1 => {
-                        b_edited.insert(b_word_idx);
-                    },
-                    0 if b_cs.get_char(b_idx).is_whitespace() => {
-                        b_edited.insert(b_word_idx);
-                        b_edited.insert(b_word_idx + 1);
-                    },
-                    _ => panic!(
-                        "an edited char at a word end should either be an insertion of \
-                        a whitespace or a deletion, but got op code {op} and character \"{}\"",
-                        b_cs.get(b_idx)
-                    )
-                }
-                break;
-            }
-            b_word_idx += 1;
-        }
-        assert!(b_word_idx < b_words.len());
-    }
-    (a_edited, b_edited)
+    let (matching_words, a_len, b_len) = match_words(a, b, false);
+    let a_words = HashSet::from_iter(0..a_len);
+    let unedited_a_words: HashSet<usize> = matching_words
+        .iter()
+        .map(|(a_word_idx, _)| *a_word_idx)
+        .collect();
+    let b_words = HashSet::from_iter(0..b_len);
+    let unedited_b_words: HashSet<usize> = matching_words
+        .iter()
+        .map(|(_, b_word_idx)| *b_word_idx)
+        .collect();
+    (
+        a_words.difference(&unedited_a_words).cloned().collect(),
+        b_words.difference(&unedited_b_words).cloned().collect(),
+    )
 }
 
 /// A submodule for calculating the edit distance and operations between strings.
@@ -250,18 +206,96 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
 
 #[cfg(test)]
 mod tests {
-    use crate::edit::{distance, operations};
+    use std::collections::HashSet;
+    use rand::{Rng, SeedableRng};
+    use crate::edit::{distance, edited_words, EditOperation, operations};
 
     #[test]
     fn test_edit_operations() {
-        let ed_ops = operations("this is a test", "tihsi s a test", false, true, false);
-        assert_eq!(ed_ops, vec![(3, 1, 1), (3, 4, 4)]);
-        let ed_ops = operations("this is a test", "tihsi s a test", false, true, true);
-        assert_eq!(ed_ops, vec![(3, 1, 1), (0, 4, 4), (1, 5, 6)]);
-        let ed_ops = operations("this is a test", "tihsi s a test", false, false, false);
-        assert_eq!(ed_ops, vec![(0, 1, 1), (0, 2, 3), (1, 3, 5), (1, 5, 6)]);
-        let ed_ops = operations("this is a test", "tihsi s a test", false, false, true);
-        assert_eq!(ed_ops, vec![(0, 1, 1), (0, 2, 3), (1, 3, 5), (1, 5, 6)]);
+        let ed_ops = operations(
+            "this is a test",
+            "tihsi s a test",
+            false,
+            true,
+            false,
+        );
+        assert_eq!(
+            ed_ops,
+            vec![(EditOperation::Swap, 1, 1), (EditOperation::Swap, 4, 4)]
+        );
+        let ed_ops = operations(
+            "this is a test",
+            "tihsi s a test",
+            false,
+            true,
+            true,
+        );
+        assert_eq!(
+            ed_ops,
+            vec![(EditOperation::Swap, 1, 1), (EditOperation::Insert, 4, 4), (EditOperation::Delete, 5, 6)]
+        );
+        let ed_ops = operations(
+            "this is a test",
+            "tihsi s a test",
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            ed_ops,
+            vec![(EditOperation::Insert, 1, 1), (EditOperation::Insert, 2, 3), (EditOperation::Delete, 3, 5), (EditOperation::Delete, 5, 6)]
+        );
+        let ed_ops = operations(
+            "this is a test",
+            "tihsi s a test",
+            false,
+            false,
+            true,
+        );
+        assert_eq!(
+            ed_ops,
+            vec![(EditOperation::Insert, 1, 1), (EditOperation::Insert, 2, 3), (EditOperation::Delete, 3, 5), (EditOperation::Delete, 5, 6)]
+        );
+        let ed_ops = operations(
+            "thyis is a texst",
+            "thxis is a teyst",
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            ed_ops,
+            vec![(EditOperation::Replace, 2, 2), (EditOperation::Replace, 13, 13)]
+        );
+
+        let mut rng = rand_chacha::ChaCha8Rng::from_entropy();
+
+        let mut rand_string = |min_size: usize, max_size: usize| -> String {
+            let size: usize = rng.gen_range(min_size..=max_size);
+            (0..size)
+                .map(|_| {
+                    char::from_u32(rng.gen_range(97..=100)).unwrap()
+                })
+                .collect()
+        };
+        // test that edit operations are returned always in sorted order
+        // with some randomly created ascii (characters a-d) strings
+        for _ in 0..1000 {
+            let rand_a: String = rand_string(8, 128);
+            let rand_b: String = rand_string(8, 128);
+            let ops = operations(
+                &rand_a,
+                &rand_b,
+                true,
+                false,
+                false,
+            );
+            assert!(ops.iter().enumerate().map(|(idx, (_, a_op_idx, b_op_idx))| {
+                let a_idx_geq = idx == 0 || (*a_op_idx >= ops[idx - 1].1);
+                let b_idx_geq = idx == 0 || (*b_op_idx >= ops[idx - 1].2);
+                a_idx_geq && b_idx_geq
+            }).all(|b| b))
+        }
     }
 
     #[test]
@@ -274,5 +308,53 @@ mod tests {
         assert_eq!(ed, 4);
         let ed = distance("this is a test", "tihsi s a test", false, false, true);
         assert_eq!(ed, 4);
+    }
+
+    #[test]
+    fn test_edited_words() {
+        let a_sequences = vec![
+            "th s is a test",
+            "we do no match",
+            "Just a rwong sequence",
+            "one last example",
+            "final last example",
+        ];
+        let b_sequences = vec![
+            "this is a test",
+            "we do not match",
+            "just a wrong sequence",
+            "one last last last example here",
+            "last example here",
+        ];
+        let (edited_a, edited_b) = edited_words(
+            a_sequences[0],
+            b_sequences[0],
+        );
+        assert_eq!(edited_a, HashSet::from([0, 1]));
+        assert_eq!(edited_b, HashSet::from([0]));
+        let (edited_a, edited_b) = edited_words(
+            a_sequences[1],
+            b_sequences[1],
+        );
+        assert_eq!(edited_a, HashSet::from([2]));
+        assert_eq!(edited_b, HashSet::from([2]));
+        let (edited_a, edited_b) = edited_words(
+            a_sequences[2],
+            b_sequences[2],
+        );
+        assert_eq!(edited_a, HashSet::from([0, 2]));
+        assert_eq!(edited_b, HashSet::from([0, 2]));
+        let (edited_a, edited_b) = edited_words(
+            a_sequences[3],
+            b_sequences[3],
+        );
+        assert_eq!(edited_a, HashSet::from([]));
+        assert_eq!(edited_b, HashSet::from([1, 2, 5]));
+        let (edited_a, edited_b) = edited_words(
+            a_sequences[4],
+            b_sequences[4],
+        );
+        assert_eq!(edited_a, HashSet::from([0]));
+        assert_eq!(edited_b, HashSet::from([2]));
     }
 }

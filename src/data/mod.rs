@@ -343,6 +343,7 @@ impl DataLoader {
         shuffle_prefetch_factor = "4",
         seed = "None",
         skip = "0",
+        limit = "None",
         distributed = "None"
     )]
     pub fn from_sequences(
@@ -357,6 +358,7 @@ impl DataLoader {
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
         skip: usize,
+        limit: Option<usize>,
         distributed: Option<(usize, usize)>,
     ) -> PyResult<Self> {
         if sequences.is_empty() {
@@ -389,7 +391,10 @@ impl DataLoader {
             "rank {rank} is invalid given world size {world_size}"
         );
         let len = text_iter.min_len().saturating_sub(skip) / world_size;
-        let text_iter = text_iter.skip(skip + rank).step_by(world_size);
+        let text_iter = text_iter
+            .take(limit.unwrap_or(usize::MAX))
+            .skip(skip + rank)
+            .step_by(world_size);
         let iter = if num_threads > 0 {
             pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
         } else {
@@ -420,6 +425,7 @@ impl DataLoader {
         shuffle_prefetch_factor = "4",
         seed = "None",
         skip = "0",
+        limit = "None",
         distributed = "None"
     )]
     pub fn from_files(
@@ -435,6 +441,7 @@ impl DataLoader {
         shuffle_prefetch_factor: usize,
         seed: Option<u64>,
         skip: usize,
+        limit: Option<usize>,
         distributed: Option<(usize, usize)>,
     ) -> PyResult<Self> {
         if files.is_empty() {
@@ -478,7 +485,10 @@ impl DataLoader {
             rank < world_size,
             "rank {rank} is invalid given world size {world_size}"
         );
-        let text_iter = text_iter.skip(skip + rank).step_by(world_size);
+        let text_iter = text_iter
+            .take(limit.unwrap_or(usize::MAX))
+            .skip(skip + rank)
+            .step_by(world_size);
         let iter = if num_threads > 0 {
             pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
         } else {

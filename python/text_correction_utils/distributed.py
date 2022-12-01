@@ -17,9 +17,6 @@ class DistributedInfo:
         self.local_rank = local_rank
         self.world_size = world_size
         self.local_world_size = local_world_size
-        assert self.local_rank < torch.cuda.device_count(), \
-            f"found {torch.cuda.device_count()} available GPUs, " \
-            f"but local_rank is {self.local_rank} (should be in [0..NumGPUs))"
         self.device = torch.device(self.local_rank)
 
     @property

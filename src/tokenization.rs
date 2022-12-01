@@ -129,7 +129,7 @@ impl<'a> FromPyObject<'a> for TokenizationInfo {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
         let Some(info_type) = d.get_item("type") else {
-          return Err(py_required_key_error("type", "tokenization info"));
+            return Err(py_required_key_error("type", "tokenization info"));
         };
         let info_type: String = info_type.extract()?;
         let info = match info_type.as_str() {
@@ -594,16 +594,15 @@ struct PyTokenizer {
 #[pymethods]
 impl PyTokenizer {
     #[staticmethod]
-    fn from_config(config: TokenizerConfig) -> PyResult<Self> {
-        Ok(PyTokenizer {
+    fn from_config(config: TokenizerConfig) -> Self {
+        PyTokenizer {
             name: match config {
                 TokenizerConfig::Character(_, _, _) => "character",
                 TokenizerConfig::Byte(_, _, _) => "byte",
                 TokenizerConfig::Dummy(_) => "dummy",
-            }
-            .to_string(),
+            }.to_string(),
             tokenizer: tokenizer(config),
-        })
+        }
     }
 
     #[args(prefix = "None", suffix = "None")]
@@ -612,8 +611,8 @@ impl PyTokenizer {
         s: &str,
         prefix: Option<Vec<String>>,
         suffix: Option<Vec<String>>,
-    ) -> PyResult<Tokenization> {
-        Ok(self.tokenizer.tokenize(
+    ) -> Tokenization {
+        self.tokenizer.tokenize(
             s,
             if prefix.is_some() {
                 Some(prefix.as_ref().unwrap())
@@ -625,40 +624,51 @@ impl PyTokenizer {
             } else {
                 None
             },
-        ))
+        )
     }
 
-    fn special_token_to_id(&self, token: &str) -> PyResult<u32> {
-        Ok(self.tokenizer.special_token_to_id(token))
+    fn special_token_to_id(&self, token: &str) -> u32 {
+        self.tokenizer.special_token_to_id(token)
     }
 
-    fn id_to_special_token(&self, token_id: u32) -> PyResult<&str> {
-        Ok(self.tokenizer.id_to_special_token(&token_id))
+    fn id_to_special_token(&self, token_id: u32) -> &str {
+        self.tokenizer.id_to_special_token(&token_id)
     }
 
-    fn de_tokenize(&self, token_ids: Vec<u32>) -> PyResult<String> {
-        Ok(self.tokenizer.de_tokenize(&token_ids))
+    fn de_tokenize(&self, token_ids: Vec<u32>) -> String {
+        self.tokenizer.de_tokenize(&token_ids)
     }
 
-    fn vocab_size(&self) -> PyResult<usize> {
-        Ok(self.tokenizer.vocab_size())
+    fn vocab_size(&self) -> usize {
+        self.tokenizer.vocab_size()
     }
 
-    fn num_prefix_tokens(&self) -> PyResult<usize> {
-        Ok(self.tokenizer.num_prefix_tokens())
+    fn num_prefix_tokens(&self) -> usize {
+        self.tokenizer.num_prefix_tokens()
     }
 
-    fn num_suffix_tokens(&self) -> PyResult<usize> {
-        Ok(self.tokenizer.num_suffix_tokens())
+    fn num_suffix_tokens(&self) -> usize {
+        self.tokenizer.num_suffix_tokens()
     }
 
-    fn add_special_tokens(&mut self, tokens: Vec<String>) -> PyResult<()> {
+    fn add_special_tokens(&mut self, tokens: Vec<String>) -> () {
         self.tokenizer.add_special_tokens(&tokens);
-        Ok(())
     }
 
-    fn unk_token_id(&self) -> PyResult<u32> {
-        Ok(self.tokenizer.unk_token_id())
+    fn unk_token_id(&self) -> u32 {
+        self.tokenizer.unk_token_id()
+    }
+
+    fn pad_token_id(&self) -> u32 {
+        self.tokenizer.pad_token_id()
+    }
+
+    fn bos_token_id(&self) -> u32 {
+        self.tokenizer.bos_token_id()
+    }
+
+    fn eos_token_id(&self) -> u32 {
+        self.tokenizer.eos_token_id()
     }
 }
 

@@ -109,6 +109,9 @@ class _TransformerEncoderLayer(nn.Module):
 
 
 class Encoder(nn.Module):
+    def additional_losses(self) -> Dict[str, torch.Tensor]:
+        return {}
+
     def forward(
         self,
         x: torch.Tensor,

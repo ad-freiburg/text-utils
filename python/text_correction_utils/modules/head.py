@@ -7,7 +7,7 @@ from text_correction_utils.modules import utils
 
 
 class Head(nn.Module):
-    def forward(self, x: torch.Tensor, lengths: List[int], **kwargs: Dict[str, Any]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs: Dict[str, Any]) -> torch.Tensor:
         raise NotImplementedError
 
 
@@ -34,10 +34,10 @@ class ClassificationHead(Head):
 
         self.head = nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor, lengths: List[int], **kwargs: Dict[str, Any]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs: Dict[str, Any]) -> torch.Tensor:
         return self.head(x[:, 0, :])
 
 
 class SequenceClassificationHead(ClassificationHead):
-    def forward(self, x: torch.Tensor, lengths: List[int], **kwargs: Dict[str, Any]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs: Dict[str, Any]) -> torch.Tensor:
         return self.head(x)

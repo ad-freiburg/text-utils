@@ -27,6 +27,10 @@ dependencies = [
     "tqdm>=4.49.0"
 ]
 
+[project.scripts]
+"tcu.zip_experiment" = "text_correction_utils.cli.zip_experiment:main"
+"tcu.evaluate" = "text_correction_utils.cli.evaluate:main"
+
 [project.optional-dependencies]
 test = [
     "pytest>=6.2.0",

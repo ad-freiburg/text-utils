@@ -150,5 +150,5 @@ def run(args: argparse.Namespace) -> None:
               f"and that they have the correct format for the benchmark type you want to evaluate.")
 
 
-if __name__ == "__main__":
+def main():
     run(parse_args())

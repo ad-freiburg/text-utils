@@ -147,16 +147,15 @@ class TransformerEncoder(Encoder):
         else:
             raise ValueError(f"unknown activation function {activation}")
 
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer=_TransformerEncoderLayer(
+        self.transformer = nn.ModuleList(
+            _TransformerEncoderLayer(
                 d_model=dim,
                 nhead=heads,
                 with_pos=with_pos,
                 dim_feedforward=ffw_dim,
                 dropout=dropout,
                 activation=act_fn
-            ),
-            num_layers=1 if self.share_parameters else num_layers
+            ) for _ in range(1 if self.share_parameters else num_layers)
         )
 
     def forward(
@@ -167,13 +166,10 @@ class TransformerEncoder(Encoder):
         **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         padding_mask = mask.padding_mask(lengths, x.device)
-        if self.share_parameters:
-            enc = x
-            for _ in range(self.num_layers):
-                enc = self.transformer(enc, src_key_padding_mask=padding_mask)
-            return enc
-        else:
-            return self.transformer(x, src_key_padding_mask=padding_mask)
+        enc = x
+        for i in range(self.num_layers):
+            enc = self.transformer[0 if self.share_parameters else i](enc, pos, padding_mask=padding_mask)
+        return enc
 
 
 class RNNEncoder(Encoder):

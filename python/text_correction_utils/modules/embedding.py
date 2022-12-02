@@ -34,7 +34,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
         self.register_buffer("pos_emb", pe)
 
     def forward(self, positions: torch.Tensor) -> torch.Tensor:
-        pos_emb = torch.index_select(self.pe, 0, positions.reshape(-1))
+        pos_emb = torch.index_select(self.pos_emb, 0, positions.reshape(-1))
         return pos_emb.view((*positions.shape, -1))
 
 

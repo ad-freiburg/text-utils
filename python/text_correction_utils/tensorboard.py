@@ -5,9 +5,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 class AverageTracker:
-    def __init__(self, name: str):
+    def __init__(self, name: str, fmt: str = ".2f"):
         self.name = name
         self.values = []
+        self.fmt = fmt
 
     def add(self, v: Union[float, int]):
         self.values.append(v)
@@ -24,7 +25,7 @@ class AverageTracker:
         )
 
     def log_info(self, logger: logging.Logger, step: int):
-        logger.info(f"[step {step}] {self.name} = {self.value}")
+        logger.info(f"[step {step}] {self.name} = {self.value:{self.fmt}}")
 
     def reset(self):
         self.values.clear()

@@ -14,7 +14,7 @@ use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 use std::{panic, process};
 
-pub type BoxedThreadSafeIter<T> = Box<dyn Iterator<Item = T> + Send + 'static>;
+pub type BoxedThreadSafeIter<T> = Box<dyn Iterator<Item=T> + Send + 'static>;
 pub type BoxedStringIter = BoxedThreadSafeIter<String>;
 pub type BoxedTextDataIter = BoxedThreadSafeIter<TextData>;
 pub type BoxedItemIter = BoxedThreadSafeIter<Item>;
@@ -290,7 +290,7 @@ impl TextIterator {
                         .map(|idx| self.lengths[*idx])
                         .collect::<Vec<usize>>(),
                 )
-                .expect("could not create line distribution");
+                    .expect("could not create line distribution");
                 self.idx = non_finished_indices[self.rng.sample(dist)];
             }
         };
@@ -340,7 +340,7 @@ pub struct PipelineIterator {
 }
 
 impl PipelineIterator {
-    pub fn new(iter: impl Iterator<Item = TextData> + Send + 'static, pipeline: Pipeline) -> Self {
+    pub fn new(iter: impl Iterator<Item=TextData> + Send + 'static, pipeline: Pipeline) -> Self {
         let size_hint = iter.size_hint();
         PipelineIterator {
             iter: Box::new(
@@ -352,7 +352,7 @@ impl PipelineIterator {
     }
 
     pub fn new_threaded(
-        iter: impl Iterator<Item = TextData> + Send + 'static,
+        iter: impl Iterator<Item=TextData> + Send + 'static,
         pipeline: Pipeline,
         worker_threads: u8,
         buffer_size: usize,
@@ -452,7 +452,7 @@ pub enum BatchLimitType {
     NumTokens,
 }
 
-pub struct BatchedIterator<T: Iterator<Item = Item> + Send + 'static> {
+pub struct BatchedIterator<T: Iterator<Item=Item> + Send + 'static> {
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
     rng: ChaCha8Rng,
@@ -463,7 +463,7 @@ pub struct BatchedIterator<T: Iterator<Item = Item> + Send + 'static> {
     remainder: Option<Item>,
 }
 
-impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
+impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
     pub fn new(
         mut iter: T,
         batch_limit: usize,
@@ -497,21 +497,13 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
         // 1. fill up the shuffle buffer
         // 2. shuffle the shuffle buffer
         // 3. pop from shuffle buffer until we have a maxed out batch
-        let mut buffer_limit = match self.batch_limit_type {
-            BatchLimitType::BatchSize => self.shuffle_buffer.len(),
-            BatchLimitType::NumTokens => self
-                .shuffle_buffer
-                .iter()
-                .map(|item| item.tokenization.token_ids.len())
-                .sum(),
-        };
+        let mut buffer_limit = Self::buffer_limit(&self.shuffle_buffer, None, &self.batch_limit_type);
         // fill buffer until batch limit * some factor is hit
         while buffer_limit < self.batch_limit * self.shuffle_prefetch_factor {
             let Some(item) = self.iter.next() else {
                 break;
             };
-            let limit_inc = Self::limit_inc(&item, &self.batch_limit_type);
-            buffer_limit += limit_inc;
+            buffer_limit = Self::buffer_limit(&self.shuffle_buffer, Some(&item), &self.batch_limit_type);
             self.shuffle_buffer.push(item);
         }
         // we are only done if the shuffle buffer is empty
@@ -540,10 +532,23 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
     }
 
     #[inline]
-    fn limit_inc(item: &Item, limit_type: &BatchLimitType) -> usize {
+    fn buffer_limit(items: &[Item], item: Option<&Item>, limit_type: &BatchLimitType) -> usize {
         match limit_type {
-            BatchLimitType::BatchSize => 1,
-            BatchLimitType::NumTokens => item.tokenization.token_ids.len(),
+            BatchLimitType::BatchSize => items.len() + item.is_some() as usize,
+            BatchLimitType::NumTokens => {
+                let item_length = if item.is_some() {
+                    item.unwrap().tokenization.token_ids.len()
+                } else {
+                    0
+                };
+                items
+                    .iter()
+                    .map(|item| item.tokenization.token_ids.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(item_length)
+                    * (items.len() + item.is_some() as usize)
+            }
         }
     }
 
@@ -554,7 +559,6 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
         limit: usize,
         limit_type: BatchLimitType,
     ) -> (Option<Batch>, Option<Item>) {
-        let mut batch_limit: usize = Self::limit_inc(&initial, &limit_type);
         // the implementation makes sure that always at least 1 item is returned
         // in the batch, even if the item solely exceeds the specified limit
         let mut items = vec![initial];
@@ -562,8 +566,8 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
             let Some(item) = f() else {
                 return (Some(Batch { items }), None);
             };
-            let limit_inc = Self::limit_inc(&item, &limit_type);
-            if batch_limit + limit_inc > limit {
+            let buffer_limit = Self::buffer_limit(&items, Some(&item), &limit_type);
+            if buffer_limit > limit {
                 // if adding the item would overshoot
                 // just return it as remainder
                 break Some(item);
@@ -571,14 +575,13 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
                 // if adding the item would not overshoot, just add it
                 // and increase the batch limit counter
                 items.push(item);
-                batch_limit += limit_inc;
             }
         };
         (Some(Batch { items }), remainder)
     }
 }
 
-impl<T: Iterator<Item = Item> + Send + 'static> Iterator for BatchedIterator<T> {
+impl<T: Iterator<Item=Item> + Send + 'static> Iterator for BatchedIterator<T> {
     type Item = Batch;
 
     fn next(&mut self) -> Option<Self::Item> {

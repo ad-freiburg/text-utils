@@ -1,7 +1,4 @@
-use crate::data::loading::{
-    BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator,
-    TextIterationStrategy,
-};
+use crate::data::loading::{BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator, TextIterationStrategy};
 use crate::data::preprocessing::{
     labeling, preprocessing, LabelingConfig, LabelingFn, PreprocessingConfig, PreprocessingFn,
 };
@@ -309,14 +306,14 @@ impl Pipeline {
 
     pub fn apply_iter(
         self,
-        iter: impl Iterator<Item = TextData> + Send + 'static,
+        iter: impl Iterator<Item=TextData> + Send + 'static,
     ) -> PipelineIterator {
         PipelineIterator::new(iter, self.clone())
     }
 
     pub fn apply_iter_threaded(
         self,
-        iter: impl Iterator<Item = TextData> + Send + 'static,
+        iter: impl Iterator<Item=TextData> + Send + 'static,
         worker_threads: u8,
         buffer_size: usize,
     ) -> PipelineIterator {
@@ -326,8 +323,25 @@ impl Pipeline {
 
 #[pyclass]
 struct DataLoader {
-    iter: Box<dyn Iterator<Item = Batch> + Send + 'static>,
-    len: usize,
+    pipeline: Pipeline,
+    text_gen: TextGenerator,
+    strategy: TextIterationStrategy,
+    num_threads: u8,
+    buffer_size: usize,
+    batch_limit: usize,
+    batch_limit_type: BatchLimitType,
+    epoch: usize,
+    limit: usize,
+    skip: usize,
+    rank: usize,
+    world_size: usize,
+    seed: Option<u64>,
+    shuffle: bool,
+    shuffle_prefetch_factor: usize,
+    // the next to values will be set after each __iter__ call
+    #[pyo3(get)]
+    min_items: Option<usize>,
+    iter: Option<Box<dyn Iterator<Item=Batch> + Send + 'static>>,
 }
 
 impl DataLoader {
@@ -351,44 +365,37 @@ impl DataLoader {
                 "seed cannot be None if shuffle is true",
             ));
         }
+        let shuffle_prefetch_factor = shuffle_prefetch_factor.max(1);
         if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor.max(1));
+            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor);
         }
-        let gen = TextGenerator::new(generators);
-        let pipe = Pipeline::from_config(pipeline_config);
-        let text_iter = gen.with_strategy(strategy, seed);
+        let pipeline = Pipeline::from_config(pipeline_config);
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
             rank < world_size,
             "rank {rank} is invalid given world size {world_size}"
         );
+        let text_gen = TextGenerator::new(generators);
         let limit = limit.unwrap_or(usize::MAX);
-        let len = text_iter
-            .min_len()
-            .min(limit)
-            .saturating_sub(skip)
-            / world_size;
-        let text_iter = text_iter
-            .take(limit)
-            .skip(skip)
-            .skip(rank)
-            .step_by(world_size);
-        let iter = if num_threads > 0 {
-            pipe.apply_iter_threaded(text_iter, num_threads, buffer_size)
-        } else {
-            pipe.apply_iter(text_iter)
-        };
-        let batched_iter = iter.batched(
+        Ok(DataLoader {
+            pipeline,
+            text_gen,
+            strategy,
+            num_threads,
+            buffer_size,
             batch_limit,
             batch_limit_type,
+            iter: None,
+            min_items: None,
+            epoch: 0,
+            limit,
+            skip,
+            rank,
+            world_size,
+            seed,
             shuffle,
             shuffle_prefetch_factor,
-            seed,
-        );
-        Ok(DataLoader {
-            iter: Box::new(batched_iter),
-            len,
         })
     }
 }
@@ -397,17 +404,17 @@ impl DataLoader {
 impl DataLoader {
     #[staticmethod]
     #[args(
-        languages = "None",
-        num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "32",
-        batch_limit = "16",
-        batch_limit_type = "BatchLimitType::BatchSize",
-        shuffle = "false",
-        shuffle_prefetch_factor = "4",
-        seed = "None",
-        skip = "0",
-        limit = "None",
-        distributed = "None"
+    languages = "None",
+    num_threads = "(num_cpus::get() as u8).min(4)",
+    buffer_size = "32",
+    batch_limit = "16",
+    batch_limit_type = "BatchLimitType::BatchSize",
+    shuffle = "false",
+    shuffle_prefetch_factor = "4",
+    seed = "None",
+    skip = "0",
+    limit = "None",
+    distributed = "None"
     )]
     pub fn from_sequences(
         sequences: Vec<String>,
@@ -438,7 +445,7 @@ impl DataLoader {
         let generators = TextContainer::new_boxed(
             sequences,
             None,
-            languages
+            languages,
         );
         Self::new(
             vec![generators],
@@ -453,24 +460,24 @@ impl DataLoader {
             seed,
             skip,
             limit,
-            distributed
+            distributed,
         )
     }
 
     #[staticmethod]
     #[args(
-        languages = "None",
-        strategy = "TextIterationStrategy::Sequential",
-        num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "32",
-        batch_limit = "16",
-        batch_limit_type = "BatchLimitType::BatchSize",
-        shuffle = "false",
-        shuffle_prefetch_factor = "4",
-        seed = "None",
-        skip = "0",
-        limit = "None",
-        distributed = "None"
+    languages = "None",
+    strategy = "TextIterationStrategy::Sequential",
+    num_threads = "(num_cpus::get() as u8).min(4)",
+    buffer_size = "32",
+    batch_limit = "16",
+    batch_limit_type = "BatchLimitType::BatchSize",
+    shuffle = "false",
+    shuffle_prefetch_factor = "4",
+    seed = "None",
+    skip = "0",
+    limit = "None",
+    distributed = "None"
     )]
     pub fn from_files(
         files: Vec<String>,
@@ -524,16 +531,47 @@ impl DataLoader {
             seed,
             skip,
             limit,
-            distributed
+            distributed,
         )
     }
 
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        let seed = if slf.seed.is_some() {
+            Some(slf.seed.unwrap() + slf.epoch as u64)
+        } else {
+            None
+        };
+        let text_iter = slf.text_gen.with_strategy(slf.strategy, seed);
+        slf.min_items = Some(text_iter
+            .min_len()
+            .min(slf.limit)
+            .saturating_sub(slf.skip)
+            / slf.world_size);
+        let text_iter = text_iter
+            .take(slf.limit)
+            .skip(slf.skip + slf.rank)
+            .step_by(slf.world_size);
+        let iter = if slf.num_threads > 0 {
+            slf.pipeline.clone().apply_iter_threaded(text_iter, slf.num_threads, slf.buffer_size)
+        } else {
+            slf.pipeline.clone().apply_iter(text_iter)
+        };
+        slf.iter = Some(Box::new(iter.batched(
+            slf.batch_limit,
+            slf.batch_limit_type,
+            slf.shuffle,
+            slf.shuffle_prefetch_factor,
+            seed,
+        )));
         slf
     }
 
     fn __next__(&mut self) -> Option<Py<Batch>> {
-        if let Some(batch) = self.iter.next() {
+        assert!(
+            self.iter.is_some(),
+            "call iter() on the dataloader before iterating with next()"
+        );
+        if let Some(batch) = self.iter.as_mut().unwrap().next() {
             Some(Python::with_gil(|py| {
                 let item: Py<Batch> = Py::new(py, batch).expect("should not fail");
                 item
@@ -543,8 +581,8 @@ impl DataLoader {
         }
     }
 
-    fn min_items(&self) -> usize {
-        self.len
+    fn set_epoch(&mut self, epoch: usize) {
+        self.epoch = epoch;
     }
 }
 

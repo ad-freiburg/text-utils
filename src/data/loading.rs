@@ -20,7 +20,7 @@ pub type BoxedTextDataIter = BoxedThreadSafeIter<TextData>;
 pub type BoxedItemIter = BoxedThreadSafeIter<Item>;
 pub type BoxedBatchIter = BoxedThreadSafeIter<Batch>;
 
-pub trait TextGen {
+pub trait TextGen: Send + 'static {
     fn org_iter(&self) -> BoxedStringIter;
     fn has_proc(&self) -> bool;
     fn proc_iter(&self) -> Option<BoxedStringIter>;
@@ -186,19 +186,19 @@ impl TextGenerator {
     }
 
     pub fn sequential(&self) -> TextIterator {
-        TextIterator::new(&self.generators, TextIterationStrategy::Sequential, None)
+        TextIterator::new(&self.generators[..], TextIterationStrategy::Sequential, None)
     }
 
     pub fn interleaved(&self) -> TextIterator {
-        TextIterator::new(&self.generators, TextIterationStrategy::Interleaved, None)
+        TextIterator::new(&self.generators[..], TextIterationStrategy::Interleaved, None)
     }
 
     pub fn weighted(&self, seed: Option<u64>) -> TextIterator {
-        TextIterator::new(&self.generators, TextIterationStrategy::Weighted, seed)
+        TextIterator::new(&self.generators[..], TextIterationStrategy::Weighted, seed)
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[pyclass]
 pub enum TextIterationStrategy {
     Sequential,

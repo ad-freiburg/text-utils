@@ -151,27 +151,28 @@ pub(crate) fn find_subsequences_of_max_size_k<T, SeqSize>(
     if start >= values.len() {
         return vec![];
     }
-    let mut end = start;
-    let mut subsequences = vec![];
-    while start < values.len() && end < values.len() {
-        if end + 1 < values.len() && size_fn(&values[end + 1..end + 2]) > k {
-            subsequences.push((start, end + 1));
-            start = end + 2;
-            end = start;
-        } else {
-            let next_subsequence_size = size_fn(&values[start..values.len().min(end + 2)]);
-            if next_subsequence_size > k {
-                if subsequences.is_empty() || subsequences.last().unwrap().1 < end + 1 {
-                    subsequences.push((start, end + 1));
+    let mut end = start + 1;
+    let mut prev_subsequence_size = size_fn(&values[start..end]);
+    let mut subsequences: Vec<(usize, usize)> = vec![];
+    while start < values.len() && end <= values.len() {
+        let subsequence_size = size_fn(&values[start..end]);
+        match (prev_subsequence_size <= k, subsequence_size <= k) {
+            (_, true) => {
+                if end >= values.len() {
+                    subsequences.push((start, end));
                 }
-                start += 1;
-            } else {
-                end += 1;
+                end += 1
             }
-        }
-    }
-    if start != end {
-        subsequences.push((start, end));
+            (true, false) => {
+                subsequences.push((start, end - 1));
+                start += 1;
+            }
+            (false, false) => {
+                start += 1;
+                end = end.max(start + 1);
+            }
+        };
+        prev_subsequence_size = subsequence_size;
     }
     subsequences
 }
@@ -194,7 +195,7 @@ pub(crate) fn py_invalid_type_error(name: &str, type_name: &str) -> PyErr {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{accumulate, run_length_decode, run_length_encode};
+    use crate::utils::{accumulate, find_subsequences_of_max_size_k, run_length_decode, run_length_encode};
 
     #[test]
     fn test_accumulate() {
@@ -212,5 +213,35 @@ mod tests {
         let enc = run_length_encode(&values);
         assert_eq!(enc, vec![(1, 3), (2, 2), (1, 1), (4, 2), (5, 1)]);
         assert_eq!(values, run_length_decode(&enc));
+    }
+
+    #[test]
+    fn test_find_subsequences_of_max_size_k() {
+        let sum_fn = |items: &[usize]| items.iter().sum::<usize>();
+        let mut values: Vec<usize> = vec![14, 50, 80, 100];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 32, sum_fn);
+        assert_eq!(sub_seqs, vec![(0, 1)]);
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 13, sum_fn);
+        assert_eq!(sub_seqs, vec![]);
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 70, sum_fn);
+        assert_eq!(sub_seqs, vec![(0, 2)]);
+        values.reverse();
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 32, sum_fn);
+        assert_eq!(sub_seqs, vec![(3, 4)]);
+        let values: Vec<usize> = vec![14, 50, 10, 100];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 32, sum_fn);
+        assert_eq!(sub_seqs, vec![(0, 1), (2, 3)]);
+        let values: Vec<usize> = vec![10, 50, 10, 10, 100];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 70, sum_fn);
+        assert_eq!(sub_seqs, vec![(0, 3), (1, 4)]);
+        let values: Vec<usize> = vec![10, 50, 10, 10, 70];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 70, sum_fn);
+        assert_eq!(sub_seqs, vec![(0, 3), (1, 4), (4, 5)]);
+        let values: Vec<usize> = vec![10, 50, 10, 10, 70, 10];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 70, sum_fn);
+        assert_eq!(sub_seqs, vec![(0, 3), (1, 4), (4, 5), (5, 6)]);
+        let values: Vec<usize> = vec![10, 50, 10, 10, 65, 5];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 70, sum_fn);
+        assert_eq!(sub_seqs, vec![(0, 3), (1, 4), (4, 6)]);
     }
 }

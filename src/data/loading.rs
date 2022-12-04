@@ -467,6 +467,7 @@ pub struct BatchedIterator<T: Iterator<Item=Item> + Send + 'static> {
     remainder: Option<Item>,
 }
 
+#[derive(Debug, Clone)]
 enum BatchLimit {
     BatchSize(usize),
     NumTokens(usize, usize),
@@ -600,12 +601,29 @@ impl<T: Iterator<Item=Item> + Send + 'static> BatchedIterator<T> {
             }
             let index = self.rng.gen_range(0..sub_sequences.len());
             let (start_range, end_range) = sub_sequences[index];
+            let shuffle_buff_lengths = self.shuffle_buffer
+                .iter()
+                .map(|i| i.tokenization.token_ids.len())
+                .collect::<Vec<usize>>();
             let items_in_range: Vec<Item> = self.shuffle_buffer
                 .splice(start_range..end_range, vec![])
                 .collect();
+            let batch_limit = BatchLimit::from_iter(
+                items_in_range.iter(), &self.batch_limit_type
+            );
             assert!(
-                BatchLimit::from_iter(items_in_range.iter(), &self.batch_limit_type).limit()
-                <= self.batch_limit
+                batch_limit.limit() <= self.batch_limit,
+                "batch limit {:?} exceeds max batch limit {}\n\
+                subsequences: {:?},\n\
+                chosen subsequence: {:?} at index {index}\n\
+                shuffle buffer: {:?}\n\
+                items in subsequence: {:?}",
+                batch_limit,
+                self.batch_limit,
+                sub_sequences,
+                sub_sequences[index],
+                shuffle_buff_lengths,
+                items_in_range.iter().map(|i| i.tokenization.token_ids.len()).collect::<Vec<usize>>()
             );
             (Some(Batch::new(items_in_range)), self.shuffle_buffer.pop())
         } else {

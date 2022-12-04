@@ -7,13 +7,14 @@ import yaml
 
 def _handle_str(s: str, base_dir: Any) -> Any:
     file_regex = re.compile(r"^file\((.+\.yaml)\)$")
-    env_regex = re.compile(r"^env\(([A-Z0-9_]+):?(.*?)\)$")
+    env_regex_full = re.compile(r"^env\(([A-Z0-9_]+):?(.*?)\)$")
     path_regex = re.compile(r"^abspath\((.+)\)$")
     eval_regex = re.compile(r"^eval\((.+)\)$")
     file_regex_match = file_regex.fullmatch(s)
-    env_regex_match = env_regex.fullmatch(s)
+    env_regex_match = env_regex_full.fullmatch(s)
     path_regex_match = path_regex.fullmatch(s)
     eval_regex_match = eval_regex.fullmatch(s)
+    eval_regex = re.compile(r"(env\([A-Z0-9_]+:?.*?\)|eval\(.+\))")
     num_matches = (
             (file_regex_match is not None) + (env_regex_match is not None)
             + (path_regex_match is not None) + (eval_regex_match is not None)
@@ -45,6 +46,16 @@ def _handle_str(s: str, base_dir: Any) -> Any:
         return os.path.abspath(path)
     elif eval_regex_match is not None:
         expression = eval_regex_match.group(1)
+        org_length = len(expression)
+        length_change = 0
+        for match in eval_regex.finditer(expression):
+            replacement = _handle_str(match.group(1), base_dir)
+            expression = (
+                    expression[:match.start(1) + length_change]
+                    + str(replacement)
+                    + expression[match.end(1) + length_change:]
+            )
+            length_change = len(expression) - org_length
         expression = _handle_str(expression, base_dir)
         assert isinstance(expression, str), "eval() operator input should be a string"
         return eval(expression)
@@ -79,6 +90,7 @@ def load_config(yaml_path: str) -> Any:
         - abspath(some/path) for turning paths into absolute paths
         - eval(expression) for evaluating python expressions
     Note that these special operators can be nested.
+    Inside eval() only env() operators are supported.
 
     :param yaml_path: path to config file
     :return: fully resolved yaml configuration

@@ -8,7 +8,7 @@ checkstyle:
 .PHONY: test
 test:
 	cargo test
-	pytest -n auto
+	pytest -W ignore
 
 # preferred build command for local installation
 

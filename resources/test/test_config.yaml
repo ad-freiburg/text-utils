@@ -4,4 +4,4 @@ test:
   - env(TEST_ENV_VAR)
   - env(TEST_ENV_VAR_WITH_DEFAULT:123)
 subconfig: file(sub_dir/sub_config.yaml)
-path: abspath(sub_dir/env(TEST_PATH))
+eval: eval(100 * 5)

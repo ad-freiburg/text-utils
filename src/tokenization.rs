@@ -143,7 +143,7 @@ impl<'a> FromPyObject<'a> for TokenizationInfo {
                         "token groups tokenization info"));
                 };
                 TokenizationInfo::TokenGroups(groups.extract()?)
-            },
+            }
             k => return Err(py_invalid_type_error(k, "tokenization info")),
         };
         Ok(info)
@@ -541,21 +541,26 @@ impl Tokenize for ByteTokenizer {
         prefix: Option<&[String]>,
         suffix: Option<&[String]>,
     ) -> Tokenization {
-        let (bytes, info) = self.split(s);
+        let prefix = prefix
+            .unwrap_or(&self.default_prefix_tokens);
+        let suffix = suffix
+            .unwrap_or(&self.default_suffix_tokens);
+        let (bytes, mut token_groups) = self.split(s);
+        let mut groups: Vec<usize> = vec![1; prefix.len()];
+        groups.append(&mut token_groups);
+        groups.append(&mut vec![1; suffix.len()]);
         Tokenization::new(
             prefix
-                .unwrap_or(&self.default_prefix_tokens)
                 .iter()
                 .map(|t| self.special_token_to_id(t))
                 .chain(bytes.into_iter())
                 .chain(
                     suffix
-                        .unwrap_or(&self.default_suffix_tokens)
                         .iter()
                         .map(|t| self.special_token_to_id(t)),
                 )
                 .collect(),
-            TokenizationInfo::TokenGroups(info),
+            TokenizationInfo::TokenGroups(groups),
         )
     }
 

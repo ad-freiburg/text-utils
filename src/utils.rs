@@ -1,5 +1,5 @@
+use std::ops::Add;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use num::traits::Num;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
@@ -11,7 +11,7 @@ pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
             ProgressStyle::with_template(
                 "{msg}: {wide_bar} [{pos}/{len}] [{elapsed_precise}|{eta_precise}]",
             )
-            .unwrap(),
+                .unwrap(),
         )
         .with_message("matching words");
     if hidden {
@@ -22,9 +22,9 @@ pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
 
 #[inline]
 pub(crate) fn accumulate_with<T, F>(values: &[T], acc_fn: F) -> Vec<T>
-where
-    T: Clone,
-    F: Fn(&T, &T) -> T,
+    where
+        T: Clone,
+        F: Fn(&T, &T) -> T,
 {
     if values.is_empty() {
         return vec![];
@@ -41,34 +41,34 @@ where
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn accumulate_with_pub<T, F>(values: &[T], acc_fn: F) -> Vec<T>
-where
-    T: Clone,
-    F: Fn(&T, &T) -> T,
+    where
+        T: Clone,
+        F: Fn(&T, &T) -> T,
 {
     accumulate_with(values, acc_fn)
 }
 
 #[inline]
 pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
-where
-    T: Num + Copy,
+    where
+        T: Add<T, Output=T> + Clone,
 {
-    accumulate_with(values, |acc, v| *acc + *v)
+    accumulate_with(values, |acc, v| acc.clone() + v.clone())
 }
 
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn accumulate_pub<T>(values: &[T]) -> Vec<T>
-where
-    T: Num + Copy,
+    where
+        T: Add<T, Output=T> + Clone,
 {
     accumulate(values)
 }
 
 #[inline]
 pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
-where
-    T: Num + PartialOrd,
+    where
+        T: PartialOrd,
 {
     if value < min {
         min
@@ -81,8 +81,8 @@ where
 
 #[inline]
 pub(crate) fn run_length_encode<T>(values: &[T]) -> Vec<(T, usize)>
-where
-    T: PartialEq + Clone,
+    where
+        T: PartialEq + Clone,
 {
     if values.is_empty() {
         return vec![];
@@ -106,16 +106,16 @@ where
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn run_length_encode_pub<T>(values: &[T]) -> Vec<(T, usize)>
-where
-    T: PartialEq + Clone,
+    where
+        T: PartialEq + Clone,
 {
     run_length_encode(values)
 }
 
 #[inline]
 pub(crate) fn run_length_decode<T>(values: &[(T, usize)]) -> Vec<T>
-where
-    T: Clone,
+    where
+        T: Clone,
 {
     let mut decoded = vec![];
     for (v, count) in values {
@@ -129,10 +129,51 @@ where
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn run_length_decode_pub<T>(values: &[(T, usize)]) -> Vec<T>
-where
-    T: Clone,
+    where
+        T: Clone,
 {
     run_length_decode(values)
+}
+
+#[inline]
+pub(crate) fn find_subsequences_of_max_size_k<T, SeqSize>(
+    values: &[T],
+    k: usize,
+    size_fn: SeqSize,
+) -> Vec<(usize, usize)>
+    where SeqSize: Fn(&[T]) -> usize {
+    assert!(!values.is_empty(), "values cannot be empty");
+    // fast forward to first valid starting element
+    let mut start = 0;
+    while start < values.len() && size_fn(&values[start..start + 1]) > k {
+        start += 1;
+    }
+    if start >= values.len() {
+        return vec![];
+    }
+    let mut end = start;
+    let mut subsequences = vec![];
+    while start < values.len() && end < values.len() {
+        if end + 1 < values.len() && size_fn(&values[end + 1..end + 2]) > k {
+            subsequences.push((start, end + 1));
+            start = end + 2;
+            end = start;
+        } else {
+            let next_subsequence_size = size_fn(&values[start..values.len().min(end + 2)]);
+            if next_subsequence_size > k {
+                if subsequences.is_empty() || subsequences.last().unwrap().1 < end + 1 {
+                    subsequences.push((start, end + 1));
+                }
+                start += 1;
+            } else {
+                end += 1;
+            }
+        }
+    }
+    if start != end {
+        subsequences.push((start, end));
+    }
+    subsequences
 }
 
 #[inline]

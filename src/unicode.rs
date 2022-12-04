@@ -36,10 +36,6 @@ impl<'a> CharString<'a> {
         }
     }
 
-    pub fn byte_len(&self) -> usize {
-        self.str.len()
-    }
-
     pub fn len(&self) -> usize {
         self.len
     }

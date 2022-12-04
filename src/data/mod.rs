@@ -338,6 +338,7 @@ struct DataLoader {
     seed: Option<u64>,
     shuffle: bool,
     shuffle_prefetch_factor: usize,
+    sort: bool,
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
@@ -355,6 +356,7 @@ impl DataLoader {
         batch_limit_type: BatchLimitType,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
+        sort: bool,
         seed: Option<u64>,
         skip: usize,
         limit: Option<usize>,
@@ -362,7 +364,11 @@ impl DataLoader {
     ) -> PyResult<Self> {
         if shuffle && seed.is_none() {
             return Err(PyTypeError::new_err(
-                "seed cannot be None if shuffle is true",
+                "seed cannot be None if shuffle is true"
+            ));
+        } else if !shuffle && sort {
+            return Err(PyTypeError::new_err(
+                "sort cannot be true if shuffle is false"
             ));
         }
         let shuffle_prefetch_factor = shuffle_prefetch_factor.max(1);
@@ -396,6 +402,7 @@ impl DataLoader {
             seed,
             shuffle,
             shuffle_prefetch_factor,
+            sort,
         })
     }
 }
@@ -411,6 +418,7 @@ impl DataLoader {
     batch_limit_type = "BatchLimitType::BatchSize",
     shuffle = "false",
     shuffle_prefetch_factor = "4",
+    sort = "false",
     seed = "None",
     skip = "0",
     limit = "None",
@@ -426,6 +434,7 @@ impl DataLoader {
         batch_limit_type: BatchLimitType,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
+        sort: bool,
         seed: Option<u64>,
         skip: usize,
         limit: Option<usize>,
@@ -457,6 +466,7 @@ impl DataLoader {
             batch_limit_type,
             shuffle,
             shuffle_prefetch_factor,
+            sort,
             seed,
             skip,
             limit,
@@ -474,6 +484,7 @@ impl DataLoader {
     batch_limit_type = "BatchLimitType::BatchSize",
     shuffle = "false",
     shuffle_prefetch_factor = "4",
+    sort = "false",
     seed = "None",
     skip = "0",
     limit = "None",
@@ -490,6 +501,7 @@ impl DataLoader {
         batch_limit_type: BatchLimitType,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
+        sort: bool,
         seed: Option<u64>,
         skip: usize,
         limit: Option<usize>,
@@ -528,6 +540,7 @@ impl DataLoader {
             batch_limit_type,
             shuffle,
             shuffle_prefetch_factor,
+            sort,
             seed,
             skip,
             limit,
@@ -561,6 +574,7 @@ impl DataLoader {
             slf.batch_limit_type,
             slf.shuffle,
             slf.shuffle_prefetch_factor,
+            slf.sort,
             seed,
         )));
         slf

@@ -3,8 +3,8 @@ use pyo3::prelude::*;
 use rand::Rng;
 use std::collections::HashSet;
 
-use crate::unicode::CS;
-use crate::utils::Matrix;
+use crate::unicode::{Character, CS};
+use crate::utils::{find_subsequences_of_max_size_k, Matrix};
 
 #[pyfunction]
 #[inline]
@@ -168,49 +168,22 @@ pub fn possible_byte_substrings(
         return vec![(0, 0, 0)];
     }
     let cs = CS::new(str, use_graphemes);
-    if cs.byte_len() <= max_bytes {
-        return vec![(0, cs.len(), cs.len())];
-    }
-    let mut start = 0;
-    while start < cs.len() && cs.char_byte_len(start) > max_bytes {
-        start += 1;
-    }
-    if start >= cs.len() {
-        return vec![];
-    }
-    let mut end = start;
-    let mut substrings = vec![];
-    while start < cs.len() && end < cs.len() {
-        let next_end_bytes = if end + 1 < cs.len() {
-            cs.get(end + 1).len()
-        } else {
-            0
-        };
-        if next_end_bytes > max_bytes {
-            substrings.push((start, end + 1));
-            start = end + 2;
-            end = start;
-        } else {
-            let byte_until_next_end = cs.byte_start_end(end).1 + next_end_bytes;
-            let bytes_up_to_start = cs.byte_start_end(start).0;
-            if byte_until_next_end - bytes_up_to_start > max_bytes {
-                if substrings.is_empty() || substrings.last().unwrap().1 < end + 1 {
-                    substrings.push((start, end + 1));
-                }
-                start += 1;
-            } else {
-                end += 1;
-            }
-        }
-    }
-    if start != end {
-        substrings.push((start, end))
-    }
-    // convert character substrings to byte indices
-    substrings
+    let chars: Vec<Character> = cs
+        .chars()
+        .collect();
+    let subsequences = find_subsequences_of_max_size_k(
+        &chars,
+        max_bytes,
+        |sub_chars| sub_chars.iter().map(|c| c.byte_len()).sum()
+    );
+    // convert character subsequences to byte indices
+    subsequences
         .into_iter()
         .map(|(start_char, end_char)| {
-            let (start_byte, end_byte) = cs.char_range_to_byte_range(start_char, end_char);
+            let (start_byte, end_byte) = cs.char_range_to_byte_range(
+                start_char,
+                end_char
+            );
             (start_byte, end_byte, end_char - start_char)
         })
         .collect()

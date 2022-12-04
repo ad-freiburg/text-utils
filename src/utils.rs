@@ -243,5 +243,11 @@ mod tests {
         let values: Vec<usize> = vec![10, 50, 10, 10, 65, 5];
         let sub_seqs = find_subsequences_of_max_size_k(&values, 70, sum_fn);
         assert_eq!(sub_seqs, vec![(0, 3), (1, 4), (4, 6)]);
+        let values: Vec<usize> = vec![50, 50, 50, 50, 50, 50];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 20, sum_fn);
+        assert_eq!(sub_seqs, vec![]);
+        let values: Vec<usize> = vec![50, 50, 50, 20, 50, 50];
+        let sub_seqs = find_subsequences_of_max_size_k(&values, 20, sum_fn);
+        assert_eq!(sub_seqs, vec![(3, 4)]);
     }
 }

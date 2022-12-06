@@ -21,7 +21,7 @@ class _TransformerEncoderLayer(nn.Module):
         self,
         d_model,
         nhead,
-        with_pos: bool = False,
+        with_pos: str = "none",
         dim_feedforward=2048,
         dropout=0.1,
         activation=F.relu,
@@ -52,6 +52,10 @@ class _TransformerEncoderLayer(nn.Module):
             self.activation = activation
 
         self.with_pos = with_pos
+        if self.with_pos == "add_norm":
+            self.input_norm = nn.LayerNorm(d_model)
+        else:
+            self.input_norm = nn.Identity()
 
     def __setstate__(self, state):
         if 'activation' not in state:
@@ -74,6 +78,9 @@ class _TransformerEncoderLayer(nn.Module):
         """
 
         # see Fig. 1 of https://arxiv.org/pdf/2002.04745v1.pdf
+        if self.with_pos == "add" or self.with_pos == "add_norm":
+            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
+            src = self.input_norm(src + pos)
 
         x = src
         x = self.norm1(x + self._sa_block(x, pos, padding_mask))
@@ -81,7 +88,7 @@ class _TransformerEncoderLayer(nn.Module):
         return x
 
     def _with_pos(self, x: torch.Tensor, pos: Optional[torch.Tensor]) -> torch.Tensor:
-        if self.with_pos and pos is not None:
+        if self.with_pos and pos is not None and self.with_pos == "attention":
             return x + pos
         else:
             return x
@@ -130,7 +137,7 @@ class TransformerEncoder(Encoder):
         heads: int,
         ffw_dim: int,
         dropout: float,
-        with_pos: bool,
+        with_pos: str,
         activation: str = "gelu_approximate",
         share_parameters: bool = False
     ):

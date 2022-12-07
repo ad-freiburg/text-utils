@@ -375,4 +375,20 @@ pub fn labeling(labeling: LabelingConfig) -> LabelingFn {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use crate::data::TextData;
+
+    use super::noise_whitespace;
+
+    #[test]
+    fn test_noise_whitespace_preprocessing() {
+        let noise_fn = noise_whitespace(0.0, 1.0);
+        let data = TextData::new("a test".to_string(), None, None);
+        let noised = noise_fn(data.clone(), Some(0));
+        assert_eq!(&noised.processed, "atest");
+        let noise_fn = noise_whitespace(1.0, 0.0);
+        let data = TextData::new("a test".to_string(), None, None);
+        let noised = noise_fn(data.clone(), Some(0));
+        assert_eq!(&noised.processed, "a t e s t");
+    }
+}

@@ -26,11 +26,25 @@ pub const LANG_UNK: &str = "[unk]";
 #[pyclass]
 pub struct TokenizerConfig {
     tokenize: TokenizeConfig,
-    prefix_tokens: Vec<String>,
-    suffix_tokens: Vec<String>,
+    prefix: Vec<String>,
+    suffix: Vec<String>,
     language: Option<LanguageConfig>,
 }
-
+impl TokenizerConfig {
+    pub fn new(
+        tokenize: TokenizeConfig,
+        prefix: Vec<String>,
+        suffix: Vec<String>,
+        language: Option<LanguageConfig>,
+    ) -> Self {
+        Self {
+            tokenize,
+            prefix,
+            suffix,
+            language,
+        }
+    }
+}
 /// This configures the language a tokenizer can work with
 #[derive(Clone, Debug)]
 #[pyclass]
@@ -39,6 +53,22 @@ pub struct LanguageConfig {
     add_language_token_to_suffix: bool,
     languages: Vec<String>,
     default_language: Option<String>,
+}
+
+impl LanguageConfig {
+    pub fn new(
+        add_language_token_to_prefix: bool,
+        add_language_token_to_suffix: bool,
+        languages: Vec<String>,
+        default_language: Option<String>,
+    ) -> Self {
+        Self {
+            add_language_token_to_prefix,
+            add_language_token_to_suffix,
+            languages,
+            default_language,
+        }
+    }
 }
 
 /// This enum defines all tokenizers that are supported by this crate.
@@ -617,7 +647,7 @@ fn tokenize(cfg: TokenizeConfig, prefix: &[&str], suffix: &[&str]) -> Tokenizer 
 pub fn tokenizer(mut cfg: TokenizerConfig) -> Tokenizer {
     if let Some(language) = &cfg.language {
         if language.add_language_token_to_prefix {
-            cfg.prefix_tokens.push(
+            cfg.prefix.push(
                 language
                     .default_language
                     .clone()
@@ -625,7 +655,7 @@ pub fn tokenizer(mut cfg: TokenizerConfig) -> Tokenizer {
             )
         }
         if language.add_language_token_to_suffix {
-            cfg.suffix_tokens.push(
+            cfg.suffix.push(
                 language
                     .default_language
                     .clone()
@@ -635,14 +665,8 @@ pub fn tokenizer(mut cfg: TokenizerConfig) -> Tokenizer {
     }
     let mut tokenizer = tokenize(
         cfg.tokenize,
-        &cfg.prefix_tokens
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<&str>>(),
-        &cfg.suffix_tokens
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<&str>>(),
+        &cfg.prefix.iter().map(String::as_str).collect::<Vec<&str>>(),
+        &cfg.suffix.iter().map(String::as_str).collect::<Vec<&str>>(),
     );
     if let Some(language) = cfg.language {
         tokenizer.add_special_tokens(
@@ -772,8 +796,8 @@ mod tests {
 
     #[test]
     fn test_char_tokenizer() {
-        let pfx = vec![BOS.to_string()];
-        let sfx = vec![EOS.to_string()];
+        let pfx = vec![BOS];
+        let sfx = vec![EOS];
         let tok = CharTokenizer::new(true, &pfx, &sfx);
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None);
@@ -784,8 +808,8 @@ mod tests {
 
     #[test]
     fn test_byte_tokenizer() {
-        let pfx = vec![BOS.to_string()];
-        let sfx = vec![EOS.to_string()];
+        let pfx = vec![BOS];
+        let sfx = vec![EOS];
         let tok = ByteTokenizer::new(true, &pfx, &sfx);
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None);

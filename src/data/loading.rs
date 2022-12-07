@@ -709,7 +709,8 @@ mod tests {
     use crate::data::preprocessing::PreprocessingConfig;
     use crate::data::{Item, Pipeline, PipelineConfig, TextData};
     use crate::tokenization::{
-        ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizeConfig, BOS, EOS,
+        ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizeConfig, TokenizerConfig,
+        BOS, EOS,
     };
     use itertools::Itertools;
     use log::info;
@@ -847,7 +848,12 @@ mod tests {
         let pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
-            tokenizer: TokenizeConfig::Dummy(Duration::from_millis(100)),
+            tokenizer: TokenizerConfig::new(
+                TokenizeConfig::Dummy(Duration::from_millis(200)),
+                vec![],
+                vec![],
+                None,
+            ),
         });
         // test if it works with one worker and record the time it took
         let mut it = pipeline
@@ -879,7 +885,12 @@ mod tests {
         let pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
-            tokenizer: TokenizeConfig::Dummy(Duration::from_micros(0)),
+            tokenizer: TokenizerConfig::new(
+                TokenizeConfig::Dummy(Duration::from_millis(0)),
+                vec![],
+                vec![],
+                None,
+            ),
         });
         let mut it = pipeline
             .clone()
@@ -905,7 +916,7 @@ mod tests {
         let mut pipeline = Pipeline::from_config(PipelineConfig {
             preprocessing: vec![],
             labeling: None,
-            tokenizer: TokenizeConfig::Byte(true, vec![BOS.to_string()], vec![EOS.to_string()]),
+            tokenizer: TokenizerConfig::new(TokenizeConfig::Byte(true), vec![], vec![], None),
         });
         // first check the batched iterator with shuffling disabled
         let mut pipe_it = pipeline
@@ -934,20 +945,8 @@ mod tests {
                 .map(|item| item.tokenization.token_ids.len())
                 .collect();
             let batch_size: usize = item_lengths.iter().sum();
-            println!(
-                "{:?}",
-                batch
-                    .items
-                    .iter()
-                    .map(|i| i.tokenization.token_ids.len())
-                    .collect::<Vec<usize>>()
-            );
             assert!(batch.len() > 0);
-            assert!(
-                batch_size <= 256,
-                "found invalid batch with size {batch_size} ({:?})",
-                item_lengths
-            );
+            assert!(batch_size <= 256,);
             for item in batch {
                 let mut count = line_counter.get_mut(&item.data.original).unwrap();
                 *count += 1;

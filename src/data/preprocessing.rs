@@ -299,8 +299,7 @@ fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
         let (start, end, _) = possible_substrings[idx];
         let processed = item.processed[start..end].to_string();
         let (start, end) =
-            find_substring_ignoring_whitespace(&item.original, &processed)
-                .expect(&format!(
+            find_substring_ignoring_whitespace(&item.original, &processed).expect(&format!(
                 "original and processed sequences can only differ in \
             whitespaces when applying the {} substring preprocessing",
                 name
@@ -376,7 +375,4 @@ pub fn labeling(labeling: LabelingConfig) -> LabelingFn {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn test_something() {}
-}
+mod tests {}

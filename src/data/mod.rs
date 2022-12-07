@@ -1,5 +1,5 @@
 use crate::data::loading::{
-    BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator,
+    BatchLimitType, IntoPipelineIterator, TextContainer, TextFile, TextGen, TextGenerator,
     TextIterationStrategy,
 };
 use crate::data::preprocessing::{
@@ -306,22 +306,6 @@ impl Pipeline {
             tokenization,
         }
     }
-
-    pub fn apply_iter(
-        self,
-        iter: impl Iterator<Item = TextData> + Send + 'static,
-    ) -> PipelineIterator {
-        PipelineIterator::new(iter, self.clone())
-    }
-
-    pub fn apply_iter_threaded(
-        self,
-        iter: impl Iterator<Item = TextData> + Send + 'static,
-        worker_threads: u8,
-        buffer_size: usize,
-    ) -> PipelineIterator {
-        PipelineIterator::new_threaded(iter, self.clone(), worker_threads, buffer_size)
-    }
 }
 
 #[pyclass]
@@ -556,25 +540,20 @@ impl DataLoader {
         let text_iter = slf.text_gen.with_strategy(slf.strategy, seed);
         slf.min_items =
             Some(text_iter.min_len().min(slf.limit).saturating_sub(slf.skip) / slf.world_size);
-        let text_iter = text_iter
+        let batch_iter = text_iter
             .take(slf.limit)
             .skip(slf.skip + slf.rank)
-            .step_by(slf.world_size);
-        let iter = if slf.num_threads > 0 {
-            slf.pipeline
-                .clone()
-                .apply_iter_threaded(text_iter, slf.num_threads, slf.buffer_size)
-        } else {
-            slf.pipeline.clone().apply_iter(text_iter)
-        };
-        slf.iter = Some(Box::new(iter.batched(
-            slf.batch_limit,
-            slf.batch_limit_type,
-            slf.shuffle,
-            slf.shuffle_prefetch_factor,
-            slf.sort,
-            seed,
-        )));
+            .step_by(slf.world_size)
+            .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size)
+            .batched(
+                slf.batch_limit,
+                slf.batch_limit_type,
+                slf.shuffle,
+                slf.shuffle_prefetch_factor,
+                slf.sort,
+                seed,
+            );
+        slf.iter = Some(Box::new(batch_iter));
         slf
     }
 

@@ -313,7 +313,21 @@ impl TextIterator {
         self.lengths.iter().sum()
     }
 }
-
+pub(crate) trait IntoPipelineIterator {
+    fn pipe(self, pipeline: &Pipeline, num_threads: u8, buffer_size: usize) -> PipelineIterator;
+}
+impl<T> IntoPipelineIterator for T
+where
+    T: Iterator<Item = TextData> + Send + 'static,
+{
+    fn pipe(self, pipeline: &Pipeline, num_threads: u8, buffer_size: usize) -> PipelineIterator {
+        if num_threads == 0 {
+            PipelineIterator::new(self, pipeline.clone())
+        } else {
+            PipelineIterator::new_threaded(self, pipeline.clone(), num_threads, buffer_size)
+        }
+    }
+}
 impl Iterator for TextIterator {
     type Item = TextData;
 
@@ -349,7 +363,10 @@ pub struct PipelineIterator {
 }
 
 impl PipelineIterator {
-    pub fn new(iter: impl Iterator<Item = TextData> + Send + 'static, pipeline: Pipeline) -> Self {
+    pub(crate) fn new(
+        iter: impl Iterator<Item = TextData> + Send + 'static,
+        pipeline: Pipeline,
+    ) -> Self {
         let size_hint = iter.size_hint();
         PipelineIterator {
             iter: Box::new(
@@ -360,7 +377,7 @@ impl PipelineIterator {
         }
     }
 
-    pub fn new_threaded(
+    pub(crate) fn new_threaded(
         iter: impl Iterator<Item = TextData> + Send + 'static,
         pipeline: Pipeline,
         worker_threads: u8,
@@ -702,8 +719,8 @@ impl<T: Iterator<Item = Item> + Send + 'static> Iterator for BatchedIterator<T> 
 #[cfg(test)]
 mod tests {
     use crate::data::loading::{
-        open, BatchLimitType, BatchedIterator, PipelineIterator, TextFile, TextGenerator,
-        TextIterator,
+        open, BatchLimitType, BatchedIterator, IntoPipelineIterator, PipelineIterator, TextFile,
+        TextGenerator, TextIterator,
     };
     use crate::data::preprocessing::LabelingConfig::LabelWhitespaceCorrection;
     use crate::data::preprocessing::PreprocessingConfig;
@@ -856,25 +873,24 @@ mod tests {
             ),
         });
         // test if it works with one worker and record the time it took
-        let mut it = pipeline
-            .clone()
-            .apply_iter_threaded(text_files.sequential(), 1, 1);
+        let mut it = text_files.sequential().pipe(&pipeline, 0, 4);
+        let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let n: usize = 20;
         let _: Vec<Item> = it.take(n).collect();
         let time = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time, n);
         // test with more workers, check that its faster
-        let mut it = pipeline
-            .clone()
-            .apply_iter_threaded(text_files.sequential(), 2, 2);
+        let mut it = text_files.sequential().pipe(&pipeline, 2, 4);
+        let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
         let time2 = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time2, n);
         assert!(time2 < time);
         // test with even more workers
-        let mut it = pipeline.apply_iter_threaded(text_files.sequential(), 4, 4);
+        let mut it = text_files.sequential().pipe(&pipeline, 4, 4);
+        let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
         let time3 = now.elapsed().as_secs_f64();
@@ -892,9 +908,7 @@ mod tests {
                 None,
             ),
         });
-        let mut it = pipeline
-            .clone()
-            .apply_iter_threaded(text_files.sequential(), 4, 4);
+        let mut it = text_files.sequential().pipe(&pipeline, 0, 4);
         let lines = BufReader::new(open(&d)).lines();
         for (idx, (line, item)) in it.zip(lines).enumerate() {
             assert_eq!(line.data.original, item.unwrap())
@@ -919,10 +933,14 @@ mod tests {
             tokenizer: TokenizerConfig::new(TokenizeConfig::Byte(true), vec![], vec![], None),
         });
         // first check the batched iterator with shuffling disabled
-        let mut pipe_it = pipeline
-            .clone()
-            .apply_iter_threaded(text_files.sequential(), 4, 16)
-            .batched(16, BatchLimitType::BatchSize, false, 0, false, None);
+        let mut pipe_it = text_files.sequential().pipe(&pipeline, 4, 16).batched(
+            16,
+            BatchLimitType::BatchSize,
+            false,
+            0,
+            false,
+            None,
+        );
         for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(16)) {
             assert!(batch.len() > 0 && batch.len() <= 16);
             for (item, line) in batch.into_iter().zip(line_batch.into_iter()) {
@@ -930,10 +948,14 @@ mod tests {
             }
         }
         // now check the batched iterator with shuffling and sorting
-        let mut pipe_it = pipeline
-            .clone()
-            .apply_iter_threaded(text_files.weighted(Some(22)), 4, 4)
-            .batched(256, BatchLimitType::NumTokens, true, 32, true, Some(22));
+        let mut pipe_it = text_files.weighted(Some(22)).pipe(&pipeline, 4, 4).batched(
+            256,
+            BatchLimitType::NumTokens,
+            true,
+            32,
+            true,
+            Some(22),
+        );
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
         let mut line_counter: HashMap<String, usize> =

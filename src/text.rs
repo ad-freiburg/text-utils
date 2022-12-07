@@ -58,11 +58,11 @@ pub fn match_words_with(
 
     // initialize matrices
     ops[0][0] = MatchOp::NoMatch;
-    for i in 1..=a_words.len() {
-        ops[i][0] = MatchOp::Delete;
+    for op in ops.iter_mut().skip(1) {
+        op[0] = MatchOp::Delete;
     }
-    for j in 1..=b_words.len() {
-        ops[0][j] = MatchOp::Insert;
+    for op in ops[0].iter_mut().skip(1) {
+        *op = MatchOp::Insert;
     }
 
     for (a_idx, &a_word) in a_words.iter().enumerate() {
@@ -168,22 +168,15 @@ pub fn possible_byte_substrings(
         return vec![(0, 0, 0)];
     }
     let cs = CS::new(str, use_graphemes);
-    let chars: Vec<Character> = cs
-        .chars()
-        .collect();
-    let subsequences = find_subsequences_of_max_size_k(
-        &chars,
-        max_bytes,
-        |sub_chars| sub_chars.iter().map(|c| c.byte_len()).sum()
-    );
+    let chars: Vec<Character> = cs.chars().collect();
+    let subsequences = find_subsequences_of_max_size_k(&chars, max_bytes, |sub_chars| {
+        sub_chars.iter().map(|c| c.byte_len()).sum()
+    });
     // convert character subsequences to byte indices
     subsequences
         .into_iter()
         .map(|(start_char, end_char)| {
-            let (start_byte, end_byte) = cs.char_range_to_byte_range(
-                start_char,
-                end_char
-            );
+            let (start_byte, end_byte) = cs.char_range_to_byte_range(start_char, end_char);
             (start_byte, end_byte, end_char - start_char)
         })
         .collect()
@@ -219,7 +212,7 @@ pub fn edit_word(
     edits: &[CharEdit],
     exclude_indices: Option<HashSet<usize>>,
 ) -> (String, HashSet<usize>) {
-    let mut exclude_indices = exclude_indices.unwrap_or(HashSet::new());
+    let mut exclude_indices = exclude_indices.unwrap_or_default();
     let cs = CS::new(word, use_graphemes);
     assert!(
         cs.chars().all(|c| !c.is_whitespace()),
@@ -233,14 +226,9 @@ pub fn edit_word(
     match edit {
         CharEdit::Insert(insertions) if !insertions.is_empty() => {
             let insert_indices: Vec<usize> = (0..=cs.len())
-                .filter_map(|idx| {
-                    if exclude_indices.contains(&idx)
-                        || (idx > 0 && exclude_indices.contains(&(idx - 1)))
-                    {
-                        None
-                    } else {
-                        Some(idx)
-                    }
+                .filter(|idx| {
+                    !exclude_indices.contains(idx)
+                        && (*idx == 0 || !exclude_indices.contains(&(idx - 1)))
                 })
                 .collect();
             let insert_str = &insertions[rng.gen_range(0..insertions.len())];
@@ -274,13 +262,7 @@ pub fn edit_word(
         }
         CharEdit::Delete if cs.len() > 1 => {
             let delete_indices: Vec<usize> = (0..cs.len())
-                .filter_map(|idx| {
-                    if exclude_indices.contains(&idx) {
-                        None
-                    } else {
-                        Some(idx)
-                    }
-                })
+                .filter(|idx| !exclude_indices.contains(idx))
                 .collect();
             if delete_indices.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
@@ -299,13 +281,7 @@ pub fn edit_word(
         }
         CharEdit::Replace(replacements) if !replacements.is_empty() => {
             let replace_indices: Vec<usize> = (0..cs.len())
-                .filter_map(|idx| {
-                    if exclude_indices.contains(&idx) {
-                        None
-                    } else {
-                        Some(idx)
-                    }
-                })
+                .filter(|idx| !exclude_indices.contains(idx))
                 .collect();
             if replace_indices.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
@@ -316,7 +292,7 @@ pub fn edit_word(
             let mut replacement_idx = rng.gen_range(0..replacements.len());
             let mut replacement = cs.get(replace_idx).to_string();
             for _ in 0..replacements.len() {
-                if cs.get(replace_idx) != &replacements[replacement_idx] {
+                if cs.get(replace_idx) != replacements[replacement_idx] {
                     replacement = replacements[replacement_idx].clone();
                     break;
                 }
@@ -351,12 +327,8 @@ pub fn edit_word(
         }
         CharEdit::Swap if cs.len() > 1 => {
             let swap_indices: Vec<usize> = (0..cs.len() - 1)
-                .filter_map(|idx| {
-                    if exclude_indices.contains(&idx) || exclude_indices.contains(&(idx + 1)) {
-                        None
-                    } else {
-                        Some(idx)
-                    }
+                .filter(|idx| {
+                    !exclude_indices.contains(idx) && !exclude_indices.contains(&(idx + 1))
                 })
                 .collect();
             if swap_indices.is_empty() {
@@ -425,19 +397,11 @@ mod tests {
 
     #[test]
     fn test_match_words() {
-        let (matches, a_len, b_len) = match_words(
-            "this is a test",
-            "This is also a test",
-            false,
-        );
+        let (matches, a_len, b_len) = match_words("this is a test", "This is also a test", false);
         assert_eq!(matches, vec![(1, 1), (2, 3), (3, 4)]);
         assert_eq!(a_len, 4);
         assert_eq!(b_len, 5);
-        let (matches, a_len, b_len) = match_words(
-            "this is a test",
-            "This is also a test",
-            true,
-        );
+        let (matches, a_len, b_len) = match_words("this is a test", "This is also a test", true);
         assert_eq!(matches, vec![(0, 0), (1, 1), (2, 3), (3, 4)]);
         assert_eq!(a_len, 4);
         assert_eq!(b_len, 5);

@@ -9,9 +9,7 @@ pub fn remove(s: &str) -> String {
     s.split_whitespace().join("")
 }
 
-#[pyfunction(
-use_graphemes = "true"
-)]
+#[pyfunction(use_graphemes = "true")]
 pub fn full(s: &str, use_graphemes: bool) -> String {
     s.split_whitespace()
         .map(|w| CS::new(w, use_graphemes).chars().join(" "))
@@ -26,9 +24,7 @@ pub enum WhitespaceOperation {
     Delete,
 }
 
-#[pyfunction(
-use_graphemes = "true"
-)]
+#[pyfunction(use_graphemes = "true")]
 pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOperation> {
     assert_eq!(
         remove(from),
@@ -87,7 +83,8 @@ pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) 
     for (idx, (char, op)) in chars.iter().zip(operations.iter()).enumerate() {
         if *op == WhitespaceOperation::Insert
             && !char.is_whitespace()
-            && (idx == 0 || !chars[idx - 1].is_whitespace()) {
+            && (idx == 0 || !chars[idx - 1].is_whitespace())
+        {
             new_chars.push(" ");
             new_chars.push(char.str);
         } else if *op == WhitespaceOperation::Delete && char.is_whitespace() {
@@ -113,11 +110,7 @@ pub fn find_substring_ignoring_whitespace(s: &str, substring: &str) -> Option<(u
         .map(|c| escape(c.to_string().as_str()))
         .join(r"\s*");
     let re = Regex::new(substring.as_str()).expect("invalid regex, should not happen");
-    if let Some(pattern_match) = re.find(s) {
-        Some((pattern_match.start(), pattern_match.end()))
-    } else {
-        None
-    }
+    re.find(s).map(|m| (m.start(), m.end()))
 }
 
 /// A submodule containing functionality specific to handle whitespaces in text.
@@ -135,7 +128,9 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove, repair, WhitespaceOperation};
+    use crate::whitespace::{
+        find_substring_ignoring_whitespace, full, operations, remove, repair, WhitespaceOperation,
+    };
 
     #[test]
     fn test_remove() {
@@ -183,10 +178,7 @@ mod tests {
             "t h isis a test"
         );
         assert_eq!(
-            repair(
-                "    ",
-                &vec![WhitespaceOperation::Delete; 4],
-                true),
+            repair("    ", &vec![WhitespaceOperation::Delete; 4], true),
             ""
         );
         assert_eq!(

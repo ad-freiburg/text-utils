@@ -1,4 +1,7 @@
-use crate::data::loading::{BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator, TextIterationStrategy};
+use crate::data::loading::{
+    BatchLimitType, PipelineIterator, TextContainer, TextFile, TextGen, TextGenerator,
+    TextIterationStrategy,
+};
 use crate::data::preprocessing::{
     labeling, preprocessing, LabelingConfig, LabelingFn, PreprocessingConfig, PreprocessingFn,
 };
@@ -223,7 +226,7 @@ impl IntoIterator for Batch {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[pyclass]
 pub struct PipelineConfig {
     #[pyo3(get)]
@@ -306,14 +309,14 @@ impl Pipeline {
 
     pub fn apply_iter(
         self,
-        iter: impl Iterator<Item=TextData> + Send + 'static,
+        iter: impl Iterator<Item = TextData> + Send + 'static,
     ) -> PipelineIterator {
         PipelineIterator::new(iter, self.clone())
     }
 
     pub fn apply_iter_threaded(
         self,
-        iter: impl Iterator<Item=TextData> + Send + 'static,
+        iter: impl Iterator<Item = TextData> + Send + 'static,
         worker_threads: u8,
         buffer_size: usize,
     ) -> PipelineIterator {
@@ -342,7 +345,7 @@ struct DataLoader {
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
-    iter: Option<Box<dyn Iterator<Item=Batch> + Send + 'static>>,
+    iter: Option<Box<dyn Iterator<Item = Batch> + Send + 'static>>,
 }
 
 impl DataLoader {
@@ -364,11 +367,11 @@ impl DataLoader {
     ) -> PyResult<Self> {
         if shuffle && seed.is_none() {
             return Err(PyTypeError::new_err(
-                "seed cannot be None if shuffle is true"
+                "seed cannot be None if shuffle is true",
             ));
         } else if !shuffle && sort {
             return Err(PyTypeError::new_err(
-                "sort cannot be true if shuffle is false"
+                "sort cannot be true if shuffle is false",
             ));
         }
         let shuffle_prefetch_factor = shuffle_prefetch_factor.max(1);
@@ -411,18 +414,18 @@ impl DataLoader {
 impl DataLoader {
     #[staticmethod]
     #[args(
-    languages = "None",
-    num_threads = "(num_cpus::get() as u8).min(4)",
-    buffer_size = "32",
-    batch_limit = "16",
-    batch_limit_type = "BatchLimitType::BatchSize",
-    shuffle = "false",
-    shuffle_prefetch_factor = "4",
-    sort = "false",
-    seed = "None",
-    skip = "0",
-    limit = "None",
-    distributed = "None"
+        languages = "None",
+        num_threads = "(num_cpus::get() as u8).min(4)",
+        buffer_size = "32",
+        batch_limit = "16",
+        batch_limit_type = "BatchLimitType::BatchSize",
+        shuffle = "false",
+        shuffle_prefetch_factor = "4",
+        sort = "false",
+        seed = "None",
+        skip = "0",
+        limit = "None",
+        distributed = "None"
     )]
     pub fn from_sequences(
         sequences: Vec<String>,
@@ -451,11 +454,7 @@ impl DataLoader {
                 languages.as_ref().unwrap().len()
             )));
         }
-        let generators = TextContainer::new_boxed(
-            sequences,
-            None,
-            languages,
-        );
+        let generators = TextContainer::new_boxed(sequences, None, languages);
         Self::new(
             vec![generators],
             pipeline_config,
@@ -476,19 +475,19 @@ impl DataLoader {
 
     #[staticmethod]
     #[args(
-    languages = "None",
-    strategy = "TextIterationStrategy::Sequential",
-    num_threads = "(num_cpus::get() as u8).min(4)",
-    buffer_size = "32",
-    batch_limit = "16",
-    batch_limit_type = "BatchLimitType::BatchSize",
-    shuffle = "false",
-    shuffle_prefetch_factor = "4",
-    sort = "false",
-    seed = "None",
-    skip = "0",
-    limit = "None",
-    distributed = "None"
+        languages = "None",
+        strategy = "TextIterationStrategy::Sequential",
+        num_threads = "(num_cpus::get() as u8).min(4)",
+        buffer_size = "32",
+        batch_limit = "16",
+        batch_limit_type = "BatchLimitType::BatchSize",
+        shuffle = "false",
+        shuffle_prefetch_factor = "4",
+        sort = "false",
+        seed = "None",
+        skip = "0",
+        limit = "None",
+        distributed = "None"
     )]
     pub fn from_files(
         files: Vec<String>,
@@ -555,17 +554,16 @@ impl DataLoader {
             None
         };
         let text_iter = slf.text_gen.with_strategy(slf.strategy, seed);
-        slf.min_items = Some(text_iter
-            .min_len()
-            .min(slf.limit)
-            .saturating_sub(slf.skip)
-            / slf.world_size);
+        slf.min_items =
+            Some(text_iter.min_len().min(slf.limit).saturating_sub(slf.skip) / slf.world_size);
         let text_iter = text_iter
             .take(slf.limit)
             .skip(slf.skip + slf.rank)
             .step_by(slf.world_size);
         let iter = if slf.num_threads > 0 {
-            slf.pipeline.clone().apply_iter_threaded(text_iter, slf.num_threads, slf.buffer_size)
+            slf.pipeline
+                .clone()
+                .apply_iter_threaded(text_iter, slf.num_threads, slf.buffer_size)
         } else {
             slf.pipeline.clone().apply_iter(text_iter)
         };

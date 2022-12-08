@@ -308,6 +308,8 @@ class GroupingEncoder(Encoder):
         assert groups is not None, "grouping encoder expects groups keyword argument"
         if self.group_first:
             x, lengths = self.grouping(x, groups)
+            if pos is not None:
+                pos, _ = self.grouping(pos, groups)
         x = self.encoder(x, lengths, pos, **kwargs)
         if not self.group_first:
             x, _ = self.grouping(x, groups)

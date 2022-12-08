@@ -939,14 +939,10 @@ mod tests {
             tokenizer: TokenizerConfig::new(TokenizeConfig::Byte(true), vec![], vec![], None),
         });
         // first check the batched iterator with shuffling disabled
-        let mut pipe_it = text_files.sequential().pipe(&pipeline, 4, 16).batched(
-            16,
-            BatchLimitType::BatchSize,
-            false,
-            0,
-            false,
-            None,
-        );
+        let mut pipe_it = text_files
+            .sequential()
+            .pipe(&pipeline, 4, 16, None)
+            .batched(16, BatchLimitType::BatchSize, false, 0, false, None);
         for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(16)) {
             assert!(batch.len() > 0 && batch.len() <= 16);
             for (item, line) in batch.into_iter().zip(line_batch.into_iter()) {
@@ -954,14 +950,10 @@ mod tests {
             }
         }
         // now check the batched iterator with shuffling and sorting
-        let mut pipe_it = text_files.weighted(Some(22)).pipe(&pipeline, 4, 4).batched(
-            256,
-            BatchLimitType::NumTokens,
-            true,
-            32,
-            true,
-            Some(22),
-        );
+        let mut pipe_it = text_files
+            .weighted(Some(22))
+            .pipe(&pipeline, 4, 4, None)
+            .batched(256, BatchLimitType::NumTokens, true, 32, true, Some(22));
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
         let mut line_counter: HashMap<String, usize> =

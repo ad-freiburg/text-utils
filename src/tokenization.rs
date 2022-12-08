@@ -659,28 +659,22 @@ fn tokenize(cfg: TokenizeConfig, prefix: &[&str], suffix: &[&str]) -> Tokenizer 
 
 pub fn tokenizer(mut cfg: TokenizerConfig) -> Tokenizer {
     if let Some(language) = &cfg.language {
+        let default_language = language
+            .default_language
+            .clone()
+            .unwrap_or(LANG_UNK.to_string());
         if language.add_language_token_to_prefix {
-            cfg.prefix.push(
-                language
-                    .default_language
-                    .clone()
-                    .unwrap_or(LANG_UNK.to_string()),
-            )
+            cfg.prefix.push(default_language.clone());
         }
         if language.add_language_token_to_suffix {
-            cfg.suffix.push(
-                language
-                    .default_language
-                    .clone()
-                    .unwrap_or(LANG_UNK.to_string()),
-            )
+            cfg.suffix.push(default_language);
         }
     }
-    let mut tokenizer = tokenize(
-        cfg.tokenize,
-        &cfg.prefix.iter().map(String::as_str).collect::<Vec<&str>>(),
-        &cfg.suffix.iter().map(String::as_str).collect::<Vec<&str>>(),
-    );
+    let prefix = cfg.prefix.iter().map(String::as_str).collect::<Vec<&str>>();
+    let suffix = cfg.suffix.iter().map(String::as_str).collect::<Vec<&str>>();
+    let mut tokenizer = tokenize(cfg.tokenize, &prefix, &suffix);
+    tokenizer.add_special_tokens(&prefix);
+    tokenizer.add_special_tokens(&suffix);
     if let Some(language) = cfg.language {
         tokenizer.add_special_tokens(
             &language
@@ -689,11 +683,6 @@ pub fn tokenizer(mut cfg: TokenizerConfig) -> Tokenizer {
                 .map(String::as_str)
                 .collect::<Vec<&str>>(),
         );
-        if let Some(default_lang) = language.default_language {
-            tokenizer.add_special_tokens(&[&default_lang]);
-        } else {
-            tokenizer.add_special_tokens(&[LANG_UNK]);
-        }
     }
     tokenizer
 }

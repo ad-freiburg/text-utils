@@ -82,7 +82,7 @@ class Embedding(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))
         if self.positional_embeddings != "none":
-            positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0)
+            positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0).repeat(x.shape[0], 1)
             pos_emb = self.pos_drop(self.pos_embedding(positions))
         else:
             pos_emb = None

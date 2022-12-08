@@ -96,7 +96,7 @@ pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) 
     clean(new_chars.iter().join("").as_str())
 }
 
-#[pyfunction]
+#[pyfunction(use_graphemes = "true")]
 #[pyo3(name = "repair")]
 fn repair_py(s: &str, operations: Vec<WhitespaceOperation>, use_graphemes: bool) -> String {
     repair(s, &operations, use_graphemes)
@@ -121,6 +121,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_function(wrap_pyfunction!(operations, m)?)?;
     m.add_function(wrap_pyfunction!(full, m)?)?;
     m.add_function(wrap_pyfunction!(remove, m)?)?;
+    m.add_class::<WhitespaceOperation>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

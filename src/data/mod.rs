@@ -544,7 +544,7 @@ impl DataLoader {
             .take(slf.limit)
             .skip(slf.skip + slf.rank)
             .step_by(slf.world_size)
-            .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size)
+            .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size, seed)
             .batched(
                 slf.batch_limit,
                 slf.batch_limit_type,

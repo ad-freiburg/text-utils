@@ -314,17 +314,29 @@ impl TextIterator {
     }
 }
 pub(crate) trait IntoPipelineIterator {
-    fn pipe(self, pipeline: &Pipeline, num_threads: u8, buffer_size: usize) -> PipelineIterator;
+    fn pipe(
+        self,
+        pipeline: &Pipeline,
+        num_threads: u8,
+        buffer_size: usize,
+        seed: Option<u64>,
+    ) -> PipelineIterator;
 }
 impl<T> IntoPipelineIterator for T
 where
     T: Iterator<Item = TextData> + Send + 'static,
 {
-    fn pipe(self, pipeline: &Pipeline, num_threads: u8, buffer_size: usize) -> PipelineIterator {
+    fn pipe(
+        self,
+        pipeline: &Pipeline,
+        num_threads: u8,
+        buffer_size: usize,
+        seed: Option<u64>,
+    ) -> PipelineIterator {
         if num_threads == 0 {
-            PipelineIterator::new(self, pipeline.clone())
+            PipelineIterator::new(self, pipeline.clone(), seed)
         } else {
-            PipelineIterator::new_threaded(self, pipeline.clone(), num_threads, buffer_size)
+            PipelineIterator::new_threaded(self, pipeline.clone(), num_threads, buffer_size, seed)
         }
     }
 }
@@ -366,13 +378,13 @@ impl PipelineIterator {
     pub(crate) fn new(
         iter: impl Iterator<Item = TextData> + Send + 'static,
         pipeline: Pipeline,
+        seed: Option<u64>,
     ) -> Self {
         let size_hint = iter.size_hint();
         PipelineIterator {
-            iter: Box::new(
-                iter.enumerate()
-                    .map(move |(idx, item)| pipeline.apply(item, Some(idx as u64))),
-            ),
+            iter: Box::new(iter.enumerate().map(move |(idx, item)| {
+                pipeline.apply(item, Some(seed.unwrap_or(0) + idx as u64))
+            })),
             size_hint,
         }
     }
@@ -382,6 +394,7 @@ impl PipelineIterator {
         pipeline: Pipeline,
         worker_threads: u8,
         buffer_size: usize,
+        seed: Option<u64>,
     ) -> Self {
         let size_hint = iter.size_hint();
         let iter = Arc::new(Mutex::new(iter.enumerate()));
@@ -418,7 +431,7 @@ impl PipelineIterator {
                                 return;
                             }
                         }
-                        let item = pipe_clone.apply(data, Some(idx));
+                        let item = pipe_clone.apply(data, Some(seed.unwrap_or(0) + idx));
                         // wait until we are the next to send out item
                         while send_next.load(Ordering::SeqCst) != idx {
                             sleep(Duration::from_micros(100));
@@ -719,23 +732,16 @@ impl<T: Iterator<Item = Item> + Send + 'static> Iterator for BatchedIterator<T> 
 #[cfg(test)]
 mod tests {
     use crate::data::loading::{
-        open, BatchLimitType, BatchedIterator, IntoPipelineIterator, PipelineIterator, TextFile,
-        TextGenerator, TextIterator,
+        open, BatchLimitType, IntoPipelineIterator, TextFile, TextGenerator,
     };
-    use crate::data::preprocessing::LabelingConfig::LabelWhitespaceCorrection;
-    use crate::data::preprocessing::PreprocessingConfig;
     use crate::data::{Item, Pipeline, PipelineConfig, TextData};
-    use crate::tokenization::{
-        ByteTokenizer, Tokenization, TokenizationInfo, Tokenize, TokenizeConfig, TokenizerConfig,
-        BOS, EOS,
-    };
+    use crate::tokenization::{TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
     use std::collections::HashMap;
     use std::io;
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
-    use std::thread::sleep;
     use std::time::{Duration, Instant};
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
@@ -873,7 +879,7 @@ mod tests {
             ),
         });
         // test if it works with one worker and record the time it took
-        let mut it = text_files.sequential().pipe(&pipeline, 0, 4);
+        let mut it = text_files.sequential().pipe(&pipeline, 0, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let n: usize = 20;
@@ -881,7 +887,7 @@ mod tests {
         let time = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time, n);
         // test with more workers, check that its faster
-        let mut it = text_files.sequential().pipe(&pipeline, 2, 4);
+        let mut it = text_files.sequential().pipe(&pipeline, 2, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
@@ -889,7 +895,7 @@ mod tests {
         info!("took {:.2}s to fetch {} items", time2, n);
         assert!(time2 < time);
         // test with even more workers
-        let mut it = text_files.sequential().pipe(&pipeline, 4, 4);
+        let mut it = text_files.sequential().pipe(&pipeline, 4, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
@@ -908,7 +914,7 @@ mod tests {
                 None,
             ),
         });
-        let mut it = text_files.sequential().pipe(&pipeline, 0, 4);
+        let mut it = text_files.sequential().pipe(&pipeline, 0, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         for (idx, (line, item)) in it.zip(lines).enumerate() {
             assert_eq!(line.data.original, item.unwrap())

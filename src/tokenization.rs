@@ -30,7 +30,11 @@ pub struct TokenizerConfig {
     suffix: Vec<String>,
     language: Option<LanguageConfig>,
 }
+
+#[pymethods]
 impl TokenizerConfig {
+    #[new]
+    #[args(prefix = "vec![]", suffix = "vec![]", language = "None")]
     pub fn new(
         tokenize: TokenizeConfig,
         prefix: Vec<String>,
@@ -45,6 +49,7 @@ impl TokenizerConfig {
         }
     }
 }
+
 /// This configures the language a tokenizer can work with
 #[derive(Clone, Debug)]
 #[pyclass]
@@ -55,7 +60,15 @@ pub struct LanguageConfig {
     default_language: Option<String>,
 }
 
+#[pymethods]
 impl LanguageConfig {
+    #[new]
+    #[args(
+        add_language_token_to_prefix = "true",
+        add_language_token_to_suffix = "false",
+        languages = "vec![]",
+        default_language = "None"
+    )]
     pub fn new(
         add_language_token_to_prefix: bool,
         add_language_token_to_suffix: bool,

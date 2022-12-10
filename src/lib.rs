@@ -4,13 +4,13 @@ use pyo3::prelude::*;
 
 pub mod data;
 pub mod edit;
-pub mod windows;
+pub mod metrics;
 pub mod text;
 pub mod tokenization;
 pub mod unicode;
 pub mod utils;
 pub mod whitespace;
-pub mod metrics;
+pub mod windows;
 
 #[pymodule]
 fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
@@ -24,6 +24,7 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     whitespace::add_submodule(py, m)?;
     windows::add_submodule(py, m)?;
     metrics::add_submodule(py, m)?;
+    unicode::add_submodule(py, m)?;
 
     Ok(())
 }

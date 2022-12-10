@@ -1,4 +1,4 @@
-use crate::data::{Batch, Item, Pipeline, TextData};
+use crate::data::{Batch, Pipeline, TextData};
 use crate::tokenization::LANG_UNK;
 use crate::utils::find_subsequences_of_max_size_k;
 use pyo3::pyclass;
@@ -15,17 +15,11 @@ use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 use std::{panic, process};
 
-pub type BoxedThreadSafeIter<T> = Box<dyn Iterator<Item = T> + Send + 'static>;
-pub type BoxedStringIter = BoxedThreadSafeIter<String>;
-pub type BoxedTextDataIter = BoxedThreadSafeIter<TextData>;
-pub type BoxedItemIter = BoxedThreadSafeIter<Item>;
-pub type BoxedBatchIter = BoxedThreadSafeIter<Batch>;
-
-pub trait TextGen: Send + 'static {
-    fn org_iter(&self) -> BoxedStringIter;
+pub trait TextGen: Send {
+    fn org_iter(&self) -> Box<dyn Iterator<Item = String> + Send>;
     fn has_proc(&self) -> bool;
-    fn proc_iter(&self) -> Option<BoxedStringIter>;
-    fn lang_iter(&self) -> BoxedStringIter;
+    fn proc_iter(&self) -> Option<Box<dyn Iterator<Item = String> + Send>>;
+    fn lang_iter(&self) -> Box<dyn Iterator<Item = String> + Send>;
     fn min_len(&self) -> usize;
 }
 
@@ -72,7 +66,7 @@ impl TextFile {
 }
 
 impl TextGen for TextFile {
-    fn org_iter(&self) -> BoxedStringIter {
+    fn org_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
         Box::new(
             BufReader::new(open(&self.original))
                 .lines()
@@ -84,7 +78,7 @@ impl TextGen for TextFile {
         self.processed.is_some()
     }
 
-    fn proc_iter(&self) -> Option<BoxedStringIter> {
+    fn proc_iter(&self) -> Option<Box<dyn Iterator<Item = String> + Send>> {
         if let Some(path) = &self.processed {
             Some(Box::new(
                 BufReader::new(open(path))
@@ -96,7 +90,7 @@ impl TextGen for TextFile {
         }
     }
 
-    fn lang_iter(&self) -> BoxedStringIter {
+    fn lang_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
         let lang = self.language.clone();
         Box::new((0..).map(move |_| lang.clone()))
     }
@@ -136,7 +130,7 @@ impl TextContainer {
 }
 
 impl TextGen for TextContainer {
-    fn org_iter(&self) -> BoxedStringIter {
+    fn org_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
         Box::new(self.original.clone().into_iter())
     }
 
@@ -144,7 +138,7 @@ impl TextGen for TextContainer {
         self.processed.is_some()
     }
 
-    fn proc_iter(&self) -> Option<BoxedStringIter> {
+    fn proc_iter(&self) -> Option<Box<dyn Iterator<Item = String> + Send>> {
         if let Some(data) = &self.processed {
             Some(Box::new(data.clone().into_iter()))
         } else {
@@ -152,7 +146,7 @@ impl TextGen for TextContainer {
         }
     }
 
-    fn lang_iter(&self) -> BoxedStringIter {
+    fn lang_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
         if self.lang.is_some() {
             Box::new(self.lang.clone().unwrap().into_iter())
         } else {
@@ -216,9 +210,9 @@ pub enum TextIterationStrategy {
 }
 
 pub struct TextIterator {
-    org_iters: Vec<BoxedStringIter>,
-    proc_iters: Vec<BoxedStringIter>,
-    lang_iters: Vec<BoxedStringIter>,
+    org_iters: Vec<Box<dyn Iterator<Item = String> + Send>>,
+    proc_iters: Vec<Box<dyn Iterator<Item = String> + Send>>,
+    lang_iters: Vec<Box<dyn Iterator<Item = String> + Send>>,
     lengths: Vec<usize>,
     strategy: TextIterationStrategy,
     idx: usize,
@@ -313,33 +307,6 @@ impl TextIterator {
         self.lengths.iter().sum()
     }
 }
-pub(crate) trait IntoPipelineIterator {
-    fn pipe(
-        self,
-        pipeline: &Pipeline,
-        num_threads: u8,
-        buffer_size: usize,
-        seed: Option<u64>,
-    ) -> PipelineIterator;
-}
-impl<T> IntoPipelineIterator for T
-where
-    T: Iterator<Item = TextData> + Send + 'static,
-{
-    fn pipe(
-        self,
-        pipeline: &Pipeline,
-        num_threads: u8,
-        buffer_size: usize,
-        seed: Option<u64>,
-    ) -> PipelineIterator {
-        if num_threads == 0 {
-            PipelineIterator::new(self, pipeline.clone(), seed)
-        } else {
-            PipelineIterator::new_threaded(self, pipeline.clone(), num_threads, buffer_size, seed)
-        }
-    }
-}
 impl Iterator for TextIterator {
     type Item = TextData;
 
@@ -369,37 +336,82 @@ impl Iterator for TextIterator {
     }
 }
 
-pub struct PipelineIterator {
-    iter: BoxedItemIter,
+pub(crate) trait PipelineIterator<T>
+where
+    Self: Iterator<Item = TextData> + Send + 'static + Sized,
+    T: Clone + Send,
+{
+    fn pipe(
+        self,
+        pipeline: &Pipeline<T>,
+        num_threads: u8,
+        buffer_size: usize,
+        seed: Option<u64>,
+    ) -> Pipe<T>;
+}
+impl<I, T> PipelineIterator<T> for I
+where
+    I: Iterator<Item = TextData> + Send + 'static + Sized,
+    T: Clone + Send,
+{
+    fn pipe(
+        self,
+        pipeline: &Pipeline<T>,
+        num_threads: u8,
+        buffer_size: usize,
+        seed: Option<u64>,
+    ) -> Pipe<T> {
+        if num_threads == 0 {
+            Pipe::new(self, pipeline.clone(), seed)
+        } else {
+            Pipe::new_threaded(self, pipeline.clone(), num_threads, buffer_size, seed)
+        }
+    }
+}
+pub struct Pipe<T>
+where
+    T: Clone + Send + 'static,
+{
+    inner: Box<dyn Iterator<Item = T> + Send>,
     size_hint: (usize, Option<usize>),
 }
 
-impl PipelineIterator {
-    pub(crate) fn new(
-        iter: impl Iterator<Item = TextData> + Send + 'static,
-        pipeline: Pipeline,
+impl<T> Pipe<T>
+where
+    T: Clone + Send + 'static,
+{
+    fn new<I: Iterator<Item = TextData> + Send + 'static>(
+        inner: I,
+        pipeline: Pipeline<T>,
         seed: Option<u64>,
     ) -> Self {
-        let size_hint = iter.size_hint();
-        PipelineIterator {
-            iter: Box::new(iter.enumerate().map(move |(idx, item)| {
-                pipeline.apply(item, Some(seed.unwrap_or(0) + idx as u64))
+        Pipe {
+            size_hint: inner.size_hint(),
+            inner: Box::new(inner.enumerate().map(move |(idx, data)| {
+                pipeline.apply(
+                    data,
+                    idx,
+                    if seed.is_none() {
+                        None
+                    } else {
+                        Some(seed.unwrap() + idx as u64)
+                    },
+                )
             })),
-            size_hint,
         }
     }
 
-    pub(crate) fn new_threaded(
-        iter: impl Iterator<Item = TextData> + Send + 'static,
-        pipeline: Pipeline,
-        worker_threads: u8,
+    fn new_threaded<I: Iterator<Item = TextData> + Send + 'static>(
+        mut inner: I,
+        pipeline: Pipeline<T>,
+        num_threads: u8,
         buffer_size: usize,
         seed: Option<u64>,
     ) -> Self {
-        let size_hint = iter.size_hint();
-        let iter = Arc::new(Mutex::new(iter.enumerate()));
+        let size_hint = inner.size_hint();
+        let iter = Arc::new(Mutex::new(inner.enumerate()));
         let buffer_size = buffer_size.max(1);
-        let num_threads = worker_threads.min(num_cpus::get() as u8).max(1) as usize;
+        let num_threads = num_threads.min(num_cpus::get() as u8).max(1) as usize;
         let (tx, rx) = mpsc::sync_channel(buffer_size);
         let sent_counter = Arc::new(AtomicU64::new(0));
         panic::set_hook(Box::new(move |info| {
@@ -431,7 +443,15 @@ impl PipelineIterator {
                                 return;
                             }
                         }
-                        let item = pipe_clone.apply(data, Some(seed.unwrap_or(0) + idx));
+                        let item = pipe_clone.apply(
+                            data,
+                            idx as usize,
+                            if seed.is_none() {
+                                None
+                            } else {
+                                Some(seed.unwrap() + idx)
+                            },
+                        );
                         // wait until we are the next to send out item
                         while send_next.load(Ordering::SeqCst) != idx {
                             sleep(Duration::from_micros(100));
@@ -446,43 +466,25 @@ impl PipelineIterator {
                 })
                 .expect(&format!("failed building thread {}", idx));
         }
-
-        PipelineIterator {
-            iter: Box::new(rx.into_iter()),
+        Pipe {
+            inner: Box::new(rx.into_iter()),
             size_hint,
         }
     }
-
-    pub fn batched(
-        self,
-        batch_limit: usize,
-        batch_limit_type: BatchLimitType,
-        shuffle: bool,
-        shuffle_prefetch_factor: usize,
-        sort: bool,
-        seed: Option<u64>,
-    ) -> BatchedIterator<PipelineIterator> {
-        BatchedIterator::new(
-            self,
-            batch_limit,
-            batch_limit_type,
-            shuffle,
-            shuffle_prefetch_factor,
-            sort,
-            seed,
-        )
-    }
 }
 
-impl Iterator for PipelineIterator {
-    type Item = Item;
+impl<T> Iterator for Pipe<T>
+where
+    T: Clone + Send,
+{
+    type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.size_hint
+        self.size_hint()
     }
 }
 
@@ -490,77 +492,47 @@ impl Iterator for PipelineIterator {
 #[pyclass]
 pub enum BatchLimitType {
     BatchSize,
-    NumTokens,
+    TotalItemSize,
 }
 
-pub struct BatchedIterator<T: Iterator<Item = Item> + Send + 'static> {
-    batch_limit: usize,
-    batch_limit_type: BatchLimitType,
-    rng: ChaCha8Rng,
-    iter: T,
-    shuffle: bool,
-    shuffle_buffer: Vec<Item>,
-    shuffle_prefetch_factor: usize,
-    sort: bool,
-    remainder: Option<Item>,
+pub trait ItemSize {
+    fn size(&self) -> usize;
 }
 
-#[derive(Debug, Clone)]
-enum BatchLimit {
-    BatchSize(usize),
-    NumTokens(usize, usize),
-}
-
-impl BatchLimit {
-    fn from_iter<'a>(items: impl Iterator<Item = &'a Item>, limit_type: &BatchLimitType) -> Self {
-        match limit_type {
-            BatchLimitType::BatchSize => Self::BatchSize(items.count()),
-            BatchLimitType::NumTokens => {
-                let mut count = 0;
-                let max_length = items
-                    .map(|item| {
-                        count += 1;
-                        item.tokenization.token_ids.len()
-                    })
-                    .max()
-                    .unwrap_or(0);
-                Self::NumTokens(count, max_length)
-            }
-        }
-    }
-
-    fn update(self, item: &Item) -> Self {
-        match self {
-            BatchLimit::BatchSize(count) => BatchLimit::BatchSize(count + 1),
-            BatchLimit::NumTokens(count, max_length) => {
-                BatchLimit::NumTokens(count + 1, max_length.max(item.tokenization.token_ids.len()))
-            }
-        }
-    }
-
-    fn limit(&self) -> usize {
-        match self {
-            BatchLimit::BatchSize(count) => *count,
-            BatchLimit::NumTokens(count, max_length) => *count * *max_length,
-        }
-    }
-}
-
-impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
-    pub fn new(
-        mut iter: T,
-        batch_limit: usize,
-        batch_limit_type: BatchLimitType,
+pub trait BatchedIterator<T>
+where
+    Self: Iterator<Item = T> + Sized,
+    T: ItemSize + Clone,
+{
+    fn batched(
+        self,
+        sort: bool,
         shuffle: bool,
         shuffle_prefetch_factor: usize,
-        sort: bool,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
         seed: Option<u64>,
-    ) -> Self {
+    ) -> Batched<Self, T>;
+}
+impl<I, T> BatchedIterator<T> for I
+where
+    I: Iterator<Item = T> + Sized,
+    T: ItemSize + Clone,
+{
+    fn batched(
+        mut self,
+        sort: bool,
+        shuffle: bool,
+        shuffle_prefetch_factor: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        seed: Option<u64>,
+    ) -> Batched<Self, T> {
         let batch_limit = batch_limit.max(1);
         let shuffle_prefetch_factor = shuffle_prefetch_factor.max(2);
         // initialize remainder
-        let remainder = iter.next();
-        BatchedIterator {
+        let remainder = self.next();
+        Batched {
             batch_limit,
             batch_limit_type,
             rng: if seed.is_some() {
@@ -568,7 +540,7 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
             } else {
                 ChaCha8Rng::from_entropy()
             },
-            iter,
+            inner: self,
             shuffle,
             shuffle_buffer: Vec::new(),
             shuffle_prefetch_factor,
@@ -576,8 +548,30 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
             remainder,
         }
     }
+}
 
-    pub fn next_shuffled(&mut self) -> (Option<Batch>, Option<Item>) {
+pub struct Batched<I, T>
+where
+    I: Iterator<Item = T> + Sized,
+    T: ItemSize + Clone,
+{
+    batch_limit: usize,
+    batch_limit_type: BatchLimitType,
+    rng: ChaCha8Rng,
+    inner: I,
+    shuffle: bool,
+    shuffle_buffer: Vec<T>,
+    shuffle_prefetch_factor: usize,
+    sort: bool,
+    remainder: Option<T>,
+}
+
+impl<I, T> Batched<I, T>
+where
+    I: Iterator<Item = T> + Sized,
+    T: ItemSize + Clone,
+{
+    pub fn next_shuffled(&mut self) -> (Option<Batch<T>>, Option<T>) {
         // we create a batch in the following way:
         // 1. fill up the shuffle buffer
         // 2. shuffle the shuffle buffer
@@ -586,7 +580,7 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
             BatchLimit::from_iter(self.shuffle_buffer.iter(), &self.batch_limit_type);
         // fill buffer until we overshoot batch limit * some factor (>=1)
         while buffer_limit.limit() <= self.batch_limit * self.shuffle_prefetch_factor {
-            let Some(item) = self.iter.next() else {
+            let Some(item) = self.inner.next() else {
                 break;
             };
             buffer_limit = buffer_limit.update(&item);
@@ -613,12 +607,7 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
                 .push(self.remainder.as_ref().unwrap().clone());
             self.remainder = None;
             // sort the buffer by length
-            self.shuffle_buffer.sort_by(|a, b| {
-                a.tokenization
-                    .token_ids
-                    .len()
-                    .cmp(&b.tokenization.token_ids.len())
-            });
+            self.shuffle_buffer.sort_by(|a, b| a.size().cmp(&b.size()));
             // calculate possible subsequences for batch
             let sub_sequences = find_subsequences_of_max_size_k(
                 &self.shuffle_buffer,
@@ -639,30 +628,13 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
             let shuffle_buff_lengths = self
                 .shuffle_buffer
                 .iter()
-                .map(|i| i.tokenization.token_ids.len())
+                .map(|i| i.size())
                 .collect::<Vec<usize>>();
-            let items_in_range: Vec<Item> = self
+            let items_in_range: Vec<T> = self
                 .shuffle_buffer
                 .splice(start_range..end_range, vec![])
                 .collect();
             let batch_limit = BatchLimit::from_iter(items_in_range.iter(), &self.batch_limit_type);
-            assert!(
-                batch_limit.limit() <= self.batch_limit,
-                "batch limit {:?} exceeds max batch limit {}\n\
-                subsequences: {:?},\n\
-                chosen subsequence: {:?} at index {index}\n\
-                shuffle buffer: {:?}\n\
-                items in subsequence: {:?}",
-                batch_limit,
-                self.batch_limit,
-                sub_sequences,
-                sub_sequences[index],
-                shuffle_buff_lengths,
-                items_in_range
-                    .iter()
-                    .map(|i| i.tokenization.token_ids.len())
-                    .collect::<Vec<usize>>()
-            );
             (Some(Batch::new(items_in_range)), self.shuffle_buffer.pop())
         } else {
             // shuffle the buffer
@@ -679,11 +651,11 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
 
     #[inline]
     fn batch_from(
-        initial: Item,
-        mut f: impl FnMut() -> Option<Item>,
+        initial: T,
+        mut f: impl FnMut() -> Option<T>,
         limit: usize,
         limit_type: BatchLimitType,
-    ) -> (Option<Batch>, Option<Item>) {
+    ) -> (Option<Batch<T>>, Option<T>) {
         // the implementation makes sure that always at least 1 item is returned
         // in the batch, even if the item solely exceeds the specified limit
         let mut items = vec![initial];
@@ -707,8 +679,12 @@ impl<T: Iterator<Item = Item> + Send + 'static> BatchedIterator<T> {
     }
 }
 
-impl<T: Iterator<Item = Item> + Send + 'static> Iterator for BatchedIterator<T> {
-    type Item = Batch;
+impl<I, T> Iterator for Batched<I, T>
+where
+    I: Iterator<Item = T>,
+    T: ItemSize + Clone,
+{
+    type Item = Batch<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remainder.is_none() {
@@ -719,7 +695,7 @@ impl<T: Iterator<Item = Item> + Send + 'static> Iterator for BatchedIterator<T> 
         } else {
             Self::batch_from(
                 self.remainder.as_ref().unwrap().clone(),
-                || self.iter.next(),
+                || self.inner.next(),
                 self.batch_limit,
                 self.batch_limit_type,
             )
@@ -729,12 +705,54 @@ impl<T: Iterator<Item = Item> + Send + 'static> Iterator for BatchedIterator<T> 
     }
 }
 
+#[derive(Debug, Clone)]
+enum BatchLimit {
+    BatchSize(usize),
+    TotalItemSize(usize, usize),
+}
+
+impl BatchLimit {
+    fn from_iter<'a>(
+        items: impl Iterator<Item = &'a (impl ItemSize + 'a)>,
+        limit_type: &BatchLimitType,
+    ) -> Self {
+        match limit_type {
+            BatchLimitType::BatchSize => Self::BatchSize(items.count()),
+            BatchLimitType::TotalItemSize => {
+                let mut count = 0;
+                let max_length = items
+                    .map(|item| {
+                        count += 1;
+                        item.size()
+                    })
+                    .max()
+                    .unwrap_or(0);
+                Self::TotalItemSize(count, max_length)
+            }
+        }
+    }
+
+    fn update(self, item: &impl ItemSize) -> Self {
+        match self {
+            BatchLimit::BatchSize(count) => BatchLimit::BatchSize(count + 1),
+            BatchLimit::TotalItemSize(count, max_length) => {
+                BatchLimit::TotalItemSize(count + 1, max_length.max(item.size()))
+            }
+        }
+    }
+
+    fn limit(&self) -> usize {
+        match self {
+            BatchLimit::BatchSize(count) => *count,
+            BatchLimit::TotalItemSize(count, max_length) => *count * *max_length,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::data::loading::{
-        open, BatchLimitType, IntoPipelineIterator, TextFile, TextGenerator,
-    };
-    use crate::data::{Item, Pipeline, PipelineConfig, TextData};
+    use crate::data::loading::{open, BatchLimitType, PipelineIterator, TextFile, TextGenerator};
+    use crate::data::{Item, Pipeline, PipelineWithTokenizerConfig, TextData};
     use crate::tokenization::{TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
@@ -868,7 +886,7 @@ mod tests {
         let text_files = TextGenerator::new(vec![multi30k]);
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
-        let pipeline = Pipeline::from_config(PipelineConfig {
+        let pipeline = Pipeline::from_config(PipelineWithTokenizerConfig {
             preprocessing: vec![],
             labeling: None,
             tokenizer: TokenizerConfig::new(
@@ -904,7 +922,7 @@ mod tests {
         assert!(time3 < time2);
         // test that all lines of multi30k.txt are returned in order,
         // switch to non blocking tokenizer again
-        let pipeline = Pipeline::from_config(PipelineConfig {
+        let pipeline = Pipeline::from_config(PipelineWithTokenizerConfig {
             preprocessing: vec![],
             labeling: None,
             tokenizer: TokenizerConfig::new(
@@ -933,7 +951,7 @@ mod tests {
             .lines()
             .collect::<Result<Vec<String>, io::Error>>()
             .unwrap();
-        let mut pipeline = Pipeline::from_config(PipelineConfig {
+        let mut pipeline = Pipeline::from_config(PipelineWithTokenizerConfig {
             preprocessing: vec![],
             labeling: None,
             tokenizer: TokenizerConfig::new(TokenizeConfig::Byte(true), vec![], vec![], None),
@@ -953,7 +971,7 @@ mod tests {
         let mut pipe_it = text_files
             .weighted(Some(22))
             .pipe(&pipeline, 4, 4, None)
-            .batched(256, BatchLimitType::NumTokens, true, 32, true, Some(22));
+            .batched(256, BatchLimitType::TotalItemSize, true, 32, true, Some(22));
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
         let mut line_counter: HashMap<String, usize> =

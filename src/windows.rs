@@ -2,49 +2,77 @@ use crate::unicode::CS;
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 #[derive(Debug, Clone)]
-pub enum InferenceResult {
+pub enum Result {
     SequenceClassification(Vec<usize>),
     SequenceGeneration(Vec<usize>),
+    MultiSequenceGeneration(Vec<Vec<usize>>),
 }
 
-impl IntoPy<Py<PyDict>> for InferenceResult {
+impl IntoPy<Py<PyDict>> for Result {
     fn into_py(self, py: Python<'_>) -> Py<PyDict> {
         let d = PyDict::new(py);
         d.into()
     }
 }
 
-impl<'a> FromPyObject<'a> for InferenceResult {
+impl<'a> FromPyObject<'a> for Result {
     fn extract(_: &'a PyAny) -> PyResult<Self> {
-        Ok(InferenceResult::SequenceGeneration(vec![]))
+        Ok(Result::SequenceGeneration(vec![]))
     }
 }
 
 #[derive(Debug, Clone)]
-#[pyclass]
-pub struct InferenceWindow {
-    #[pyo3(get)]
+pub struct Window<'a> {
     ctx_start: usize,
-    #[pyo3(get)]
     ctx_end: usize,
-    #[pyo3(get)]
     window_start: usize,
-    #[pyo3(get)]
     window_end: usize,
-    #[pyo3(get)]
-    str: String,
+    str: &'a str,
+}
+
+impl<'a> Window<'a> {
+    pub fn new(
+        ctx_start: usize,
+        window_start: usize,
+        window_end: usize,
+        ctx_end: usize,
+        str: &'a str,
+    ) -> Self {
+        Self {
+            ctx_start,
+            window_start,
+            ctx_end,
+            window_end,
+            str,
+        }
+    }
+}
+
+impl IntoPy<PyObject> for Window<'_> {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let window = PyList::new(
+            py,
+            &[
+                self.ctx_start,
+                self.window_start,
+                self.window_end,
+                self.ctx_end,
+            ],
+        );
+        window.into()
+    }
 }
 
 #[pyfunction(use_graphemes = "true")]
-pub fn char_windows(
-    s: &str,
+pub fn char_windows<'a>(
+    s: &'a str,
     max_length: usize,
     context_length: usize,
     use_graphemes: bool,
-) -> Vec<InferenceWindow> {
+) -> Vec<Window<'a>> {
     assert!(
         max_length > 2 * context_length,
         "max length must be larger than 2 times the context \
@@ -54,24 +82,24 @@ pub fn char_windows(
     let cs = CS::new(s, use_graphemes);
     (0..cs.len())
         .step_by(window_length)
-        .map(|window_start| {
+        .map(move |window_start| {
             let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
             let ctx_start = window_start.saturating_sub(context_length);
             let ctx_end = cs.len().min(window_start + window_length + context_length);
             let window_end = cs.len().min(window_start + window_length);
-            InferenceWindow {
+            Window::new(
                 ctx_start,
-                ctx_end,
                 window_start,
                 window_end,
-                str: cs.sub(ctx_start, ctx_end).to_string(),
-            }
+                ctx_end,
+                cs.sub(ctx_start, ctx_end),
+            )
         })
         .collect()
 }
 
 #[inline]
-fn count_until(mut iter: impl Iterator<Item=usize>, max_length: usize, cs: &CS) -> usize {
+fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS) -> usize {
     iter.fold_while(0usize, |acc, idx| {
         let next_acc = acc + cs.char_byte_len(idx);
         if next_acc > max_length {
@@ -80,7 +108,7 @@ fn count_until(mut iter: impl Iterator<Item=usize>, max_length: usize, cs: &CS) 
             Continue(next_acc)
         }
     })
-        .into_inner()
+    .into_inner()
 }
 
 #[pyfunction(use_graphemes = "true")]
@@ -89,7 +117,7 @@ pub fn byte_windows(
     max_length: usize,
     context_length: usize,
     use_graphemes: bool,
-) -> Vec<InferenceWindow> {
+) -> Vec<Window> {
     assert!(
         max_length > 2 * context_length,
         "max length must be larger than 2 times the context \
@@ -117,13 +145,13 @@ pub fn byte_windows(
             window_start.saturating_sub(count_until((0..window_start).rev(), context_length, &cs));
         let ctx_end = window_end + count_until(window_end..cs.len(), context_length, &cs);
 
-        windows.push(InferenceWindow {
+        windows.push(Window::new(
             ctx_start,
-            ctx_end,
             window_start,
             window_end,
-            str: cs.sub(ctx_start, ctx_end).to_string(),
-        });
+            ctx_end,
+            cs.sub(ctx_start, ctx_end),
+        ));
 
         window_start = window_end;
     }
@@ -134,7 +162,6 @@ pub fn byte_windows(
 /// into multiple windows (useful for text correction inference).
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "windows")?;
-    m.add_class::<InferenceWindow>()?;
     m.add_function(wrap_pyfunction!(char_windows, m)?)?;
     m.add_function(wrap_pyfunction!(byte_windows, m)?)?;
     parent_module.add_submodule(m)?;

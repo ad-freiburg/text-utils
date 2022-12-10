@@ -6,7 +6,7 @@ from torch import optim
 
 
 def _warmup(optimizer: optim.Optimizer, num_steps: int) -> optim.lr_scheduler.LinearLR:
-    return optim.lr_scheduler.LinearLR(optimizer, 0, 1, num_steps)
+    return optim.lr_scheduler.LinearLR(optimizer, 1e-4, 1, num_steps)
 
 
 def _check_warmup_steps(warmup_steps: Union[float, int], train_steps: int) -> int:

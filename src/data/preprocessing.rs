@@ -1,7 +1,7 @@
 use crate::data::{Label, TextData};
 use crate::text;
 use crate::text::{possible_byte_substrings, possible_character_substrings};
-use crate::unicode::CS;
+use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{accumulate, constrain, py_invalid_type_error, py_required_key_error};
 use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
 use itertools::Itertools;
@@ -11,13 +11,17 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::ops::Sub;
 
-pub type PreprocessingFn = Box<dyn Fn(TextData, Option<u64>) -> TextData + Send + Sync>;
-pub type LabelingFn = Box<dyn Fn(&TextData) -> Label + Send + Sync>;
+pub type PreprocessingFn = Box<dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> TextData>;
+pub type LabelingFn = Box<dyn Send + Sync + 'static + Fn(&TextData) -> Label>;
+pub type ItemFn<T> = Box<dyn Send + Sync + 'static + Fn(TextData, Option<Label>) -> T>;
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {
     // clean the sequences (remove spurious whitespaces)
     Clean,
+    // normalize the sequence
+    // (using a unicode normalization scheme, see https://en.wikipedia.org/wiki/Unicode_equivalence#Normalization)
+    Normalize(Normalization, bool),
     // overwrite original text with processed text
     Overwrite,
     // switch between multiple preprocessing functions
@@ -68,6 +72,11 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "byte_substring"
             }
+            PreprocessingConfig::Normalize(scheme, use_g) => {
+                d.set_item("scheme", scheme.into_py(py)).unwrap();
+                d.set_item("use_graphemes", use_g).unwrap();
+                "normalize"
+            }
         };
         d.set_item("type", preprocessing_type).unwrap();
         d.to_object(py)
@@ -83,6 +92,18 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
         let preprocessing_type: String = preprocessing_type.extract()?;
         let preprocessing_config = match preprocessing_type.as_str() {
             "clean" => PreprocessingConfig::Clean,
+            "normalize" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+
+                let Some(scheme) = d.get_item("scheme") else {
+                    return Err(py_required_key_error("scheme", "normalization config"));
+                };
+                PreprocessingConfig::Normalize(scheme.extract()?, use_graphemes)
+            }
             "overwrite" => PreprocessingConfig::Overwrite,
             "no_whitespaces" => PreprocessingConfig::NoWhitespaces,
             "full_whitespaces" => {
@@ -337,6 +358,9 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
         }
         PreprocessingConfig::CharSubstring(l, use_graphemes) => char_substring(l, use_graphemes),
         PreprocessingConfig::ByteSubstring(l, use_graphemes) => byte_substring(l, use_graphemes),
+        PreprocessingConfig::Normalize(scheme, use_graphemes) => {
+            apply_to_text(move |s| normalize(s, &scheme, use_graphemes))
+        }
     }
 }
 

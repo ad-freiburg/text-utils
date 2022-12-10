@@ -1,19 +1,24 @@
 use crate::data::loading::{
-    BatchLimitType, IntoPipelineIterator, TextContainer, TextFile, TextGen, TextGenerator,
-    TextIterationStrategy,
+    BatchLimitType, BatchedIterator, PipelineIterator, TextContainer, TextFile, TextGen,
+    TextGenerator, TextIterationStrategy,
 };
 use crate::data::preprocessing::{
     labeling, preprocessing, LabelingConfig, LabelingFn, PreprocessingConfig, PreprocessingFn,
 };
 use crate::tokenization::{tokenizer, Tokenization, Tokenizer, TokenizerConfig, LANG_UNK};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
+use crate::windows::Window;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::vec::IntoIter;
+
+use self::loading::ItemSize;
+use self::preprocessing::ItemFn;
 
 pub mod loading;
 pub mod preprocessing;
@@ -144,6 +149,11 @@ pub struct Item {
     #[pyo3(get)]
     label: Option<Label>,
 }
+impl ItemSize for Item {
+    fn size(&self) -> usize {
+        self.tokenization.token_ids.len()
+    }
+}
 
 impl Item {
     pub fn new(data: TextData, tokenization: Tokenization, label: Option<Label>) -> Self {
@@ -178,15 +188,13 @@ impl Item {
     }
 }
 
-#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[pyclass]
-pub struct Batch {
-    #[pyo3(get)]
-    items: Vec<Item>,
+#[derive(Debug)]
+pub struct Batch<T> {
+    items: Vec<T>,
 }
 
-impl Batch {
-    pub fn new(items: Vec<Item>) -> Self {
+impl<T> Batch<T> {
+    pub fn new(items: Vec<T>) -> Self {
         Batch { items }
     }
 
@@ -195,30 +203,32 @@ impl Batch {
     }
 }
 
+#[derive(Debug)]
+#[pyclass]
+pub struct ItemBatch {
+    batch: Batch<Item>,
+}
+impl ItemBatch {
+    pub fn new(items: Vec<Item>) -> Self {
+        ItemBatch {
+            batch: Batch::new(items),
+        }
+    }
+}
 #[pymethods]
-impl Batch {
+impl ItemBatch {
     #[new]
     fn py_new(items: Vec<Item>) -> Self {
         Self::new(items)
     }
 
     fn __len__(&self) -> usize {
-        self.len()
-    }
-
-    fn __hash__(&self) -> u64 {
-        let mut s = DefaultHasher::new();
-        self.hash(&mut s);
-        s.finish()
-    }
-
-    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
-        op.matches(self.cmp(other))
+        self.batch.len()
     }
 }
 
-impl IntoIterator for Batch {
-    type Item = Item;
+impl<T> IntoIterator for Batch<T> {
+    type Item = T;
     type IntoIter = IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -233,20 +243,13 @@ pub struct PipelineConfig {
     preprocessing: Vec<PreprocessingConfig>,
     #[pyo3(get)]
     labeling: Option<LabelingConfig>,
-    #[pyo3(get)]
-    tokenizer: TokenizerConfig,
 }
 
 impl PipelineConfig {
-    pub fn new(
-        preprocessing: Vec<PreprocessingConfig>,
-        labeling: Option<LabelingConfig>,
-        tokenizer: TokenizerConfig,
-    ) -> Self {
+    pub fn new(preprocessing: Vec<PreprocessingConfig>, labeling: Option<LabelingConfig>) -> Self {
         PipelineConfig {
             preprocessing,
             labeling,
-            tokenizer,
         }
     }
 }
@@ -257,60 +260,69 @@ impl PipelineConfig {
     #[args(labeling = "None")]
     fn py_new(
         preprocessing: Vec<PreprocessingConfig>,
-        tokenizer: TokenizerConfig,
         labeling: Option<LabelingConfig>,
     ) -> PyResult<Self> {
-        Ok(Self::new(preprocessing, labeling, tokenizer))
+        Ok(Self::new(preprocessing, labeling))
     }
 }
 
-pub struct Pipeline {
-    // Preprocessing a FnMut so we have to wrap it here to be thread safe
-    cfg: PipelineConfig,
-    preprocessing_fn: PreprocessingFn,
-    label_fn: Option<LabelingFn>,
-    tokenizer: Tokenizer,
+#[derive(Clone)]
+pub struct Pipeline<T: Clone> {
+    preprocessing_fn: Arc<PreprocessingFn>,
+    label_fn: Option<Arc<LabelingFn>>,
+    item_fn: Arc<ItemFn<T>>,
 }
 
-impl Clone for Pipeline {
-    fn clone(&self) -> Self {
-        Pipeline::from_config(self.cfg.clone())
-    }
-}
-
-impl Pipeline {
-    pub fn from_config(cfg: PipelineConfig) -> Self {
-        Pipeline {
-            cfg: cfg.clone(),
-            preprocessing_fn: preprocessing(cfg.preprocessing),
-            label_fn: if cfg.labeling.is_some() {
-                Some(labeling(cfg.labeling.unwrap()))
-            } else {
-                None
-            },
-            tokenizer: tokenizer(cfg.tokenizer),
-        }
-    }
-
-    pub fn apply(&self, item: TextData, seed: Option<u64>) -> Item {
+impl<T: Clone> Pipeline<T> {
+    pub fn apply(&self, item: TextData, idx: usize, seed: Option<u64>) -> T {
         let data = (self.preprocessing_fn)(item, seed);
         let label = if self.label_fn.is_some() {
             Some((self.label_fn.as_ref().unwrap())(&data))
         } else {
             None
         };
-        let tokenization = self.tokenizer.tokenize(&data.processed, None, None);
-        Item {
-            data,
-            label,
-            tokenization,
+        (self.item_fn)(data, label)
+    }
+
+    fn from_config_and_item_fn(cfg: PipelineConfig, item_fn: ItemFn<T>) -> Self {
+        Pipeline {
+            preprocessing_fn: Arc::new(preprocessing(cfg.preprocessing)),
+            label_fn: if cfg.labeling.is_some() {
+                Some(Arc::new(labeling(cfg.labeling.unwrap())))
+            } else {
+                None
+            },
+            item_fn: Arc::new(item_fn),
         }
+    }
+}
+
+impl Pipeline<Item> {
+    pub fn with_tokenizer(pipeline_cfg: PipelineConfig, tokenizer_cfg: TokenizerConfig) -> Self {
+        let tok = tokenizer(tokenizer_cfg);
+        Pipeline::from_config_and_item_fn(
+            pipeline_cfg,
+            Box::new(move |data, label| -> Item {
+                Item {
+                    tokenization: tok.tokenize(&data.processed, None, None),
+                    data,
+                    label,
+                }
+            }),
+        )
+    }
+}
+
+impl Pipeline<Vec<Window<'_>>> {
+    pub fn with_windows(pipeline_cfg: PipelineConfig, tokenizer_cfg: TokenizerConfig) -> Self {
+        let tok = tokenizer(tokenizer_cfg);
+        Pipeline::from_config_and_item_fn(pipeline_cfg, Box::new(move |data, label| vec![]))
     }
 }
 
 #[pyclass]
 struct DataLoader {
-    pipeline: Pipeline,
+    pipeline: Pipeline<Item>,
     text_gen: TextGenerator,
     strategy: TextIterationStrategy,
     num_threads: u8,
@@ -329,13 +341,14 @@ struct DataLoader {
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
-    iter: Option<Box<dyn Iterator<Item = Batch> + Send + 'static>>,
+    iter: Option<Box<dyn Iterator<Item = Batch<Item>> + Send>>,
 }
 
 impl DataLoader {
     fn new(
         generators: Vec<Box<dyn TextGen>>,
         pipeline_config: PipelineConfig,
+        tokenizer_config: TokenizerConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
         mut buffer_size: usize,
@@ -362,7 +375,7 @@ impl DataLoader {
         if batch_limit_type == BatchLimitType::BatchSize {
             buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor);
         }
-        let pipeline = Pipeline::from_config(pipeline_config);
+        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config);
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
@@ -414,6 +427,7 @@ impl DataLoader {
     pub fn from_sequences(
         sequences: Vec<String>,
         pipeline_config: PipelineConfig,
+        tokenizer_config: TokenizerConfig,
         languages: Option<Vec<String>>,
         num_threads: u8,
         buffer_size: usize,
@@ -442,6 +456,7 @@ impl DataLoader {
         Self::new(
             vec![generators],
             pipeline_config,
+            tokenizer_config,
             TextIterationStrategy::Sequential,
             num_threads,
             buffer_size,
@@ -476,6 +491,7 @@ impl DataLoader {
     pub fn from_files(
         files: Vec<String>,
         pipeline_config: PipelineConfig,
+        tokenizer_config: TokenizerConfig,
         languages: Option<Vec<String>>,
         strategy: TextIterationStrategy,
         num_threads: u8,
@@ -516,6 +532,7 @@ impl DataLoader {
         Self::new(
             generators,
             pipeline_config,
+            tokenizer_config,
             strategy,
             num_threads,
             buffer_size,
@@ -546,26 +563,26 @@ impl DataLoader {
             .step_by(slf.world_size)
             .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size, seed)
             .batched(
-                slf.batch_limit,
-                slf.batch_limit_type,
+                slf.sort,
                 slf.shuffle,
                 slf.shuffle_prefetch_factor,
-                slf.sort,
+                slf.batch_limit,
+                slf.batch_limit_type,
                 seed,
             );
         slf.iter = Some(Box::new(batch_iter));
         slf
     }
 
-    fn __next__(&mut self) -> Option<Py<Batch>> {
+    fn __next__(&mut self) -> Option<Py<ItemBatch>> {
         assert!(
             self.iter.is_some(),
             "call iter() on the dataloader before iterating with next()"
         );
         if let Some(batch) = self.iter.as_mut().unwrap().next() {
             Some(Python::with_gil(|py| {
-                let item: Py<Batch> = Py::new(py, batch).expect("should not fail");
-                item
+                let item_batch = ItemBatch { batch };
+                Py::new(py, item_batch).expect("should not fail")
             }))
         } else {
             None
@@ -591,7 +608,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_class::<PipelineConfig>()?;
     m.add_class::<TextData>()?;
     m.add_class::<Item>()?;
-    m.add_class::<Batch>()?;
+    m.add_class::<ItemBatch>()?;
     m.add_class::<TextIterationStrategy>()?;
     m.add_class::<BatchLimitType>()?;
     parent_module.add_submodule(m)?;

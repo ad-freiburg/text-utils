@@ -1,6 +1,8 @@
 use crate::utils::run_length_encode;
+use pyo3::prelude::*;
 use std::fmt::{Display, Formatter};
 use std::str::Chars;
+use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone)]
@@ -163,6 +165,46 @@ impl Display for Character<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.str)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[pyclass]
+pub enum Normalization {
+    NFC,
+    NFD,
+    NFKC,
+    NFKD,
+}
+
+#[pyfunction(use_graphemes = "true")]
+#[inline]
+pub fn normalize(s: &str, normalization: &Normalization, use_graphemes: bool) -> String {
+    if use_graphemes {
+        // split in grapheme clusters first, then normalize
+        // every cluster individually, and concatenate the result
+        let cs = CharString::new(s, use_graphemes);
+        cs.chars()
+            .map(|c| normalize(c.str, normalization, false))
+            .collect()
+    } else {
+        let chars = s.chars();
+        match normalization {
+            Normalization::NFC => chars.nfc().collect(),
+            Normalization::NFD => chars.nfd().collect(),
+            Normalization::NFKC => chars.nfkc().collect(),
+            Normalization::NFKD => chars.nfkd().collect(),
+        }
+    }
+}
+
+/// A submodule containing functionality for handling unicode.
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
+    let m = PyModule::new(py, "unicode")?;
+    m.add_function(wrap_pyfunction!(normalize, m)?)?;
+    m.add_class::<Normalization>()?;
+    parent_module.add_submodule(m)?;
+
+    Ok(())
 }
 
 #[cfg(test)]

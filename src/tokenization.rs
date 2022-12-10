@@ -227,13 +227,13 @@ impl Tokenization {
 }
 
 /// A tokenization function in general takes in a &str and return a tokenization.
-pub type TokenizationFn = Box<dyn FnMut(&str) -> Tokenization>;
+pub type TokenizationFn = Box<dyn Send + 'static + Fn(&str) -> Tokenization>;
 /// A tokenizer is something that implements the tokenize trait with the
 /// appropriate bounds on tokens and token ids.
-pub type Tokenizer = Box<dyn Tokenize>;
+pub type Tokenizer = Box<dyn Send + 'static + Tokenize>;
 
 /// The tokenize trait defines behavior that every tokenizer should support.
-pub trait Tokenize: Send {
+pub trait Tokenize: Send + Sync + 'static {
     fn vocab_size(&self) -> usize;
 
     fn unk_token_id(&self) -> u32;

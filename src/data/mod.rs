@@ -5,9 +5,9 @@ use crate::data::loading::{
 use crate::data::preprocessing::{
     labeling, preprocessing, LabelingConfig, LabelingFn, PreprocessingConfig, PreprocessingFn,
 };
-use crate::tokenization::{tokenizer, Tokenization, Tokenizer, TokenizerConfig, LANG_UNK};
+use crate::tokenization::{tokenizer, Tokenization, TokenizerConfig, LANG_UNK};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
-use crate::windows::Window;
+use crate::windows::{windows, WindowConfig};
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -267,24 +267,22 @@ impl PipelineConfig {
 }
 
 #[derive(Clone)]
-pub struct Pipeline<T: Clone> {
+pub struct Pipeline<T> {
     preprocessing_fn: Arc<PreprocessingFn>,
     label_fn: Option<Arc<LabelingFn>>,
-    item_fn: Arc<ItemFn<T>>,
+    item_fn: Arc<ItemFn<T, Arc<LabelingFn>>>,
 }
 
-impl<T: Clone> Pipeline<T> {
+impl<T> Pipeline<T> {
     pub fn apply(&self, item: TextData, idx: usize, seed: Option<u64>) -> T {
         let data = (self.preprocessing_fn)(item, seed);
-        let label = if self.label_fn.is_some() {
-            Some((self.label_fn.as_ref().unwrap())(&data))
-        } else {
-            None
-        };
-        (self.item_fn)(data, label)
+        (self.item_fn)(data, idx, self.label_fn.as_ref())
     }
 
-    fn from_config_and_item_fn(cfg: PipelineConfig, item_fn: ItemFn<T>) -> Self {
+    fn from_config_and_item_fn(
+        cfg: PipelineConfig,
+        item_fn: Arc<ItemFn<T, Arc<LabelingFn>>>,
+    ) -> Self {
         Pipeline {
             preprocessing_fn: Arc::new(preprocessing(cfg.preprocessing)),
             label_fn: if cfg.labeling.is_some() {
@@ -292,7 +290,7 @@ impl<T: Clone> Pipeline<T> {
             } else {
                 None
             },
-            item_fn: Arc::new(item_fn),
+            item_fn,
         }
     }
 }
@@ -302,21 +300,57 @@ impl Pipeline<Item> {
         let tok = tokenizer(tokenizer_cfg);
         Pipeline::from_config_and_item_fn(
             pipeline_cfg,
-            Box::new(move |data, label| -> Item {
+            Arc::new(move |data, _, label_fn| -> Item {
                 Item {
                     tokenization: tok.tokenize(&data.processed, None, None),
+                    label: if label_fn.is_some() {
+                        Some(label_fn.unwrap()(&data))
+                    } else {
+                        None
+                    },
                     data,
-                    label,
                 }
             }),
         )
     }
 }
 
-impl Pipeline<Vec<Window<'_>>> {
-    pub fn with_windows(pipeline_cfg: PipelineConfig, tokenizer_cfg: TokenizerConfig) -> Self {
+pub type InferenceItem = Vec<(Item, usize, usize, (usize, usize, usize, usize))>;
+pub type InferencePipeline = Pipeline<InferenceItem>;
+impl InferencePipeline {
+    pub fn with_windows(
+        pipeline_cfg: PipelineConfig,
+        tokenizer_cfg: TokenizerConfig,
+        window_cfg: WindowConfig,
+    ) -> Self {
         let tok = tokenizer(tokenizer_cfg);
-        Pipeline::from_config_and_item_fn(pipeline_cfg, Box::new(move |data, label| vec![]))
+        Pipeline::from_config_and_item_fn(
+            pipeline_cfg,
+            Arc::new(move |data, idx, label_fn| {
+                windows(&data.processed, &window_cfg)
+                    .iter()
+                    .enumerate()
+                    .map(|(w_idx, w)| {
+                        let tokenization = tok.tokenize(w.str, None, None);
+                        let boundaries = w.boundaries();
+                        let item = Item {
+                            label: if label_fn.is_some() {
+                                Some(label_fn.unwrap()(&data))
+                            } else {
+                                None
+                            },
+                            data: TextData::new(
+                                w.str.to_string(),
+                                None,
+                                Some(data.language.clone()),
+                            ),
+                            tokenization,
+                        };
+                        (item, idx, w_idx, boundaries)
+                    })
+                    .collect()
+            }),
+        )
     }
 }
 

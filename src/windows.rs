@@ -2,7 +2,7 @@ use crate::unicode::CS;
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::PyDict;
 
 #[derive(Debug, Clone)]
 pub enum Result {
@@ -26,11 +26,11 @@ impl<'a> FromPyObject<'a> for Result {
 
 #[derive(Debug, Clone)]
 pub struct Window<'a> {
-    ctx_start: usize,
+    pub ctx_start: usize,
     ctx_end: usize,
     window_start: usize,
     window_end: usize,
-    str: &'a str,
+    pub str: &'a str,
 }
 impl<'a> Window<'a> {
     pub fn new(
@@ -48,8 +48,36 @@ impl<'a> Window<'a> {
             str,
         }
     }
+
+    pub fn boundaries(&self) -> (usize, usize, usize, usize) {
+        (
+            self.ctx_start,
+            self.window_start,
+            self.window_end,
+            self.ctx_end,
+        )
+    }
 }
-#[pyclass(name = "Window")]
+
+#[derive(Debug, Clone)]
+pub enum WindowConfig {
+    Character(usize, usize, bool),
+    Bytes(usize, usize, bool),
+}
+
+pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> Vec<Window<'a>> {
+    match *config {
+        WindowConfig::Character(max_chars, context_chars, use_graphemes) => {
+            char_windows(s, max_chars, context_chars, use_graphemes)
+        }
+        WindowConfig::Bytes(max_bytes, context_bytes, use_graphemes) => {
+            byte_windows(s, max_bytes, context_bytes, use_graphemes)
+        }
+    }
+}
+
+#[pyclass]
+#[pyo3(name = "Window")]
 pub struct PyWindow {
     #[pyo3(get)]
     ctx_start: usize,
@@ -107,7 +135,7 @@ pub fn char_windows<'a>(
 }
 
 #[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "char_window")]
+#[pyo3(name = "char_windows")]
 pub fn char_windows_py(
     s: String,
     max_length: usize,
@@ -135,12 +163,12 @@ fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS
 
 pub fn byte_windows<'a>(
     s: &'a str,
-    max_length: usize,
-    context_length: usize,
+    max_bytes: usize,
+    context_bytes: usize,
     use_graphemes: bool,
 ) -> Vec<Window<'a>> {
     assert!(
-        max_length > 2 * context_length,
+        max_bytes > 2 * context_bytes,
         "max length must be larger than 2 times the context \
         length, otherwise there are no tokens left for the window itself"
     );
@@ -149,7 +177,7 @@ pub fn byte_windows<'a>(
     let mut windows = vec![];
     let mut window_start = 0;
     while window_start < cs.len() {
-        let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
+        let window_length = max_bytes - (1 + (window_start > 0) as usize) * context_bytes;
         let window_end = window_start + count_until(window_start..cs.len(), window_length, &cs);
         assert!(
             window_end > window_start,
@@ -163,8 +191,8 @@ pub fn byte_windows<'a>(
             )
         );
         let ctx_start =
-            window_start.saturating_sub(count_until((0..window_start).rev(), context_length, &cs));
-        let ctx_end = window_end + count_until(window_end..cs.len(), context_length, &cs);
+            window_start.saturating_sub(count_until((0..window_start).rev(), context_bytes, &cs));
+        let ctx_end = window_end + count_until(window_end..cs.len(), context_bytes, &cs);
 
         windows.push(Window::new(
             ctx_start,
@@ -179,10 +207,25 @@ pub fn byte_windows<'a>(
     windows
 }
 
+#[pyfunction(use_graphemes = "true")]
+#[pyo3(name = "byte_windows")]
+pub fn byte_windows_py(
+    s: String,
+    max_bytes: usize,
+    context_bytes: usize,
+    use_graphemes: bool,
+) -> Vec<PyWindow> {
+    byte_windows(&s, max_bytes, context_bytes, use_graphemes)
+        .into_iter()
+        .map(PyWindow::from)
+        .collect()
+}
+
 /// A submodule containing helper functions needed for splitting long strings
 /// into multiple windows (useful for text correction inference).
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "windows")?;
+    m.add_function(wrap_pyfunction!(byte_windows_py, m)?)?;
     m.add_function(wrap_pyfunction!(char_windows_py, m)?)?;
     parent_module.add_submodule(m)?;
 

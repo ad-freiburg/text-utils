@@ -402,7 +402,7 @@ where
     }
 
     fn new_threaded<I: Iterator<Item = TextData> + Send + 'static>(
-        mut inner: I,
+        inner: I,
         pipeline: Pipeline<T>,
         num_threads: u8,
         buffer_size: usize,
@@ -625,16 +625,10 @@ where
             }
             let index = self.rng.gen_range(0..sub_sequences.len());
             let (start_range, end_range) = sub_sequences[index];
-            let shuffle_buff_lengths = self
-                .shuffle_buffer
-                .iter()
-                .map(|i| i.size())
-                .collect::<Vec<usize>>();
             let items_in_range: Vec<T> = self
                 .shuffle_buffer
                 .splice(start_range..end_range, vec![])
                 .collect();
-            let batch_limit = BatchLimit::from_iter(items_in_range.iter(), &self.batch_limit_type);
             (Some(Batch::new(items_in_range)), self.shuffle_buffer.pop())
         } else {
             // shuffle the buffer

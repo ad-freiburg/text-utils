@@ -1,6 +1,7 @@
 use crate::data::{Label, TextData};
 use crate::text;
 use crate::text::{possible_byte_substrings, possible_character_substrings};
+use crate::tokenization::LANG_UNK;
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{accumulate, constrain, py_invalid_type_error, py_required_key_error};
 use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
@@ -11,9 +12,9 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::ops::Sub;
 
-pub type PreprocessingFn = Box<dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> TextData>;
-pub type LabelingFn = Box<dyn Send + Sync + 'static + Fn(&TextData) -> Label>;
-pub type ItemFn<T> = Box<dyn Send + Sync + 'static + Fn(TextData, Option<Label>) -> T>;
+pub type PreprocessingFn = dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> TextData;
+pub type LabelingFn = dyn Send + Sync + 'static + Fn(&TextData) -> Label;
+pub type ItemFn<T, L> = dyn Send + Sync + 'static + Fn(TextData, usize, Option<&L>) -> T;
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {
@@ -35,6 +36,8 @@ pub enum PreprocessingConfig {
     // extract substrings from text
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
+    // randomly replace the language token with the given default
+    LanguageDropout(f64, String),
 }
 
 impl IntoPy<PyObject> for PreprocessingConfig {
@@ -76,6 +79,11 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("scheme", scheme.into_py(py)).unwrap();
                 d.set_item("use_graphemes", use_g).unwrap();
                 "normalize"
+            }
+            PreprocessingConfig::LanguageDropout(p, default) => {
+                d.set_item("prob", p).unwrap();
+                d.set_item("default", default).unwrap();
+                "language_dropout"
             }
         };
         d.set_item("type", preprocessing_type).unwrap();
@@ -169,6 +177,17 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 };
                 PreprocessingConfig::ByteSubstring(max_bytes.extract()?, use_graphemes)
             }
+            "language_dropout" => {
+                let Some(p) = d.get_item("prob") else {
+                    return Err(py_required_key_error("prob", "language dropout config"));
+                };
+                let default = if let Some(value) = d.get_item("default") {
+                    value.extract()?
+                } else {
+                    LANG_UNK.to_string()
+                };
+                PreprocessingConfig::LanguageDropout(p.extract()?, default)
+            }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
             }
@@ -221,7 +240,7 @@ impl<'a> FromPyObject<'a> for LabelingConfig {
     }
 }
 
-fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> PreprocessingFn {
+fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> Box<PreprocessingFn> {
     let num_fns = fns.len();
     assert!(
         num_fns > 0 && num_fns == probs.len(),
@@ -236,11 +255,11 @@ fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> PreprocessingFn {
         "all switch probabilities should sum to 1"
     );
 
-    let fns: Vec<PreprocessingFn> = fns.into_iter().map(|f| preprocessing_fn(f)).collect();
+    let fns: Vec<Box<PreprocessingFn>> = fns.into_iter().map(|f| preprocessing_fn(f)).collect();
 
     // return new function that switches between multiple preprocessing functions
     // based on the given probability distribution
-    Box::new(move |item, seed| {
+    Box::new(move |item, seed| -> TextData {
         let mut rng = if seed.is_some() {
             ChaCha8Rng::seed_from_u64(seed.unwrap())
         } else {
@@ -255,21 +274,21 @@ fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> PreprocessingFn {
     })
 }
 
-fn apply_to_text<F: Fn(&str) -> String + Send + Sync + 'static>(f: F) -> PreprocessingFn {
+fn apply_to_text<F: Fn(&str) -> String + Send + Sync + 'static>(f: F) -> Box<PreprocessingFn> {
     Box::new(move |item, _| TextData {
         processed: f(&item.processed),
         ..item
     })
 }
 
-fn overwrite_original_from_processed() -> PreprocessingFn {
+fn overwrite_original_from_processed() -> Box<PreprocessingFn> {
     Box::new(|item, _| TextData {
         original: item.processed.clone(),
         ..item
     })
 }
 
-fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
+fn noise_whitespace(iw_p: f64, dw_p: f64) -> Box<PreprocessingFn> {
     let iw_p = constrain(iw_p, 0., 1.);
     let dw_p = constrain(dw_p, 0., 1.);
     assert!(
@@ -308,7 +327,7 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> PreprocessingFn {
 fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
     name: String,
     substring_fn: F,
-) -> PreprocessingFn {
+) -> Box<PreprocessingFn> {
     Box::new(move |item, seed| {
         let mut rng = if seed.is_some() {
             ChaCha8Rng::seed_from_u64(seed.unwrap())
@@ -334,19 +353,39 @@ fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
     })
 }
 
-fn char_substring(max_chars: usize, use_graphemes: bool) -> PreprocessingFn {
+fn char_substring(max_chars: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
     substring("character".to_string(), move |s| {
         possible_character_substrings(s, max_chars, use_graphemes)
     })
 }
 
-fn byte_substring(max_bytes: usize, use_graphemes: bool) -> PreprocessingFn {
+fn byte_substring(max_bytes: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
     substring("byte".to_string(), move |s| {
         possible_byte_substrings(s, max_bytes, use_graphemes)
     })
 }
 
-fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
+fn language_dropout(prob: f64, default: String) -> Box<PreprocessingFn> {
+    let prob = constrain(prob, 0.0, 1.0);
+    Box::new(move |item, seed| {
+        let mut rng = if seed.is_some() {
+            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        } else {
+            ChaCha8Rng::from_entropy()
+        };
+        let r: f64 = rng.gen();
+        if r < prob {
+            TextData {
+                language: default.clone(),
+                ..item
+            }
+        } else {
+            item
+        }
+    })
+}
+
+fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> {
     match preprocessing {
         PreprocessingConfig::Clean => apply_to_text(text::clean),
         PreprocessingConfig::Overwrite => overwrite_original_from_processed(),
@@ -361,13 +400,14 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> PreprocessingFn {
         PreprocessingConfig::Normalize(scheme, use_graphemes) => {
             apply_to_text(move |s| normalize(s, &scheme, use_graphemes))
         }
+        PreprocessingConfig::LanguageDropout(p, default) => language_dropout(p, default),
     }
 }
 
-pub fn preprocessing(preprocessing: Vec<PreprocessingConfig>) -> PreprocessingFn {
+pub fn preprocessing(preprocessing: Vec<PreprocessingConfig>) -> Box<PreprocessingFn> {
     // return new function that runs all given preprocessing functions
     // in order
-    let fns: Vec<PreprocessingFn> = preprocessing
+    let fns: Vec<Box<PreprocessingFn>> = preprocessing
         .into_iter()
         .map(|p| preprocessing_fn(p))
         .collect();
@@ -379,7 +419,7 @@ pub fn preprocessing(preprocessing: Vec<PreprocessingConfig>) -> PreprocessingFn
     })
 }
 
-fn whitespace_correction_label(use_graphemes: bool) -> LabelingFn {
+fn whitespace_correction_label(use_graphemes: bool) -> Box<LabelingFn> {
     Box::new(move |item| {
         Label::SeqClassification(
             operations(&item.processed, &item.original, use_graphemes)
@@ -390,7 +430,7 @@ fn whitespace_correction_label(use_graphemes: bool) -> LabelingFn {
     })
 }
 
-pub fn labeling(labeling: LabelingConfig) -> LabelingFn {
+pub fn labeling(labeling: LabelingConfig) -> Box<LabelingFn> {
     match labeling {
         LabelingConfig::LabelWhitespaceCorrection(use_graphemes) => {
             whitespace_correction_label(use_graphemes)

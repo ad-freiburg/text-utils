@@ -484,7 +484,7 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.size_hint()
+        self.size_hint
     }
 }
 

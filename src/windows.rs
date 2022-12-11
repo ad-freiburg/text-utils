@@ -2,7 +2,7 @@ use crate::unicode::CS;
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyTuple};
 
 #[derive(Debug, Clone)]
 pub enum Result {
@@ -32,7 +32,6 @@ pub struct Window<'a> {
     window_end: usize,
     str: &'a str,
 }
-
 impl<'a> Window<'a> {
     pub fn new(
         ctx_start: usize,
@@ -50,23 +49,32 @@ impl<'a> Window<'a> {
         }
     }
 }
+#[pyclass(name = "Window")]
+pub struct PyWindow {
+    #[pyo3(get)]
+    ctx_start: usize,
+    #[pyo3(get)]
+    window_start: usize,
+    #[pyo3(get)]
+    window_end: usize,
+    #[pyo3(get)]
+    ctx_end: usize,
+    #[pyo3(get)]
+    str: String,
+}
 
-impl IntoPy<PyObject> for Window<'_> {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let window = PyList::new(
-            py,
-            &[
-                self.ctx_start,
-                self.window_start,
-                self.window_end,
-                self.ctx_end,
-            ],
-        );
-        window.into()
+impl<'a> From<Window<'a>> for PyWindow {
+    fn from(w: Window<'a>) -> Self {
+        PyWindow {
+            ctx_start: w.ctx_start,
+            window_start: w.window_start,
+            window_end: w.window_end,
+            ctx_end: w.ctx_end,
+            str: w.str.to_string(),
+        }
     }
 }
 
-#[pyfunction(use_graphemes = "true")]
 pub fn char_windows<'a>(
     s: &'a str,
     max_length: usize,
@@ -82,7 +90,7 @@ pub fn char_windows<'a>(
     let cs = CS::new(s, use_graphemes);
     (0..cs.len())
         .step_by(window_length)
-        .map(move |window_start| {
+        .map(|window_start| {
             let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
             let ctx_start = window_start.saturating_sub(context_length);
             let ctx_end = cs.len().min(window_start + window_length + context_length);
@@ -95,6 +103,20 @@ pub fn char_windows<'a>(
                 cs.sub(ctx_start, ctx_end),
             )
         })
+        .collect()
+}
+
+#[pyfunction(use_graphemes = "true")]
+#[pyo3(name = "char_window")]
+pub fn char_windows_py(
+    s: String,
+    max_length: usize,
+    context_length: usize,
+    use_graphemes: bool,
+) -> Vec<PyWindow> {
+    char_windows(&s, max_length, context_length, use_graphemes)
+        .into_iter()
+        .map(PyWindow::from)
         .collect()
 }
 
@@ -111,13 +133,12 @@ fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS
     .into_inner()
 }
 
-#[pyfunction(use_graphemes = "true")]
-pub fn byte_windows(
-    s: &str,
+pub fn byte_windows<'a>(
+    s: &'a str,
     max_length: usize,
     context_length: usize,
     use_graphemes: bool,
-) -> Vec<Window> {
+) -> Vec<Window<'a>> {
     assert!(
         max_length > 2 * context_length,
         "max length must be larger than 2 times the context \
@@ -162,8 +183,7 @@ pub fn byte_windows(
 /// into multiple windows (useful for text correction inference).
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "windows")?;
-    m.add_function(wrap_pyfunction!(char_windows, m)?)?;
-    m.add_function(wrap_pyfunction!(byte_windows, m)?)?;
+    m.add_function(wrap_pyfunction!(char_windows_py, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())

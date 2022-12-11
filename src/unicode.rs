@@ -24,7 +24,7 @@ pub(crate) type CS<'a> = CharString<'a>;
 // humans consider to be characters (in Python available via third party libraries)
 
 impl<'a> CharString<'a> {
-    pub fn new(str: &str, use_graphemes: bool) -> CharString {
+    pub fn new(str: &'a str, use_graphemes: bool) -> CharString {
         let cluster_lengths: Vec<usize> = if use_graphemes {
             str.graphemes(true).map(|s| s.len()).collect()
         } else {
@@ -85,7 +85,7 @@ impl<'a> CharString<'a> {
         Character { str: self.get(n) }
     }
 
-    pub fn sub(&self, start: usize, end: usize) -> &str {
+    pub fn sub(&self, start: usize, end: usize) -> &'a str {
         assert!(start <= end && end <= self.len());
         if self.len() == 0 || start == end {
             return "";
@@ -133,7 +133,7 @@ pub struct Character<'a> {
     pub str: &'a str,
 }
 
-impl Character<'_> {
+impl<'a> Character<'a> {
     pub fn byte_len(&self) -> usize {
         self.str.len()
     }

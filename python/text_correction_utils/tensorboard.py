@@ -74,29 +74,18 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
             if "token_groups" == item.tokenization.info["type"]:
                 end = len(item.tokenization.info["groups"]) - self.input_tokenizer.num_suffix_tokens()
 
-            pred_ops = []
             repair_ops = []
             for pred in output[start:end]:
                 if pred == 0:
-                    repair_ops.append("K")
-                    pred_ops.append(whitespace.WhitespaceOperation.Keep)
+                    repair_ops.append("k")
                 elif pred == 1:
-                    repair_ops.append("I")
-                    pred_ops.append(whitespace.WhitespaceOperation.Insert)
+                    repair_ops.append("i")
                 elif pred == 2:
-                    repair_ops.append("D")
-                    pred_ops.append(whitespace.WhitespaceOperation.Delete)
+                    repair_ops.append("d")
                 else:
                     raise RuntimeError(f"expected repair tokens to be either 0, 1, or 2, but got {pred}")
-            target_ops = []
-            for op in whitespace.operations(item.data.processed, item.data.original):
-                if op == whitespace.WhitespaceOperation.Keep:
-                    target_ops.append("K")
-                elif op == whitespace.WhitespaceOperation.Insert:
-                    target_ops.append("I")
-                else:
-                    target_ops.append("D")
-            repaired = whitespace.repair(item.data.processed, pred_ops)
+            target_ops = whitespace.operations(item.data.processed, item.data.original)
+            repaired = whitespace.repair(item.data.processed, repair_ops)
             strings.append(
                 "\n".join([
                     f"Input      : {item.data.processed}",

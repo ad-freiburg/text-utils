@@ -398,7 +398,7 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> 
         PreprocessingConfig::CharSubstring(l, use_graphemes) => char_substring(l, use_graphemes),
         PreprocessingConfig::ByteSubstring(l, use_graphemes) => byte_substring(l, use_graphemes),
         PreprocessingConfig::Normalize(scheme, use_graphemes) => {
-            apply_to_text(move |s| normalize(s, &scheme, use_graphemes))
+            apply_to_text(move |s| normalize(s, scheme, use_graphemes))
         }
         PreprocessingConfig::LanguageDropout(p, default) => language_dropout(p, default),
     }

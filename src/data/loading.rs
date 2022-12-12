@@ -1,7 +1,7 @@
 use crate::data::{Batch, Pipeline, TextData};
 use crate::tokenization::LANG_UNK;
-use crate::utils::find_subsequences_of_max_size_k;
-use pyo3::pyclass;
+use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
+use pyo3::prelude::*;
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -258,11 +258,23 @@ impl TextGenerator {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[pyclass]
 pub enum TextIterationStrategy {
     Sequential,
     Interleaved,
     Weighted,
+}
+
+impl<'a> FromPyObject<'a> for TextIterationStrategy {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let strategy = match s.as_str() {
+            "sequential" => TextIterationStrategy::Sequential,
+            "interleaved" => TextIterationStrategy::Interleaved,
+            "weighted" => TextIterationStrategy::Weighted,
+            k => return Err(py_invalid_type_error(k, "text iteration strategy")),
+        };
+        Ok(strategy)
+    }
 }
 
 pub struct TextIterator {
@@ -545,10 +557,21 @@ where
 }
 
 #[derive(Copy, Clone, PartialEq)]
-#[pyclass]
 pub enum BatchLimitType {
     BatchSize,
     PaddedItemSize,
+}
+
+impl<'a> FromPyObject<'a> for BatchLimitType {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let limit_type = match s.as_str() {
+            "batch_size" => BatchLimitType::BatchSize,
+            "padded_item_size" => BatchLimitType::PaddedItemSize,
+            k => return Err(py_invalid_type_error(k, "batch limit")),
+        };
+        Ok(limit_type)
+    }
 }
 
 pub trait ItemSize {

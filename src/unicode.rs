@@ -1,4 +1,4 @@
-use crate::utils::run_length_encode;
+use crate::utils::{py_invalid_type_error, run_length_encode};
 use pyo3::prelude::*;
 use std::fmt::{Display, Formatter};
 use std::str::Chars;
@@ -6,9 +6,9 @@ use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone)]
-pub(crate) struct CharString<'a> {
-    pub(crate) str: &'a str,
-    pub(crate) rle_cluster_lengths: Vec<(usize, usize)>,
+pub struct CharString<'a> {
+    pub str: &'a str,
+    pub rle_cluster_lengths: Vec<(usize, usize)>,
     len: usize,
 }
 
@@ -31,6 +31,9 @@ impl<'a> CharString<'a> {
             str.chars().map(|c| c.len_utf8()).collect()
         };
         let rle_cluster_lengths = run_length_encode(&cluster_lengths);
+
+        println!("{cluster_lengths:?}");
+        println!("{rle_cluster_lengths:?}");
         CharString {
             str,
             rle_cluster_lengths,
@@ -52,7 +55,6 @@ impl<'a> CharString<'a> {
                 let end = start + num_bytes;
                 return (start, end);
             }
-            start += count * num_bytes;
             total_count += count;
         }
         panic!("should not happen")
@@ -121,6 +123,7 @@ impl<'a> Iterator for Characters<'a> {
             return None;
         }
         let (start, end) = self.char_str.byte_start_end(self.idx);
+        println!("start: {start}, end: {end}");
         let char = Character {
             str: &self.char_str.str[start..end],
         };
@@ -167,8 +170,7 @@ impl Display for Character<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[pyclass]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Normalization {
     NFC,
     NFD,
@@ -176,9 +178,35 @@ pub enum Normalization {
     NFKD,
 }
 
+impl<'a> FromPyObject<'a> for Normalization {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let norm = match s.as_str() {
+            "nfc" | "NFC" => Normalization::NFC,
+            "nfd" | "NFD" => Normalization::NFD,
+            "nfkc" | "NFKC" => Normalization::NFKC,
+            "nfkd" | "NFKD" => Normalization::NFKD,
+            k => return Err(py_invalid_type_error(k, "normalization")),
+        };
+        Ok(norm)
+    }
+}
+
+impl IntoPy<PyObject> for Normalization {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            Normalization::NFC => "nfc",
+            Normalization::NFD => "nfd",
+            Normalization::NFKC => "nfkc",
+            Normalization::NFKD => "nfkd",
+        }
+        .into_py(py)
+    }
+}
+
 #[pyfunction(use_graphemes = "true")]
 #[inline]
-pub fn normalize(s: &str, normalization: &Normalization, use_graphemes: bool) -> String {
+pub fn normalize(s: &str, normalization: Normalization, use_graphemes: bool) -> String {
     if use_graphemes {
         // split in grapheme clusters first, then normalize
         // every cluster individually, and concatenate the result
@@ -201,7 +229,6 @@ pub fn normalize(s: &str, normalization: &Normalization, use_graphemes: bool) ->
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "unicode")?;
     m.add_function(wrap_pyfunction!(normalize, m)?)?;
-    m.add_class::<Normalization>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

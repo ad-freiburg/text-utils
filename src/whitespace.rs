@@ -1,5 +1,6 @@
 use crate::text::clean;
 use crate::unicode::{Character, CS};
+use crate::utils::py_invalid_type_error;
 use itertools::Itertools;
 use pyo3::prelude::*;
 use regex::{escape, Regex};
@@ -17,11 +18,34 @@ pub fn full(s: &str, use_graphemes: bool) -> String {
 }
 
 #[derive(Debug, Clone, Copy, Hash, Ord, PartialOrd, Eq, PartialEq)]
-#[pyclass]
 pub enum WhitespaceOperation {
     Keep,
     Insert,
     Delete,
+}
+
+impl<'a> FromPyObject<'a> for WhitespaceOperation {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let ws_op = match s.as_str() {
+            "k" | "keep" => WhitespaceOperation::Keep,
+            "i" | "insert" => WhitespaceOperation::Insert,
+            "d" | "delete" => WhitespaceOperation::Delete,
+            k => return Err(py_invalid_type_error(k, "whitespace operation")),
+        };
+        Ok(ws_op)
+    }
+}
+
+impl IntoPy<PyObject> for WhitespaceOperation {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            WhitespaceOperation::Keep => "k",
+            WhitespaceOperation::Insert => "i",
+            WhitespaceOperation::Delete => "d",
+        }
+        .into_py(py)
+    }
 }
 
 #[pyfunction(use_graphemes = "true")]
@@ -121,7 +145,6 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_function(wrap_pyfunction!(operations, m)?)?;
     m.add_function(wrap_pyfunction!(full, m)?)?;
     m.add_function(wrap_pyfunction!(remove, m)?)?;
-    m.add_class::<WhitespaceOperation>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

@@ -19,7 +19,7 @@ pub type ItemFn<T, L> = dyn Send + Sync + 'static + Fn(TextData, usize, Option<&
 #[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {
     // clean the sequences (remove spurious whitespaces)
-    Clean,
+    Clean(bool),
     // normalize the sequence
     // (using a unicode normalization scheme, see https://en.wikipedia.org/wiki/Unicode_equivalence#Normalization)
     Normalize(Normalization, bool),
@@ -28,11 +28,11 @@ pub enum PreprocessingConfig {
     // switch between multiple preprocessing functions
     Switch(Vec<PreprocessingConfig>, Vec<f64>),
     // delete all whitespaces
-    NoWhitespaces,
+    NoWhitespaces(bool),
     // insert whitespaces between all characters
     FullWhitespaces(bool),
     // delete and insert whitespaces with certain probabilities
-    NoiseWhitespaces(f64, f64),
+    NoiseWhitespaces(f64, f64, bool),
     // extract substrings from text
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
@@ -44,7 +44,10 @@ impl IntoPy<PyObject> for PreprocessingConfig {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
         let preprocessing_type = match self {
-            PreprocessingConfig::Clean => "clean",
+            PreprocessingConfig::Clean(use_g) => {
+                d.set_item("use_graphemes", use_g).unwrap();
+                "clean"
+            }
             PreprocessingConfig::Overwrite => "overwrite",
             PreprocessingConfig::Switch(configs, probs) => {
                 let py_configs = PyList::empty(py);
@@ -55,14 +58,18 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("probabilities", PyList::new(py, probs)).unwrap();
                 "switch"
             }
-            PreprocessingConfig::NoWhitespaces => "no_whitespaces",
+            PreprocessingConfig::NoWhitespaces(use_g) => {
+                d.set_item("use_graphemes", use_g).unwrap();
+                "no_whitespaces"
+            }
             PreprocessingConfig::FullWhitespaces(use_g) => {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "full_whitespaces"
             }
-            PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => {
+            PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p, use_g) => {
                 d.set_item("insert_whitespace_prob", iw_p).unwrap();
                 d.set_item("delete_whitespace_prob", dw_p).unwrap();
+                d.set_item("use_graphemes", use_g).unwrap();
                 "noise_whitespaces"
             }
             PreprocessingConfig::CharSubstring(max_chars, use_g) => {
@@ -99,7 +106,15 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
         };
         let preprocessing_type: String = preprocessing_type.extract()?;
         let preprocessing_config = match preprocessing_type.as_str() {
-            "clean" => PreprocessingConfig::Clean,
+            "clean" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+
+                PreprocessingConfig::Clean(use_graphemes)
+            }
             "normalize" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
                     value.extract()?
@@ -113,7 +128,14 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 PreprocessingConfig::Normalize(scheme.extract()?, use_graphemes)
             }
             "overwrite" => PreprocessingConfig::Overwrite,
-            "no_whitespaces" => PreprocessingConfig::NoWhitespaces,
+            "no_whitespaces" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                PreprocessingConfig::NoWhitespaces(use_graphemes)
+            }
             "full_whitespaces" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
                     value.extract()?
@@ -123,6 +145,12 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 PreprocessingConfig::FullWhitespaces(use_graphemes)
             }
             "noise_whitespaces" => {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+
                 let iw_p = if let Some(value) = d.get_item("insert_whitespace_prob") {
                     value.extract()?
                 } else {
@@ -133,7 +161,7 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 } else {
                     0.
                 };
-                PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p)
+                PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p, use_graphemes)
             }
             "switch" => {
                 let Some(configs) = d.get_item("configs") else {
@@ -288,7 +316,7 @@ fn overwrite_original_from_processed() -> Box<PreprocessingFn> {
     })
 }
 
-fn noise_whitespace(iw_p: f64, dw_p: f64) -> Box<PreprocessingFn> {
+fn noise_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<PreprocessingFn> {
     let iw_p = constrain(iw_p, 0., 1.);
     let dw_p = constrain(dw_p, 0., 1.);
     assert!(
@@ -301,19 +329,19 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> Box<PreprocessingFn> {
         } else {
             ChaCha8Rng::from_entropy()
         };
-        let cs = CS::new(&item.processed, true);
+        let cs = CS::new(&item.processed, use_graphemes);
         let processed = cs
             .chars()
             .enumerate()
             .map(|(idx, c)| {
                 let r: f64 = rng.gen();
-                if c.is_ascii_whitespace() {
+                if c.is_whitespace() {
                     if r < dw_p {
                         "".to_string()
                     } else {
                         c.str.to_string()
                     }
-                } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_ascii_whitespace() {
+                } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_whitespace() {
                     " ".to_string() + c.str
                 } else {
                     c.str.to_string()
@@ -327,6 +355,7 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> Box<PreprocessingFn> {
 fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
     name: String,
     substring_fn: F,
+    use_graphemes: bool,
 ) -> Box<PreprocessingFn> {
     Box::new(move |item, seed| {
         let mut rng = if seed.is_some() {
@@ -339,11 +368,13 @@ fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
         let (start, end, _) = possible_substrings[idx];
         let processed = item.processed[start..end].to_string();
         let (start, end) =
-            find_substring_ignoring_whitespace(&item.original, &processed).expect(&format!(
-                "original and processed sequences can only differ in \
+            find_substring_ignoring_whitespace(&item.original, &processed, use_graphemes).expect(
+                &format!(
+                    "original and processed sequences can only differ in \
             whitespaces when applying the {} substring preprocessing",
-                name
-            ));
+                    name
+                ),
+            );
         let original = item.original[start..end].to_string();
         TextData {
             original,
@@ -354,15 +385,19 @@ fn substring<F: Fn(&str) -> Vec<(usize, usize, usize)> + Send + Sync + 'static>(
 }
 
 fn char_substring(max_chars: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
-    substring("character".to_string(), move |s| {
-        possible_character_substrings(s, max_chars, use_graphemes)
-    })
+    substring(
+        "character".to_string(),
+        move |s| possible_character_substrings(s, max_chars, use_graphemes),
+        use_graphemes,
+    )
 }
 
 fn byte_substring(max_bytes: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
-    substring("byte".to_string(), move |s| {
-        possible_byte_substrings(s, max_bytes, use_graphemes)
-    })
+    substring(
+        "byte".to_string(),
+        move |s| possible_byte_substrings(s, max_bytes, use_graphemes),
+        use_graphemes,
+    )
 }
 
 fn language_dropout(prob: f64, default: String) -> Box<PreprocessingFn> {
@@ -387,11 +422,15 @@ fn language_dropout(prob: f64, default: String) -> Box<PreprocessingFn> {
 
 fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> {
     match preprocessing {
-        PreprocessingConfig::Clean => apply_to_text(text::clean),
+        PreprocessingConfig::Clean(use_g) => apply_to_text(move |s| text::clean(s, use_g)),
         PreprocessingConfig::Overwrite => overwrite_original_from_processed(),
         PreprocessingConfig::Switch(fns, probs) => switch(fns, probs),
-        PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p) => noise_whitespace(iw_p, dw_p),
-        PreprocessingConfig::NoWhitespaces => apply_to_text(remove),
+        PreprocessingConfig::NoiseWhitespaces(iw_p, dw_p, use_g) => {
+            noise_whitespace(iw_p, dw_p, use_g)
+        }
+        PreprocessingConfig::NoWhitespaces(use_graphemes) => {
+            apply_to_text(move |s| remove(s, use_graphemes))
+        }
         PreprocessingConfig::FullWhitespaces(use_graphemes) => {
             apply_to_text(move |s| full(s, use_graphemes))
         }
@@ -446,13 +485,16 @@ mod tests {
 
     #[test]
     fn test_noise_whitespace_preprocessing() {
-        let noise_fn = noise_whitespace(0.0, 1.0);
+        let noise_fn = noise_whitespace(0.0, 1.0, true);
         let data = TextData::new("a test".to_string(), None, None);
         let noised = noise_fn(data.clone(), Some(0));
         assert_eq!(&noised.processed, "atest");
-        let noise_fn = noise_whitespace(1.0, 0.0);
+        let noise_fn = noise_whitespace(1.0, 0.0, true);
         let data = TextData::new("a test".to_string(), None, None);
         let noised = noise_fn(data.clone(), Some(0));
         assert_eq!(&noised.processed, "a t e s t");
+        let data = TextData::new("Ginsberǵs".to_string(), None, None);
+        let noised = noise_fn(data.clone(), Some(0));
+        assert_eq!(&noised.processed, "G i n s b e r ǵ s");
     }
 }

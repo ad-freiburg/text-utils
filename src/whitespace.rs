@@ -1,19 +1,22 @@
-use crate::text::clean;
 use crate::unicode::{Character, CS};
 use crate::utils::py_invalid_type_error;
 use itertools::Itertools;
 use pyo3::prelude::*;
 use regex::{escape, Regex};
 
-#[pyfunction]
-pub fn remove(s: &str) -> String {
-    s.split_ascii_whitespace().join("")
+#[pyfunction(use_graphemes = "true")]
+pub fn remove(s: &str, use_graphemes: bool) -> String {
+    CS::new(s, use_graphemes)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .join("")
 }
 
 #[pyfunction(use_graphemes = "true")]
 pub fn full(s: &str, use_graphemes: bool) -> String {
-    s.split_ascii_whitespace()
-        .map(|w| CS::new(w, use_graphemes).chars().join(" "))
+    CS::new(s, use_graphemes)
+        .chars()
+        .filter(|c| !c.is_whitespace())
         .join(" ")
 }
 
@@ -50,11 +53,6 @@ impl IntoPy<PyObject> for WhitespaceOperation {
 
 #[pyfunction(use_graphemes = "true")]
 pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOperation> {
-    assert_eq!(
-        remove(from),
-        remove(to),
-        "from and to should only differ in whitespaces"
-    );
     let from_cs = CS::new(from, use_graphemes);
     let to_cs = CS::new(to, use_graphemes);
     let from_chars: Vec<Character> = from_cs.chars().collect();
@@ -73,15 +71,15 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOp
         if to_char.is_some() && from_char == to_char.unwrap() {
             operations.push(WhitespaceOperation::Keep);
             to_ptr += 1;
-        } else if to_char.is_some() && to_char.unwrap().is_ascii_whitespace() {
+        } else if to_char.is_some() && to_char.unwrap().is_whitespace() {
             operations.push(WhitespaceOperation::Insert);
             to_ptr += 2;
-        } else if from_char.is_ascii_whitespace() {
+        } else if from_char.is_whitespace() {
             operations.push(WhitespaceOperation::Delete);
         } else {
             panic!(
                 "should not happen, most likely your inputs contain multiple \
-                consecutive whitespaces or non-ascii whitespaces, \
+                consecutive whitespaces, leading, or trailing whitespaces, \
                 prepare them first using the clean function:\n\
                 from: \"{from}\"\nto  : \"{to}\""
             );
@@ -103,22 +101,21 @@ pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) 
         chars.len()
     );
 
-    let mut new_chars = vec![];
-    new_chars.reserve(operations.len());
+    let mut output = String::new();
     for (idx, (char, op)) in chars.iter().zip(operations.iter()).enumerate() {
         if *op == WhitespaceOperation::Insert
-            && !char.is_ascii_whitespace()
-            && (idx == 0 || !chars[idx - 1].is_ascii_whitespace())
+            && !char.is_whitespace()
+            && (idx == 0 || !chars[idx - 1].is_whitespace())
         {
-            new_chars.push(" ");
-            new_chars.push(char.str);
-        } else if *op == WhitespaceOperation::Delete && char.is_ascii_whitespace() {
+            output.push(' ');
+            output.push_str(char.str);
+        } else if *op == WhitespaceOperation::Delete && char.is_whitespace() {
             continue;
         } else {
-            new_chars.push(char.str);
+            output.push_str(char.str);
         }
     }
-    clean(new_chars.iter().join("").as_str())
+    output
 }
 
 #[pyfunction(use_graphemes = "true")]
@@ -128,11 +125,16 @@ fn repair_py(s: &str, operations: Vec<WhitespaceOperation>, use_graphemes: bool)
 }
 
 #[pyfunction]
-pub fn find_substring_ignoring_whitespace(s: &str, substring: &str) -> Option<(usize, usize)> {
-    let substring = substring
+pub fn find_substring_ignoring_whitespace(
+    s: &str,
+    substring: &str,
+    use_graphemes: bool,
+) -> Option<(usize, usize)> {
+    let cs = CS::new(substring, use_graphemes);
+    let substring = cs
         .chars()
-        .filter(|c| !c.is_ascii_whitespace())
-        .map(|c| escape(c.to_string().as_str()))
+        .filter(|c| !c.is_whitespace())
+        .map(|c| escape(c.str))
         .join(r"\s*");
     let re = Regex::new(substring.as_str()).expect("invalid regex, should not happen");
     re.find(s).map(|m| (m.start(), m.end()))
@@ -159,8 +161,8 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        assert_eq!(remove(" t   h is is \n\t a tes    t "), "thisisatest");
-        assert_eq!(remove(""), "");
+        assert_eq!(remove(" t   h is is \n\t a tes    t ", true), "thisisatest");
+        assert_eq!(remove("", true), "");
     }
 
     #[test]
@@ -195,31 +197,14 @@ mod tests {
 
     #[test]
     fn test_repair() {
-        let from = " t h isis a test  ";
+        let from = "t h isis a test";
         let to = "this is a test";
         assert_eq!(repair(from, &operations(from, to, true), true), to);
         assert_eq!(
             repair(to, &operations(to, from, true), true),
             "t h isis a test"
         );
-        assert_eq!(
-            repair("    ", &vec![WhitespaceOperation::Delete; 4], true),
-            ""
-        );
-        assert_eq!(
-            repair(
-                "  t  ",
-                &vec![
-                    WhitespaceOperation::Keep,
-                    WhitespaceOperation::Delete,
-                    WhitespaceOperation::Keep,
-                    WhitespaceOperation::Keep,
-                    WhitespaceOperation::Insert,
-                ],
-                true,
-            ),
-            "t"
-        );
+        assert_eq!(repair("t", &vec![WhitespaceOperation::Delete,], true,), "t");
         assert_eq!(repair("", &vec![], true), "");
     }
 
@@ -227,17 +212,17 @@ mod tests {
     fn test_find_substring_ignoring_whitespace() {
         let s = "this is a test sentence";
         let sub = "  a te s\n t";
-        let result = find_substring_ignoring_whitespace(s, sub);
+        let result = find_substring_ignoring_whitespace(s, sub, true);
         assert!(result.is_some());
         let (start, end) = result.unwrap();
         assert_eq!(start, 8);
         assert_eq!(end, 14);
         assert_eq!(&s[start..end], "a test");
-        let result = find_substring_ignoring_whitespace(s, "a täst");
+        let result = find_substring_ignoring_whitespace(s, "a täst", true);
         assert!(result.is_none());
         let s = "this is \" a \\w+ test \" sentence";
         let sub = "\"a \\w+test\"";
-        let result = find_substring_ignoring_whitespace(s, sub);
+        let result = find_substring_ignoring_whitespace(s, sub, true);
         assert!(result.is_some());
     }
 }

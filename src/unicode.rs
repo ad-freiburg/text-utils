@@ -146,10 +146,6 @@ impl<'a> Character<'a> {
         self.str.chars().all(|c| c.is_whitespace())
     }
 
-    pub fn is_ascii_whitespace(&self) -> bool {
-        self.str.chars().all(|c| c.is_ascii_whitespace())
-    }
-
     pub fn code_point_len(&self) -> usize {
         self.str.chars().count()
     }

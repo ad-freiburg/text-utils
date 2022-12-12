@@ -207,7 +207,11 @@ fn _correction_f1(
             let input = &input_sequences[idx];
             let predicted = &predicted_sequences[idx];
             let target = &target_sequences[idx];
-            f(&clean(input), &clean(predicted), &clean(target))
+            f(
+                &clean(input, true),
+                &clean(predicted, true),
+                &clean(target, true),
+            )
         })
         .collect();
     if sequence_averaged {
@@ -262,11 +266,11 @@ fn _group_words(
             word_idx += 1;
         }
 
-        if op == EditOperation::Delete && input_cs.get_char(input_idx).is_ascii_whitespace() {
+        if op == EditOperation::Delete && input_cs.get_char(input_idx).is_whitespace() {
             merged_with_next.insert(word_idx);
         }
 
-        if op == EditOperation::Insert && pred_cs.get_char(pred_idx).is_ascii_whitespace() {
+        if op == EditOperation::Insert && pred_cs.get_char(pred_idx).is_whitespace() {
             num_whitespaces_inserted.insert(
                 word_idx,
                 num_whitespaces_inserted

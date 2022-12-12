@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use pyo3::prelude::*;
 use rand::Rng;
 use std::collections::HashSet;
@@ -8,8 +7,21 @@ use crate::utils::{find_subsequences_of_max_size_k, Matrix};
 
 #[pyfunction]
 #[inline]
-pub fn clean(s: &str) -> String {
-    s.split_ascii_whitespace().join(" ")
+pub fn clean(s: &str, use_graphemes: bool) -> String {
+    let cs = CS::new(s, use_graphemes);
+    let mut output = String::new();
+    let mut last_was_whitespace = false;
+    for char in cs.chars() {
+        if char.is_whitespace() {
+            last_was_whitespace = true;
+            continue;
+        } else if last_was_whitespace && !output.is_empty() {
+            output.push(' ');
+        }
+        last_was_whitespace = false;
+        output.push_str(char.str);
+    }
+    output
 }
 
 #[pyfunction(use_graphemes = "true")]
@@ -19,7 +31,7 @@ pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     let mut start: Option<usize> = None;
     let mut num_elements = 0;
     for (idx, char) in CS::new(str, use_graphemes).chars().enumerate() {
-        match (char.is_ascii_whitespace(), start) {
+        match (char.is_whitespace(), start) {
             (true, Some(start_idx)) => {
                 boundaries.push((start_idx, idx));
                 start = None;
@@ -219,7 +231,7 @@ pub fn edit_word(
     let mut exclude_indices = exclude_indices.unwrap_or_default();
     let cs = CS::new(word, use_graphemes);
     assert!(
-        cs.chars().all(|c| !c.is_ascii_whitespace()),
+        cs.chars().all(|c| !c.is_whitespace()),
         "edit word should only be called \
     on strings that do not contain whitespace"
     );
@@ -382,7 +394,7 @@ mod tests {
     #[test]
     fn test_clean() {
         let text = "  this\t is \n a test sentence  ";
-        assert_eq!(clean(text), "this is a test sentence");
+        assert_eq!(clean(text, true), "this is a test sentence");
     }
 
     #[test]

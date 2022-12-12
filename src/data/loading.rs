@@ -745,12 +745,13 @@ impl BatchLimit {
 
 #[cfg(test)]
 mod tests {
-    use crate::data::loading::{open, BatchLimitType, PipelineIterator, TextFile, TextGenerator};
-    use crate::data::{Item, Pipeline, PipelineWithTokenizerConfig, TextData};
+    use crate::data::loading::{
+        open, BatchLimitType, BatchedIterator, ItemSize, PipelineIterator, TextFile, TextGenerator,
+    };
+    use crate::data::{Item, Pipeline, PipelineConfig, TextData};
     use crate::tokenization::{TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
-    use std::collections::HashMap;
     use std::io;
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
@@ -761,7 +762,6 @@ mod tests {
     const MULTI30K_REV_FIRST: &str = "A man in shorts and a Hawaiian shirt leans over the rail of a pilot boat, with fog and mountains in the background.";
     const MULTI30K_REV_SECOND: &str =
         "An elderly man sits outside a storefront accompanied by a young boy with a cart.";
-    const UNK: &str = "[unk]";
 
     #[test]
     fn test_text_iterator() {
@@ -880,16 +880,15 @@ mod tests {
         let text_files = TextGenerator::new(vec![multi30k]);
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
-        let pipeline = Pipeline::from_config(PipelineWithTokenizerConfig {
-            preprocessing: vec![],
-            labeling: None,
-            tokenizer: TokenizerConfig::new(
+        let pipeline = Pipeline::with_tokenizer(
+            PipelineConfig::new(vec![], None),
+            TokenizerConfig::new(
                 TokenizeConfig::Dummy(Duration::from_millis(200)),
                 vec![],
                 vec![],
                 None,
             ),
-        });
+        );
         // test if it works with one worker and record the time it took
         let mut it = text_files.sequential().pipe(&pipeline, 0, 4, None);
         let lines = BufReader::new(open(&d)).lines();
@@ -916,16 +915,16 @@ mod tests {
         assert!(time3 < time2);
         // test that all lines of multi30k.txt are returned in order,
         // switch to non blocking tokenizer again
-        let pipeline = Pipeline::from_config(PipelineWithTokenizerConfig {
-            preprocessing: vec![],
-            labeling: None,
-            tokenizer: TokenizerConfig::new(
+        let pipeline = Pipeline::with_tokenizer(
+            PipelineConfig::new(vec![], None),
+            TokenizerConfig::new(
                 TokenizeConfig::Dummy(Duration::from_millis(0)),
                 vec![],
                 vec![],
                 None,
             ),
-        });
+        );
+
         let mut it = text_files.sequential().pipe(&pipeline, 0, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         for (idx, (line, item)) in it.zip(lines).enumerate() {
@@ -945,16 +944,19 @@ mod tests {
             .lines()
             .collect::<Result<Vec<String>, io::Error>>()
             .unwrap();
-        let mut pipeline = Pipeline::from_config(PipelineWithTokenizerConfig {
-            preprocessing: vec![],
-            labeling: None,
-            tokenizer: TokenizerConfig::new(TokenizeConfig::Byte(true), vec![], vec![], None),
-        });
-        // first check the batched iterator with shuffling disabled
-        let mut pipe_it = text_files
+        let pipeline = Pipeline::with_tokenizer(
+            PipelineConfig::new(vec![], None),
+            TokenizerConfig::new(
+                TokenizeConfig::Dummy(Duration::from_millis(0)),
+                vec![],
+                vec![],
+                None,
+            ),
+        );
+        let pipe_it = text_files
             .sequential()
             .pipe(&pipeline, 4, 16, None)
-            .batched(16, BatchLimitType::BatchSize, false, 0, false, None);
+            .batched(false, false, 0, 16, BatchLimitType::BatchSize, None);
         for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(16)) {
             assert!(batch.len() > 0 && batch.len() <= 16);
             for (item, line) in batch.into_iter().zip(line_batch.into_iter()) {
@@ -962,31 +964,17 @@ mod tests {
             }
         }
         // now check the batched iterator with shuffling and sorting
-        let mut pipe_it = text_files
+        let pipe_it = text_files
             .weighted(Some(22))
             .pipe(&pipeline, 4, 4, None)
-            .batched(256, BatchLimitType::TotalItemSize, true, 32, true, Some(22));
+            .batched(true, true, 32, 256, BatchLimitType::TotalItemSize, Some(22));
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
-        let mut line_counter: HashMap<String, usize> =
-            lines.iter().cloned().map(|l| (l, 0)).collect();
         for batch in pipe_it {
-            let item_lengths: Vec<usize> = batch
-                .items
-                .iter()
-                .map(|item| item.tokenization.token_ids.len())
-                .collect();
+            let item_lengths: Vec<usize> = batch.items.iter().map(|item| item.size()).collect();
             let batch_size: usize = item_lengths.iter().sum();
             assert!(batch.len() > 0);
             assert!(batch_size <= 256,);
-            for item in batch {
-                let mut count = line_counter.get_mut(&item.data.original).unwrap();
-                *count += 1;
-            }
         }
-        assert!(
-            line_counter.iter().all(|(_, c)| *c == 1 || *c == 2)
-                && line_counter.iter().map(|(_, c)| *c).sum::<usize>() == lines.len()
-        );
     }
 }

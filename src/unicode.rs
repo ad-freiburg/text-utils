@@ -31,9 +31,6 @@ impl<'a> CharString<'a> {
             str.chars().map(|c| c.len_utf8()).collect()
         };
         let rle_cluster_lengths = run_length_encode(&cluster_lengths);
-
-        println!("{cluster_lengths:?}");
-        println!("{rle_cluster_lengths:?}");
         CharString {
             str,
             rle_cluster_lengths,
@@ -55,6 +52,7 @@ impl<'a> CharString<'a> {
                 let end = start + num_bytes;
                 return (start, end);
             }
+            start += count * num_bytes;
             total_count += count;
         }
         panic!("should not happen")
@@ -123,7 +121,6 @@ impl<'a> Iterator for Characters<'a> {
             return None;
         }
         let (start, end) = self.char_str.byte_start_end(self.idx);
-        println!("start: {start}, end: {end}");
         let char = Character {
             str: &self.char_str.str[start..end],
         };

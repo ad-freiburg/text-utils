@@ -87,7 +87,7 @@ fn bench_text(c: &mut Criterion) {
 fn bench_tokenizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("tokenizer");
     let mut rng = ChaCha8Rng::seed_from_u64(22);
-    let fx: Vec<String> = vec!["test".to_string()];
+    let fx: Vec<&str> = vec!["test"];
     let char_tok = CharTokenizer::new(true, &fx, &fx);
     let byte_tok = ByteTokenizer::new(true, &fx, &fx);
     for size in INPUT_SIZES.iter() {

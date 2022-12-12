@@ -65,13 +65,70 @@ impl TextFile {
     }
 }
 
+pub struct LossyUtf8Reader<R>
+where
+    R: BufRead,
+{
+    reader: R,
+}
+
+impl<R> LossyUtf8Reader<R>
+where
+    R: BufRead,
+{
+    pub fn new(reader: R) -> Self {
+        LossyUtf8Reader { reader }
+    }
+
+    pub fn lines(self) -> LossyUtf8Lines<R> {
+        LossyUtf8Lines {
+            reader: self.reader,
+        }
+    }
+}
+
+pub struct LossyUtf8Lines<R>
+where
+    R: BufRead,
+{
+    reader: R,
+}
+
+impl<R> LossyUtf8Lines<R>
+where
+    R: BufRead,
+{
+    pub fn new(reader: R) -> Self {
+        LossyUtf8Lines { reader }
+    }
+}
+
+impl<R> Iterator for LossyUtf8Lines<R>
+where
+    R: BufRead,
+{
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut buf = vec![];
+        match self.reader.read_until(b'\n', &mut buf) {
+            Ok(0) => return None,
+            Ok(_) => {
+                buf.pop();
+                if !buf.is_empty() && *buf.last().unwrap() == b'\r' {
+                    buf.pop();
+                }
+                let s = String::from_utf8_lossy(&buf);
+                Some(s.to_string())
+            }
+            Err(e) => panic!("failed to read line: {e}"),
+        }
+    }
+}
+
 impl TextGen for TextFile {
     fn org_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
-        Box::new(
-            BufReader::new(open(&self.original))
-                .lines()
-                .map(|l| l.expect("failed to read line")),
-        )
+        Box::new(LossyUtf8Reader::new(BufReader::new(open(&self.original))).lines())
     }
 
     fn has_proc(&self) -> bool {
@@ -81,9 +138,7 @@ impl TextGen for TextFile {
     fn proc_iter(&self) -> Option<Box<dyn Iterator<Item = String> + Send>> {
         if let Some(path) = &self.processed {
             Some(Box::new(
-                BufReader::new(open(path))
-                    .lines()
-                    .map(|l| l.expect("failed to read line")),
+                LossyUtf8Reader::new(BufReader::new(open(path))).lines(),
             ))
         } else {
             None

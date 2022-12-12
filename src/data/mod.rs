@@ -249,10 +249,10 @@ impl<T> Batch<T> {
     }
 }
 
-#[derive(Debug)]
 #[pyclass]
 pub struct ItemBatch {
     batch: Batch<Item>,
+    iter: Option<Box<dyn Iterator<Item = Item> + Send>>,
 }
 
 #[pymethods]
@@ -260,17 +260,58 @@ impl ItemBatch {
     fn __len__(&self) -> usize {
         self.batch.len()
     }
+
+    #[getter]
+    fn items(&self) -> Vec<Item> {
+        self.batch.items.clone()
+    }
+
+    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        slf.iter = Some(Box::new(slf.batch.items.clone().into_iter()));
+        slf
+    }
+
+    fn __next__(&mut self) -> Option<Py<Item>> {
+        if let Some(item) = self.iter.as_mut().unwrap().next() {
+            Some(Python::with_gil(|py| {
+                Py::new(py, item).expect("should not fail")
+            }))
+        } else {
+            None
+        }
+    }
 }
-#[derive(Debug)]
+
 #[pyclass]
 pub struct InferenceItemBatch {
     batch: Batch<InferenceItem>,
+    iter: Option<Box<dyn Iterator<Item = InferenceItem> + Send>>,
 }
 
 #[pymethods]
 impl InferenceItemBatch {
     fn __len__(&self) -> usize {
         self.batch.len()
+    }
+
+    #[getter]
+    fn items(&self) -> Vec<InferenceItem> {
+        self.batch.items.clone()
+    }
+
+    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        slf.iter = Some(Box::new(slf.batch.items.clone().into_iter()));
+        slf
+    }
+
+    fn __next__(&mut self) -> Option<Py<InferenceItem>> {
+        if let Some(item) = self.iter.as_mut().unwrap().next() {
+            Some(Python::with_gil(|py| {
+                Py::new(py, item).expect("should not fail")
+            }))
+        } else {
+            None
+        }
     }
 }
 
@@ -670,7 +711,7 @@ impl InferenceLoader {
         );
         if let Some(batch) = self.iter.as_mut().unwrap().next() {
             Some(Python::with_gil(|py| {
-                let item_batch = InferenceItemBatch { batch };
+                let item_batch = InferenceItemBatch { batch, iter: None };
                 Py::new(py, item_batch).expect("should not fail")
             }))
         } else {
@@ -857,7 +898,7 @@ impl DataLoader {
         );
         if let Some(batch) = self.iter.as_mut().unwrap().next() {
             Some(Python::with_gil(|py| {
-                let item_batch = ItemBatch { batch };
+                let item_batch = ItemBatch { batch, iter: None };
                 Py::new(py, item_batch).expect("should not fail")
             }))
         } else {

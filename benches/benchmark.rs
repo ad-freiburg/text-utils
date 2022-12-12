@@ -64,7 +64,7 @@ fn bench_text(c: &mut Criterion) {
             BenchmarkId::new("clean", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| clean(str));
+                b.iter(|| clean(str, true));
             },
         );
         group.bench_with_input(

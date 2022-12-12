@@ -1,4 +1,5 @@
 use crate::unicode::CS;
+use crate::utils::{py_invalid_type_error, py_required_key_error};
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
@@ -63,6 +64,56 @@ impl<'a> Window<'a> {
 pub enum WindowConfig {
     Character(usize, usize, bool),
     Bytes(usize, usize, bool),
+}
+
+impl<'a> FromPyObject<'a> for WindowConfig {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let Some(window_type) = d.get_item("type") else {
+            return Err(py_required_key_error("type", "window config"));
+        };
+        let window_type: String = window_type.extract()?;
+        let window_config = match window_type.as_str() {
+            "character" => {
+                let Some(max_chars) = d.get_item("max_chars") else {
+                    return Err(py_required_key_error("max_chars", "window config"));
+                };
+                let Some(context_chars) = d.get_item("context_chars") else {
+                    return Err(py_required_key_error("context_chars", "window config"));
+                };
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                WindowConfig::Character(
+                    max_chars.extract()?,
+                    context_chars.extract()?,
+                    use_graphemes,
+                )
+            }
+            "byte" => {
+                let Some(max_bytes) = d.get_item("max_bytes") else {
+                    return Err(py_required_key_error("max_bytes", "window config"));
+                };
+                let Some(context_bytes) = d.get_item("context_bytes") else {
+                    return Err(py_required_key_error("context_bytes", "window config"));
+                };
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                WindowConfig::Bytes(
+                    max_bytes.extract()?,
+                    context_bytes.extract()?,
+                    use_graphemes,
+                )
+            }
+            k => return Err(py_invalid_type_error(k, "window")),
+        };
+        Ok(window_config)
+    }
 }
 
 pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> Vec<Window<'a>> {

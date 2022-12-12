@@ -114,6 +114,7 @@ where
         match self.reader.read_until(b'\n', &mut buf) {
             Ok(0) => return None,
             Ok(_) => {
+                // remove \n or \r\n from line
                 buf.pop();
                 if !buf.is_empty() && *buf.last().unwrap() == b'\r' {
                     buf.pop();
@@ -547,7 +548,7 @@ where
 #[pyclass]
 pub enum BatchLimitType {
     BatchSize,
-    TotalItemSize,
+    PaddedItemSize,
 }
 
 pub trait ItemSize {
@@ -563,7 +564,7 @@ where
         self,
         sort: bool,
         shuffle: bool,
-        shuffle_prefetch_factor: usize,
+        prefetch_factor: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         seed: Option<u64>,
@@ -578,13 +579,13 @@ where
         mut self,
         sort: bool,
         shuffle: bool,
-        shuffle_prefetch_factor: usize,
+        prefetch_factor: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         seed: Option<u64>,
     ) -> Batched<Self, T> {
         let batch_limit = batch_limit.max(1);
-        let shuffle_prefetch_factor = shuffle_prefetch_factor.max(2);
+        let prefetch_factor = prefetch_factor.max(2);
         // initialize remainder
         let remainder = self.next();
         Batched {
@@ -597,8 +598,8 @@ where
             },
             inner: self,
             shuffle,
-            shuffle_buffer: Vec::new(),
-            shuffle_prefetch_factor,
+            buffer: Vec::new(),
+            prefetch_factor,
             sort,
             remainder,
         }
@@ -615,8 +616,8 @@ where
     rng: ChaCha8Rng,
     inner: I,
     shuffle: bool,
-    shuffle_buffer: Vec<T>,
-    shuffle_prefetch_factor: usize,
+    buffer: Vec<T>,
+    prefetch_factor: usize,
     sort: bool,
     remainder: Option<T>,
 }
@@ -626,23 +627,30 @@ where
     I: Iterator<Item = T> + Sized,
     T: ItemSize + Clone,
 {
-    pub fn next_shuffled(&mut self) -> (Option<Batch<T>>, Option<T>) {
+    pub fn build_batch(&mut self) -> (Option<Batch<T>>, Option<T>) {
+        if !self.sort && !self.shuffle {
+            return Self::batch_from(
+                self.remainder.as_ref().unwrap().clone(),
+                || self.inner.next(),
+                self.batch_limit,
+                self.batch_limit_type,
+            );
+        }
         // we create a batch in the following way:
-        // 1. fill up the shuffle buffer
-        // 2. shuffle the shuffle buffer
-        // 3. pop from shuffle buffer until we have a maxed out batch
-        let mut buffer_limit =
-            BatchLimit::from_iter(self.shuffle_buffer.iter(), &self.batch_limit_type);
+        // 1. fill up the buffer
+        // 2. maybe sort or shuffle the buffer
+        // 3. pop from buffer until we have a maxed out batch
+        let mut buffer_limit = BatchLimit::from_items(&self.buffer[..], &self.batch_limit_type);
         // fill buffer until we overshoot batch limit * some factor (>=1)
-        while buffer_limit.limit() <= self.batch_limit * self.shuffle_prefetch_factor {
+        while buffer_limit.limit() <= self.batch_limit * self.prefetch_factor {
             let Some(item) = self.inner.next() else {
                 break;
             };
             buffer_limit = buffer_limit.update(&item);
-            self.shuffle_buffer.push(item);
+            self.buffer.push(item);
         }
-        // we are only done if the shuffle buffer is empty
-        if self.shuffle_buffer.is_empty() {
+        // we are only done if the buffer is empty
+        if self.buffer.is_empty() {
             // return remainder as final batch if we still have one
             return (
                 if self.remainder.is_none() {
@@ -653,49 +661,48 @@ where
                 None,
             );
         }
-        // sort is only considered inside next shuffled (if shuffle is true) because
-        // sorting effectively also shuffles the order of the underlying item iterator
         if self.sort {
-            // add remainder to shuffle buffer
-            // shuffle buffer now contains at least two items
-            self.shuffle_buffer
-                .push(self.remainder.as_ref().unwrap().clone());
-            self.remainder = None;
+            // add remainder to buffer
+            // buffer now contains at least two items
+            self.buffer.push(self.remainder.as_ref().unwrap().clone());
             // sort the buffer by length
-            self.shuffle_buffer.sort_by(|a, b| a.size().cmp(&b.size()));
-            // calculate possible subsequences for batch
-            let sub_sequences = find_subsequences_of_max_size_k(
-                &self.shuffle_buffer,
-                self.batch_limit,
-                |sub_items| BatchLimit::from_iter(sub_items.iter(), &self.batch_limit_type).limit(),
-            );
-            // randomly choose one subsequence
-            if sub_sequences.is_empty() {
-                // only happens if there is no single item that's smaller than the batch limit,
-                // since we always need to return at least one item, just return the last
-                // and set the second last to the remainder, this should always work
-                // since the shuffle buffer contains at least two items
-                let batch = Batch::new(vec![self.shuffle_buffer.pop().unwrap()]);
-                return (Some(batch), self.shuffle_buffer.pop());
+            self.buffer.sort_by(|a, b| a.size().cmp(&b.size()));
+            // if shuffle is also true, return a random subsequence from the sorted buffer
+            if self.shuffle {
+                // calculate possible subsequences for batch
+                let sub_sequences =
+                    find_subsequences_of_max_size_k(&self.buffer, self.batch_limit, |sub_items| {
+                        BatchLimit::from_items(&sub_items, &self.batch_limit_type).limit()
+                    });
+                // randomly choose one subsequence
+                if sub_sequences.is_empty() {
+                    // only happens if there is no single item that's smaller than the batch limit,
+                    // since we always need to return at least one item, just return the last
+                    // and set the second last to the remainder, this should always work
+                    // since the shuffle buffer contains at least two items
+                    let batch = Batch::new(vec![self.buffer.pop().unwrap()]);
+                    return (Some(batch), self.buffer.pop());
+                }
+                let index = self.rng.gen_range(0..sub_sequences.len());
+                let (start_range, end_range) = sub_sequences[index];
+                let items_in_range: Vec<T> =
+                    self.buffer.splice(start_range..end_range, vec![]).collect();
+                return (Some(Batch::new(items_in_range)), self.buffer.pop());
+            } else {
+                // if shuffle is false, pop the largest element from the buffer as the remainder
+                self.remainder = self.buffer.pop();
             }
-            let index = self.rng.gen_range(0..sub_sequences.len());
-            let (start_range, end_range) = sub_sequences[index];
-            let items_in_range: Vec<T> = self
-                .shuffle_buffer
-                .splice(start_range..end_range, vec![])
-                .collect();
-            (Some(Batch::new(items_in_range)), self.shuffle_buffer.pop())
-        } else {
+        } else if self.shuffle {
             // shuffle the buffer
-            self.shuffle_buffer.shuffle(&mut self.rng);
-            // now pop from the back until batch is full
-            Self::batch_from(
-                self.remainder.as_ref().unwrap().clone(),
-                || self.shuffle_buffer.pop(),
-                self.batch_limit,
-                self.batch_limit_type,
-            )
+            self.buffer.shuffle(&mut self.rng);
         }
+        // now pop from the back until batch is full
+        Self::batch_from(
+            self.remainder.as_ref().unwrap().clone(),
+            || self.buffer.pop(),
+            self.batch_limit,
+            self.batch_limit_type,
+        )
     }
 
     #[inline]
@@ -708,7 +715,7 @@ where
         // the implementation makes sure that always at least 1 item is returned
         // in the batch, even if the item solely exceeds the specified limit
         let mut items = vec![initial];
-        let mut batch_limit = BatchLimit::from_iter(items.iter(), &limit_type);
+        let mut batch_limit = BatchLimit::from_items(&items, &limit_type);
         let remainder = loop {
             let Some(item) = f() else {
                 return (Some(Batch::new(items)), None);
@@ -739,16 +746,7 @@ where
         if self.remainder.is_none() {
             return None;
         }
-        let (batch, remainder) = if self.shuffle {
-            self.next_shuffled()
-        } else {
-            Self::batch_from(
-                self.remainder.as_ref().unwrap().clone(),
-                || self.inner.next(),
-                self.batch_limit,
-                self.batch_limit_type,
-            )
-        };
+        let (batch, remainder) = self.build_batch();
         self.remainder = remainder;
         batch
     }
@@ -761,23 +759,13 @@ enum BatchLimit {
 }
 
 impl BatchLimit {
-    fn from_iter<'a>(
-        items: impl Iterator<Item = &'a (impl ItemSize + 'a)>,
-        limit_type: &BatchLimitType,
-    ) -> Self {
+    fn from_items(items: &[impl ItemSize], limit_type: &BatchLimitType) -> Self {
         match limit_type {
-            BatchLimitType::BatchSize => Self::BatchSize(items.count()),
-            BatchLimitType::TotalItemSize => {
-                let mut count = 0;
-                let max_length = items
-                    .map(|item| {
-                        count += 1;
-                        item.size()
-                    })
-                    .max()
-                    .unwrap_or(0);
-                Self::TotalItemSize(count, max_length)
-            }
+            BatchLimitType::BatchSize => Self::BatchSize(items.len()),
+            BatchLimitType::PaddedItemSize => Self::TotalItemSize(
+                items.len(),
+                items.iter().map(|i| i.size()).max().unwrap_or(0),
+            ),
         }
     }
 
@@ -801,12 +789,13 @@ impl BatchLimit {
 #[cfg(test)]
 mod tests {
     use crate::data::loading::{
-        open, BatchLimitType, BatchedIterator, ItemSize, PipelineIterator, TextFile, TextGenerator,
+        open, BatchLimitType, BatchedIterator, PipelineIterator, TextFile, TextGenerator,
     };
     use crate::data::{Item, Pipeline, PipelineConfig, TextData};
     use crate::tokenization::{TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
+    use std::collections::HashMap;
     use std::io;
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
@@ -1011,25 +1000,52 @@ mod tests {
         let pipe_it = text_files
             .sequential()
             .pipe(&pipeline, 4, 16, None)
-            .batched(false, false, 0, 16, BatchLimitType::BatchSize, None);
-        for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(16)) {
-            assert!(batch.len() > 0 && batch.len() <= 16);
-            for (item, line) in batch.into_iter().zip(line_batch.into_iter()) {
+            .batched(false, false, 0, 8, BatchLimitType::BatchSize, None);
+        for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(8)) {
+            assert!(batch.len() > 0 && batch.len() <= 8);
+            let lines: Vec<&String> = line_batch.into_iter().collect();
+            assert!(batch.len() == lines.len());
+            for (item, line) in batch.into_iter().zip(lines.into_iter()) {
                 assert_eq!(item.data.original, *line);
             }
         }
-        // now check the batched iterator with shuffling and sorting
-        let pipe_it = text_files
-            .weighted(Some(22))
-            .pipe(&pipeline, 4, 4, None)
-            .batched(true, true, 32, 256, BatchLimitType::TotalItemSize, Some(22));
+        // now check the batched iterator with any combinations of shuffling and sorting
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
-        for batch in pipe_it {
-            let item_lengths: Vec<usize> = batch.items.iter().map(|item| item.size()).collect();
-            let batch_size: usize = item_lengths.iter().sum();
-            assert!(batch.len() > 0);
-            assert!(batch_size <= 256,);
+        for shuffle in [true, false] {
+            for sort in [true, false] {
+                let pipe_it = text_files
+                    .weighted(Some(22))
+                    .pipe(&pipeline, 4, 4, None)
+                    .batched(
+                        sort,
+                        shuffle,
+                        32,
+                        256,
+                        BatchLimitType::PaddedItemSize,
+                        Some(22),
+                    );
+                let mut line_counter: HashMap<String, usize> =
+                    lines.iter().cloned().map(|l| (l, 0)).collect();
+                for batch in pipe_it {
+                    let item_lengths: Vec<usize> = batch
+                        .items
+                        .iter()
+                        .map(|item| item.tokenization.token_ids.len())
+                        .collect();
+                    let batch_size: usize = item_lengths.iter().sum();
+                    assert!(batch.len() > 0);
+                    assert!(batch_size <= 256,);
+                    for item in batch {
+                        let count = line_counter.get_mut(&item.data.original).unwrap();
+                        *count += 1;
+                    }
+                }
+                assert!(
+                    line_counter.iter().all(|(_, c)| *c == 1 || *c == 2)
+                        && line_counter.iter().map(|(_, c)| *c).sum::<usize>() == lines.len()
+                );
+            }
         }
     }
 }

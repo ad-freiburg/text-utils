@@ -167,14 +167,60 @@ impl Item {
 
 #[pymethods]
 impl Item {
-    #[new]
-    #[args(label = "None")]
-    fn py_new(data: TextData, tokenization: Tokenization, label: Option<Label>) -> PyResult<Self> {
-        Ok(Self::new(data, tokenization, label))
-    }
-
     fn __len__(&self) -> usize {
         self.tokenization.token_ids.len()
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
+
+    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
+        op.matches(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
+#[pyclass]
+pub struct InferenceItem {
+    #[pyo3(get)]
+    item: Item,
+    #[pyo3(get)]
+    item_idx: usize,
+    #[pyo3(get)]
+    window_idx: usize,
+    #[pyo3(get)]
+    window: (usize, usize, usize, usize),
+}
+
+impl InferenceItem {
+    pub fn new(
+        item: Item,
+        item_idx: usize,
+        window_idx: usize,
+        window: (usize, usize, usize, usize),
+    ) -> Self {
+        InferenceItem {
+            item,
+            item_idx,
+            window_idx,
+            window,
+        }
+    }
+}
+
+impl ItemSize for InferenceItem {
+    fn size(&self) -> usize {
+        self.item.size()
+    }
+}
+
+#[pymethods]
+impl InferenceItem {
+    fn __len__(&self) -> usize {
+        self.item.size()
     }
 
     fn __hash__(&self) -> u64 {
@@ -208,20 +254,21 @@ impl<T> Batch<T> {
 pub struct ItemBatch {
     batch: Batch<Item>,
 }
-impl ItemBatch {
-    pub fn new(items: Vec<Item>) -> Self {
-        ItemBatch {
-            batch: Batch::new(items),
-        }
-    }
-}
+
 #[pymethods]
 impl ItemBatch {
-    #[new]
-    fn py_new(items: Vec<Item>) -> Self {
-        Self::new(items)
+    fn __len__(&self) -> usize {
+        self.batch.len()
     }
+}
+#[derive(Debug)]
+#[pyclass]
+pub struct InferenceItemBatch {
+    batch: Batch<InferenceItem>,
+}
 
+#[pymethods]
+impl InferenceItemBatch {
     fn __len__(&self) -> usize {
         self.batch.len()
     }
@@ -315,8 +362,7 @@ impl Pipeline<Item> {
     }
 }
 
-pub type InferenceItem = Vec<(Item, usize, usize, (usize, usize, usize, usize))>;
-pub type InferencePipeline = Pipeline<InferenceItem>;
+pub type InferencePipeline = Pipeline<Vec<InferenceItem>>;
 impl InferencePipeline {
     pub fn with_windows(
         pipeline_cfg: PipelineConfig,
@@ -346,7 +392,7 @@ impl InferencePipeline {
                             ),
                             tokenization,
                         };
-                        (item, idx, w_idx, boundaries)
+                        InferenceItem::new(item, idx, w_idx, boundaries)
                     })
                     .collect()
             }),
@@ -370,12 +416,28 @@ struct DataLoader {
     world_size: usize,
     seed: Option<u64>,
     shuffle: bool,
-    shuffle_prefetch_factor: usize,
+    prefetch_factor: usize,
     sort: bool,
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
     iter: Option<Box<dyn Iterator<Item = Batch<Item>> + Send>>,
+}
+
+#[pyclass]
+struct InferenceLoader {
+    pipeline: Pipeline<Vec<InferenceItem>>,
+    text_gen: TextGenerator,
+    num_threads: u8,
+    buffer_size: usize,
+    batch_limit: usize,
+    batch_limit_type: BatchLimitType,
+    prefetch_factor: usize,
+    sort: bool,
+    #[pyo3(get)]
+    min_items: Option<usize>,
+    iter: Option<Box<dyn Iterator<Item = Batch<InferenceItem>> + Send>>,
+    splits: Vec<usize>,
 }
 
 impl DataLoader {
@@ -389,7 +451,7 @@ impl DataLoader {
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
-        shuffle_prefetch_factor: usize,
+        prefetch_factor: usize,
         sort: bool,
         seed: Option<u64>,
         skip: usize,
@@ -400,14 +462,10 @@ impl DataLoader {
             return Err(PyTypeError::new_err(
                 "seed cannot be None if shuffle is true",
             ));
-        } else if !shuffle && sort {
-            return Err(PyTypeError::new_err(
-                "sort cannot be true if shuffle is false",
-            ));
         }
-        let shuffle_prefetch_factor = shuffle_prefetch_factor.max(1);
+        let prefetch_factor = prefetch_factor.max(1);
         if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit * shuffle_prefetch_factor);
+            buffer_size = buffer_size.max(batch_limit * prefetch_factor);
         }
         let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config);
         // handle distributed arguments
@@ -435,9 +493,193 @@ impl DataLoader {
             world_size,
             seed,
             shuffle,
-            shuffle_prefetch_factor,
+            prefetch_factor,
             sort,
         })
+    }
+}
+
+impl InferenceLoader {
+    pub fn new(
+        generators: Vec<Box<dyn TextGen>>,
+        pipeline_config: PipelineConfig,
+        tokenizer_config: TokenizerConfig,
+        window_config: WindowConfig,
+        num_threads: u8,
+        mut buffer_size: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        prefetch_factor: usize,
+        sort: bool,
+    ) -> PyResult<Self> {
+        let pipeline = Pipeline::with_windows(pipeline_config, tokenizer_config, window_config);
+        let splits = generators.iter().map(|g| g.min_len()).collect();
+        let text_gen = TextGenerator::new(generators);
+        let prefetch_factor = prefetch_factor.max(1);
+        if batch_limit_type == BatchLimitType::BatchSize {
+            buffer_size = buffer_size.max(batch_limit * prefetch_factor);
+        }
+        Ok(InferenceLoader {
+            pipeline,
+            text_gen,
+            num_threads,
+            buffer_size,
+            batch_limit,
+            batch_limit_type,
+            iter: None,
+            min_items: None,
+            prefetch_factor,
+            sort,
+            splits,
+        })
+    }
+}
+
+#[pymethods]
+impl InferenceLoader {
+    #[staticmethod]
+    #[args(
+        languages = "None",
+        num_threads = "(num_cpus::get() as u8).min(4)",
+        buffer_size = "32",
+        batch_limit = "16",
+        batch_limit_type = "BatchLimitType::BatchSize",
+        prefetch_factor = "4",
+        sort = "false"
+    )]
+    pub fn from_sequences(
+        sequences: Vec<String>,
+        pipeline_config: PipelineConfig,
+        tokenizer_config: TokenizerConfig,
+        window_config: WindowConfig,
+        languages: Option<Vec<String>>,
+        num_threads: u8,
+        buffer_size: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        prefetch_factor: usize,
+        sort: bool,
+    ) -> PyResult<Self> {
+        if sequences.is_empty() {
+            return Err(PyTypeError::new_err("sequences is empty"));
+        }
+        if languages.is_some() && sequences.len() == languages.as_ref().unwrap().len() {
+            return Err(PyTypeError::new_err(format!(
+                "there must be one language for every sequence if specified, but \
+                    got {} sequences and {} languages",
+                sequences.len(),
+                languages.as_ref().unwrap().len()
+            )));
+        }
+        let generators = TextContainer::new_boxed(sequences, None, languages);
+        Self::new(
+            vec![generators],
+            pipeline_config,
+            tokenizer_config,
+            window_config,
+            num_threads,
+            buffer_size,
+            batch_limit,
+            batch_limit_type,
+            prefetch_factor,
+            sort,
+        )
+    }
+
+    #[staticmethod]
+    #[args(
+        languages = "None",
+        num_threads = "(num_cpus::get() as u8).min(4)",
+        buffer_size = "32",
+        batch_limit = "16",
+        batch_limit_type = "BatchLimitType::BatchSize",
+        prefetch_factor = "4",
+        sort = "false"
+    )]
+    pub fn from_files(
+        files: Vec<String>,
+        pipeline_config: PipelineConfig,
+        tokenizer_config: TokenizerConfig,
+        window_config: WindowConfig,
+        languages: Option<Vec<String>>,
+        num_threads: u8,
+        buffer_size: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        prefetch_factor: usize,
+        sort: bool,
+    ) -> PyResult<Self> {
+        if files.is_empty() {
+            return Err(PyTypeError::new_err("files is empty"));
+        }
+        if languages.is_some() && files.len() != languages.as_ref().unwrap().len() {
+            return Err(PyTypeError::new_err(format!(
+                "there must be one language for every file if specified, but \
+                    got {} files and {} languages",
+                files.len(),
+                languages.as_ref().unwrap().len()
+            )));
+        }
+        let generators = files
+            .into_iter()
+            .enumerate()
+            .map(|(idx, file)| {
+                let lang = if languages.is_some() {
+                    Some(languages.as_ref().unwrap()[idx].clone())
+                } else {
+                    None
+                };
+                TextFile::new_boxed(&file.into(), None, lang) as Box<dyn TextGen>
+            })
+            .collect();
+        Self::new(
+            generators,
+            pipeline_config,
+            tokenizer_config,
+            window_config,
+            num_threads,
+            buffer_size,
+            batch_limit,
+            batch_limit_type,
+            prefetch_factor,
+            sort,
+        )
+    }
+
+    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        let text_iter = slf.text_gen.sequential();
+        let batch_iter = text_iter
+            .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size, None)
+            .flatten()
+            .batched(
+                slf.sort,
+                false,
+                slf.prefetch_factor,
+                slf.batch_limit,
+                slf.batch_limit_type,
+                None,
+            );
+        slf.iter = Some(Box::new(batch_iter));
+        slf
+    }
+
+    fn __next__(&mut self) -> Option<Py<InferenceItemBatch>> {
+        assert!(
+            self.iter.is_some(),
+            "call iter() on the inferenceloader before iterating with next()"
+        );
+        if let Some(batch) = self.iter.as_mut().unwrap().next() {
+            Some(Python::with_gil(|py| {
+                let item_batch = InferenceItemBatch { batch };
+                Py::new(py, item_batch).expect("should not fail")
+            }))
+        } else {
+            None
+        }
+    }
+
+    pub fn splits(&self) -> Vec<usize> {
+        self.splits.clone()
     }
 }
 
@@ -451,7 +693,7 @@ impl DataLoader {
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
         shuffle = "false",
-        shuffle_prefetch_factor = "4",
+        prefetch_factor = "4",
         sort = "false",
         seed = "None",
         skip = "0",
@@ -468,7 +710,7 @@ impl DataLoader {
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
-        shuffle_prefetch_factor: usize,
+        prefetch_factor: usize,
         sort: bool,
         seed: Option<u64>,
         skip: usize,
@@ -497,7 +739,7 @@ impl DataLoader {
             batch_limit,
             batch_limit_type,
             shuffle,
-            shuffle_prefetch_factor,
+            prefetch_factor,
             sort,
             seed,
             skip,
@@ -515,7 +757,7 @@ impl DataLoader {
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
         shuffle = "false",
-        shuffle_prefetch_factor = "4",
+        prefetch_factor = "4",
         sort = "false",
         seed = "None",
         skip = "0",
@@ -533,7 +775,7 @@ impl DataLoader {
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         shuffle: bool,
-        shuffle_prefetch_factor: usize,
+        prefetch_factor: usize,
         sort: bool,
         seed: Option<u64>,
         skip: usize,
@@ -573,7 +815,7 @@ impl DataLoader {
             batch_limit,
             batch_limit_type,
             shuffle,
-            shuffle_prefetch_factor,
+            prefetch_factor,
             sort,
             seed,
             skip,
@@ -599,7 +841,7 @@ impl DataLoader {
             .batched(
                 slf.sort,
                 slf.shuffle,
-                slf.shuffle_prefetch_factor,
+                slf.prefetch_factor,
                 slf.batch_limit,
                 slf.batch_limit_type,
                 seed,
@@ -639,6 +881,7 @@ impl DataLoader {
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "data")?;
     m.add_class::<DataLoader>()?;
+    m.add_class::<InferenceLoader>()?;
     m.add_class::<PipelineConfig>()?;
     m.add_class::<TextData>()?;
     m.add_class::<Item>()?;

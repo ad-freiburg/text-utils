@@ -886,6 +886,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_class::<TextData>()?;
     m.add_class::<Item>()?;
     m.add_class::<ItemBatch>()?;
+    m.add_class::<InferenceItemBatch>()?;
     m.add_class::<TextIterationStrategy>()?;
     m.add_class::<BatchLimitType>()?;
     parent_module.add_submodule(m)?;

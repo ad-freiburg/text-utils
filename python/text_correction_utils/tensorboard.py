@@ -45,7 +45,7 @@ class AverageTracker(TensorboardLogger):
 
 
 class TensorboardMetric(TensorboardLogger):
-    def set_values(self, batch: data.Batch, outputs: torch.Tensor):
+    def set_values(self, batch: data.ItemBatch, outputs: torch.Tensor):
         raise NotImplementedError
 
 
@@ -58,7 +58,7 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
         self.input_tokenizer = input_tokenizer
 
     @override
-    def set_values(self, batch: data.Batch, outputs: torch.Tensor):
+    def set_values(self, batch: data.ItemBatch, outputs: torch.Tensor):
         self.batch = batch
         self.outputs = torch.argmax(outputs, dim=-1).tolist()
 

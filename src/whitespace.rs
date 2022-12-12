@@ -7,12 +7,12 @@ use regex::{escape, Regex};
 
 #[pyfunction]
 pub fn remove(s: &str) -> String {
-    s.split_whitespace().join("")
+    s.split_ascii_whitespace().join("")
 }
 
 #[pyfunction(use_graphemes = "true")]
 pub fn full(s: &str, use_graphemes: bool) -> String {
-    s.split_whitespace()
+    s.split_ascii_whitespace()
         .map(|w| CS::new(w, use_graphemes).chars().join(" "))
         .join(" ")
 }
@@ -73,16 +73,17 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOp
         if to_char.is_some() && from_char == to_char.unwrap() {
             operations.push(WhitespaceOperation::Keep);
             to_ptr += 1;
-        } else if to_char.is_some() && to_char.unwrap().is_whitespace() {
+        } else if to_char.is_some() && to_char.unwrap().is_ascii_whitespace() {
             operations.push(WhitespaceOperation::Insert);
             to_ptr += 2;
-        } else if from_char.is_whitespace() {
+        } else if from_char.is_ascii_whitespace() {
             operations.push(WhitespaceOperation::Delete);
         } else {
             panic!(
                 "should not happen, most likely your inputs contain multiple \
-             consecutive whitespaces, prepare them first using the clean function:\n\
-             from: \"{from}\"\nto  : \"{to}\""
+                consecutive whitespaces or non-ascii whitespaces, \
+                prepare them first using the clean function:\n\
+                from: \"{from}\"\nto  : \"{to}\""
             );
         }
         from_ptr += 1;
@@ -106,12 +107,12 @@ pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) 
     new_chars.reserve(operations.len());
     for (idx, (char, op)) in chars.iter().zip(operations.iter()).enumerate() {
         if *op == WhitespaceOperation::Insert
-            && !char.is_whitespace()
-            && (idx == 0 || !chars[idx - 1].is_whitespace())
+            && !char.is_ascii_whitespace()
+            && (idx == 0 || !chars[idx - 1].is_ascii_whitespace())
         {
             new_chars.push(" ");
             new_chars.push(char.str);
-        } else if *op == WhitespaceOperation::Delete && char.is_whitespace() {
+        } else if *op == WhitespaceOperation::Delete && char.is_ascii_whitespace() {
             continue;
         } else {
             new_chars.push(char.str);
@@ -130,7 +131,7 @@ fn repair_py(s: &str, operations: Vec<WhitespaceOperation>, use_graphemes: bool)
 pub fn find_substring_ignoring_whitespace(s: &str, substring: &str) -> Option<(usize, usize)> {
     let substring = substring
         .chars()
-        .filter(|c| !c.is_whitespace())
+        .filter(|c| !c.is_ascii_whitespace())
         .map(|c| escape(c.to_string().as_str()))
         .join(r"\s*");
     let re = Regex::new(substring.as_str()).expect("invalid regex, should not happen");

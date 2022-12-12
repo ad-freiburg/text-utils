@@ -307,13 +307,13 @@ fn noise_whitespace(iw_p: f64, dw_p: f64) -> Box<PreprocessingFn> {
             .enumerate()
             .map(|(idx, c)| {
                 let r: f64 = rng.gen();
-                if c.is_whitespace() {
+                if c.is_ascii_whitespace() {
                     if r < dw_p {
                         "".to_string()
                     } else {
                         c.str.to_string()
                     }
-                } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_whitespace() {
+                } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_ascii_whitespace() {
                     " ".to_string() + c.str
                 } else {
                     c.str.to_string()

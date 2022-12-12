@@ -9,16 +9,17 @@ use crate::utils::{find_subsequences_of_max_size_k, Matrix};
 #[pyfunction]
 #[inline]
 pub fn clean(s: &str) -> String {
-    s.split_whitespace().join(" ")
+    s.split_ascii_whitespace().join(" ")
 }
 
 #[pyfunction(use_graphemes = "true")]
+#[inline]
 pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     let mut boundaries = vec![];
     let mut start: Option<usize> = None;
     let mut num_elements = 0;
     for (idx, char) in CS::new(str, use_graphemes).chars().enumerate() {
-        match (char.is_whitespace(), start) {
+        match (char.is_ascii_whitespace(), start) {
             (true, Some(start_idx)) => {
                 boundaries.push((start_idx, idx));
                 start = None;
@@ -50,8 +51,8 @@ pub fn match_words_with(
     b: &str,
     word_match_fn: impl Fn(&str, &str) -> bool,
 ) -> (Vec<(usize, usize)>, usize, usize) {
-    let a_words = a.split_whitespace().collect::<Vec<&str>>();
-    let b_words = b.split_whitespace().collect::<Vec<&str>>();
+    let a_words = a.split_ascii_whitespace().collect::<Vec<&str>>();
+    let b_words = b.split_ascii_whitespace().collect::<Vec<&str>>();
 
     let mut d: Matrix<usize> = vec![vec![0; b_words.len() + 1]; a_words.len() + 1];
     let mut ops: Matrix<MatchOp> = vec![vec![MatchOp::None; b_words.len() + 1]; a_words.len() + 1];
@@ -126,6 +127,7 @@ pub fn match_words_with(
 }
 
 #[pyfunction(ignore_case = "false")]
+#[inline]
 pub fn match_words(a: &str, b: &str, ignore_case: bool) -> (Vec<(usize, usize)>, usize, usize) {
     match_words_with(a, b, str_match_fn(ignore_case))
 }
@@ -139,6 +141,7 @@ enum MatchOp {
     NoMatch,
 }
 
+#[inline]
 pub fn possible_character_substrings(
     str: &str,
     mut max_chars: usize,
@@ -159,6 +162,7 @@ pub fn possible_character_substrings(
         .collect()
 }
 
+#[inline]
 pub fn possible_byte_substrings(
     str: &str,
     max_bytes: usize,
@@ -215,7 +219,7 @@ pub fn edit_word(
     let mut exclude_indices = exclude_indices.unwrap_or_default();
     let cs = CS::new(word, use_graphemes);
     assert!(
-        cs.chars().all(|c| !c.is_whitespace()),
+        cs.chars().all(|c| !c.is_ascii_whitespace()),
         "edit word should only be called \
     on strings that do not contain whitespace"
     );

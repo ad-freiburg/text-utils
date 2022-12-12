@@ -54,7 +54,7 @@ fn _calculate_edit_matrices(
                 // chars are not equal, only allow replacement if no space is involved
                 // or we are allowed to replace spaces
                 if !spaces_insert_delete_only
-                    || (!a_char.is_whitespace() && !b_char.is_whitespace())
+                    || (!a_char.is_ascii_whitespace() && !b_char.is_ascii_whitespace())
                 {
                     costs.push((d[i - 1][j - 1] + 1, EditOp::Replace));
                 }
@@ -66,7 +66,7 @@ fn _calculate_edit_matrices(
                 // we can swap the chars, but only allow swapping if no space is involved
                 // or we are allowed to swap spaces
                 if !spaces_insert_delete_only
-                    || (!a_char.is_whitespace() && !a_chars[i - 2].is_whitespace())
+                    || (!a_char.is_ascii_whitespace() && !a_chars[i - 2].is_ascii_whitespace())
                 {
                     costs.push((d[i - 2][j - 2] + 1, EditOp::Swap));
                 }

@@ -427,8 +427,8 @@ impl InferencePipeline {
                                 None
                             },
                             data: TextData::new(
-                                w.str.to_string(),
-                                None,
+                                data.original.clone(),
+                                Some(w.str.to_string()),
                                 Some(data.language.clone()),
                             ),
                             tokenization,
@@ -478,6 +478,7 @@ struct InferenceLoader {
     #[pyo3(get)]
     min_items: Option<usize>,
     iter: Option<Box<dyn Iterator<Item = Batch<InferenceItem>> + Send>>,
+    #[pyo3(get)]
     splits: Vec<usize>,
 }
 
@@ -718,10 +719,6 @@ impl InferenceLoader {
             None
         }
     }
-
-    pub fn splits(&self) -> Vec<usize> {
-        self.splits.clone()
-    }
 }
 
 #[pymethods]
@@ -926,6 +923,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_class::<PipelineConfig>()?;
     m.add_class::<TextData>()?;
     m.add_class::<Item>()?;
+    m.add_class::<InferenceItem>()?;
     m.add_class::<ItemBatch>()?;
     m.add_class::<InferenceItemBatch>()?;
     parent_module.add_submodule(m)?;

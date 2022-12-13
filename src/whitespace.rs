@@ -29,12 +29,22 @@ pub enum WhitespaceOperation {
 
 impl<'a> FromPyObject<'a> for WhitespaceOperation {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let s: String = ob.extract()?;
-        let ws_op = match s.as_str() {
-            "k" | "keep" => WhitespaceOperation::Keep,
-            "i" | "insert" => WhitespaceOperation::Insert,
-            "d" | "delete" => WhitespaceOperation::Delete,
-            k => return Err(py_invalid_type_error(k, "whitespace operation")),
+        let s: PyResult<String> = ob.extract();
+        let ws_op = if s.is_ok() {
+            match s.unwrap().as_str() {
+                "k" | "keep" => WhitespaceOperation::Keep,
+                "i" | "insert" => WhitespaceOperation::Insert,
+                "d" | "delete" => WhitespaceOperation::Delete,
+                k => return Err(py_invalid_type_error(k, "whitespace operation")),
+            }
+        } else {
+            let s: u8 = ob.extract()?;
+            match s {
+                0 => WhitespaceOperation::Keep,
+                1 => WhitespaceOperation::Insert,
+                2 => WhitespaceOperation::Delete,
+                k => return Err(py_invalid_type_error(k, "whitespace operation")),
+            }
         };
         Ok(ws_op)
     }

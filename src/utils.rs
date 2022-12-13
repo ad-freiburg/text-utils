@@ -1,7 +1,8 @@
-use std::ops::Add;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+use std::fmt::Display;
+use std::ops::Add;
 
 pub(crate) type Matrix<T> = Vec<Vec<T>>;
 
@@ -11,7 +12,7 @@ pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
             ProgressStyle::with_template(
                 "{msg}: {wide_bar} [{pos}/{len}] [{elapsed_precise}|{eta_precise}]",
             )
-                .unwrap(),
+            .unwrap(),
         )
         .with_message("matching words");
     if hidden {
@@ -22,9 +23,9 @@ pub(crate) fn get_progress_bar(size: u64, hidden: bool) -> ProgressBar {
 
 #[inline]
 pub(crate) fn accumulate_with<T, F>(values: &[T], acc_fn: F) -> Vec<T>
-    where
-        T: Clone,
-        F: Fn(&T, &T) -> T,
+where
+    T: Clone,
+    F: Fn(&T, &T) -> T,
 {
     if values.is_empty() {
         return vec![];
@@ -41,17 +42,17 @@ pub(crate) fn accumulate_with<T, F>(values: &[T], acc_fn: F) -> Vec<T>
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn accumulate_with_pub<T, F>(values: &[T], acc_fn: F) -> Vec<T>
-    where
-        T: Clone,
-        F: Fn(&T, &T) -> T,
+where
+    T: Clone,
+    F: Fn(&T, &T) -> T,
 {
     accumulate_with(values, acc_fn)
 }
 
 #[inline]
 pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
-    where
-        T: Add<T, Output=T> + Clone,
+where
+    T: Add<T, Output = T> + Clone,
 {
     accumulate_with(values, |acc, v| acc.clone() + v.clone())
 }
@@ -59,16 +60,16 @@ pub(crate) fn accumulate<T>(values: &[T]) -> Vec<T>
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn accumulate_pub<T>(values: &[T]) -> Vec<T>
-    where
-        T: Add<T, Output=T> + Clone,
+where
+    T: Add<T, Output = T> + Clone,
 {
     accumulate(values)
 }
 
 #[inline]
 pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
-    where
-        T: PartialOrd,
+where
+    T: PartialOrd,
 {
     if value < min {
         min
@@ -81,8 +82,8 @@ pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
 
 #[inline]
 pub(crate) fn run_length_encode<T>(values: &[T]) -> Vec<(T, usize)>
-    where
-        T: PartialEq + Clone,
+where
+    T: PartialEq + Clone,
 {
     if values.is_empty() {
         return vec![];
@@ -106,16 +107,16 @@ pub(crate) fn run_length_encode<T>(values: &[T]) -> Vec<(T, usize)>
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn run_length_encode_pub<T>(values: &[T]) -> Vec<(T, usize)>
-    where
-        T: PartialEq + Clone,
+where
+    T: PartialEq + Clone,
 {
     run_length_encode(values)
 }
 
 #[inline]
 pub(crate) fn run_length_decode<T>(values: &[(T, usize)]) -> Vec<T>
-    where
-        T: Clone,
+where
+    T: Clone,
 {
     let mut decoded = vec![];
     for (v, count) in values {
@@ -129,8 +130,8 @@ pub(crate) fn run_length_decode<T>(values: &[(T, usize)]) -> Vec<T>
 #[cfg(feature = "benchmark-utils")]
 #[inline]
 pub fn run_length_decode_pub<T>(values: &[(T, usize)]) -> Vec<T>
-    where
-        T: Clone,
+where
+    T: Clone,
 {
     run_length_decode(values)
 }
@@ -141,7 +142,9 @@ pub(crate) fn find_subsequences_of_max_size_k<T, SeqSize>(
     k: usize,
     size_fn: SeqSize,
 ) -> Vec<(usize, usize)>
-    where SeqSize: Fn(&[T]) -> usize {
+where
+    SeqSize: Fn(&[T]) -> usize,
+{
     assert!(!values.is_empty(), "values cannot be empty");
     // fast forward to first valid starting element
     let mut start = 0;
@@ -182,20 +185,22 @@ pub(crate) fn as_ref_slice_to_vec(values: &[impl AsRef<str>]) -> Vec<&str> {
     values.iter().map(|s| s.as_ref()).collect()
 }
 
-pub(crate) fn py_required_key_error(key_name: &str, value_name: &str) -> PyErr {
+pub(crate) fn py_required_key_error(key_name: impl Display, value_name: impl Display) -> PyErr {
     PyTypeError::new_err(format!(
         "could not find required key \"{key_name}\" for \
             {value_name}"
     ))
 }
 
-pub(crate) fn py_invalid_type_error(name: &str, type_name: &str) -> PyErr {
+pub(crate) fn py_invalid_type_error(name: impl Display, type_name: impl Display) -> PyErr {
     PyTypeError::new_err(format!("\"{name}\" is not a valid {type_name} type"))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{accumulate, find_subsequences_of_max_size_k, run_length_decode, run_length_encode};
+    use crate::utils::{
+        accumulate, find_subsequences_of_max_size_k, run_length_decode, run_length_encode,
+    };
 
     #[test]
     fn test_accumulate() {

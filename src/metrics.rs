@@ -2,7 +2,7 @@ use crate::edit;
 use crate::edit::{distance, edited_words, EditOperation};
 use crate::text::{clean, match_words, word_boundaries};
 use crate::unicode::CS;
-use crate::utils::{as_ref_slice_to_vec, constrain};
+use crate::utils::{as_ref_slice_to_vec, constrain, py_invalid_type_error};
 use crate::whitespace::{operations, WhitespaceOperation};
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -367,11 +367,43 @@ pub fn spelling_correction_f1(
     )
 }
 
-#[pyclass]
+#[pyfunction(beta = "1.0", sequence_averaged = "false", use_graphemes = "true")]
+#[pyo3(name = "spelling_correction_f1")]
+fn spelling_correction_f1_py(
+    input_sequences: Vec<String>,
+    predicted_sequences: Vec<String>,
+    target_sequences: Vec<String>,
+    beta: f64,
+    sequence_averaged: bool,
+    use_graphemes: bool,
+) -> F1PrecRec {
+    spelling_correction_f1(
+        &input_sequences,
+        &predicted_sequences,
+        &target_sequences,
+        beta,
+        sequence_averaged,
+        use_graphemes,
+    )
+}
+
 pub enum WhitespaceCorrectionMode {
     Insertions,
     Deletions,
     InsertionsAndDeletions,
+}
+
+impl<'a> FromPyObject<'a> for WhitespaceCorrectionMode {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let mode = match s.as_str() {
+            "insertions" => WhitespaceCorrectionMode::Insertions,
+            "deletions" => WhitespaceCorrectionMode::Deletions,
+            "insertion_and_deletions" => WhitespaceCorrectionMode::InsertionsAndDeletions,
+            k => return Err(py_invalid_type_error(k, "whitespace correction mode")),
+        };
+        Ok(mode)
+    }
 }
 
 #[inline]
@@ -439,6 +471,33 @@ pub fn whitespace_correction_f1(
     )
 }
 
+#[pyfunction(
+    beta = "1.0",
+    sequence_averaged = "true",
+    mode = "WhitespaceCorrectionMode::InsertionsAndDeletions",
+    use_graphemes = "true"
+)]
+#[pyo3(name = "whitespace_correction_f1")]
+fn whitespace_correction_f1_py(
+    input_sequences: Vec<String>,
+    predicted_sequences: Vec<String>,
+    target_sequences: Vec<String>,
+    beta: f64,
+    sequence_averaged: bool,
+    mode: WhitespaceCorrectionMode,
+    use_graphemes: bool,
+) -> F1PrecRec {
+    whitespace_correction_f1(
+        &input_sequences,
+        &predicted_sequences,
+        &target_sequences,
+        beta,
+        sequence_averaged,
+        mode,
+        use_graphemes,
+    )
+}
+
 /// A submodule containing functions to calculate various text correction metrics.
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "metrics")?;
@@ -446,6 +505,8 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_function(wrap_pyfunction!(mean_normalized_edit_distance_py, m)?)?;
     m.add_function(wrap_pyfunction!(binary_f1_py, m)?)?;
     m.add_function(wrap_pyfunction!(accuracy_py, m)?)?;
+    m.add_function(wrap_pyfunction!(spelling_correction_f1_py, m)?)?;
+    m.add_function(wrap_pyfunction!(whitespace_correction_f1_py, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())

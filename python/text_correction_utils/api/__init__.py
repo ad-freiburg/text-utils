@@ -80,7 +80,7 @@ def download_zip(
     return os.path.join(zip_dir, zip_sub_dir[0])
 
 
-def _cpu_info() -> str:
+def cpu_info() -> str:
     if platform.system() == "Linux":
         try:
             cpu_regex = re.compile(r"model name\t: (.*)", re.DOTALL)
@@ -97,7 +97,7 @@ def _cpu_info() -> str:
     return platform.processor()
 
 
-def _gpu_info(device: Union[torch.device, str, int]) -> str:
+def gpu_info(device: Union[torch.device, str, int]) -> str:
     device_props = torch.cuda.get_device_properties(device)
     return f"{device_props.name} ({device_props.total_memory // 1024 // 1024:,}MiB memory, " \
            f"{device_props.major}.{device_props.minor} compute capability, " \
@@ -105,7 +105,7 @@ def _gpu_info(device: Union[torch.device, str, int]) -> str:
 
 
 def device_info(device: torch.device) -> str:
-    return _gpu_info(device) if device.type == "cuda" else _cpu_info()
+    return gpu_info(device) if device.type == "cuda" else cpu_info()
 
 
 def num_parameters(module: nn.Module) -> Dict[str, int]:

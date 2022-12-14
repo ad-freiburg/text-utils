@@ -5,7 +5,6 @@ version = "0.0.1"
 edition = "2021"
 
 [package.metadata.maturin]
-python-source = "python"
 name = "text_correction_utils._internal"
 
 [lib]

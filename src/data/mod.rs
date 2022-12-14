@@ -11,13 +11,13 @@ use crate::windows::{windows, WindowConfig};
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyIterator};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::vec::IntoIter;
 
-use self::loading::ItemSize;
+use self::loading::{ItemSize, TextIterator};
 use self::preprocessing::ItemFn;
 
 pub mod loading;
@@ -467,17 +467,9 @@ struct DataLoader {
 
 #[pyclass]
 struct InferenceLoader {
-    pipeline: Pipeline<Vec<InferenceItem>>,
-    text_gen: TextGenerator,
-    num_threads: u8,
-    buffer_size: usize,
-    batch_limit: usize,
-    batch_limit_type: BatchLimitType,
-    prefetch_factor: usize,
-    sort: bool,
     #[pyo3(get)]
-    min_items: Option<usize>,
-    iter: Option<Box<dyn Iterator<Item = Batch<InferenceItem>> + Send>>,
+    min_items: usize,
+    iter: Box<dyn Iterator<Item = Batch<InferenceItem>> + Send>,
     #[pyo3(get)]
     splits: Vec<usize>,
 }
@@ -556,22 +548,25 @@ impl InferenceLoader {
     ) -> PyResult<Self> {
         let pipeline = Pipeline::with_windows(pipeline_config, tokenizer_config, window_config);
         let splits = generators.iter().map(|g| g.min_len()).collect();
-        let text_gen = TextGenerator::new(generators);
+        let min_items = splits.iter().sum();
         let prefetch_factor = prefetch_factor.max(1);
         if batch_limit_type == BatchLimitType::BatchSize {
             buffer_size = buffer_size.max(batch_limit * prefetch_factor);
         }
+        let iter = TextIterator::new(generators, TextIterationStrategy::Sequential, None)
+            .pipe(&pipeline, num_threads, buffer_size, None)
+            .flatten()
+            .batched(
+                sort,
+                false,
+                prefetch_factor,
+                batch_limit,
+                batch_limit_type,
+                None,
+            );
         Ok(InferenceLoader {
-            pipeline,
-            text_gen,
-            num_threads,
-            buffer_size,
-            batch_limit,
-            batch_limit_type,
-            iter: None,
-            min_items: None,
-            prefetch_factor,
-            sort,
+            iter,
+            min_items,
             splits,
         })
     }
@@ -581,7 +576,6 @@ impl InferenceLoader {
 impl InferenceLoader {
     #[staticmethod]
     #[args(
-        languages = "None",
         num_threads = "(num_cpus::get() as u8).min(4)",
         buffer_size = "32",
         batch_limit = "16",
@@ -589,12 +583,11 @@ impl InferenceLoader {
         prefetch_factor = "4",
         sort = "false"
     )]
-    pub fn from_sequences(
-        sequences: Vec<String>,
+    pub fn from_iterator(
+        iterator: PyObject,
         pipeline_config: PipelineConfig,
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
-        languages: Option<Vec<String>>,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -602,20 +595,9 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
-        if sequences.is_empty() {
-            return Err(PyTypeError::new_err("sequences is empty"));
-        }
-        if languages.is_some() && sequences.len() == languages.as_ref().unwrap().len() {
-            return Err(PyTypeError::new_err(format!(
-                "there must be one language for every sequence if specified, but \
-                    got {} sequences and {} languages",
-                sequences.len(),
-                languages.as_ref().unwrap().len()
-            )));
-        }
-        let generators = TextContainer::new_boxed(sequences, None, languages);
+        let text_gen = TextContainer::from_pyiterator(iterator);
         Self::new(
-            vec![generators],
+            vec![text_gen],
             pipeline_config,
             tokenizer_config,
             window_config,
@@ -689,19 +671,6 @@ impl InferenceLoader {
     }
 
     fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
-        let text_iter = slf.text_gen.sequential();
-        let batch_iter = text_iter
-            .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size, None)
-            .flatten()
-            .batched(
-                slf.sort,
-                false,
-                slf.prefetch_factor,
-                slf.batch_limit,
-                slf.batch_limit_type,
-                None,
-            );
-        slf.iter = Some(Box::new(batch_iter));
         slf
     }
 
@@ -723,69 +692,6 @@ impl InferenceLoader {
 
 #[pymethods]
 impl DataLoader {
-    #[staticmethod]
-    #[args(
-        languages = "None",
-        num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "32",
-        batch_limit = "16",
-        batch_limit_type = "BatchLimitType::BatchSize",
-        shuffle = "false",
-        prefetch_factor = "4",
-        sort = "false",
-        seed = "None",
-        skip = "0",
-        limit = "None",
-        distributed = "None"
-    )]
-    pub fn from_sequences(
-        sequences: Vec<String>,
-        pipeline_config: PipelineConfig,
-        tokenizer_config: TokenizerConfig,
-        languages: Option<Vec<String>>,
-        num_threads: u8,
-        buffer_size: usize,
-        batch_limit: usize,
-        batch_limit_type: BatchLimitType,
-        shuffle: bool,
-        prefetch_factor: usize,
-        sort: bool,
-        seed: Option<u64>,
-        skip: usize,
-        limit: Option<usize>,
-        distributed: Option<(usize, usize)>,
-    ) -> PyResult<Self> {
-        if sequences.is_empty() {
-            return Err(PyTypeError::new_err("sequences is empty"));
-        }
-        if languages.is_some() && sequences.len() == languages.as_ref().unwrap().len() {
-            return Err(PyTypeError::new_err(format!(
-                "there must be one language for every sequence if specified, but \
-                    got {} sequences and {} languages",
-                sequences.len(),
-                languages.as_ref().unwrap().len()
-            )));
-        }
-        let generators = TextContainer::new_boxed(sequences, None, languages);
-        Self::new(
-            vec![generators],
-            pipeline_config,
-            tokenizer_config,
-            TextIterationStrategy::Sequential,
-            num_threads,
-            buffer_size,
-            batch_limit,
-            batch_limit_type,
-            shuffle,
-            prefetch_factor,
-            sort,
-            seed,
-            skip,
-            limit,
-            distributed,
-        )
-    }
-
     #[staticmethod]
     #[args(
         languages = "None",

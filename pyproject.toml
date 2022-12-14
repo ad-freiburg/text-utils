@@ -29,7 +29,6 @@ dependencies = [
 
 [project.scripts]
 "tcu.zip_experiment" = "text_correction_utils.cli.zip_experiment:main"
-"tcu.evaluate" = "text_correction_utils.cli.evaluate:main"
 
 [project.optional-dependencies]
 test = [
@@ -43,3 +42,6 @@ Github = "https://github.com/bastiscode/text-correction-utils"
 [build-system]
 requires = ["maturin>=0.13,<0.14"]
 build-backend = "maturin"
+
+[tool.maturin]
+python-source = "python"

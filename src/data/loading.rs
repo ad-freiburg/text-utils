@@ -2,6 +2,7 @@ use crate::data::{Batch, Pipeline, TextData};
 use crate::tokenization::LANG_UNK;
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use pyo3::prelude::*;
+use pyo3::types::PyIterator;
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -15,11 +16,8 @@ use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 use std::{panic, process};
 
-pub trait TextGen: Send {
-    fn org_iter(&self) -> Box<dyn Iterator<Item = String> + Send>;
-    fn has_proc(&self) -> bool;
-    fn proc_iter(&self) -> Option<Box<dyn Iterator<Item = String> + Send>>;
-    fn lang_iter(&self) -> Box<dyn Iterator<Item = String> + Send>;
+pub type RawTextData = (String, Option<String>, Option<String>);
+pub trait TextGen: Iterator<Item = RawTextData> + Send {
     fn min_len(&self) -> usize;
 }
 
@@ -29,40 +27,6 @@ fn open(p: &Path) -> File {
 
 fn count_lines(p: &Path) -> usize {
     BufReader::new(open(p)).lines().count()
-}
-
-#[derive(Clone, Debug)]
-pub struct TextFile {
-    original: PathBuf,
-    processed: Option<PathBuf>,
-    language: String,
-    len: usize,
-}
-
-impl TextFile {
-    pub fn new(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<String>) -> Self {
-        let len = count_lines(&org);
-        if proc.is_some() {
-            let proc_len = count_lines(proc.unwrap());
-            assert_eq!(
-                len,
-                proc_len,
-                "expected same number of lines for {:?} and {:?}",
-                org,
-                proc.unwrap()
-            );
-        }
-        TextFile {
-            original: org.clone(),
-            processed: proc.map(|p| p.clone()),
-            language: lang.unwrap_or(LANG_UNK.to_string()),
-            len,
-        }
-    }
-
-    pub fn new_boxed(org: &PathBuf, proc: Option<&PathBuf>, lang: Option<String>) -> Box<Self> {
-        Box::new(Self::new(org, proc, lang))
-    }
 }
 
 pub struct LossyUtf8Reader<R>
@@ -127,133 +91,101 @@ where
     }
 }
 
-impl TextGen for TextFile {
-    fn org_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
-        Box::new(LossyUtf8Reader::new(BufReader::new(open(&self.original))).lines())
-    }
+#[derive(Debug)]
+pub struct TextGenerator<I>
+where
+    I: Iterator<Item = RawTextData> + Send,
+{
+    iter: I,
+    min_len: usize,
+}
 
-    fn has_proc(&self) -> bool {
-        self.processed.is_some()
-    }
-
-    fn proc_iter(&self) -> Option<Box<dyn Iterator<Item = String> + Send>> {
-        if let Some(path) = &self.processed {
-            Some(Box::new(
-                LossyUtf8Reader::new(BufReader::new(open(path))).lines(),
-            ))
+pub fn text_generator_from_file(
+    org: &Path,
+    proc: Option<&Path>,
+    lang: Option<String>,
+) -> impl TextGen {
+    let org_len = count_lines(org);
+    let org_iter = LossyUtf8Reader::new(BufReader::new(open(org))).lines();
+    let proc_iter = if proc.is_some() {
+        let proc_len = count_lines(proc.unwrap());
+        assert_eq!(
+            org_len,
+            proc_len,
+            "expected same number of lines for {:?} and {:?}",
+            org,
+            proc.unwrap()
+        );
+        Some(LossyUtf8Reader::new(BufReader::new(open(proc.unwrap()))).lines())
+    } else {
+        None
+    };
+    let iter = org_iter.map(move |org_s| {
+        let proc_s = if proc_iter.is_some() {
+            proc_iter.as_mut().unwrap().next()
         } else {
             None
-        }
-    }
-
-    fn lang_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
-        let lang = self.language.clone();
-        Box::new((0..).map(move |_| lang.clone()))
-    }
-
-    fn min_len(&self) -> usize {
-        self.len
+        };
+        (org_s, proc_s, lang.clone())
+    });
+    TextGenerator {
+        min_len: org_len,
+        iter,
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct TextContainer {
+pub fn text_generator_from_sequences(
     original: Vec<String>,
     processed: Option<Vec<String>>,
-    lang: Option<Vec<String>>,
-}
-
-impl TextContainer {
-    pub fn new(
-        original: Vec<String>,
-        processed: Option<Vec<String>>,
-        lang: Option<Vec<String>>,
-    ) -> Self {
-        TextContainer {
-            original,
-            processed,
-            lang,
-        }
-    }
-
-    pub fn new_boxed(
-        original: Vec<String>,
-        processed: Option<Vec<String>>,
-        lang: Option<Vec<String>>,
-    ) -> Box<Self> {
-        Box::new(Self::new(original, processed, lang))
-    }
-}
-
-impl TextGen for TextContainer {
-    fn org_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
-        Box::new(self.original.clone().into_iter())
-    }
-
-    fn has_proc(&self) -> bool {
-        self.processed.is_some()
-    }
-
-    fn proc_iter(&self) -> Option<Box<dyn Iterator<Item = String> + Send>> {
-        if let Some(data) = &self.processed {
-            Some(Box::new(data.clone().into_iter()))
+    language: Option<Vec<String>>,
+) -> impl TextGen {
+    let len = original.len();
+    let org_iter = original.into_iter();
+    let mut proc_iter = if processed.is_some() {
+        assert_eq!(processed.as_ref().unwrap().len(), len);
+        Some(processed.unwrap().into_iter())
+    } else {
+        None
+    };
+    let mut lang_iter = if language.is_some() {
+        assert_eq!(language.as_ref().unwrap().len(), len);
+        Some(language.unwrap().into_iter())
+    } else {
+        None
+    };
+    let iter = org_iter.map(move |org_s| {
+        let proc_s = if proc_iter.is_some() {
+            proc_iter.as_mut().unwrap().next()
         } else {
             None
-        }
-    }
-
-    fn lang_iter(&self) -> Box<dyn Iterator<Item = String> + Send> {
-        if self.lang.is_some() {
-            Box::new(self.lang.clone().unwrap().into_iter())
+        };
+        let lang_s = if lang_iter.is_some() {
+            lang_iter.as_mut().unwrap().next()
         } else {
-            Box::new((0..).map(|_| LANG_UNK.to_string()))
-        }
-    }
+            None
+        };
+        (org_s, proc_s, lang_s)
+    });
+    TextGenerator { iter, len }
+}
 
+impl<I> Iterator for TextGenerator<I>
+where
+    I: Iterator<Item = RawTextData> + Send,
+{
+    type Item = RawTextData;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+}
+
+impl<I> TextGen for TextGenerator<I>
+where
+    I: Iterator<Item = RawTextData> + Send,
+{
     fn min_len(&self) -> usize {
-        self.original.len()
-    }
-}
-
-pub struct TextGenerator {
-    generators: Vec<Box<dyn TextGen>>,
-}
-
-impl TextGenerator {
-    pub fn new(generators: Vec<Box<dyn TextGen>>) -> Self {
-        TextGenerator { generators }
-    }
-
-    pub fn with_strategy(
-        &self,
-        strategy: TextIterationStrategy,
-        seed: Option<u64>,
-    ) -> TextIterator {
-        match strategy {
-            TextIterationStrategy::Sequential => self.sequential(),
-            TextIterationStrategy::Interleaved => self.interleaved(),
-            TextIterationStrategy::Weighted => self.weighted(seed),
-        }
-    }
-
-    pub fn sequential(&self) -> TextIterator {
-        TextIterator::new(
-            &self.generators[..],
-            TextIterationStrategy::Sequential,
-            None,
-        )
-    }
-
-    pub fn interleaved(&self) -> TextIterator {
-        TextIterator::new(
-            &self.generators[..],
-            TextIterationStrategy::Interleaved,
-            None,
-        )
-    }
-
-    pub fn weighted(&self, seed: Option<u64>) -> TextIterator {
-        TextIterator::new(&self.generators[..], TextIterationStrategy::Weighted, seed)
+        self.len
     }
 }
 
@@ -278,9 +210,7 @@ impl<'a> FromPyObject<'a> for TextIterationStrategy {
 }
 
 pub struct TextIterator {
-    org_iters: Vec<Box<dyn Iterator<Item = String> + Send>>,
-    proc_iters: Vec<Box<dyn Iterator<Item = String> + Send>>,
-    lang_iters: Vec<Box<dyn Iterator<Item = String> + Send>>,
+    text_generators: Vec<Box<dyn TextGen>>,
     lengths: Vec<usize>,
     strategy: TextIterationStrategy,
     idx: usize,
@@ -290,25 +220,12 @@ pub struct TextIterator {
 
 impl TextIterator {
     pub fn new(
-        text_generators: &[Box<dyn TextGen>],
+        text_generators: Vec<Box<dyn TextGen>>,
         strategy: TextIterationStrategy,
         seed: Option<u64>,
     ) -> Self {
         assert!(!text_generators.is_empty());
-        let mut org_iters = vec![];
-        let mut proc_iters = vec![];
-        let mut lang_iters = vec![];
-        let mut lengths = vec![];
-        for text_reader in text_generators {
-            org_iters.push(text_reader.org_iter());
-            proc_iters.push(if text_reader.has_proc() {
-                text_reader.proc_iter().unwrap()
-            } else {
-                text_reader.org_iter()
-            });
-            lengths.push(text_reader.min_len());
-            lang_iters.push(text_reader.lang_iter())
-        }
+        let lengths = text_generators.iter().map(|g| g.min_len()).collect();
         if strategy == TextIterationStrategy::Weighted {
             assert!(
                 lengths.iter().all(|l| *l > 0),
@@ -316,12 +233,10 @@ impl TextIterator {
             minimum length, otherwise they would never be iterated"
             );
         }
-        let finished = vec![false; org_iters.len()];
+        let finished = vec![false; text_generators.len()];
         TextIterator {
-            org_iters,
-            proc_iters,
+            text_generators,
             lengths,
-            lang_iters,
             strategy,
             idx: 0,
             rng: if seed.is_some() {
@@ -375,6 +290,7 @@ impl TextIterator {
         self.lengths.iter().sum()
     }
 }
+
 impl Iterator for TextIterator {
     type Item = TextData;
 
@@ -382,22 +298,7 @@ impl Iterator for TextIterator {
         if self.all_finished() {
             return None;
         }
-        let original;
-        loop {
-            let maybe_original = self.org_iters[self.idx].next();
-            if maybe_original.is_none() {
-                self.finished[self.idx] = true;
-                if self.all_finished() {
-                    return None;
-                }
-                self.next_idx();
-                continue;
-            }
-            original = maybe_original.unwrap();
-            break;
-        }
-        let processed = self.proc_iters[self.idx].next();
-        let language = self.lang_iters[self.idx].next();
+        let (original, processed, language) = self.text_generators[self.idx].next();
         let data = TextData::new(original, processed, language);
         self.next_idx();
         Some(data)

@@ -1,15 +1,13 @@
 use crate::data::{Batch, Pipeline, TextData};
-use crate::tokenization::LANG_UNK;
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use pyo3::prelude::*;
-use pyo3::types::PyIterator;
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
@@ -100,6 +98,26 @@ where
     min_len: usize,
 }
 
+impl<I> Iterator for TextGenerator<I>
+where
+    I: Iterator<Item = RawTextData> + Send,
+{
+    type Item = RawTextData;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+}
+
+impl<I> TextGen for TextGenerator<I>
+where
+    I: Iterator<Item = RawTextData> + Send,
+{
+    fn min_len(&self) -> usize {
+        self.min_len
+    }
+}
+
 pub fn text_generator_from_file(
     org: &Path,
     proc: Option<&Path>,
@@ -107,7 +125,7 @@ pub fn text_generator_from_file(
 ) -> impl TextGen {
     let org_len = count_lines(org);
     let org_iter = LossyUtf8Reader::new(BufReader::new(open(org))).lines();
-    let proc_iter = if proc.is_some() {
+    let mut proc_iter = if proc.is_some() {
         let proc_len = count_lines(proc.unwrap());
         assert_eq!(
             org_len,
@@ -166,27 +184,33 @@ pub fn text_generator_from_sequences(
         };
         (org_s, proc_s, lang_s)
     });
-    TextGenerator { iter, len }
+    TextGenerator { iter, min_len: len }
 }
 
-impl<I> Iterator for TextGenerator<I>
-where
-    I: Iterator<Item = RawTextData> + Send,
-{
+pub struct PyRawTextDataIterator {
+    obj: PyObject,
+}
+
+impl Iterator for PyRawTextDataIterator {
     type Item = RawTextData;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
+        Python::with_gil(|py| {
+            let v = self
+                .obj
+                .call_method0(py, "__next__")
+                .expect("python object has no __next__ method, make sure it is an iterator");
+            let data: Option<RawTextData> = v
+                .extract(py)
+                .expect("failed to extract raw text data or None from iterator value");
+            data
+        })
     }
 }
 
-impl<I> TextGen for TextGenerator<I>
-where
-    I: Iterator<Item = RawTextData> + Send,
-{
-    fn min_len(&self) -> usize {
-        self.len
-    }
+pub fn text_generator_from_python(obj: PyObject) -> impl TextGen {
+    let iter = PyRawTextDataIterator { obj };
+    TextGenerator { iter, min_len: 0 }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -225,7 +249,7 @@ impl TextIterator {
         seed: Option<u64>,
     ) -> Self {
         assert!(!text_generators.is_empty());
-        let lengths = text_generators.iter().map(|g| g.min_len()).collect();
+        let lengths: Vec<usize> = text_generators.iter().map(|g| g.min_len()).collect();
         if strategy == TextIterationStrategy::Weighted {
             assert!(
                 lengths.iter().all(|l| *l > 0),
@@ -295,10 +319,18 @@ impl Iterator for TextIterator {
     type Item = TextData;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.all_finished() {
-            return None;
-        }
-        let (original, processed, language) = self.text_generators[self.idx].next();
+        let (original, processed, language) = loop {
+            match self.text_generators[self.idx].next() {
+                Some(v) => break v,
+                None => {
+                    self.finished[self.idx] = true;
+                    if self.all_finished() {
+                        return None;
+                    }
+                    self.next_idx();
+                }
+            };
+        };
         let data = TextData::new(original, processed, language);
         self.next_idx();
         Some(data)

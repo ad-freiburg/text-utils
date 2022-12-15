@@ -1,6 +1,5 @@
 use crate::data::loading::{
-    BatchLimitType, BatchedIterator, PipelineIterator, TextContainer, TextFile, TextGen,
-    TextGenerator, TextIterationStrategy,
+    BatchLimitType, BatchedIterator, PipelineIterator, TextGen, TextIterationStrategy,
 };
 use crate::data::preprocessing::{
     labeling, preprocessing, LabelingConfig, LabelingFn, PreprocessingConfig, PreprocessingFn,
@@ -11,13 +10,14 @@ use crate::windows::{windows, WindowConfig};
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyIterator};
+use pyo3::types::PyDict;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::Arc;
 use std::vec::IntoIter;
 
-use self::loading::{ItemSize, TextIterator};
+use self::loading::{text_generator_from_file, text_generator_from_python, ItemSize, TextIterator};
 use self::preprocessing::ItemFn;
 
 pub mod loading;
@@ -442,95 +442,12 @@ impl InferencePipeline {
 }
 
 #[pyclass]
-struct DataLoader {
-    pipeline: Pipeline<Item>,
-    text_gen: TextGenerator,
-    strategy: TextIterationStrategy,
-    num_threads: u8,
-    buffer_size: usize,
-    batch_limit: usize,
-    batch_limit_type: BatchLimitType,
-    epoch: usize,
-    limit: usize,
-    skip: usize,
-    rank: usize,
-    world_size: usize,
-    seed: Option<u64>,
-    shuffle: bool,
-    prefetch_factor: usize,
-    sort: bool,
-    // the next to values will be set after each __iter__ call
-    #[pyo3(get)]
-    min_items: Option<usize>,
-    iter: Option<Box<dyn Iterator<Item = Batch<Item>> + Send>>,
-}
-
-#[pyclass]
 struct InferenceLoader {
-    #[pyo3(get)]
-    min_items: usize,
     iter: Box<dyn Iterator<Item = Batch<InferenceItem>> + Send>,
     #[pyo3(get)]
+    min_items: usize,
+    #[pyo3(get)]
     splits: Vec<usize>,
-}
-
-impl DataLoader {
-    fn new(
-        generators: Vec<Box<dyn TextGen>>,
-        pipeline_config: PipelineConfig,
-        tokenizer_config: TokenizerConfig,
-        strategy: TextIterationStrategy,
-        num_threads: u8,
-        mut buffer_size: usize,
-        batch_limit: usize,
-        batch_limit_type: BatchLimitType,
-        shuffle: bool,
-        prefetch_factor: usize,
-        sort: bool,
-        seed: Option<u64>,
-        skip: usize,
-        limit: Option<usize>,
-        distributed: Option<(usize, usize)>,
-    ) -> PyResult<Self> {
-        if shuffle && seed.is_none() {
-            return Err(PyTypeError::new_err(
-                "seed cannot be None if shuffle is true",
-            ));
-        }
-        let prefetch_factor = prefetch_factor.max(1);
-        if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit * prefetch_factor);
-        }
-        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config);
-        // handle distributed arguments
-        let (rank, world_size) = distributed.unwrap_or((0, 1));
-        assert!(
-            rank < world_size,
-            "rank {rank} is invalid given world size {world_size}"
-        );
-        let text_gen = TextGenerator::new(generators);
-        let limit = limit.unwrap_or(usize::MAX);
-        Ok(DataLoader {
-            pipeline,
-            text_gen,
-            strategy,
-            num_threads,
-            buffer_size,
-            batch_limit,
-            batch_limit_type,
-            iter: None,
-            min_items: None,
-            epoch: 0,
-            limit,
-            skip,
-            rank,
-            world_size,
-            seed,
-            shuffle,
-            prefetch_factor,
-            sort,
-        })
-    }
 }
 
 impl InferenceLoader {
@@ -547,7 +464,7 @@ impl InferenceLoader {
         sort: bool,
     ) -> PyResult<Self> {
         let pipeline = Pipeline::with_windows(pipeline_config, tokenizer_config, window_config);
-        let splits = generators.iter().map(|g| g.min_len()).collect();
+        let splits: Vec<usize> = generators.iter().map(|g| g.min_len()).collect();
         let min_items = splits.iter().sum();
         let prefetch_factor = prefetch_factor.max(1);
         if batch_limit_type == BatchLimitType::BatchSize {
@@ -565,7 +482,7 @@ impl InferenceLoader {
                 None,
             );
         Ok(InferenceLoader {
-            iter,
+            iter: Box::new(iter),
             min_items,
             splits,
         })
@@ -595,7 +512,7 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
-        let text_gen = TextContainer::from_pyiterator(iterator);
+        let text_gen = Box::new(text_generator_from_python(iterator));
         Self::new(
             vec![text_gen],
             pipeline_config,
@@ -653,7 +570,7 @@ impl InferenceLoader {
                 } else {
                     None
                 };
-                TextFile::new_boxed(&file.into(), None, lang) as Box<dyn TextGen>
+                Box::new(text_generator_from_file(Path::new(&file), None, lang)) as Box<dyn TextGen>
             })
             .collect();
         Self::new(
@@ -670,16 +587,12 @@ impl InferenceLoader {
         )
     }
 
-    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
     fn __next__(&mut self) -> Option<Py<InferenceItemBatch>> {
-        assert!(
-            self.iter.is_some(),
-            "call iter() on the inferenceloader before iterating with next()"
-        );
-        if let Some(batch) = self.iter.as_mut().unwrap().next() {
+        if let Some(batch) = self.iter.next() {
             Some(Python::with_gil(|py| {
                 let item_batch = InferenceItemBatch { batch, iter: None };
                 Py::new(py, item_batch).expect("should not fail")
@@ -687,6 +600,91 @@ impl InferenceLoader {
         } else {
             None
         }
+    }
+}
+
+#[pyclass]
+struct DataLoader {
+    pipeline: Pipeline<Item>,
+    files: Vec<String>,
+    languages: Option<Vec<String>>,
+    strategy: TextIterationStrategy,
+    num_threads: u8,
+    buffer_size: usize,
+    batch_limit: usize,
+    batch_limit_type: BatchLimitType,
+    epoch: usize,
+    limit: usize,
+    skip: usize,
+    rank: usize,
+    world_size: usize,
+    seed: Option<u64>,
+    shuffle: bool,
+    prefetch_factor: usize,
+    sort: bool,
+    // the next to values will be set after each __iter__ call
+    #[pyo3(get)]
+    min_items: Option<usize>,
+    iter: Option<Box<dyn Iterator<Item = Batch<Item>> + Send>>,
+}
+
+impl DataLoader {
+    fn new(
+        files: Vec<String>,
+        languages: Option<Vec<String>>,
+        pipeline_config: PipelineConfig,
+        tokenizer_config: TokenizerConfig,
+        strategy: TextIterationStrategy,
+        num_threads: u8,
+        mut buffer_size: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        shuffle: bool,
+        prefetch_factor: usize,
+        sort: bool,
+        seed: Option<u64>,
+        skip: usize,
+        limit: Option<usize>,
+        distributed: Option<(usize, usize)>,
+    ) -> PyResult<Self> {
+        if shuffle && seed.is_none() {
+            return Err(PyTypeError::new_err(
+                "seed cannot be None if shuffle is true",
+            ));
+        }
+        let prefetch_factor = prefetch_factor.max(1);
+        if batch_limit_type == BatchLimitType::BatchSize {
+            buffer_size = buffer_size.max(batch_limit * prefetch_factor);
+        }
+        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config);
+        // handle distributed arguments
+        let (rank, world_size) = distributed.unwrap_or((0, 1));
+        assert!(
+            rank < world_size,
+            "rank {rank} is invalid given world size {world_size}"
+        );
+        let limit = limit.unwrap_or(usize::MAX);
+        Ok(DataLoader {
+            pipeline,
+            files,
+            languages,
+            strategy,
+            num_threads,
+            buffer_size,
+            batch_limit,
+            batch_limit_type,
+            iter: None,
+            min_items: None,
+            epoch: 0,
+            limit,
+            skip,
+            rank,
+            world_size,
+            seed,
+            shuffle,
+            prefetch_factor,
+            sort,
+        })
     }
 }
 
@@ -737,20 +735,9 @@ impl DataLoader {
                 languages.as_ref().unwrap().len()
             )));
         }
-        let generators = files
-            .into_iter()
-            .enumerate()
-            .map(|(idx, file)| {
-                let lang = if languages.is_some() {
-                    Some(languages.as_ref().unwrap()[idx].clone())
-                } else {
-                    None
-                };
-                TextFile::new_boxed(&file.into(), None, lang) as Box<dyn TextGen>
-            })
-            .collect();
         Self::new(
-            generators,
+            files,
+            languages,
             pipeline_config,
             tokenizer_config,
             strategy,
@@ -774,7 +761,22 @@ impl DataLoader {
         } else {
             None
         };
-        let text_iter = slf.text_gen.with_strategy(slf.strategy, seed);
+        let text_generators = slf
+            .files
+            .clone()
+            .into_iter()
+            .enumerate()
+            .map(|(idx, file)| {
+                let lang = if slf.languages.is_some() {
+                    Some(slf.languages.as_ref().unwrap()[idx].clone())
+                } else {
+                    None
+                };
+                Box::new(text_generator_from_file(Path::new(&file), None, lang)) as Box<dyn TextGen>
+            })
+            .collect();
+
+        let text_iter = TextIterator::new(text_generators, slf.strategy, seed);
         slf.min_items =
             Some(text_iter.min_len().min(slf.limit).saturating_sub(slf.skip) / slf.world_size);
         let batch_iter = text_iter

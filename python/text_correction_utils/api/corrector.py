@@ -2,7 +2,7 @@ import collections
 import math
 import os
 import pprint
-from typing import Dict, Iterable, List, Optional, Sized, Union, Iterator, Any
+from typing import Dict, Iterable, List, Optional, Sized, Union, Tuple, Iterator, Any
 
 import torch
 from torch import autocast, nn
@@ -51,7 +51,7 @@ class Corrector:
             download_dir: Optional[str] = None,
             cache_dir: Optional[str] = None,
             force_download: bool = False
-    ) -> "Corrector":
+    ):
         assert any(model == m.name for m in cls.available_models()), \
             f"model {model} does not match any of the available models:\n{pprint.pformat(cls.available_models())}"
 
@@ -73,7 +73,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             cls,
             experiment_dir: str,
             device: Union[str, int] = "cuda"
-    ) -> "Corrector":
+    ):
         return cls(experiment_dir, device)
 
     @property
@@ -125,13 +125,13 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
     def _build_inference_loader_config(self) -> Dict[str, Any]:
         raise NotImplementedError
 
-    def _prepare_batch(self, batch: InferenceItemBatch) -> Dict[str, Any]:
+    def _prepare_batch(self, batch: data.InferenceItemBatch) -> Dict[str, Any]:
         raise NotImplementedError
 
     @torch.inference_mode()
     def _run_model(self, batch: data.InferenceItemBatch) -> Any:
         # this is a slight hack for now, because fp32 on cpu throws an error even when enabled=False
-        inputs = ...
+        inputs = self._prepare_batch(batch)
         if self.mixed_precision_enabled:
             with autocast(
                     device_type=self.device.type,
@@ -148,7 +148,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
 
     def _get_loader(
             self,
-            inputs: Union[List[str], Iterator[str]],
+            inputs: Union[List[str], Iterator[str], Iterator[Tuple[str, Optional[str]]]],
             input_type: str,
             languages: Optional[List[str]],
             batch_size: int = 16,
@@ -171,7 +171,6 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             prefetch_factor = min_items_per_batch
 
         self._inference_loader_cfg.update({
-            "languages": languages,
             "num_threads": num_threads,
             "batch_limit": batch_limit,
             "buffer_size": buffer_size,
@@ -181,17 +180,22 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         })
         self._inference_loader_cfg.update(kwargs)
         if input_type == "files":
+            self._inference_loader_cfg.update({
+                "languages": languages
+            })
             loader = data.InferenceLoader.from_files(
                 inputs,
                 **self._inference_loader_cfg
             )
         elif input_type == "sequences":
             loader = data.InferenceLoader.from_iterator(
-                iter(inputs), **self._inference_loader_cfg
+                ((seq, None, languages[i] if languages is not None else None)
+                 for i, seq in enumerate(inputs)),
+                **self._inference_loader_cfg
             )
         elif input_type == "iterator":
             loader = data.InferenceLoader.from_iterator(
-                inputs, **self._inference_loader_cfg
+                ((seq, None, lang) for seq, lang in inputs), **self._inference_loader_cfg
             )
         else:
             raise ValueError(f"unknown input type {input_type}")
@@ -201,11 +205,11 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         results = {}
         for batch in loader:
             outputs = self._run_model(batch)
+            print(outputs[0].shape)
             for item, output in zip(batch, outputs):
                 if item.item_idx not in results:
                     results[item.item_idx] = {}
                 results[item.item_idx][item.window_idx] = (item, output)
-
         outputs = []
         for item_idx in range(len(results)):
             window_items = []
@@ -223,6 +227,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         window_outputs = []
         for batch in loader:
             outputs = self._run_model(batch)
+            print(outputs[0].shape)
             for item, output in zip(batch, outputs):
                 if item.item_idx == prev_item_idx:
                     window_items.append(item)
@@ -234,68 +239,6 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
                 window_outputs = [output]
         # dont forget to yield final item
         yield self._process_results(window_items, window_outputs)
-
-    def correct_text(
-            self,
-            inputs: Union[str, List[str]],
-            languages: Optional[List[str]] = None,
-            batch_size: int = 16,
-            batch_max_tokens: Optional[int] = None,
-            sort: bool = True,
-            num_threads: Optional[int] = None
-    ) -> Union[str, List[str], Iterator[str]]:
-        input_is_string = isinstance(inputs, str)
-        assert (
-            input_is_string
-            or (isinstance(inputs, list) and all(isinstance(ipt, str) for ipt in inputs))
-        ), "input needs to be a string or a list of strings"
-
-        if input_is_string:
-            inputs = [inputs]  # type: ignore
-        loader = self._get_loader(
-            inputs,
-            False,
-            languages,
-            batch_size,
-            batch_max_tokens,
-            sort,
-            num_threads
-        )
-        if sort:
-            outputs = self._correct_sorted(loader)
-            return outputs[0] if input_is_string else outputs
-        else:
-            return self._correct_unsorted(loader)
-
-    def correct_file(
-            self,
-            input_file_path: str,
-            output_file_path: Optional[str] = None,
-            language: Optional[str] = None,
-            batch_size: int = 16,
-            batch_max_tokens: Optional[int] = None,
-            sort: bool = True,
-            num_threads: Optional[int] = None
-    ) -> Optional[Union[Iterator[str], List[str]]]:
-        loader = self._get_loader(
-            [input_file_path],
-            True,
-            [language] if language is not None else None,
-            batch_size,
-            batch_max_tokens,
-            sort,
-            num_threads
-        )
-        if sort:
-            outputs = self._correct_sorted(loader)
-        else:
-            outputs = self._correct_unsorted(loader)
-        if output_file_path is not None:
-            with open(output_file_path, "w", encoding="utf8") as of:
-                for output in outputs:
-                    of.write(output + "\n")
-        else:
-            return outputs
 
     def to(self, device: Union[str, int]) -> "Corrector":
         self.device = torch.device(device)

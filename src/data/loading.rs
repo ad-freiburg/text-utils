@@ -744,9 +744,7 @@ impl BatchLimit {
 
 #[cfg(test)]
 mod tests {
-    use crate::data::loading::{
-        open, BatchLimitType, BatchedIterator, PipelineIterator, TextFile, TextGenerator,
-    };
+    use crate::data::loading::{open, BatchLimitType, BatchedIterator, PipelineIterator};
     use crate::data::{Item, Pipeline, PipelineConfig, TextData};
     use crate::tokenization::{TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
@@ -756,6 +754,8 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+
+    use super::{text_generator_from_file, TextIterator};
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
     const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
@@ -768,11 +768,14 @@ mod tests {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let multi30k = TextFile::new_boxed(&d, None, Some("1".to_string()));
-        let multi30k_rev = TextFile::new_boxed(&d2, None, Some("2".to_string()));
-        let text_files = TextGenerator::new(vec![multi30k.clone()]);
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let mut it = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
+
         // first check sequential lines with one file
-        let mut it = text_files.sequential();
         assert_eq!(it.min_len(), 29000);
         assert_eq!(
             it.next().unwrap(),
@@ -791,9 +794,17 @@ mod tests {
             }
         );
         // check sequential lines with original and processed
-        let multi30k_and_rev = TextFile::new_boxed(&d, Some(&d2), Some("1".to_string()));
-        let text_files = TextGenerator::new(vec![multi30k_and_rev]);
-        let mut it = text_files.sequential();
+        let multi30k = Box::new(text_generator_from_file(
+            &d,
+            Some(&d2),
+            Some("1".to_string()),
+        ));
+        let mut it = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
+
         assert_eq!(it.min_len(), 29000);
         assert_eq!(
             it.next().unwrap(),
@@ -812,8 +823,14 @@ mod tests {
             }
         );
         // check interleaved lines with two files
-        let text_files = TextGenerator::new(vec![multi30k.clone(), multi30k_rev.clone()]);
-        let mut it = text_files.interleaved();
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let multi30k_rev = Box::new(text_generator_from_file(&d2, None, Some("2".to_string())));
+        let mut it = TextIterator::new(
+            vec![multi30k, multi30k_rev],
+            super::TextIterationStrategy::Interleaved,
+            None,
+        );
+
         assert_eq!(it.min_len(), 2 * 29000);
         assert_eq!(
             it.next().unwrap(),
@@ -854,8 +871,14 @@ mod tests {
             idx += 1;
         }
         // check weighted lines with two files
-        let text_files = TextGenerator::new(vec![multi30k_rev, multi30k]);
-        let mut it = text_files.weighted(Some(22));
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let multi30k_rev = Box::new(text_generator_from_file(&d2, None, Some("2".to_string())));
+        let mut it = TextIterator::new(
+            vec![multi30k, multi30k_rev],
+            super::TextIterationStrategy::Weighted,
+            None,
+        );
+
         assert_eq!(it.min_len(), 2 * 29000);
         let mut first_count = 0;
         let mut second_count = 0;
@@ -876,8 +899,13 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = TextFile::new_boxed(&d, None, Some("1".to_string()));
-        let text_files = TextGenerator::new(vec![multi30k]);
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let text_iter = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
+
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
         let pipeline = Pipeline::with_tokenizer(
@@ -890,7 +918,14 @@ mod tests {
             ),
         );
         // test if it works with one worker and record the time it took
-        let mut it = text_files.sequential().pipe(&pipeline, 0, 4, None);
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let text_iter = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
+
+        let mut it = text_iter.pipe(&pipeline, 0, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let n: usize = 20;
@@ -898,7 +933,14 @@ mod tests {
         let time = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time, n);
         // test with more workers, check that its faster
-        let mut it = text_files.sequential().pipe(&pipeline, 2, 4, None);
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let text_iter = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
+
+        let mut it = text_iter.pipe(&pipeline, 2, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
@@ -906,7 +948,14 @@ mod tests {
         info!("took {:.2}s to fetch {} items", time2, n);
         assert!(time2 < time);
         // test with even more workers
-        let mut it = text_files.sequential().pipe(&pipeline, 4, 4, None);
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let text_iter = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
+
+        let mut it = text_iter.pipe(&pipeline, 4, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
@@ -925,7 +974,14 @@ mod tests {
             ),
         );
 
-        let mut it = text_files.sequential().pipe(&pipeline, 0, 4, None);
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let text_iter = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
+
+        let mut it = text_iter.pipe(&pipeline, 0, 4, None);
         let lines = BufReader::new(open(&d)).lines();
         for (idx, (line, item)) in it.zip(lines).enumerate() {
             assert_eq!(line.data.original, item.unwrap())
@@ -938,8 +994,12 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = TextFile::new_boxed(&d, None, Some("1".to_string()));
-        let text_files = TextGenerator::new(vec![multi30k]);
+        let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+        let text_iter = TextIterator::new(
+            vec![multi30k],
+            super::TextIterationStrategy::Sequential,
+            None,
+        );
         let lines: Vec<String> = BufReader::new(open(&d))
             .lines()
             .collect::<Result<Vec<String>, io::Error>>()
@@ -953,10 +1013,14 @@ mod tests {
                 None,
             ),
         );
-        let pipe_it = text_files
-            .sequential()
-            .pipe(&pipeline, 4, 16, None)
-            .batched(false, false, 0, 8, BatchLimitType::BatchSize, None);
+        let pipe_it = text_iter.pipe(&pipeline, 4, 16, None).batched(
+            false,
+            false,
+            0,
+            8,
+            BatchLimitType::BatchSize,
+            None,
+        );
         for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(8)) {
             assert!(batch.len() > 0 && batch.len() <= 8);
             let lines: Vec<&String> = line_batch.into_iter().collect();
@@ -970,17 +1034,18 @@ mod tests {
         // (because some descriptions in multi30k appear twice)
         for shuffle in [true, false] {
             for sort in [true, false] {
-                let pipe_it = text_files
-                    .weighted(Some(22))
-                    .pipe(&pipeline, 4, 4, None)
-                    .batched(
-                        sort,
-                        shuffle,
-                        32,
-                        256,
-                        BatchLimitType::PaddedItemSize,
-                        Some(22),
-                    );
+                let multi30k = Box::new(text_generator_from_file(&d, None, Some("1".to_string())));
+                let text_iter =
+                    TextIterator::new(vec![multi30k], super::TextIterationStrategy::Weighted, None);
+
+                let pipe_it = text_iter.pipe(&pipeline, 4, 4, None).batched(
+                    sort,
+                    shuffle,
+                    32,
+                    256,
+                    BatchLimitType::PaddedItemSize,
+                    Some(22),
+                );
                 let mut line_counter: HashMap<String, usize> =
                     lines.iter().cloned().map(|l| (l, 0)).collect();
                 for batch in pipe_it {

@@ -118,6 +118,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         self.model.eval()
         for param in self.model.parameters():
             param.requires_grad = False
+        self.model.to(self.device)
 
         self._mixed_precision_dtype = torch.float32
         self._inference_loader_cfg = self._build_inference_loader_config()
@@ -138,9 +139,9 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
                     dtype=self._mixed_precision_dtype,
                     enabled=self.mixed_precision_enabled
             ):
-                outputs = self.model(**inputs)
+                outputs, _ = self.model(**inputs)
         else:
-            outputs = self.model(**inputs)
+            outputs, _ = self.model(**inputs)
         return outputs
 
     def _process_results(self, items: List[data.InferenceItem], outputs: List[Any]) -> Any:
@@ -205,7 +206,6 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         results = {}
         for batch in loader:
             outputs = self._run_model(batch)
-            print(outputs[0].shape)
             for item, output in zip(batch, outputs):
                 if item.item_idx not in results:
                     results[item.item_idx] = {}
@@ -227,7 +227,6 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         window_outputs = []
         for batch in loader:
             outputs = self._run_model(batch)
-            print(outputs[0].shape)
             for item, output in zip(batch, outputs):
                 if item.item_idx == prev_item_idx:
                     window_items.append(item)

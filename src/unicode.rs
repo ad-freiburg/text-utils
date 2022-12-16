@@ -86,7 +86,11 @@ impl<'a> CharString<'a> {
     }
 
     pub fn sub(&self, start: usize, end: usize) -> &'a str {
-        assert!(start <= end && end <= self.len());
+        assert!(
+            start <= end && end <= self.len(),
+            "start: {start}, end: {end}, len: {}",
+            self.len()
+        );
         if self.len() == 0 || start == end {
             return "";
         }

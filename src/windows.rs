@@ -201,15 +201,16 @@ pub fn char_windows_py(
 
 #[inline]
 fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS) -> usize {
-    iter.fold_while(0usize, |acc, idx| {
+    iter.fold_while((0usize, 0usize), |(count, acc), idx| {
         let next_acc = acc + cs.char_byte_len(idx);
         if next_acc > max_length {
-            Done(acc)
+            Done((count, acc))
         } else {
-            Continue(next_acc)
+            Continue((count + 1, next_acc))
         }
     })
     .into_inner()
+    .0
 }
 
 pub fn byte_windows<'a>(

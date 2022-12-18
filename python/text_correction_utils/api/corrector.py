@@ -189,12 +189,14 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
                 **self._inference_loader_cfg
             )
         elif input_type == "sequences":
+            self._inference_loader_cfg["num_threads"] = 0
             loader = data.InferenceLoader.from_iterator(
                 ((seq, None, languages[i] if languages is not None else None)
                  for i, seq in enumerate(inputs)),
                 **self._inference_loader_cfg
             )
         elif input_type == "iterator":
+            self._inference_loader_cfg["num_threads"] = 0
             loader = data.InferenceLoader.from_iterator(
                 ((seq, None, lang) for seq, lang in inputs), **self._inference_loader_cfg
             )

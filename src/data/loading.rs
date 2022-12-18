@@ -1,6 +1,6 @@
 use crate::data::{Batch, Pipeline, TextData};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
-use pyo3::prelude::*;
+use pyo3::{intern, prelude::*};
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -196,14 +196,14 @@ impl Iterator for PyRawTextDataIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         Python::with_gil(|py| {
-            let v = self
-                .obj
-                .call_method0(py, "__next__")
-                .expect("python object has no __next__ method, make sure it is an iterator");
-            let data: Option<RawTextData> = v
-                .extract(py)
-                .expect("failed to extract raw text data or None from iterator value");
-            data
+            let return_value = self.obj.call_method0(py, intern!(py, "__next__"));
+            // we return None when the python object is not an iterator
+            // (no __next__ method), the items the python iterator produces
+            // are not RawTextData items, and if the iterator is fully consumed.
+            match return_value.ok() {
+                Some(data) => data.extract(py).ok(),
+                None => None,
+            }
         })
     }
 }
@@ -320,7 +320,8 @@ impl Iterator for TextIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         let (original, processed, language) = loop {
-            match self.text_generators[self.idx].next() {
+            let next = self.text_generators[self.idx].next();
+            match next {
                 Some(v) => break v,
                 None => {
                     self.finished[self.idx] = true;
@@ -526,6 +527,7 @@ where
         seed: Option<u64>,
     ) -> Batched<Self, T>;
 }
+
 impl<I, T> BatchedIterator<T> for I
 where
     I: Iterator<Item = T> + Sized,

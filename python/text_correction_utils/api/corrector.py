@@ -14,7 +14,7 @@ __all__ = ["ModelInfo"]
 ModelInfo = collections.namedtuple("ModelInfo", ["name", "description", "tags"])
 
 
-class Corrector:
+class TextCorrector:
     task: str
 
     @classmethod
@@ -241,7 +241,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         # dont forget to yield final item
         yield self._process_results(window_items, window_outputs)
 
-    def to(self, device: Union[str, int]) -> "Corrector":
+    def to(self, device: Union[str, int]) -> "TextCorrector":
         self.device = torch.device(device)
         self.model = self.model.to(self.device)
         return self

@@ -2,6 +2,7 @@ import os
 from typing import List, Optional, Set, Tuple
 
 import torch
+from torch import nn
 
 from text_correction_utils.api import utils
 

@@ -177,7 +177,8 @@ pub fn operations(
 #[pyfunction(
     use_graphemes = "true",
     with_swap = "true",
-    spaces_insert_delete_only = "false"
+    spaces_insert_delete_only = "false",
+    normalized = "false"
 )]
 pub fn distance(
     a: &str,
@@ -185,14 +186,17 @@ pub fn distance(
     use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
-) -> usize {
-    let (d, _) = _calculate_edit_matrices(
-        CS::new(a, use_graphemes),
-        CS::new(b, use_graphemes),
-        with_swap,
-        spaces_insert_delete_only,
-    );
-    d[d.len() - 1][d[0].len() - 1]
+    normalized: bool,
+) -> f64 {
+    let a_cs = CS::new(a, use_graphemes);
+    let b_cs = CS::new(b, use_graphemes);
+    let norm = if normalized {
+        a_cs.len().max(b_cs.len()) as f64
+    } else {
+        1.0
+    };
+    let (d, _) = _calculate_edit_matrices(a_cs, b_cs, with_swap, spaces_insert_delete_only);
+    d[d.len() - 1][d[0].len() - 1] as f64 / norm
 }
 
 #[pyfunction]
@@ -305,14 +309,35 @@ mod tests {
 
     #[test]
     fn test_edit_distance() {
-        let ed = distance("this is a test", "tihsi s a test", false, true, false);
-        assert_eq!(ed, 2);
-        let ed = distance("this is a test", "tihsi s a test", false, true, true);
-        assert_eq!(ed, 3);
-        let ed = distance("this is a test", "tihsi s a test", false, false, false);
-        assert_eq!(ed, 4);
-        let ed = distance("this is a test", "tihsi s a test", false, false, true);
-        assert_eq!(ed, 4);
+        let ed = distance(
+            "this is a test",
+            "tihsi s a test",
+            false,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(ed as usize, 2);
+        let ed = distance("this is a test", "tihsi s a test", false, true, true, false);
+        assert_eq!(ed as usize, 3);
+        let ed = distance(
+            "this is a test",
+            "tihsi s a test",
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(ed as usize, 4);
+        let ed = distance(
+            "this is a test",
+            "tihsi s a test",
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(ed as usize, 4);
     }
 
     #[test]

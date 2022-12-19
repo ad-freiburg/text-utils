@@ -1,17 +1,9 @@
 import functools
+import math
 from typing import Callable, List, Tuple
 
 import torch
 from torch import nn
-
-
-def _aggregation_fn(aggregation: str) -> Callable[[torch.Tensor], torch.Tensor]:
-    if aggregation == "mean":
-        return functools.partial(torch.mean, dim=1)
-    elif aggregation == "sum":
-        return functools.partial(torch.sum, dim=1)
-    else:
-        raise ValueError(f"aggregation must be mean or sum, but got {aggregation}")
 
 
 class Grouping(nn.Module):
@@ -44,41 +36,28 @@ class Grouping(nn.Module):
 
     def __init__(self, aggregation: str = "mean"):
         super().__init__()
-        self.agg_fn = _aggregation_fn(aggregation)
+        if aggregation == "mean":
+            self.pow = -1
+        elif aggregation == "sum":
+            self.pow = 1
+        else:
+            raise ValueError(f"unknown aggregation '{aggregation}', must be either 'mean' or 'sum'")
 
     def forward(self, feats: torch.Tensor, groups: List[List[int]]) -> Tuple[torch.Tensor, List[int]]:
         assert feats.ndim == 3, f"feats must have a shape of [B, S, H], but got {feats.shape}"
-        b, s, h = feats.shape
+        b, s, _ = feats.shape
         group_lengths = [len(group) for group in groups]
         max_group_length = max(group_lengths)
-        agg_feats = torch.zeros(b, max_group_length, h, dtype=feats.dtype, device=feats.device)
+        # create sparse weight matrix of dense shape [B, max(G), S]
+        indices = [[], [], []]
+        values = []
         for i, group in enumerate(groups):
-            if len(group) == 0:
-                continue
-
-            start = 0
-            end = 1
-            group_start = 0
-            total_group_length = group[0]
-            while end < len(group):
-                if group[start] == group[end]:
-                    total_group_length += group[end]
-                    end += 1
-                    continue
-
-                agg_feats[i, start:end] = self.agg_fn(
-                    feats[i, group_start:group_start + total_group_length].view(
-                        total_group_length // group[start], group[start], -1
-                    )
-                )
-                start = end
-                group_start = group_start + total_group_length
-                total_group_length = 0
-
-            agg_feats[i, start:end] = self.agg_fn(
-                feats[i, group_start:group_start + total_group_length].view(
-                    total_group_length // group[start], group[start], -1
-                )
-            )
-
-        return agg_feats, group_lengths
+            cum_group_length = 0
+            for j, g in enumerate(group):
+                indices[0].extend([i] * g)
+                indices[1].extend([j] * g)
+                indices[2].extend(list(range(cum_group_length, cum_group_length + g)))
+                values.extend([math.pow(g, self.pow)] * g)
+                cum_group_length += g
+        weights = torch.sparse_coo_tensor(indices, values, size=(b, max_group_length, s), device=feats.device)
+        return torch.bmm(weights, feats), group_lengths

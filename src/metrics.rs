@@ -1,7 +1,7 @@
 use crate::edit;
 use crate::edit::{distance, edited_words, EditOperation};
 use crate::text::{clean, match_words, word_boundaries};
-use crate::unicode::CS;
+use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{as_ref_slice_to_vec, constrain, py_invalid_type_error};
 use crate::whitespace::{operations, WhitespaceOperation};
 use pyo3::prelude::*;
@@ -15,7 +15,7 @@ fn _mean_edit_distance(
     target_sequences: &[impl AsRef<str>],
     length: usize,
     use_graphemes: bool,
-    normalize: bool,
+    normalized: bool,
 ) -> f64 {
     let sequences = as_ref_slice_to_vec(sequences);
     let target_sequences = as_ref_slice_to_vec(target_sequences);
@@ -28,12 +28,14 @@ fn _mean_edit_distance(
         .into_par_iter()
         .zip(target_sequences)
         .map(|(s, ts)| {
-            let norm = if normalize {
-                s.len().max(ts.len()).max(1) as f64
-            } else {
-                1.0
-            };
-            distance(s, ts, use_graphemes, false, false) as f64 / norm
+            distance(
+                &normalize(&clean(s, true), Normalization::NFKC, true),
+                &normalize(&clean(ts, true), Normalization::NFKC, true),
+                use_graphemes,
+                false,
+                false,
+                normalized,
+            )
         })
         .sum::<f64>()
         / length.max(1) as f64
@@ -104,6 +106,14 @@ pub fn accuracy<T: Ord>(predictions: &[T], targets: &[T]) -> f64 {
 #[pyfunction]
 #[pyo3(name = "accuracy")]
 fn accuracy_py(predictions: Vec<&str>, targets: Vec<&str>) -> f64 {
+    let predictions: Vec<String> = predictions
+        .into_iter()
+        .map(|s| normalize(&clean(s, true), Normalization::NFKC, true))
+        .collect();
+    let targets: Vec<String> = targets
+        .into_iter()
+        .map(|s| normalize(&clean(s, true), Normalization::NFKC, true))
+        .collect();
     accuracy(&predictions, &targets)
 }
 
@@ -208,9 +218,9 @@ fn _correction_f1(
             let predicted = &predicted_sequences[idx];
             let target = &target_sequences[idx];
             f(
-                &clean(input, true),
-                &clean(predicted, true),
-                &clean(target, true),
+                &normalize(&clean(input, true), Normalization::NFKC, true),
+                &normalize(&clean(predicted, true), Normalization::NFKC, true),
+                &normalize(&clean(target, true), Normalization::NFKC, true),
             )
         })
         .collect();

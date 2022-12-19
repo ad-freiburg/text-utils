@@ -4,6 +4,7 @@ from typing import Callable, List, Tuple
 
 import torch
 from torch import nn
+from torch.cuda import amp
 
 
 class Grouping(nn.Module):
@@ -60,4 +61,5 @@ class Grouping(nn.Module):
                 values.extend([math.pow(g, self.pow)] * g)
                 cum_group_length += g
         weights = torch.sparse_coo_tensor(indices, values, size=(b, max_group_length, s), device=feats.device)
-        return torch.bmm(weights, feats), group_lengths
+        with amp.autocast(enabled=False):
+            return torch.bmm(weights.float(), feats.float()), group_lengths

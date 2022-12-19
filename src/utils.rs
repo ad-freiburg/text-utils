@@ -137,7 +137,7 @@ where
 }
 
 #[inline]
-pub(crate) fn find_subsequences_of_max_size_k<T, SeqSize>(
+pub fn find_subsequences_of_max_size_k<T, SeqSize>(
     values: &[T],
     k: usize,
     size_fn: SeqSize,

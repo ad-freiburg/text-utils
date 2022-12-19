@@ -5,7 +5,9 @@ use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{ByteTokenizer, CharTokenizer, Tokenization, Tokenize};
-use text_correction_utils::utils::{accumulate_pub, run_length_decode_pub, run_length_encode_pub};
+use text_correction_utils::utils::{
+    accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
+};
 
 const INPUT_SIZES: [usize; 3] = [16, 128, 512];
 
@@ -26,7 +28,7 @@ fn bench_edit_distance(c: &mut Criterion) {
                 BenchmarkId::new("edit_distance", format!("{} -> {}", from_size, to_size)),
                 &(from_str.as_str(), to_str.as_str()),
                 |b, &(from, to)| {
-                    b.iter(|| distance(from, to, true, true, false));
+                    b.iter(|| distance(from, to, true, true, false, false));
                 },
             );
             group.bench_with_input(
@@ -142,6 +144,15 @@ fn bench_utils(c: &mut Criterion) {
             &input_encoded,
             |b, input| {
                 b.iter(|| run_length_decode_pub(input));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("subsequences of max size", format!("{size}")),
+            &input,
+            |b, input| {
+                b.iter(|| {
+                    find_subsequences_of_max_size_k(input, *size, |values| values.iter().sum())
+                })
             },
         );
     }

@@ -30,6 +30,7 @@ def save_checkpoint(
     val_loss: float,
     optimizer: Optional[optim.Optimizer] = None,
     lr_scheduler: Optional[Any] = None,
+    loss_fn: Optional[nn.Module] = None,
     grad_scaler: Optional[amp.GradScaler] = None
 ) -> None:
     """
@@ -42,6 +43,7 @@ def save_checkpoint(
     :param val_loss: Validation loss achieved by this checkpoint
     :param optimizer: Pytorch optimizer
     :param lr_scheduler: Pytorch learning rate scheduler,
+    :param loss_fn: Pytorch module computing the loss,
     :param grad_scaler: Pytorch gradient scaler
     """
     checkpoint_dir = os.path.dirname(checkpoint_path)
@@ -57,6 +59,8 @@ def save_checkpoint(
         else optimizer.state_dict(),
         "lr_scheduler_state_dict": None if lr_scheduler is None
         else lr_scheduler.state_dict(),
+        "loss_fn_state_dict": None if loss_fn is None
+        else loss_fn.state_dict(),
         "grad_scaler_state_dict": None if grad_scaler is None
         else grad_scaler.state_dict()
     }

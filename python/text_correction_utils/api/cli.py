@@ -2,7 +2,7 @@ import argparse
 import sys
 import time
 import logging
-from typing import Any, Iterator
+from typing import Any, Iterator, Tuple, Generator
 
 import torch
 
@@ -180,14 +180,14 @@ class TextCorrectionCli:
     def format_output(self, pred: Any) -> str:
         raise NotImplementedError
 
-    def correct_iter(self, iter: Iterator[str]) -> Any:
+    def correct_iter(self, corrector: TextCorrector, iter: Iterator[str]) -> Generator[str, None, Tuple[int, int]]:
         raise NotImplementedError
 
-    def correct_file(self, s: str) -> Any:
+    def correct_file(self, corrector: TextCorrector, path: str) -> Generator[str, None, Tuple[int, int]]:
         raise NotImplementedError
 
-    def correct_single(self, s: str) -> Any:
-        return self.correct_iter(iter([s]))
+    def correct_single(self, corrector: TextCorrector, s: str) -> str:
+        return self.correct_iter(corrector, iter([s]))
 
     def run(self, args: argparse.Namespace):
         if args.version:
@@ -216,15 +216,16 @@ class TextCorrectionCli:
         else:
             logging.disable(logging.CRITICAL)
 
+        device = "cpu" if args.cpu else "cuda"
         if args.experiment:
             cor = self.text_corrector_cls.from_experiment(
                 experiment_dir=args.experiment,
-                device="cpu" if args.cpu else "cuda"
+                device=device
             )
         else:
             cor = self.text_corrector_cls.from_pretrained(
                 model=args.model,
-                device="cpu" if args.cpu else "cuda",
+                device=device,
                 download_dir=args.download_dir,
                 cache_dir=args.cache_dir,
                 force_download=args.force_download
@@ -238,14 +239,13 @@ class TextCorrectionCli:
 
         start = time.perf_counter()
         if args.correct is not None:
-            corrected = self.correct_single(args.correct)
-            print(self.format_output(corrected))
+            print(self.correct_single(cor, args.correct))
 
         elif args.file is not None:
-            corrected = self.correct_file(args.file)
+            corrected, num_bytes = self.correct_file(args.file)
             if args.out_path is None:
                 for line in corrected:
-                    print(self.format_output(line))
+                    print(line)
             if args.report:
                 if is_cuda:
                     torch.cuda.synchronize(cor.device)

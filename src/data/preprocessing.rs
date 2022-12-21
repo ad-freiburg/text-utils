@@ -1,7 +1,6 @@
 use crate::data::{Label, TextData};
 use crate::text;
 use crate::text::{possible_byte_substrings, possible_character_substrings};
-use crate::tokenization::LANG_UNK;
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{accumulate, constrain, py_invalid_type_error, py_required_key_error};
 use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
@@ -14,7 +13,6 @@ use std::ops::Sub;
 
 pub type PreprocessingFn = dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> TextData;
 pub type LabelingFn = dyn Send + Sync + 'static + Fn(&TextData) -> Label;
-pub type ItemFn<T, L> = dyn Send + Sync + 'static + Fn(TextData, usize, Option<&L>) -> T;
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {
@@ -37,7 +35,7 @@ pub enum PreprocessingConfig {
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
     // randomly replace the language token with the given default
-    LanguageDropout(f64, String),
+    LanguageDropout(f64),
 }
 
 impl IntoPy<PyObject> for PreprocessingConfig {
@@ -87,9 +85,8 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "normalize"
             }
-            PreprocessingConfig::LanguageDropout(p, default) => {
+            PreprocessingConfig::LanguageDropout(p) => {
                 d.set_item("prob", p).unwrap();
-                d.set_item("default", default).unwrap();
                 "language_dropout"
             }
         };
@@ -209,12 +206,7 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 let Some(p) = d.get_item("prob") else {
                     return Err(py_required_key_error("prob", "language dropout config"));
                 };
-                let default = if let Some(value) = d.get_item("default") {
-                    value.extract()?
-                } else {
-                    LANG_UNK.to_string()
-                };
-                PreprocessingConfig::LanguageDropout(p.extract()?, default)
+                PreprocessingConfig::LanguageDropout(p.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
@@ -400,7 +392,7 @@ fn byte_substring(max_bytes: usize, use_graphemes: bool) -> Box<PreprocessingFn>
     )
 }
 
-fn language_dropout(prob: f64, default: String) -> Box<PreprocessingFn> {
+fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
     let prob = constrain(prob, 0.0, 1.0);
     Box::new(move |item, seed| {
         let mut rng = if seed.is_some() {
@@ -411,7 +403,7 @@ fn language_dropout(prob: f64, default: String) -> Box<PreprocessingFn> {
         let r: f64 = rng.gen();
         if r < prob {
             TextData {
-                language: default.clone(),
+                language: None,
                 ..item
             }
         } else {
@@ -439,7 +431,7 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> 
         PreprocessingConfig::Normalize(scheme, use_graphemes) => {
             apply_to_text(move |s| normalize(s, scheme, use_graphemes))
         }
-        PreprocessingConfig::LanguageDropout(p, default) => language_dropout(p, default),
+        PreprocessingConfig::LanguageDropout(p) => language_dropout(p),
     }
 }
 

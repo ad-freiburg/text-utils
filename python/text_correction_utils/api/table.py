@@ -131,7 +131,8 @@ def generate_report(
         task: str,
         model_name: str,
         model: nn.Module,
-        inputs: List[str],
+        input_size: int,
+        input_size_bytes: int,
         runtime: float,
         precision: torch.dtype,
         batch_size: int,
@@ -139,9 +140,6 @@ def generate_report(
         device: torch.device,
         file_path: Optional[str] = None
 ) -> Optional[str]:
-    input_size = len(inputs)
-    input_size_bytes = sum(len(ipt.encode("utf8")) for ipt in inputs)
-
     if precision == torch.float16:
         precision_str = "fp16"
     elif precision == torch.bfloat16:

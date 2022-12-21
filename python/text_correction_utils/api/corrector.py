@@ -161,7 +161,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         if num_threads is None:
             num_threads = min(len(os.sched_getaffinity(0)), 4)
         if batch_max_tokens is None:
-            batch_limit = prefetch_factor = batch_size
+            batch_limit = prefetch_factor = max(1, batch_size)
             batch_limit_type = "batch_size"
             buffer_size = batch_limit * batch_limit
         else:
@@ -190,15 +190,18 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             )
         elif input_type == "sequences":
             self._inference_loader_cfg["num_threads"] = 0
+            self._inference_loader_cfg["prefetch_factor"] = len(inputs)
+            self._inference_loader_cfg["buffer_size"] = len(inputs)
             loader = data.InferenceLoader.from_iterator(
-                ((seq, None, languages[i] if languages is not None else None)
+                ((seq, languages[i] if languages is not None else None)
                  for i, seq in enumerate(inputs)),
                 **self._inference_loader_cfg
             )
         elif input_type == "iterator":
             self._inference_loader_cfg["num_threads"] = 0
             loader = data.InferenceLoader.from_iterator(
-                ((seq, None, lang) for seq, lang in inputs), **self._inference_loader_cfg
+                ((seq, lang) for seq, lang in inputs),
+                **self._inference_loader_cfg
             )
         else:
             raise ValueError(f"unknown input type {input_type}")

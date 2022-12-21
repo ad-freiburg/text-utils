@@ -1,10 +1,10 @@
 use crate::data::loading::{
-    BatchLimitType, BatchedIterator, PipelineIterator, TextGen, TextIterationStrategy,
+    BatchLimitType, BatchedIterator, DataGen, PipelineIterator, TextIterationStrategy,
 };
-use crate::data::preprocessing::{
-    labeling, preprocessing, LabelingConfig, LabelingFn, PreprocessingConfig, PreprocessingFn,
-};
-use crate::tokenization::{tokenizer, Tokenization, TokenizerConfig, LANG_UNK};
+use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingConfig};
+use crate::text::clean;
+use crate::tokenization::{tokenizer, Tokenization, TokenizerConfig};
+use crate::unicode::{normalize, Normalization};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
 use pyo3::basic::CompareOp;
@@ -17,8 +17,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::vec::IntoIter;
 
-use self::loading::{text_generator_from_file, text_generator_from_python, ItemSize, TextIterator};
-use self::preprocessing::ItemFn;
+use self::loading::{
+    inference_data_generator_from_file, inference_data_generator_from_python,
+    text_data_generator_from_files, ItemSize, TextIterator,
+};
 
 pub mod loading;
 pub mod preprocessing;
@@ -31,13 +33,12 @@ pub struct TextData {
     #[pyo3(get)]
     processed: String,
     #[pyo3(get)]
-    language: String,
+    language: Option<String>,
 }
 
 impl TextData {
     pub fn new(original: String, processed: Option<String>, language: Option<String>) -> Self {
         let processed = processed.unwrap_or(original.clone());
-        let language = language.unwrap_or(LANG_UNK.to_string());
         TextData {
             original,
             processed,
@@ -147,7 +148,7 @@ pub struct Item {
     #[pyo3(get)]
     tokenization: Tokenization,
     #[pyo3(get)]
-    label: Option<Label>,
+    label: Label,
 }
 impl ItemSize for Item {
     fn size(&self) -> usize {
@@ -156,7 +157,7 @@ impl ItemSize for Item {
 }
 
 impl Item {
-    pub fn new(data: TextData, tokenization: Tokenization, label: Option<Label>) -> Self {
+    pub fn new(data: TextData, tokenization: Tokenization, label: Label) -> Self {
         Item {
             data,
             tokenization,
@@ -182,11 +183,89 @@ impl Item {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum InferenceDataFileFormat {
+    Text,
+    TextPlusDetections,
+    TextPlusLanguage,
+    TextPlusDetectionsPlusLanguage,
+}
+
+impl<'a> FromPyObject<'a> for InferenceDataFileFormat {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let format = match s.as_str() {
+            "text" => InferenceDataFileFormat::Text,
+            "text_detections" => InferenceDataFileFormat::TextPlusDetections,
+            "text_language" => InferenceDataFileFormat::TextPlusLanguage,
+            "text_detections_language" => InferenceDataFileFormat::TextPlusDetectionsPlusLanguage,
+            k => return Err(py_invalid_type_error(k, "inference data file format")),
+        };
+        Ok(format)
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
+#[pyclass]
+pub struct InferenceData {
+    original: String,
+    detections: Option<Vec<bool>>,
+    language: Option<String>,
+}
+
+impl InferenceData {
+    pub fn new(original: String, detections: Option<Vec<bool>>, language: Option<String>) -> Self {
+        Self {
+            original,
+            detections,
+            language,
+        }
+    }
+
+    fn parse_detections(str: &str) -> Vec<bool> {
+        str.split(char::is_whitespace)
+            .map(|s| {
+                str::parse::<u8>(s.trim())
+                    .expect(format!("failed to parse {s} to integer").as_str())
+                    != 0
+            })
+            .collect()
+    }
+
+    pub fn from_str(s: &str, format: &InferenceDataFileFormat) -> Self {
+        let (original, detections, language) = match format {
+            InferenceDataFileFormat::Text => (s, None, None),
+            InferenceDataFileFormat::TextPlusDetections => {
+                let splits: Vec<&str> = s.split("\t").collect();
+                assert_eq!(splits.len(), 2);
+                (splits[0], Some(Self::parse_detections(splits[1])), None)
+            }
+            InferenceDataFileFormat::TextPlusLanguage => {
+                let splits: Vec<&str> = s.split("\t").collect();
+                assert_eq!(splits.len(), 2);
+                (splits[0], None, Some(splits[1].trim().to_string()))
+            }
+            InferenceDataFileFormat::TextPlusDetectionsPlusLanguage => {
+                let splits: Vec<&str> = s.split("\t").collect();
+                assert_eq!(splits.len(), 3);
+                (
+                    splits[0],
+                    Some(Self::parse_detections(splits[1])),
+                    Some(splits[2].trim().to_string()),
+                )
+            }
+        };
+        Self::new(original.trim().to_string(), detections, language)
+    }
+}
+
 #[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
 #[pyclass]
 pub struct InferenceItem {
     #[pyo3(get)]
-    item: Item,
+    data: InferenceData,
+    #[pyo3(get)]
+    tokenization: Tokenization,
     #[pyo3(get)]
     item_idx: usize,
     #[pyo3(get)]
@@ -197,13 +276,15 @@ pub struct InferenceItem {
 
 impl InferenceItem {
     pub fn new(
-        item: Item,
+        data: InferenceData,
+        tokenization: Tokenization,
         item_idx: usize,
         window_idx: usize,
         window: (usize, usize, usize, usize),
     ) -> Self {
         InferenceItem {
-            item,
+            data,
+            tokenization,
             item_idx,
             window_idx,
             window,
@@ -213,14 +294,14 @@ impl InferenceItem {
 
 impl ItemSize for InferenceItem {
     fn size(&self) -> usize {
-        self.item.size()
+        self.tokenization.token_ids.len()
     }
 }
 
 #[pymethods]
 impl InferenceItem {
     fn __len__(&self) -> usize {
-        self.item.size()
+        self.size()
     }
 
     fn __hash__(&self) -> u64 {
@@ -326,16 +407,16 @@ impl<T> IntoIterator for Batch<T> {
 
 #[derive(Debug, Clone)]
 #[pyclass]
-pub struct PipelineConfig {
+pub struct PreprocessingPipelineConfig {
     #[pyo3(get)]
     preprocessing: Vec<PreprocessingConfig>,
     #[pyo3(get)]
-    labeling: Option<LabelingConfig>,
+    labeling: LabelingConfig,
 }
 
-impl PipelineConfig {
-    pub fn new(preprocessing: Vec<PreprocessingConfig>, labeling: Option<LabelingConfig>) -> Self {
-        PipelineConfig {
+impl PreprocessingPipelineConfig {
+    pub fn new(preprocessing: Vec<PreprocessingConfig>, labeling: LabelingConfig) -> Self {
+        PreprocessingPipelineConfig {
             preprocessing,
             labeling,
         }
@@ -343,101 +424,85 @@ impl PipelineConfig {
 }
 
 #[pymethods]
-impl PipelineConfig {
+impl PreprocessingPipelineConfig {
     #[new]
-    #[args(labeling = "None")]
-    fn py_new(
-        preprocessing: Vec<PreprocessingConfig>,
-        labeling: Option<LabelingConfig>,
-    ) -> PyResult<Self> {
+    fn py_new(preprocessing: Vec<PreprocessingConfig>, labeling: LabelingConfig) -> PyResult<Self> {
         Ok(Self::new(preprocessing, labeling))
     }
 }
 
-#[derive(Clone)]
-pub struct Pipeline<T> {
-    preprocessing_fn: Arc<PreprocessingFn>,
-    label_fn: Option<Arc<LabelingFn>>,
-    item_fn: Arc<ItemFn<T, Arc<LabelingFn>>>,
+pub type ApplyFn<I, O> = dyn Send + Sync + 'static + Fn(I, usize, Option<u64>) -> O;
+pub struct Pipeline<I, O> {
+    apply_fn: Arc<ApplyFn<I, O>>,
 }
-
-impl<T> Pipeline<T> {
-    pub fn apply(&self, item: TextData, idx: usize, seed: Option<u64>) -> T {
-        let data = (self.preprocessing_fn)(item, seed);
-        (self.item_fn)(data, idx, self.label_fn.as_ref())
-    }
-
-    fn from_config_and_item_fn(
-        cfg: PipelineConfig,
-        item_fn: Arc<ItemFn<T, Arc<LabelingFn>>>,
-    ) -> Self {
-        Pipeline {
-            preprocessing_fn: Arc::new(preprocessing(cfg.preprocessing)),
-            label_fn: if cfg.labeling.is_some() {
-                Some(Arc::new(labeling(cfg.labeling.unwrap())))
-            } else {
-                None
-            },
-            item_fn,
+impl<I, O> Clone for Pipeline<I, O> {
+    fn clone(&self) -> Self {
+        Self {
+            apply_fn: self.apply_fn.clone(),
         }
     }
 }
 
-impl Pipeline<Item> {
-    pub fn with_tokenizer(pipeline_cfg: PipelineConfig, tokenizer_cfg: TokenizerConfig) -> Self {
-        let tok = tokenizer(tokenizer_cfg);
-        Pipeline::from_config_and_item_fn(
-            pipeline_cfg,
-            Arc::new(move |data, _, label_fn| -> Item {
-                Item {
-                    tokenization: tok.tokenize(&data.processed, None, None),
-                    label: if label_fn.is_some() {
-                        Some(label_fn.unwrap()(&data))
-                    } else {
-                        None
-                    },
-                    data,
-                }
-            }),
-        )
+impl<I, O> Pipeline<I, O> {
+    pub fn apply(&self, input: I, idx: usize, seed: Option<u64>) -> O {
+        (self.apply_fn)(input, idx, seed)
+    }
+
+    pub fn new(apply_fn: Arc<ApplyFn<I, O>>) -> Self {
+        Self { apply_fn }
     }
 }
 
-pub type InferencePipeline = Pipeline<Vec<InferenceItem>>;
-impl InferencePipeline {
-    pub fn with_windows(
-        pipeline_cfg: PipelineConfig,
+impl Pipeline<TextData, Item> {
+    pub fn with_tokenizer(
+        pipeline_cfg: PreprocessingPipelineConfig,
         tokenizer_cfg: TokenizerConfig,
-        window_cfg: WindowConfig,
     ) -> Self {
         let tok = tokenizer(tokenizer_cfg);
-        Pipeline::from_config_and_item_fn(
-            pipeline_cfg,
-            Arc::new(move |data, idx, label_fn| {
-                windows(&data.processed, &window_cfg)
-                    .iter()
-                    .enumerate()
-                    .map(|(w_idx, w)| {
-                        let tokenization = tok.tokenize(w.str, None, None);
-                        let boundaries = w.boundaries();
-                        let item = Item {
-                            label: if label_fn.is_some() {
-                                Some(label_fn.unwrap()(&data))
-                            } else {
-                                None
-                            },
-                            data: TextData::new(
-                                data.original.clone(),
-                                Some(w.str.to_string()),
-                                Some(data.language.clone()),
-                            ),
-                            tokenization,
-                        };
-                        InferenceItem::new(item, idx, w_idx, boundaries)
-                    })
-                    .collect()
-            }),
-        )
+        let preprocess_fn = preprocessing(pipeline_cfg.preprocessing);
+        let label_fn = labeling(pipeline_cfg.labeling);
+        Pipeline::new(Arc::new(move |data, _, seed| -> Item {
+            let data = preprocess_fn(data, seed);
+            Item {
+                tokenization: tok.tokenize(&data.processed, None, None),
+                label: label_fn(&data),
+                data,
+            }
+        }))
+    }
+}
+
+pub type InferencePipeline = Pipeline<InferenceData, Vec<InferenceItem>>;
+impl InferencePipeline {
+    pub fn with_windows(
+        tokenizer_cfg: TokenizerConfig,
+        window_cfg: WindowConfig,
+        normalization: Option<Normalization>,
+        use_graphemes: bool,
+    ) -> Self {
+        let tok = tokenizer(tokenizer_cfg);
+        Pipeline::new(Arc::new(move |data, idx, _| {
+            let data = InferenceData {
+                original: clean(&data.original, use_graphemes),
+                ..data
+            };
+            let normalized: String;
+            let str = if normalization.is_some() {
+                normalized = normalize(&data.original, normalization.unwrap(), use_graphemes);
+                &normalized
+            } else {
+                &data.original
+            };
+            windows(str, &window_cfg)
+                .iter()
+                .enumerate()
+                .map(|(w_idx, w)| {
+                    let tokenization = tok.tokenize(w.str, None, None);
+                    let boundaries = w.boundaries();
+                    InferenceItem::new(data.clone(), tokenization, idx, w_idx, boundaries)
+                })
+                .collect()
+        }))
     }
 }
 
@@ -452,10 +517,11 @@ struct InferenceLoader {
 
 impl InferenceLoader {
     pub fn new(
-        generators: Vec<Box<dyn TextGen>>,
-        pipeline_config: PipelineConfig,
+        generators: Vec<Box<dyn DataGen<Item = InferenceData>>>,
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
+        normalization: Option<Normalization>,
+        use_graphemes: bool,
         num_threads: u8,
         mut buffer_size: usize,
         batch_limit: usize,
@@ -463,7 +529,12 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
-        let pipeline = Pipeline::with_windows(pipeline_config, tokenizer_config, window_config);
+        let pipeline = Pipeline::with_windows(
+            tokenizer_config,
+            window_config,
+            normalization,
+            use_graphemes,
+        );
         let splits: Vec<usize> = generators.iter().map(|g| g.min_len()).collect();
         let min_items = splits.iter().sum();
         let prefetch_factor = prefetch_factor.max(1);
@@ -493,6 +564,8 @@ impl InferenceLoader {
 impl InferenceLoader {
     #[staticmethod]
     #[args(
+        normalization = "Normalization::NFKC",
+        use_graphemes = "true",
         num_threads = "(num_cpus::get() as u8).min(4)",
         buffer_size = "32",
         batch_limit = "16",
@@ -502,9 +575,10 @@ impl InferenceLoader {
     )]
     pub fn from_iterator(
         iterator: PyObject,
-        pipeline_config: PipelineConfig,
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
+        normalization: Option<Normalization>,
+        use_graphemes: bool,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -512,12 +586,13 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
-        let text_gen = Box::new(text_generator_from_python(iterator));
+        let text_gen = Box::new(inference_data_generator_from_python(iterator));
         Self::new(
             vec![text_gen],
-            pipeline_config,
             tokenizer_config,
             window_config,
+            normalization,
+            use_graphemes,
             num_threads,
             buffer_size,
             batch_limit,
@@ -529,6 +604,9 @@ impl InferenceLoader {
 
     #[staticmethod]
     #[args(
+        file_format = "InferenceDataFileFormat::Text",
+        normalization = "Normalization::NFKC",
+        use_graphemes = "true",
         languages = "None",
         num_threads = "(num_cpus::get() as u8).min(4)",
         buffer_size = "32",
@@ -539,9 +617,11 @@ impl InferenceLoader {
     )]
     pub fn from_files(
         files: Vec<String>,
-        pipeline_config: PipelineConfig,
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
+        file_format: InferenceDataFileFormat,
+        normalization: Option<Normalization>,
+        use_graphemes: bool,
         languages: Option<Vec<String>>,
         num_threads: u8,
         buffer_size: usize,
@@ -570,14 +650,19 @@ impl InferenceLoader {
                 } else {
                     None
                 };
-                Box::new(text_generator_from_file(Path::new(&file), None, lang)) as Box<dyn TextGen>
+                Box::new(inference_data_generator_from_file(
+                    Path::new(&file),
+                    file_format,
+                    lang,
+                )) as Box<dyn DataGen<Item = InferenceData>>
             })
             .collect();
         Self::new(
             generators,
-            pipeline_config,
             tokenizer_config,
             window_config,
+            normalization,
+            use_graphemes,
             num_threads,
             buffer_size,
             batch_limit,
@@ -605,7 +690,7 @@ impl InferenceLoader {
 
 #[pyclass]
 struct DataLoader {
-    pipeline: Pipeline<Item>,
+    pipeline: Pipeline<TextData, Item>,
     files: Vec<String>,
     languages: Option<Vec<String>>,
     strategy: TextIterationStrategy,
@@ -632,7 +717,7 @@ impl DataLoader {
     fn new(
         files: Vec<String>,
         languages: Option<Vec<String>>,
-        pipeline_config: PipelineConfig,
+        pipeline_config: PreprocessingPipelineConfig,
         tokenizer_config: TokenizerConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
@@ -708,7 +793,7 @@ impl DataLoader {
     )]
     pub fn from_files(
         files: Vec<String>,
-        pipeline_config: PipelineConfig,
+        pipeline_config: PreprocessingPipelineConfig,
         tokenizer_config: TokenizerConfig,
         languages: Option<Vec<String>>,
         strategy: TextIterationStrategy,
@@ -772,7 +857,8 @@ impl DataLoader {
                 } else {
                     None
                 };
-                Box::new(text_generator_from_file(Path::new(&file), None, lang)) as Box<dyn TextGen>
+                Box::new(text_data_generator_from_files(Path::new(&file), None, lang))
+                    as Box<dyn DataGen<Item = TextData>>
             })
             .collect();
 
@@ -828,8 +914,9 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     let m = PyModule::new(py, "data")?;
     m.add_class::<DataLoader>()?;
     m.add_class::<InferenceLoader>()?;
-    m.add_class::<PipelineConfig>()?;
+    m.add_class::<PreprocessingPipelineConfig>()?;
     m.add_class::<TextData>()?;
+    m.add_class::<InferenceData>()?;
     m.add_class::<Item>()?;
     m.add_class::<InferenceItem>()?;
     m.add_class::<ItemBatch>()?;

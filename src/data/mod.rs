@@ -208,8 +208,11 @@ impl<'a> FromPyObject<'a> for InferenceDataFileFormat {
 #[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
 #[pyclass]
 pub struct InferenceData {
+    #[pyo3(get)]
     original: String,
+    #[pyo3(get)]
     detections: Option<Vec<bool>>,
+    #[pyo3(get)]
     language: Option<String>,
 }
 
@@ -529,7 +532,7 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
-        let pipeline = Pipeline::with_windows(
+        let pipeline = InferencePipeline::with_windows(
             tokenizer_config,
             window_config,
             normalization,

@@ -2,6 +2,7 @@ import collections
 import math
 import os
 import pprint
+import sys
 from typing import Dict, Iterable, List, Optional, Sized, Union, Tuple, Iterator, Any
 
 import torch
@@ -189,15 +190,21 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
                 **self._inference_loader_cfg
             )
         elif input_type == "sequences":
+            # threading currently not supported with python iterators
             self._inference_loader_cfg["num_threads"] = 0
-            self._inference_loader_cfg["prefetch_factor"] = len(inputs)
-            self._inference_loader_cfg["buffer_size"] = len(inputs)
+            if sort:
+                # make sure all sequences are loaded into buffer for
+                # best possible sorting if sequences are in memory
+                max_usize = sys.maxsize * 2 + 1
+                self._inference_loader_cfg["prefetch_factor"] = max_usize
+                self._inference_loader_cfg["buffer_size"] = max_usize
             loader = data.InferenceLoader.from_iterator(
                 ((seq, languages[i] if languages is not None else None)
                  for i, seq in enumerate(inputs)),
                 **self._inference_loader_cfg
             )
         elif input_type == "iterator":
+            # threading currently not supported with python iterators
             self._inference_loader_cfg["num_threads"] = 0
             loader = data.InferenceLoader.from_iterator(
                 ((seq, lang) for seq, lang in inputs),
@@ -260,7 +267,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             mixed_precision_dtype = torch.bfloat16
 
         if self.device.type == "cpu" and precision == "fp16":
-            self.logger.info("Setting precision to bfp16 instead of fp16, because fp16 is not supported on CPU yet")
+            self.logger.info("setting precision to bfp16 instead of fp16, because fp16 is not supported on CPU yet")
             mixed_precision_dtype = torch.bfloat16
 
         self._mixed_precision_dtype = mixed_precision_dtype

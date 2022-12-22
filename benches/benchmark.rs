@@ -1,10 +1,10 @@
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::distributions::WeightedIndex;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
-use text_correction_utils::tokenization::{ByteTokenizer, CharTokenizer, Tokenization, Tokenize};
+use text_correction_utils::tokenization::{ByteTokenizer, CharTokenizer, Tokenize};
 use text_correction_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
 };
@@ -117,7 +117,7 @@ fn bench_tokenizer(c: &mut Criterion) {
 fn bench_utils(c: &mut Criterion) {
     let mut group = c.benchmark_group("utils");
     let mut rng = ChaCha8Rng::seed_from_u64(22);
-    let mut dist: WeightedIndex<usize> = WeightedIndex::new([16, 4, 2, 1]).unwrap();
+    let dist: WeightedIndex<usize> = WeightedIndex::new([16, 4, 2, 1]).unwrap();
     for size in INPUT_SIZES.iter() {
         let input: Vec<usize> = (&mut rng)
             .sample_iter(&dist)

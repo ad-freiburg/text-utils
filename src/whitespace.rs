@@ -91,7 +91,8 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOp
                 "should not happen, most likely your inputs contain multiple \
                 consecutive whitespaces, leading, or trailing whitespaces, \
                 prepare them first using the clean function:\n\
-                from: \"{from}\"\nto  : \"{to}\""
+                from: \"{from}\"\nto  : \"{to}\"\n\
+                from_char: \"{from_char}\"\nto_char  : \"{to_char:?}\"\n"
             );
         }
         from_ptr += 1;

@@ -133,6 +133,7 @@ impl<'a> Iterator for Characters<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct Character<'a> {
     pub str: &'a str,
 }
@@ -147,7 +148,7 @@ impl<'a> Character<'a> {
     }
 
     pub fn is_whitespace(&self) -> bool {
-        self.str.chars().all(|c| c.is_whitespace())
+        self.str.chars().all(char::is_whitespace)
     }
 
     pub fn code_point_len(&self) -> usize {

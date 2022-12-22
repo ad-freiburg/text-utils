@@ -19,7 +19,12 @@ pub fn clean(s: &str, use_graphemes: bool) -> String {
             output.push(' ');
         }
         last_was_whitespace = false;
-        output.push_str(char.str);
+        // char.is_whitespace() is only true for characters that
+        // contain only whitespace unicode code points, so we trim
+        // remaining whitespaces here again. it should be enough to trim here because
+        // whitespaces should never occurr in the middle of a grapheme cluster with
+        // > 2 code points
+        output.push_str(char.str.trim());
     }
     output
 }

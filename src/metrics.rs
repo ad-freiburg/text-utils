@@ -543,12 +543,6 @@ mod tests {
         assert!((rec - 0.5).abs() < EPS);
     }
 
-    const INPUT_SEQUENCES: [&str; 4] = [
-        "this is a tset",
-        "we do nod match",
-        "just a rwong sequence",
-        "one last examples",
-    ];
     const PRED_SEQUENCES: [&str; 4] = [
         "this is a test",
         "we do no match",

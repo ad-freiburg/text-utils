@@ -775,7 +775,7 @@ impl BatchLimit {
 mod tests {
     use crate::data::loading::{open, BatchLimitType, BatchedIterator, PipelineIterator};
     use crate::data::preprocessing::LabelingConfig;
-    use crate::data::{InferenceData, Item, Pipeline, PreprocessingPipelineConfig, TextData};
+    use crate::data::{Item, Pipeline, PreprocessingPipelineConfig, TextData};
     use crate::tokenization::{TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
@@ -952,16 +952,6 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
-        let text_iter = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        );
 
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
@@ -989,8 +979,7 @@ mod tests {
             None,
         );
 
-        let mut it = text_iter.pipe(&pipeline, 0, 4, None);
-        let lines = BufReader::new(open(&d)).lines();
+        let it = text_iter.pipe(&pipeline, 0, 4, None);
         let now = Instant::now();
         let n: usize = 20;
         let _: Vec<Item> = it.take(n).collect();
@@ -1008,8 +997,7 @@ mod tests {
             None,
         );
 
-        let mut it = text_iter.pipe(&pipeline, 2, 4, None);
-        let lines = BufReader::new(open(&d)).lines();
+        let it = text_iter.pipe(&pipeline, 2, 4, None);
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
         let time2 = now.elapsed().as_secs_f64();
@@ -1027,8 +1015,7 @@ mod tests {
             None,
         );
 
-        let mut it = text_iter.pipe(&pipeline, 4, 4, None);
-        let lines = BufReader::new(open(&d)).lines();
+        let it = text_iter.pipe(&pipeline, 4, 4, None);
         let now = Instant::now();
         let _: Vec<Item> = it.take(n).collect();
         let time3 = now.elapsed().as_secs_f64();
@@ -1060,9 +1047,9 @@ mod tests {
             None,
         );
 
-        let mut it = text_iter.pipe(&pipeline, 0, 4, None);
+        let it = text_iter.pipe(&pipeline, 0, 4, None);
         let lines = BufReader::new(open(&d)).lines();
-        for (idx, (line, item)) in it.zip(lines).enumerate() {
+        for (line, item) in it.zip(lines) {
             assert_eq!(line.data.original, item.unwrap())
         }
     }

@@ -479,7 +479,7 @@ mod tests {
         assert!(ew.len() < w.len());
         assert_eq!(excluded.len(), 0);
         // test with excluded indices --> ä should be removed
-        let (ew, excluded) = edit_word(w, true, &mut rng, &edits, Some(HashSet::from([0, 2, 3])));
+        let (ew, _) = edit_word(w, true, &mut rng, &edits, Some(HashSet::from([0, 2, 3])));
         assert_eq!(&ew, "tst");
         // test deletion for word with 1 or fewer characters
         let (ew, excluded) = edit_word("t", true, &mut rng, &edits, None);

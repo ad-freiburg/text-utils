@@ -27,6 +27,7 @@ def save_checkpoint(
     step: int,
     epoch: int,
     epoch_step: int,
+    epoch_items: int,
     val_loss: float,
     optimizer: Optional[optim.Optimizer] = None,
     lr_scheduler: Optional[Any] = None,
@@ -40,6 +41,7 @@ def save_checkpoint(
     :param step: global step
     :param epoch: global epoch
     :param epoch_step: step within epoch
+    :param epoch_items: the number of items (batch elements) seen during this epoch, if a fixed batch size is used this would be batch_size * epoch_step
     :param val_loss: Validation loss achieved by this checkpoint
     :param optimizer: Pytorch optimizer
     :param lr_scheduler: Pytorch learning rate scheduler,
@@ -54,6 +56,7 @@ def save_checkpoint(
         "step": step,
         "epoch": epoch,
         "epoch_step": epoch_step,
+        "epoch_items": epoch_items,
         "val_loss": val_loss,
         "optimizer_state_dict": None if optimizer is None
         else optimizer.state_dict(),

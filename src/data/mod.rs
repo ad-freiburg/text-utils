@@ -699,6 +699,7 @@ struct DataLoader {
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
     epoch: usize,
+    fast_forward: usize,
     limit: usize,
     skip: usize,
     rank: usize,
@@ -761,6 +762,7 @@ impl DataLoader {
             iter: None,
             min_items: None,
             epoch: 0,
+            fast_forward: 0,
             limit,
             skip,
             rank,
@@ -867,7 +869,7 @@ impl DataLoader {
             Some(text_iter.min_len().min(slf.limit).saturating_sub(slf.skip) / slf.world_size);
         let batch_iter = text_iter
             .take(slf.limit)
-            .skip(slf.skip + slf.rank)
+            .skip(slf.skip + slf.fast_forward + slf.rank)
             .step_by(slf.world_size)
             .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size, seed)
             .batched(
@@ -899,6 +901,10 @@ impl DataLoader {
 
     fn set_epoch(&mut self, epoch: usize) {
         self.epoch = epoch;
+    }
+
+    fn set_fast_forward(&mut self, num_items: usize) {
+        self.fast_forward = num_items
     }
 }
 

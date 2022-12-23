@@ -21,7 +21,7 @@ class _TransformerEncoderLayer(nn.Module):
         self,
         d_model,
         nhead,
-        with_pos: str = "none",
+        add_pos: bool,
         dim_feedforward=2048,
         dropout=0.1,
         activation=F.relu,
@@ -51,11 +51,7 @@ class _TransformerEncoderLayer(nn.Module):
         else:
             self.activation = activation
 
-        self.with_pos = with_pos
-        if self.with_pos == "add_norm":
-            self.input_norm = nn.LayerNorm(d_model)
-        else:
-            self.input_norm = nn.Identity()
+        self.add_pos = add_pos
 
     def __setstate__(self, state):
         if 'activation' not in state:
@@ -78,17 +74,13 @@ class _TransformerEncoderLayer(nn.Module):
         """
 
         # see Fig. 1 of https://arxiv.org/pdf/2002.04745v1.pdf
-        if self.with_pos == "add" or self.with_pos == "add_norm":
-            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
-            src = self.input_norm(src + pos)
-
         x = src
         x = self.norm1(x + self._sa_block(x, pos, padding_mask))
         x = self.norm2(x + self._ff_block(x))
         return x
 
-    def _with_pos(self, x: torch.Tensor, pos: Optional[torch.Tensor]) -> torch.Tensor:
-        if self.with_pos and pos is not None and self.with_pos == "attention":
+    def _add_pos(self, x: torch.Tensor, pos: Optional[torch.Tensor]) -> torch.Tensor:
+        if self.add_pos and pos is not None:
             return x + pos
         else:
             return x
@@ -101,8 +93,8 @@ class _TransformerEncoderLayer(nn.Module):
         padding_mask: Optional[torch.Tensor]
     ) -> torch.Tensor:
         x = self.self_attn(
-            self._with_pos(x, pos),
-            self._with_pos(x, pos),
+            self._add_pos(x, pos),
+            self._add_pos(x, pos),
             x,
             key_padding_mask=padding_mask,
             need_weights=True
@@ -158,12 +150,18 @@ class TransformerEncoder(Encoder):
             _TransformerEncoderLayer(
                 d_model=dim,
                 nhead=heads,
-                with_pos=with_pos,
+                add_pos=with_pos == "attention",
                 dim_feedforward=ffw_dim,
                 dropout=dropout,
                 activation=act_fn
             ) for _ in range(1 if self.share_parameters else num_layers)
         )
+
+        self.with_pos = with_pos 
+        if self.with_pos == "add_norm":
+            self.input_norm = nn.LayerNorm(dim)
+        else:
+            self.input_norm = nn.Identity()
 
     def forward(
         self,
@@ -173,6 +171,11 @@ class TransformerEncoder(Encoder):
         **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         padding_mask = mask.padding_mask(lengths, x.device)
+        if self.with_pos == "add" or self.with_pos == "add_norm":
+            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
+            x = self.input_norm(x + pos)
+            pos = None
+
         enc = x
         for i in range(self.num_layers):
             enc = self.transformer[0 if self.share_parameters else i](enc, pos, padding_mask=padding_mask)

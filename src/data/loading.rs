@@ -361,7 +361,7 @@ impl<T> Iterator for TextIterator<T> {
     }
 }
 
-pub(crate) trait PipelineIterator<I, O>
+pub trait PipelineIterator<I, O>
 where
     Self: Iterator<Item = I> + Send + 'static + Sized,
     I: Send + 'static,

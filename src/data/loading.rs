@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::sync_channel;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
@@ -378,7 +379,7 @@ where
 
 impl<It, I, O> PipelineIterator<I, O> for It
 where
-    It: Iterator<Item = I> + Send + 'static + Sized,
+    It: Iterator<Item = I> + Send + 'static,
     I: Send + 'static,
     O: Send + 'static,
 {
@@ -504,7 +505,7 @@ where
 
 impl<T> Iterator for Pipe<T>
 where
-    T: Clone + Send,
+    T: Send + 'static,
 {
     type Item = T;
 
@@ -541,8 +542,8 @@ pub trait ItemSize {
 
 pub trait BatchedIterator<T>
 where
-    Self: Iterator<Item = T> + Sized,
-    T: ItemSize + Clone,
+    Self: Iterator<Item = T> + Send + 'static,
+    T: ItemSize + Send + 'static,
 {
     fn batched(
         self,
@@ -551,113 +552,158 @@ where
         prefetch_factor: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        buffer_size: usize,
         seed: Option<u64>,
-    ) -> Batched<Self, T>;
+    ) -> Batched<T>;
 }
 
 impl<I, T> BatchedIterator<T> for I
 where
-    I: Iterator<Item = T> + Sized,
-    T: ItemSize + Clone,
+    I: Iterator<Item = T> + Send + 'static,
+    T: ItemSize + Send + 'static,
 {
     fn batched(
-        mut self,
+        self,
         sort: bool,
         shuffle: bool,
         prefetch_factor: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        buffer_size: usize,
         seed: Option<u64>,
-    ) -> Batched<Self, T> {
+    ) -> Batched<T> {
         let batch_limit = batch_limit.max(1);
-        let prefetch_factor = prefetch_factor.max(2);
+        let prefetch_factor = prefetch_factor.max(1);
         // initialize remainder
-        let remainder = self.next();
-        Batched {
+        Batched::new(
+            self,
+            sort,
+            shuffle,
+            prefetch_factor,
             batch_limit,
             batch_limit_type,
-            rng: if seed.is_some() {
-                ChaCha8Rng::seed_from_u64(seed.unwrap())
-            } else {
-                ChaCha8Rng::from_entropy()
-            },
-            inner: self,
-            shuffle,
-            buffer: Vec::new(),
-            prefetch_factor,
-            sort,
-            remainder,
-        }
+            buffer_size,
+            seed,
+        )
     }
 }
 
-pub struct Batched<I, T>
-where
-    I: Iterator<Item = T> + Sized,
-    T: ItemSize + Clone,
-{
-    batch_limit: usize,
-    batch_limit_type: BatchLimitType,
-    rng: ChaCha8Rng,
-    inner: I,
-    shuffle: bool,
-    buffer: Vec<T>,
-    prefetch_factor: usize,
-    sort: bool,
-    remainder: Option<T>,
+pub struct Batched<T> {
+    inner: Box<dyn Iterator<Item = Batch<T>> + Send>,
 }
 
-impl<I, T> Batched<I, T>
+impl<T> Batched<T>
 where
-    I: Iterator<Item = T> + Sized,
-    T: ItemSize + Clone,
+    T: ItemSize + Send + 'static,
 {
-    pub fn build_batch(&mut self) -> (Option<Batch<T>>, Option<T>) {
-        if !self.sort && !self.shuffle {
+    pub fn new<I>(
+        mut iter: I,
+        sort: bool,
+        shuffle: bool,
+        prefetch_factor: usize,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        buffer_limit: usize,
+        seed: Option<u64>,
+    ) -> Self
+    where
+        I: Iterator<Item = T> + Send + 'static,
+    {
+        let (tx, rx) = sync_channel(buffer_limit);
+        let _ = Builder::new()
+            .name("batching thread".to_string())
+            .spawn(move || {
+                let mut remainder = iter.next();
+                let mut buf = Vec::new();
+                let mut rng = if seed.is_some() {
+                    ChaCha8Rng::seed_from_u64(seed.unwrap())
+                } else {
+                    ChaCha8Rng::from_entropy()
+                };
+                while remainder.is_some() {
+                    let (batch, rem) = Self::build_batch(
+                        &mut iter,
+                        &mut buf,
+                        &mut rng,
+                        remainder,
+                        sort,
+                        shuffle,
+                        batch_limit,
+                        batch_limit_type,
+                        prefetch_factor,
+                    );
+                    if batch.is_some() && tx.send(batch.unwrap()).is_err() {
+                        return;
+                    }
+                    remainder = rem;
+                }
+            })
+            .expect("failed to build batching thread");
+        Self {
+            inner: Box::new(rx.into_iter()),
+        }
+    }
+
+    #[inline]
+    fn build_batch<It>(
+        iter: &mut It,
+        buf: &mut Vec<T>,
+        rng: &mut ChaCha8Rng,
+        mut remainder: Option<T>,
+        sort: bool,
+        shuffle: bool,
+        batch_limit: usize,
+        batch_limit_type: BatchLimitType,
+        prefetch_factor: usize,
+    ) -> (Option<Batch<T>>, Option<T>)
+    where
+        It: Iterator<Item = T>,
+    {
+        if !sort && !shuffle {
             return Self::batch_from(
-                self.remainder.as_ref().unwrap().clone(),
-                || self.inner.next(),
-                self.batch_limit,
-                self.batch_limit_type,
+                remainder.unwrap(),
+                || iter.next(),
+                batch_limit,
+                batch_limit_type,
             );
         }
         // we create a batch in the following way:
         // 1. fill up the buffer
         // 2. maybe sort or shuffle the buffer
         // 3. pop from buffer until we have a maxed out batch
-        let mut buffer_limit = BatchLimit::from_items(&self.buffer[..], &self.batch_limit_type);
+        let mut buffer_limit = BatchLimit::from_items(&buf[..], &batch_limit_type);
         // fill buffer until we overshoot batch limit * some factor (>=1)
-        while buffer_limit.limit() <= self.batch_limit * self.prefetch_factor {
-            let Some(item) = self.inner.next() else {
+        while buffer_limit.limit() <= batch_limit * prefetch_factor {
+            let Some(item) = iter.next() else {
                 break;
             };
             buffer_limit = buffer_limit.update(&item);
-            self.buffer.push(item);
+            buf.push(item);
         }
         // we are only done if the buffer is empty
-        if self.buffer.is_empty() {
+        if buf.is_empty() {
             // return remainder as final batch if we still have one
             return (
-                if self.remainder.is_none() {
+                if remainder.is_none() {
                     None
                 } else {
-                    Some(Batch::new(vec![self.remainder.as_ref().unwrap().clone()]))
+                    Some(Batch::new(vec![remainder.unwrap()]))
                 },
                 None,
             );
         }
-        if self.sort {
+        if sort {
             // add remainder to buffer
             // buffer now contains at least two items
-            self.buffer.push(self.remainder.as_ref().unwrap().clone());
+            buf.push(remainder.unwrap());
             // sort the buffer by length
-            self.buffer.sort_by(|a, b| a.size().cmp(&b.size()));
+            buf.sort_by(|a, b| a.size().cmp(&b.size()));
             // if shuffle is also true, return a random subsequence from the sorted buffer
-            if self.shuffle {
+            if shuffle {
                 // calculate possible subsequences for batch
                 let sub_sequences =
-                    find_subsequences_of_max_size_k(&self.buffer, self.batch_limit, |sub_items| {
-                        BatchLimit::from_items(&sub_items, &self.batch_limit_type).limit()
+                    find_subsequences_of_max_size_k(&buf, batch_limit, |sub_items| {
+                        BatchLimit::from_items(&sub_items, &batch_limit_type).limit()
                     });
                 // randomly choose one subsequence
                 if sub_sequences.is_empty() {
@@ -665,28 +711,27 @@ where
                     // since we always need to return at least one item, just return the last
                     // and set the second last to the remainder, this should always work
                     // since the shuffle buffer contains at least two items
-                    let batch = Batch::new(vec![self.buffer.pop().unwrap()]);
-                    return (Some(batch), self.buffer.pop());
+                    let batch = Batch::new(vec![buf.pop().unwrap()]);
+                    return (Some(batch), buf.pop());
                 }
-                let index = self.rng.gen_range(0..sub_sequences.len());
+                let index = rng.gen_range(0..sub_sequences.len());
                 let (start_range, end_range) = sub_sequences[index];
-                let items_in_range: Vec<T> =
-                    self.buffer.splice(start_range..end_range, vec![]).collect();
-                return (Some(Batch::new(items_in_range)), self.buffer.pop());
+                let items_in_range: Vec<T> = buf.splice(start_range..end_range, vec![]).collect();
+                return (Some(Batch::new(items_in_range)), buf.pop());
             } else {
                 // if shuffle is false, pop the largest element from the buffer as the remainder
-                self.remainder = self.buffer.pop();
+                remainder = buf.pop();
             }
-        } else if self.shuffle {
+        } else if shuffle {
             // shuffle the buffer
-            self.buffer.shuffle(&mut self.rng);
+            buf.shuffle(rng);
         }
         // now pop from the back until batch is full
         Self::batch_from(
-            self.remainder.as_ref().unwrap().clone(),
-            || self.buffer.pop(),
-            self.batch_limit,
-            self.batch_limit_type,
+            remainder.unwrap(),
+            || buf.pop(),
+            batch_limit,
+            batch_limit_type,
         )
     }
 
@@ -720,20 +765,14 @@ where
     }
 }
 
-impl<I, T> Iterator for Batched<I, T>
+impl<T> Iterator for Batched<T>
 where
-    I: Iterator<Item = T>,
-    T: ItemSize + Clone,
+    T: ItemSize + Send,
 {
     type Item = Batch<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remainder.is_none() {
-            return None;
-        }
-        let (batch, remainder) = self.build_batch();
-        self.remainder = remainder;
-        batch
+        self.inner.next()
     }
 }
 
@@ -770,6 +809,8 @@ impl BatchLimit {
         }
     }
 }
+
+pub struct PaddedIterator {}
 
 #[cfg(test)]
 mod tests {
@@ -1092,6 +1133,7 @@ mod tests {
             0,
             8,
             BatchLimitType::BatchSize,
+            8,
             None,
         );
         for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(8)) {
@@ -1121,6 +1163,7 @@ mod tests {
                     32,
                     256,
                     BatchLimitType::PaddedItemSize,
+                    8,
                     Some(22),
                 );
                 let mut line_counter: HashMap<String, usize> =

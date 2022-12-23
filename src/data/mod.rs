@@ -529,6 +529,7 @@ impl InferenceLoader {
         mut buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
@@ -553,6 +554,7 @@ impl InferenceLoader {
                 prefetch_factor,
                 batch_limit,
                 batch_limit_type,
+                batch_buffer_size,
                 None,
             );
         Ok(InferenceLoader {
@@ -570,9 +572,10 @@ impl InferenceLoader {
         normalization = "Normalization::NFKC",
         use_graphemes = "true",
         num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "32",
+        buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
+        batch_buffer_size = "8",
         prefetch_factor = "4",
         sort = "false"
     )]
@@ -586,6 +589,7 @@ impl InferenceLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
@@ -600,6 +604,7 @@ impl InferenceLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
+            batch_buffer_size,
             prefetch_factor,
             sort,
         )
@@ -612,9 +617,10 @@ impl InferenceLoader {
         use_graphemes = "true",
         languages = "None",
         num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "32",
+        buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
+        batch_buffer_size = "8",
         prefetch_factor = "4",
         sort = "false"
     )]
@@ -630,6 +636,7 @@ impl InferenceLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
     ) -> PyResult<Self> {
@@ -670,6 +677,7 @@ impl InferenceLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
+            batch_buffer_size,
             prefetch_factor,
             sort,
         )
@@ -701,6 +709,7 @@ struct DataLoader {
     buffer_size: usize,
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
+    batch_buffer_size: usize,
     epoch: usize,
     fast_forward: usize,
     limit: usize,
@@ -728,6 +737,7 @@ impl DataLoader {
         mut buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        batch_buffer_size: usize,
         shuffle: bool,
         prefetch_factor: usize,
         sort: bool,
@@ -762,6 +772,7 @@ impl DataLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
+            batch_buffer_size,
             iter: None,
             min_items: None,
             epoch: 0,
@@ -785,9 +796,10 @@ impl DataLoader {
         languages = "None",
         strategy = "TextIterationStrategy::Sequential",
         num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "32",
+        buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
+        batch_buffer_size = "8",
         shuffle = "false",
         prefetch_factor = "4",
         sort = "false",
@@ -806,6 +818,7 @@ impl DataLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        batch_buffer_size: usize,
         shuffle: bool,
         prefetch_factor: usize,
         sort: bool,
@@ -835,6 +848,7 @@ impl DataLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
+            batch_buffer_size,
             shuffle,
             prefetch_factor,
             sort,
@@ -881,6 +895,7 @@ impl DataLoader {
                 slf.prefetch_factor,
                 slf.batch_limit,
                 slf.batch_limit_type,
+                slf.batch_buffer_size,
                 seed,
             );
         slf.iter = Some(Box::new(batch_iter));

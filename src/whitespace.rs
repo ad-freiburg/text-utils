@@ -107,7 +107,7 @@ pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) 
         chars.len(),
         operations.len(),
         "expected one operation for every character, but got {} operations and \
-        {} characters",
+        {} characters for input\n{s}",
         operations.len(),
         chars.len()
     );

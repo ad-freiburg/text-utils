@@ -485,18 +485,14 @@ impl InferencePipeline {
     ) -> Self {
         let tok = tokenizer(tokenizer_cfg);
         Pipeline::new(Arc::new(move |data, idx, _| {
-            let data = InferenceData {
+            let mut data = InferenceData {
                 original: clean(&data.original, use_graphemes),
                 ..data
             };
-            let normalized: String;
-            let str = if normalization.is_some() {
-                normalized = normalize(&data.original, normalization.unwrap(), use_graphemes);
-                &normalized
-            } else {
-                &data.original
-            };
-            windows(str, &window_cfg)
+            if normalization.is_some() {
+                data.original = normalize(&data.original, normalization.unwrap(), use_graphemes);
+            }
+            windows(&data.original, &window_cfg)
                 .iter()
                 .enumerate()
                 .map(|(w_idx, w)| {

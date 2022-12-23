@@ -165,24 +165,25 @@ pub fn char_windows<'a>(
         "max length must be larger than 2 times the context \
         length, otherwise there are no tokens left for the window itself"
     );
-    let window_length = max_length - 2 * context_length;
     let cs = CS::new(s, use_graphemes);
-    (0..cs.len())
-        .step_by(window_length)
-        .map(|window_start| {
-            let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
-            let ctx_start = window_start.saturating_sub(context_length);
-            let ctx_end = cs.len().min(window_start + window_length + context_length);
-            let window_end = cs.len().min(window_start + window_length);
-            Window::new(
-                ctx_start,
-                window_start,
-                window_end,
-                ctx_end,
-                cs.sub(ctx_start, ctx_end),
-            )
-        })
-        .collect()
+    let mut window_start = 0;
+    let mut windows = vec![];
+    while window_start < cs.len() {
+        let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
+        let ctx_start = window_start.saturating_sub(context_length);
+        let ctx_end = cs.len().min(window_start + window_length + context_length);
+        let window_end = cs.len().min(window_start + window_length);
+        windows.push(Window::new(
+            ctx_start,
+            window_start,
+            window_end,
+            ctx_end,
+            cs.sub(ctx_start, ctx_end),
+        ));
+
+        window_start = window_end;
+    }
+    windows
 }
 
 #[pyfunction(use_graphemes = "true")]

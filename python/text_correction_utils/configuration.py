@@ -22,15 +22,12 @@ def _handle_str(s: str, base_dir: Any) -> Any:
     assert num_matches <= 1, f"more than one config command matches '{s}'"
     if file_regex_match is not None:
         file_path = file_regex_match.group(1)
-        file_path = _handle_str(file_path, base_dir)
-        assert isinstance(file_path, str), "file() operator input should be a string"
+        file_path = str(_handle_str(file_path, base_dir))
         return load_config(os.path.join(base_dir, file_path))
     elif env_regex_match is not None:
         env_var, env_default = env_regex_match.group(1), env_regex_match.group(2)
-        env_var = _handle_str(env_var, base_dir)
-        assert isinstance(env_var, str), "env() operator input should be a string"
-        env_default = _handle_str(env_default, base_dir)
-        assert isinstance(env_default, str), "env() operator default should be a string"
+        env_var = str(_handle_str(env_var, base_dir))
+        env_default = str(_handle_str(env_default, base_dir))
         if env_var not in os.environ:
             if env_default == "":
                 raise ValueError(f"environment variable {env_var} not found and no default was given")
@@ -41,8 +38,7 @@ def _handle_str(s: str, base_dir: Any) -> Any:
         return yaml.load(env_var, Loader=yaml.FullLoader)
     elif path_regex_match is not None:
         path = path_regex_match.group(1)
-        path = _handle_str(path, base_dir)
-        assert isinstance(path, str), "abspath() operator input should be a string"
+        path = str(_handle_str(path, base_dir))
         return os.path.abspath(path)
     elif eval_regex_match is not None:
         expression = eval_regex_match.group(1)
@@ -56,8 +52,7 @@ def _handle_str(s: str, base_dir: Any) -> Any:
                     + expression[match.end(1) + length_change:]
             )
             length_change = len(expression) - org_length
-        expression = _handle_str(expression, base_dir)
-        assert isinstance(expression, str), "eval() operator input should be a string"
+        expression = str(_handle_str(expression, base_dir))
         return eval(expression)
     else:
         return s

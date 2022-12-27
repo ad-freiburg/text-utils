@@ -1,5 +1,6 @@
 use crate::unicode::CS;
 use crate::utils::{py_invalid_type_error, py_required_key_error};
+use anyhow::anyhow;
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
@@ -116,7 +117,7 @@ impl<'a> FromPyObject<'a> for WindowConfig {
     }
 }
 
-pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> Vec<Window<'a>> {
+pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> anyhow::Result<Vec<Window<'a>>> {
     match *config {
         WindowConfig::Character(max_chars, context_chars, use_graphemes) => {
             char_windows(s, max_chars, context_chars, use_graphemes)
@@ -159,12 +160,13 @@ pub fn char_windows<'a>(
     max_length: usize,
     context_length: usize,
     use_graphemes: bool,
-) -> Vec<Window<'a>> {
-    assert!(
-        max_length > 2 * context_length,
-        "max length must be larger than 2 times the context \
-        length, otherwise there are no tokens left for the window itself"
-    );
+) -> anyhow::Result<Vec<Window<'a>>> {
+    if max_length <= 2 * context_length {
+        return Err(anyhow!(
+            "max length must be larger than 2 times the context \
+        length, otherwise there are no characters left for the window itself"
+        ));
+    }
     let cs = CS::new(s, use_graphemes);
     let mut window_start = 0;
     let mut windows = vec![];
@@ -183,7 +185,7 @@ pub fn char_windows<'a>(
 
         window_start = window_end;
     }
-    windows
+    Ok(windows)
 }
 
 #[pyfunction(use_graphemes = "true")]
@@ -193,11 +195,11 @@ pub fn char_windows_py(
     max_length: usize,
     context_length: usize,
     use_graphemes: bool,
-) -> Vec<PyWindow> {
-    char_windows(&s, max_length, context_length, use_graphemes)
+) -> anyhow::Result<Vec<PyWindow>> {
+    Ok(char_windows(&s, max_length, context_length, use_graphemes)?
         .into_iter()
         .map(PyWindow::from)
-        .collect()
+        .collect())
 }
 
 #[inline]
@@ -219,12 +221,13 @@ pub fn byte_windows<'a>(
     max_bytes: usize,
     context_bytes: usize,
     use_graphemes: bool,
-) -> Vec<Window<'a>> {
-    assert!(
-        max_bytes > 2 * context_bytes,
-        "max length must be larger than 2 times the context \
-        length, otherwise there are no tokens left for the window itself"
-    );
+) -> anyhow::Result<Vec<Window<'a>>> {
+    if max_bytes <= 2 * context_bytes {
+        return Err(anyhow!(
+            "max bytes must be larger than 2 times the context \
+        bytes, otherwise there are no bytes left for the window itself"
+        ));
+    }
     let cs = CS::new(s, use_graphemes);
 
     let mut windows = vec![];
@@ -232,17 +235,15 @@ pub fn byte_windows<'a>(
     while window_start < cs.len() {
         let window_length = max_bytes - (1 + (window_start > 0) as usize) * context_bytes;
         let window_end = window_start + count_until(window_start..cs.len(), window_length, &cs);
-        assert!(
-            window_end > window_start,
-            "{}",
-            format!(
+        if window_end > window_start {
+            return Err(anyhow!(
                 "single character at position {window_start} has more bytes \
                 ({}) than the window length {window_length}, \
                 this suggests that something with your input string is wrong or the window length \
                 is too small",
                 cs.char_byte_len(window_start)
-            )
-        );
+            ));
+        }
         let ctx_start =
             window_start.saturating_sub(count_until((0..window_start).rev(), context_bytes, &cs));
         let ctx_end = window_end + count_until(window_end..cs.len(), context_bytes, &cs);
@@ -257,7 +258,7 @@ pub fn byte_windows<'a>(
 
         window_start = window_end;
     }
-    windows
+    Ok(windows)
 }
 
 #[pyfunction(use_graphemes = "true")]
@@ -267,11 +268,11 @@ pub fn byte_windows_py(
     max_bytes: usize,
     context_bytes: usize,
     use_graphemes: bool,
-) -> Vec<PyWindow> {
-    byte_windows(&s, max_bytes, context_bytes, use_graphemes)
+) -> anyhow::Result<Vec<PyWindow>> {
+    Ok(byte_windows(&s, max_bytes, context_bytes, use_graphemes)?
         .into_iter()
         .map(PyWindow::from)
-        .collect()
+        .collect())
 }
 
 /// A submodule containing helper functions needed for splitting long strings

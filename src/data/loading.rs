@@ -1,5 +1,6 @@
 use crate::data::{Batch, InferenceData, Pipeline, TextData};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
+use anyhow::{anyhow, Context};
 use pyo3::{intern, prelude::*, PyClass};
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
@@ -22,12 +23,12 @@ pub trait DataGen: Iterator + Send {
     fn min_len(&self) -> usize;
 }
 
-fn open(p: &Path) -> File {
-    File::open(p).expect(&format!("could not open file at {:?}", p))
+fn open(p: &Path) -> anyhow::Result<File> {
+    Ok(File::open(p).with_context(|| format!("could not open file at {:?}", p))?)
 }
 
-fn count_lines(p: &Path) -> usize {
-    BufReader::new(open(p)).lines().count()
+fn count_lines(p: &Path) -> anyhow::Result<usize> {
+    Ok(BufReader::new(open(p)?).lines().count())
 }
 
 pub struct LossyUtf8Reader<R>
@@ -72,7 +73,7 @@ impl<R> Iterator for LossyUtf8Lines<R>
 where
     R: BufRead,
 {
-    type Item = String;
+    type Item = anyhow::Result<String>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = vec![];
@@ -85,9 +86,9 @@ where
                     buf.pop();
                 }
                 let s = String::from_utf8_lossy(&buf);
-                Some(s.to_string())
+                Some(Ok(s.to_string()))
             }
-            Err(e) => panic!("failed to read line: {e}"),
+            Err(e) => Some(Err(anyhow!("failed to read line: {e}"))),
         }
     }
 }
@@ -120,11 +121,11 @@ pub fn text_data_generator_from_files(
     org: &Path,
     proc: Option<&Path>,
     lang: Option<String>,
-) -> impl DataGen<Item = TextData> {
-    let org_len = count_lines(org);
-    let org_iter = LossyUtf8Reader::new(BufReader::new(open(org))).lines();
+) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
+    let org_len = count_lines(org)?;
+    let org_iter = LossyUtf8Reader::new(BufReader::new(open(org)?)).lines();
     let mut proc_iter = if proc.is_some() {
-        let proc_len = count_lines(proc.unwrap());
+        let proc_len = count_lines(proc.unwrap())?;
         assert_eq!(
             org_len,
             proc_len,
@@ -132,56 +133,65 @@ pub fn text_data_generator_from_files(
             org,
             proc.unwrap()
         );
-        Some(LossyUtf8Reader::new(BufReader::new(open(proc.unwrap()))).lines())
+        Some(LossyUtf8Reader::new(BufReader::new(open(proc.unwrap())?)).lines())
     } else {
         None
     };
     let iter = org_iter.map(move |org_s| {
         let proc_s = if proc_iter.is_some() {
-            proc_iter.as_mut().unwrap().next()
+            match proc_iter.as_mut().unwrap().next() {
+                Some(result) => Some(result?),
+                None => None,
+            }
         } else {
             None
         };
-        TextData::new(org_s, proc_s, lang.clone())
+        Ok(TextData::new(org_s?, proc_s, lang.clone()))
     });
-    DataGenerator {
+    Ok(Box::new(DataGenerator {
         min_len: org_len,
         iter,
-    }
+    }))
 }
 
 pub fn inference_data_generator_from_file(
     path: &Path,
     format: InferenceDataFileFormat,
     lang: Option<String>,
-) -> impl DataGen<Item = InferenceData> {
-    let iter = LossyUtf8Reader::new(BufReader::new(open(path)))
+) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>> {
+    let iter = LossyUtf8Reader::new(BufReader::new(open(path)?))
         .lines()
         .map(move |s| {
-            let mut data = InferenceData::from_str(&s, &format);
+            let mut data = InferenceData::from_str(&(s?), &format);
             if data.language.is_none() && lang.is_some() {
                 data.language = lang.clone();
             };
-            data
+            Ok(data)
         });
-    DataGenerator { min_len: 0, iter }
+    Ok(Box::new(DataGenerator { min_len: 0, iter }))
 }
 
 pub fn text_data_generator_from_sequences(
     original: Vec<String>,
     processed: Option<Vec<String>>,
     language: Option<Vec<String>>,
-) -> impl DataGen<Item = TextData> {
+) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
     let len = original.len();
     let org_iter = original.into_iter();
     let mut proc_iter = if processed.is_some() {
-        assert_eq!(processed.as_ref().unwrap().len(), len);
+        if processed.as_ref().unwrap().len() != len {
+            return Err(anyhow!(
+                "expect the same number of processed sequences as original sequences"
+            ));
+        }
         Some(processed.unwrap().into_iter())
     } else {
         None
     };
     let mut lang_iter = if language.is_some() {
-        assert_eq!(language.as_ref().unwrap().len(), len);
+        if language.as_ref().unwrap().len() != len {
+            return Err(anyhow!("expect a language for every sequence"));
+        }
         Some(language.unwrap().into_iter())
     } else {
         None
@@ -197,9 +207,9 @@ pub fn text_data_generator_from_sequences(
         } else {
             None
         };
-        TextData::new(org_s, proc_s, lang_s)
+        Ok(TextData::new(org_s, proc_s, lang_s))
     });
-    DataGenerator { iter, min_len: len }
+    Ok(Box::new(DataGenerator { iter, min_len: len }))
 }
 
 pub struct PyIterator<T>
@@ -214,23 +224,34 @@ impl<T> Iterator for PyIterator<T>
 where
     T: PyClass + Clone,
 {
-    type Item = T;
+    type Item = anyhow::Result<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Python::with_gil(|py| {
-            let return_value = self.obj.call_method0(py, intern!(py, "__next__"));
-            // we return None when the python object is not an iterator
-            // (no __next__ method), the items the python iterator produces
-            // are not of type T items, and if the iterator is fully consumed.
-            match return_value.ok() {
-                Some(data) => data.extract(py).ok(),
-                None => None,
+            let return_value = match self.obj.call_method0(py, intern!(py, "__next__")) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Some(Err(anyhow!(
+                        "calling __next__ on python object failed, it is not an iterator"
+                    )))
+                }
+            };
+            match return_value.extract::<'_, Option<T>>(py) {
+                Ok(value) => match value {
+                    Some(t) => Some(Ok(t)),
+                    None => None,
+                },
+                Err(e) => Some(Err(anyhow!(
+                    "failed to extract expected type from iterator: {e}"
+                ))),
             }
         })
     }
 }
 
-pub fn inference_data_generator_from_python(obj: PyObject) -> impl DataGen<Item = InferenceData> {
+pub fn inference_data_generator_from_python(
+    obj: PyObject,
+) -> impl DataGen<Item = anyhow::Result<InferenceData>> {
     let iter = PyIterator {
         obj,
         _phantom: None,
@@ -272,18 +293,16 @@ impl<T> TextIterator<T> {
         text_generators: Vec<Box<dyn DataGen<Item = T>>>,
         strategy: TextIterationStrategy,
         seed: Option<u64>,
-    ) -> Self {
-        assert!(!text_generators.is_empty());
+    ) -> anyhow::Result<Self> {
         let lengths: Vec<usize> = text_generators.iter().map(|g| g.min_len()).collect();
-        if strategy == TextIterationStrategy::Weighted {
-            assert!(
-                lengths.iter().all(|l| *l > 0),
+        if strategy == TextIterationStrategy::Weighted && lengths.iter().any(|l| *l == 0) {
+            return Err(anyhow!(
                 "for the weighted iteration strategy all text generators must specify a positive \
             minimum length, otherwise they would never be iterated"
-            );
+            ));
         }
         let finished = vec![false; text_generators.len()];
-        TextIterator {
+        Ok(TextIterator {
             text_generators,
             lengths,
             strategy,
@@ -294,7 +313,7 @@ impl<T> TextIterator<T> {
                 ChaCha8Rng::from_entropy()
             },
             finished,
-        }
+        })
     }
 
     fn next_idx(&mut self) {
@@ -814,19 +833,19 @@ pub struct PaddedIterator {}
 
 #[cfg(test)]
 mod tests {
-    use crate::data::loading::{open, BatchLimitType, BatchedIterator, PipelineIterator};
+    use crate::data::loading::{open, BatchLimitType};
     use crate::data::preprocessing::LabelingConfig;
     use crate::data::{Item, Pipeline, PreprocessingPipelineConfig, TextData};
     use crate::tokenization::{TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
     use std::collections::HashMap;
-    use std::io;
-    use std::io::{BufRead, BufReader};
+    use std::io::BufReader;
+    use std::io::{self, BufRead};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use super::{text_data_generator_from_files, TextIterator};
+    use super::{text_data_generator_from_files, BatchedIterator, PipelineIterator, TextIterator};
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
     const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
@@ -835,25 +854,21 @@ mod tests {
         "An elderly man sits outside a storefront accompanied by a young boy with a cart.";
 
     #[test]
-    fn test_text_iterator() {
+    fn test_text_iterator() -> anyhow::Result<()> {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
-        );
+        )?;
 
         // first check sequential lines with one file
         assert_eq!(it.min_len(), 29000);
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_FIRST.to_string(),
                 processed: MULTI30K_FIRST.to_string(),
@@ -861,7 +876,7 @@ mod tests {
             }
         );
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_SECOND.to_string(),
                 processed: MULTI30K_SECOND.to_string(),
@@ -869,20 +884,16 @@ mod tests {
             }
         );
         // check sequential lines with original and processed
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            Some(&d2),
-            Some("1".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, Some(&d2), Some("1".to_string()))?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
-        );
+        )?;
 
         assert_eq!(it.min_len(), 29000);
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_FIRST.to_string(),
                 processed: MULTI30K_REV_FIRST.to_string(),
@@ -890,7 +901,7 @@ mod tests {
             }
         );
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_SECOND.to_string(),
                 processed: MULTI30K_REV_SECOND.to_string(),
@@ -898,25 +909,17 @@ mod tests {
             }
         );
         // check interleaved lines with two files
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
-        let multi30k_rev = Box::new(text_data_generator_from_files(
-            &d2,
-            None,
-            Some("2".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+        let multi30k_rev = text_data_generator_from_files(&d2, None, Some("2".to_string()))?;
         let mut it = TextIterator::new(
             vec![multi30k, multi30k_rev],
             super::TextIterationStrategy::Interleaved,
             None,
-        );
+        )?;
 
         assert_eq!(it.min_len(), 2 * 29000);
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_FIRST.to_string(),
                 processed: MULTI30K_FIRST.to_string(),
@@ -924,7 +927,7 @@ mod tests {
             }
         );
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_REV_FIRST.to_string(),
                 processed: MULTI30K_REV_FIRST.to_string(),
@@ -932,7 +935,7 @@ mod tests {
             }
         );
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_SECOND.to_string(),
                 processed: MULTI30K_SECOND.to_string(),
@@ -940,7 +943,7 @@ mod tests {
             }
         );
         assert_eq!(
-            it.next().unwrap(),
+            it.next().unwrap().unwrap(),
             TextData {
                 original: MULTI30K_REV_SECOND.to_string(),
                 processed: MULTI30K_REV_SECOND.to_string(),
@@ -951,33 +954,25 @@ mod tests {
         let mut idx: usize = 4;
         while let Some(data) = it.next() {
             assert_eq!(
-                &data.language.unwrap(),
+                &data.unwrap().language.unwrap(),
                 if idx % 2 == 0 { "1" } else { "2" }
             );
             idx += 1;
         }
         // check weighted lines with two files
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
-        let multi30k_rev = Box::new(text_data_generator_from_files(
-            &d2,
-            None,
-            Some("2".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+        let multi30k_rev = text_data_generator_from_files(&d2, None, Some("2".to_string()))?;
         let mut it = TextIterator::new(
             vec![multi30k, multi30k_rev],
             super::TextIterationStrategy::Weighted,
             None,
-        );
+        )?;
 
         assert_eq!(it.min_len(), 2 * 29000);
         let mut first_count = 0;
         let mut second_count = 0;
         while let Some(data) = it.next() {
-            if data.language.unwrap().as_str() == "1" {
+            if data.unwrap().language.unwrap().as_str() == "1" {
                 first_count += 1;
             } else {
                 second_count += 1;
@@ -985,10 +980,11 @@ mod tests {
         }
         assert_eq!(first_count, 29000);
         assert_eq!(first_count, second_count);
+        Ok(())
     }
 
     #[test]
-    fn test_pipeline_iterator() {
+    fn test_pipeline_iterator() -> anyhow::Result<()> {
         let _ = env_logger::try_init();
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1009,56 +1005,44 @@ mod tests {
             ),
         );
         // test if it works with one worker and record the time it took
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
-        );
+        )?;
 
-        let it = text_iter.pipe(&pipeline, 0, 4, None);
+        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 0, 4, None);
         let now = Instant::now();
         let n: usize = 20;
-        let _: Vec<Item> = it.take(n).collect();
+        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
         let time = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time, n);
         // test with more workers, check that its faster
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
-        );
+        )?;
 
-        let it = text_iter.pipe(&pipeline, 2, 4, None);
+        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 2, 4, None);
         let now = Instant::now();
-        let _: Vec<Item> = it.take(n).collect();
+        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
         let time2 = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time2, n);
         assert!(time2 < time);
         // test with even more workers
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
-        );
+        )?;
 
-        let it = text_iter.pipe(&pipeline, 4, 4, None);
+        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 4, 4, None);
         let now = Instant::now();
-        let _: Vec<Item> = it.take(n).collect();
+        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
         let time3 = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time3, n);
         assert!(time3 < time2);
@@ -1077,41 +1061,34 @@ mod tests {
             ),
         );
 
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
-        );
+        )?;
 
-        let it = text_iter.pipe(&pipeline, 0, 4, None);
-        let lines = BufReader::new(open(&d)).lines();
-        for (line, item) in it.zip(lines) {
-            assert_eq!(line.data.original, item.unwrap())
+        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 0, 4, None);
+        let lines = BufReader::new(open(&d)?).lines();
+        for (item, line) in it.zip(lines) {
+            assert_eq!(item.unwrap().data.original, line.unwrap())
         }
+        Ok(())
     }
 
     #[test]
-    fn test_batched_pipeline_iterator() {
+    fn test_batched_pipeline_iterator() -> anyhow::Result<()> {
         let _ = env_logger::try_init();
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = Box::new(text_data_generator_from_files(
-            &d,
-            None,
-            Some("1".to_string()),
-        ));
+        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
-        );
-        let lines: Vec<String> = BufReader::new(open(&d))
+        )?;
+        let lines: Vec<String> = BufReader::new(open(&d)?)
             .lines()
             .collect::<Result<Vec<String>, io::Error>>()
             .unwrap();
@@ -1127,15 +1104,11 @@ mod tests {
                 None,
             ),
         );
-        let pipe_it = text_iter.pipe(&pipeline, 4, 16, None).batched(
-            false,
-            false,
-            0,
-            8,
-            BatchLimitType::BatchSize,
-            8,
-            None,
-        );
+        let pipe_it = text_iter
+            .filter_map(|d| d.ok())
+            .pipe(&pipeline, 4, 16, None)
+            .filter_map(|d| d.ok())
+            .batched(false, false, 0, 8, BatchLimitType::BatchSize, 8, None);
         for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(8)) {
             assert!(batch.len() > 0 && batch.len() <= 8);
             let lines: Vec<&String> = line_batch.into_iter().collect();
@@ -1149,23 +1122,26 @@ mod tests {
         // (because some descriptions in multi30k appear twice)
         for shuffle in [true, false] {
             for sort in [true, false] {
-                let multi30k = Box::new(text_data_generator_from_files(
-                    &d,
+                let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+                let text_iter = TextIterator::new(
+                    vec![multi30k],
+                    super::TextIterationStrategy::Weighted,
                     None,
-                    Some("1".to_string()),
-                ));
-                let text_iter =
-                    TextIterator::new(vec![multi30k], super::TextIterationStrategy::Weighted, None);
+                )?;
 
-                let pipe_it = text_iter.pipe(&pipeline, 4, 4, None).batched(
-                    sort,
-                    shuffle,
-                    32,
-                    256,
-                    BatchLimitType::PaddedItemSize,
-                    8,
-                    Some(22),
-                );
+                let pipe_it = text_iter
+                    .filter_map(|d| d.ok())
+                    .pipe(&pipeline, 4, 4, None)
+                    .filter_map(|d| d.ok())
+                    .batched(
+                        sort,
+                        shuffle,
+                        32,
+                        256,
+                        BatchLimitType::PaddedItemSize,
+                        8,
+                        Some(22),
+                    );
                 let mut line_counter: HashMap<String, usize> =
                     lines.iter().cloned().map(|l| (l, 0)).collect();
                 for batch in pipe_it {
@@ -1188,5 +1164,6 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 }

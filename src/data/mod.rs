@@ -7,6 +7,7 @@ use crate::tokenization::{tokenizer, Tokenization, TokenizerConfig};
 use crate::unicode::{normalize, Normalization};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
+use anyhow::anyhow;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -14,7 +15,7 @@ use pyo3::types::PyDict;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::vec::IntoIter;
 
 use self::loading::{
@@ -456,7 +457,8 @@ impl<I, O> Pipeline<I, O> {
     }
 }
 
-impl Pipeline<TextData, Item> {
+pub type TextDataPipeline = Pipeline<TextData, anyhow::Result<Item>>;
+impl TextDataPipeline {
     pub fn with_tokenizer(
         pipeline_cfg: PreprocessingPipelineConfig,
         tokenizer_cfg: TokenizerConfig,
@@ -464,18 +466,18 @@ impl Pipeline<TextData, Item> {
         let tok = tokenizer(tokenizer_cfg);
         let preprocess_fn = preprocessing(pipeline_cfg.preprocessing);
         let label_fn = labeling(pipeline_cfg.labeling);
-        Pipeline::new(Arc::new(move |data, _, seed| -> Item {
-            let data = preprocess_fn(data, seed);
-            Item {
+        Pipeline::new(Arc::new(move |data, _, seed| -> anyhow::Result<Item> {
+            let data = preprocess_fn(data, seed)?;
+            Ok(Item {
                 tokenization: tok.tokenize(&data.processed, None, None),
-                label: label_fn(&data),
+                label: label_fn(&data)?,
                 data,
-            }
+            })
         }))
     }
 }
 
-pub type InferencePipeline = Pipeline<InferenceData, Vec<InferenceItem>>;
+pub type InferencePipeline = Pipeline<InferenceData, anyhow::Result<Vec<InferenceItem>>>;
 impl InferencePipeline {
     pub fn with_windows(
         tokenizer_cfg: TokenizerConfig,
@@ -492,7 +494,7 @@ impl InferencePipeline {
             if normalization.is_some() {
                 data.original = normalize(&data.original, normalization.unwrap(), use_graphemes);
             }
-            windows(&data.original, &window_cfg)
+            Ok(windows(&data.original, &window_cfg)?
                 .iter()
                 .enumerate()
                 .map(|(w_idx, w)| {
@@ -500,7 +502,7 @@ impl InferencePipeline {
                     let boundaries = w.boundaries();
                     InferenceItem::new(data.clone(), tokenization, idx, w_idx, boundaries)
                 })
-                .collect()
+                .collect())
         }))
     }
 }
@@ -508,6 +510,7 @@ impl InferencePipeline {
 #[pyclass]
 struct InferenceLoader {
     iter: Box<dyn Iterator<Item = Batch<InferenceItem>> + Send>,
+    iter_err: Arc<Mutex<Option<anyhow::Error>>>,
     #[pyo3(get)]
     min_items: usize,
     #[pyo3(get)]
@@ -516,7 +519,7 @@ struct InferenceLoader {
 
 impl InferenceLoader {
     pub fn new(
-        generators: Vec<Box<dyn DataGen<Item = InferenceData>>>,
+        generators: Vec<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>>,
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
         normalization: Option<Normalization>,
@@ -528,7 +531,7 @@ impl InferenceLoader {
         batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
-    ) -> PyResult<Self> {
+    ) -> anyhow::Result<Self> {
         let pipeline = InferencePipeline::with_windows(
             tokenizer_config,
             window_config,
@@ -541,8 +544,28 @@ impl InferenceLoader {
         if batch_limit_type == BatchLimitType::BatchSize {
             buffer_size = buffer_size.max(batch_limit * prefetch_factor);
         }
-        let iter = TextIterator::new(generators, TextIterationStrategy::Sequential, None)
+        let text_iter = TextIterator::new(generators, TextIterationStrategy::Sequential, None)?;
+        let iter_err = Arc::new(Mutex::new(None));
+        let text_iter_err = iter_err.clone();
+        let pipe_iter_err = iter_err.clone();
+        let iter = text_iter
+            .scan((), move |_, d| {
+                if d.is_err() {
+                    *text_iter_err.lock().unwrap() = Some(d.unwrap_err());
+                    None
+                } else {
+                    d.ok()
+                }
+            })
             .pipe(&pipeline, num_threads, buffer_size, None)
+            .scan((), move |_, i| {
+                if i.is_err() {
+                    *pipe_iter_err.lock().unwrap() = Some(i.unwrap_err());
+                    None
+                } else {
+                    i.ok()
+                }
+            })
             .flatten()
             .batched(
                 sort,
@@ -555,6 +578,7 @@ impl InferenceLoader {
             );
         Ok(InferenceLoader {
             iter: Box::new(iter),
+            iter_err,
             min_items,
             splits,
         })
@@ -588,7 +612,7 @@ impl InferenceLoader {
         batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
-    ) -> PyResult<Self> {
+    ) -> anyhow::Result<Self> {
         let text_gen = Box::new(inference_data_generator_from_python(iterator));
         Self::new(
             vec![text_gen],
@@ -635,34 +659,28 @@ impl InferenceLoader {
         batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
-    ) -> PyResult<Self> {
+    ) -> anyhow::Result<Self> {
         if files.is_empty() {
-            return Err(PyTypeError::new_err("files is empty"));
+            return Err(anyhow!("files is empty"));
         }
         if languages.is_some() && files.len() != languages.as_ref().unwrap().len() {
-            return Err(PyTypeError::new_err(format!(
+            return Err(anyhow!(
                 "there must be one language for every file if specified, but \
                     got {} files and {} languages",
                 files.len(),
                 languages.as_ref().unwrap().len()
-            )));
+            ));
         }
-        let generators = files
-            .into_iter()
-            .enumerate()
-            .map(|(idx, file)| {
-                let lang = if languages.is_some() {
-                    Some(languages.as_ref().unwrap()[idx].clone())
-                } else {
-                    None
-                };
-                Box::new(inference_data_generator_from_file(
-                    Path::new(&file),
-                    file_format,
-                    lang,
-                )) as Box<dyn DataGen<Item = InferenceData>>
-            })
-            .collect();
+        let mut generators = vec![];
+        for (idx, file) in files.iter().enumerate() {
+            let lang = if languages.is_some() {
+                Some(languages.as_ref().unwrap()[idx].clone())
+            } else {
+                None
+            };
+            let generator = inference_data_generator_from_file(Path::new(file), file_format, lang)?;
+            generators.push(generator);
+        }
         Self::new(
             generators,
             tokenizer_config,
@@ -683,21 +701,26 @@ impl InferenceLoader {
         slf
     }
 
-    fn __next__(&mut self) -> Option<Py<InferenceItemBatch>> {
+    fn __next__(&mut self) -> anyhow::Result<Option<Py<InferenceItemBatch>>> {
         if let Some(batch) = self.iter.next() {
-            Some(Python::with_gil(|py| {
+            Ok(Some(Python::with_gil(|py| {
                 let item_batch = InferenceItemBatch { batch, iter: None };
                 Py::new(py, item_batch).expect("should not fail")
-            }))
+            })))
         } else {
-            None
+            // check if batch is None because iterator is stopped,
+            // or because an error was encountered
+            match self.iter_err.lock().unwrap().as_ref() {
+                Some(e) => Err(anyhow!("error during inference iterator: {e}")),
+                None => Ok(None),
+            }
         }
     }
 }
 
 #[pyclass]
 struct DataLoader {
-    pipeline: Pipeline<TextData, Item>,
+    pipeline: TextDataPipeline,
     files: Vec<String>,
     languages: Option<Vec<String>>,
     strategy: TextIterationStrategy,
@@ -855,36 +878,33 @@ impl DataLoader {
         )
     }
 
-    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+    fn __iter__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<PyRefMut<'_, Self>> {
         let seed = if slf.seed.is_some() {
             Some(slf.seed.unwrap() + slf.epoch as u64)
         } else {
             None
         };
-        let text_generators = slf
-            .files
-            .clone()
-            .into_iter()
-            .enumerate()
-            .map(|(idx, file)| {
-                let lang = if slf.languages.is_some() {
-                    Some(slf.languages.as_ref().unwrap()[idx].clone())
-                } else {
-                    None
-                };
-                Box::new(text_data_generator_from_files(Path::new(&file), None, lang))
-                    as Box<dyn DataGen<Item = TextData>>
-            })
-            .collect();
+        let mut generators = vec![];
+        for (idx, file) in slf.files.iter().enumerate() {
+            let lang = if slf.languages.is_some() {
+                Some(slf.languages.as_ref().unwrap()[idx].clone())
+            } else {
+                None
+            };
+            let generator = text_data_generator_from_files(Path::new(file), None, lang)?;
+            generators.push(generator);
+        }
 
-        let text_iter = TextIterator::new(text_generators, slf.strategy, seed);
+        let text_iter = TextIterator::new(generators, slf.strategy, seed)?;
         slf.min_items =
             Some(text_iter.min_len().min(slf.limit).saturating_sub(slf.skip) / slf.world_size);
         let batch_iter = text_iter
             .take(slf.limit)
             .skip(slf.skip + slf.fast_forward + slf.rank)
             .step_by(slf.world_size)
+            .filter_map(|d| d.ok())
             .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size, seed)
+            .filter_map(|i| i.ok())
             .batched(
                 slf.sort,
                 slf.shuffle,
@@ -895,7 +915,7 @@ impl DataLoader {
                 seed,
             );
         slf.iter = Some(Box::new(batch_iter));
-        slf
+        Ok(slf)
     }
 
     fn __next__(&mut self) -> Option<Py<ItemBatch>> {

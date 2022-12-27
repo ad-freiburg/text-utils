@@ -17,7 +17,7 @@ log = "0.4"
 env_logger = "0.10"
 rayon = "1.6"
 indicatif = { version = "0.17", features = ["rayon"] }
-pyo3 = { version = "0.17", features = ["extension-module", "abi3-py38", "auto-initialize", "macros"] }
+pyo3 = { version = "0.17", features = ["anyhow", "extension-module", "abi3-py38", "auto-initialize", "macros"] }
 pyo3-log = "0.7"
 itertools = "0.10"
 rand = "0.8"

@@ -4,6 +4,7 @@ use crate::text::{clean, match_words, word_boundaries};
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{as_ref_slice_to_vec, constrain, py_invalid_type_error};
 use crate::whitespace::{operations, WhitespaceOperation};
+use anyhow::anyhow;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -16,15 +17,15 @@ fn _mean_edit_distance(
     length: usize,
     use_graphemes: bool,
     normalized: bool,
-) -> f64 {
+) -> anyhow::Result<f64> {
     let sequences = as_ref_slice_to_vec(sequences);
     let target_sequences = as_ref_slice_to_vec(target_sequences);
-    assert_eq!(
-        sequences.len(),
-        target_sequences.len(),
-        "expected the same number of sequences and target sequences"
-    );
-    sequences
+    if sequences.len() != target_sequences.len() {
+        return Err(anyhow!(
+            "different number of sequences and target sequences"
+        ));
+    }
+    Ok(sequences
         .into_par_iter()
         .zip(target_sequences)
         .map(|(s, ts)| {
@@ -38,14 +39,14 @@ fn _mean_edit_distance(
             )
         })
         .sum::<f64>()
-        / length.max(1) as f64
+        / length.max(1) as f64)
 }
 
 pub fn mean_edit_distance(
     sequences: &[impl AsRef<str>],
     target_sequences: &[impl AsRef<str>],
     use_graphemes: bool,
-) -> f64 {
+) -> anyhow::Result<f64> {
     _mean_edit_distance(
         sequences,
         target_sequences,
@@ -61,7 +62,7 @@ fn mean_edit_distance_py(
     sequences: Vec<String>,
     target_sequences: Vec<String>,
     use_graphemes: bool,
-) -> f64 {
+) -> anyhow::Result<f64> {
     mean_edit_distance(&sequences, &target_sequences, use_graphemes)
 }
 
@@ -69,7 +70,7 @@ pub fn mean_normalized_edit_distance(
     sequences: &[impl AsRef<str>],
     target_sequences: &[impl AsRef<str>],
     use_graphemes: bool,
-) -> f64 {
+) -> anyhow::Result<f64> {
     _mean_edit_distance(
         sequences,
         target_sequences,
@@ -85,27 +86,27 @@ fn mean_normalized_edit_distance_py(
     sequences: Vec<String>,
     target_sequences: Vec<String>,
     use_graphemes: bool,
-) -> f64 {
+) -> anyhow::Result<f64> {
     mean_normalized_edit_distance(&sequences, &target_sequences, use_graphemes)
 }
 
-pub fn accuracy<T: Ord>(predictions: &[T], targets: &[T]) -> f64 {
-    assert_eq!(
-        predictions.len(),
-        targets.len(),
-        "expected the same number of predictions and targets"
-    );
-    predictions
+pub fn accuracy<T: Ord>(predictions: &[T], targets: &[T]) -> anyhow::Result<f64> {
+    if predictions.len() != targets.len() {
+        return Err(anyhow!(
+            "expected the same number of predictions and targets"
+        ));
+    }
+    Ok(predictions
         .iter()
         .zip(targets.iter())
         .map(|(p, t)| (p == t) as usize)
         .sum::<usize>() as f64
-        / predictions.len().max(1) as f64
+        / predictions.len().max(1) as f64)
 }
 
 #[pyfunction]
 #[pyo3(name = "accuracy")]
-fn accuracy_py(predictions: Vec<&str>, targets: Vec<&str>) -> f64 {
+fn accuracy_py(predictions: Vec<&str>, targets: Vec<&str>) -> anyhow::Result<f64> {
     let predictions: Vec<String> = predictions
         .into_iter()
         .map(|s| normalize(&clean(s, true), Normalization::NFKC, true))
@@ -184,14 +185,21 @@ fn _count_tp_fp_fn(a: &[bool], b: &[bool]) -> TpFpFn {
         })
 }
 
-pub fn binary_f1(predictions: &[bool], targets: &[bool], beta: f64) -> F1PrecRec {
+pub fn binary_f1(predictions: &[bool], targets: &[bool], beta: f64) -> anyhow::Result<F1PrecRec> {
+    if predictions.len() != targets.len() {
+        return Err(anyhow!("different number of predictions and targets"));
+    }
     let tp_fp_fn = _count_tp_fp_fn(predictions, targets);
-    tp_fp_fn.f1(beta)
+    Ok(tp_fp_fn.f1(beta))
 }
 
 #[pyfunction(beta = "1.0")]
 #[pyo3(name = "binary_f1")]
-fn binary_f1_py(predictions: Vec<bool>, targets: Vec<bool>, beta: f64) -> F1PrecRec {
+fn binary_f1_py(
+    predictions: Vec<bool>,
+    targets: Vec<bool>,
+    beta: f64,
+) -> anyhow::Result<F1PrecRec> {
     binary_f1(&predictions, &targets, beta)
 }
 
@@ -201,17 +209,19 @@ fn _correction_f1(
     target_sequences: &[impl AsRef<str>],
     beta: f64,
     sequence_averaged: bool,
-    f: impl Fn(&str, &str, &str) -> (TpFpFn, bool) + Sync,
-) -> F1PrecRec {
+    f: impl Fn(&str, &str, &str) -> anyhow::Result<(TpFpFn, bool)> + Sync,
+) -> anyhow::Result<F1PrecRec> {
     let input_sequences = as_ref_slice_to_vec(input_sequences);
     let predicted_sequences = as_ref_slice_to_vec(predicted_sequences);
     let target_sequences = as_ref_slice_to_vec(target_sequences);
-    assert!(
-        input_sequences.len() == target_sequences.len()
-            && input_sequences.len() == predicted_sequences.len(),
-        "expected the same number of input, target, and predicted sequences"
-    );
-    let values: Vec<(TpFpFn, bool)> = (0..input_sequences.len())
+    if !(input_sequences.len() == target_sequences.len()
+        && input_sequences.len() == predicted_sequences.len())
+    {
+        return Err(anyhow!(
+            "expected the same number of input, target, and predicted sequences"
+        ));
+    };
+    let values = (0..input_sequences.len())
         .into_par_iter()
         .map(|idx| {
             let input = &input_sequences[idx];
@@ -223,7 +233,7 @@ fn _correction_f1(
                 &normalize(&clean(target, true), Normalization::NFKC, true),
             )
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<(TpFpFn, bool)>>>()?;
     if sequence_averaged {
         let (f1_sum, prec_sum, rec_sum) = values
             .into_iter()
@@ -241,16 +251,16 @@ fn _correction_f1(
                 },
             );
         let num_values = input_sequences.len().max(1) as f64;
-        (
+        Ok((
             f1_sum / num_values,
             prec_sum / num_values,
             rec_sum / num_values,
-        )
+        ))
     } else {
         let tp_fp_fn = values
             .into_iter()
             .fold(TpFpFn::default(), |total, (tp_fp_fn, _)| total + tp_fp_fn);
-        tp_fp_fn.f1(beta)
+        Ok(tp_fp_fn.f1(beta))
     }
 }
 
@@ -361,7 +371,7 @@ pub fn spelling_correction_f1(
     beta: f64,
     sequence_averaged: bool,
     use_graphemes: bool,
-) -> F1PrecRec {
+) -> anyhow::Result<F1PrecRec> {
     let input_sequences = as_ref_slice_to_vec(input_sequences);
     let predicted_sequences = as_ref_slice_to_vec(predicted_sequences);
     let target_sequences = as_ref_slice_to_vec(target_sequences);
@@ -372,7 +382,12 @@ pub fn spelling_correction_f1(
         beta,
         sequence_averaged,
         |input, predicted, target| {
-            _spelling_correction_tp_fp_fn(input, predicted, target, use_graphemes)
+            Ok(_spelling_correction_tp_fp_fn(
+                input,
+                predicted,
+                target,
+                use_graphemes,
+            ))
         },
     )
 }
@@ -386,7 +401,7 @@ fn spelling_correction_f1_py(
     beta: f64,
     sequence_averaged: bool,
     use_graphemes: bool,
-) -> F1PrecRec {
+) -> anyhow::Result<F1PrecRec> {
     spelling_correction_f1(
         &input_sequences,
         &predicted_sequences,
@@ -424,7 +439,6 @@ fn _whitespace_ops_to_set(
     ops.iter()
         .enumerate()
         .filter_map(|(idx, op)| match (*op, mode) {
-            (WhitespaceOperation::Keep, _) => None,
             (
                 WhitespaceOperation::Insert | WhitespaceOperation::Delete,
                 WhitespaceCorrectionMode::InsertionsAndDeletions,
@@ -433,7 +447,7 @@ fn _whitespace_ops_to_set(
             | (WhitespaceOperation::Delete, WhitespaceCorrectionMode::Deletions) => {
                 Some((idx, *op))
             }
-            _ => panic!("should not happen, op should be either 0, 1, or 2, but got {op:?}"),
+            _ => None,
         })
         .collect()
 }
@@ -445,10 +459,14 @@ fn _whitespace_correction_tp_fp_fn(
     target: &str,
     mode: &WhitespaceCorrectionMode,
     use_graphemes: bool,
-) -> (TpFpFn, bool) {
-    let gt_ops = operations(input, target, use_graphemes);
-    let pred_ops = operations(input, predicted, use_graphemes);
-    assert_eq!(gt_ops.len(), pred_ops.len());
+) -> anyhow::Result<(TpFpFn, bool)> {
+    let gt_ops = operations(input, target, use_graphemes)?;
+    let pred_ops = operations(input, predicted, use_graphemes)?;
+    if gt_ops.len() != pred_ops.len() {
+        return Err(anyhow!(
+            "different number of operations from input to target than from input to prediction"
+        ));
+    }
     let gt_ops = _whitespace_ops_to_set(&gt_ops, mode);
     let pred_ops = _whitespace_ops_to_set(&pred_ops, mode);
 
@@ -457,7 +475,7 @@ fn _whitespace_correction_tp_fp_fn(
         pred_ops.difference(&gt_ops).count(),
         gt_ops.difference(&pred_ops).count(),
     );
-    (tp_fp_fn, gt_ops.is_empty() && pred_ops.is_empty())
+    Ok((tp_fp_fn, gt_ops.is_empty() && pred_ops.is_empty()))
 }
 
 pub fn whitespace_correction_f1(
@@ -468,7 +486,7 @@ pub fn whitespace_correction_f1(
     sequence_averaged: bool,
     mode: WhitespaceCorrectionMode,
     use_graphemes: bool,
-) -> F1PrecRec {
+) -> anyhow::Result<F1PrecRec> {
     _correction_f1(
         input_sequences,
         predicted_sequences,
@@ -496,7 +514,7 @@ fn whitespace_correction_f1_py(
     sequence_averaged: bool,
     mode: WhitespaceCorrectionMode,
     use_graphemes: bool,
-) -> F1PrecRec {
+) -> anyhow::Result<F1PrecRec> {
     whitespace_correction_f1(
         &input_sequences,
         &predicted_sequences,
@@ -537,7 +555,8 @@ mod tests {
             &[true, true, false, false],
             &[true, false, true, false],
             1.0,
-        );
+        )
+        .unwrap();
         assert!((f1 - 0.5).abs() < EPS);
         assert!((prec - 0.5).abs() < EPS);
         assert!((rec - 0.5).abs() < EPS);
@@ -564,7 +583,8 @@ mod tests {
         let tgt = "The cute cat eats delicious fish.";
         let pred = "The cute act eats delicate fi sh.";
 
-        let (f1, prec, rec) = spelling_correction_f1(&[ipt], &[pred], &[tgt], 1.0, false, true);
+        let (f1, prec, rec) =
+            spelling_correction_f1(&[ipt], &[pred], &[tgt], 1.0, false, true).unwrap();
         assert!((f1 - 0.5).abs() < EPS);
         assert!((prec - 0.5).abs() < EPS);
         assert!((rec - 0.5).abs() < EPS);
@@ -572,21 +592,21 @@ mod tests {
 
     #[test]
     fn test_mean_edit_distance() {
-        let med = mean_edit_distance(&PRED_SEQUENCES, &TARGET_SEQUENCES, true);
+        let med = mean_edit_distance(&PRED_SEQUENCES, &TARGET_SEQUENCES, true).unwrap();
         assert!((med - (1.0 + 1.0 + 1.0 + 0.0) / 4.0).abs() < EPS);
     }
 
     #[test]
     fn test_mean_normalized_edit_distance() {
-        let mned = mean_normalized_edit_distance(&PRED_SEQUENCES, &TARGET_SEQUENCES, true);
+        let mned = mean_normalized_edit_distance(&PRED_SEQUENCES, &TARGET_SEQUENCES, true).unwrap();
         assert!((mned - (1.0 / 15.0 + 1.0 / 21.0 + 1.0 / 17.0 + 0.0) / 4.0).abs() < EPS);
     }
 
     #[test]
     fn test_accuracy() {
-        let acc = accuracy(&[true, false, true], &[true, false, false]);
+        let acc = accuracy(&[true, false, true], &[true, false, false]).unwrap();
         assert!((acc - 0.666).abs() < 1e-3);
-        let acc = accuracy(&PRED_SEQUENCES, &TARGET_SEQUENCES);
+        let acc = accuracy(&PRED_SEQUENCES, &TARGET_SEQUENCES).unwrap();
         assert!((acc - 0.25).abs() < EPS);
     }
 
@@ -619,7 +639,8 @@ mod tests {
             false,
             WhitespaceCorrectionMode::InsertionsAndDeletions,
             true,
-        );
+        )
+        .unwrap();
         assert!((f1 - 0.9444).abs() < 1e-4);
         assert!((prec - (3.0 + 1.0 + 2.0 + 11.0) / (3.0 + 1.0 + 3.0 + 12.0)).abs() < EPS);
         assert!((rec - 1.0).abs() < EPS);
@@ -631,7 +652,8 @@ mod tests {
             true,
             WhitespaceCorrectionMode::InsertionsAndDeletions,
             true,
-        );
+        )
+        .unwrap();
         assert!((f1 - 0.9391).abs() < 1e-4);
         assert!((prec - 0.8958).abs() < 1e-4);
         assert!((rec - 1.0).abs() < EPS);

@@ -1,5 +1,6 @@
 use crate::unicode::{Character, CS};
 use crate::utils::py_invalid_type_error;
+use anyhow::anyhow;
 use itertools::Itertools;
 use pyo3::prelude::*;
 use regex::{escape, Regex};
@@ -62,7 +63,11 @@ impl IntoPy<PyObject> for WhitespaceOperation {
 }
 
 #[pyfunction(use_graphemes = "true")]
-pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOperation> {
+pub fn operations(
+    from: &str,
+    to: &str,
+    use_graphemes: bool,
+) -> anyhow::Result<Vec<WhitespaceOperation>> {
     let from_cs = CS::new(from, use_graphemes);
     let to_cs = CS::new(to, use_graphemes);
     let from_chars: Vec<Character> = from_cs.chars().collect();
@@ -87,30 +92,34 @@ pub fn operations(from: &str, to: &str, use_graphemes: bool) -> Vec<WhitespaceOp
         } else if from_char.is_whitespace() {
             operations.push(WhitespaceOperation::Delete);
         } else {
-            panic!(
+            return Err(anyhow!(
                 "should not happen, most likely your inputs contain multiple \
                 consecutive whitespaces, leading, or trailing whitespaces, \
                 prepare them first using the clean function:\n\
                 from: \"{from}\"\nto  : \"{to}\"\n\
                 from_char: \"{from_char}\"\nto_char  : \"{to_char:?}\"\n"
-            );
+            ));
         }
         from_ptr += 1;
     }
-    operations
+    Ok(operations)
 }
 
-pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) -> String {
+pub fn repair(
+    s: &str,
+    operations: &[WhitespaceOperation],
+    use_graphemes: bool,
+) -> anyhow::Result<String> {
     let cs = CS::new(s, use_graphemes);
     let chars: Vec<Character> = cs.chars().collect();
-    assert_eq!(
-        chars.len(),
-        operations.len(),
-        "expected one operation for every character, but got {} operations and \
+    if chars.len() != operations.len() {
+        return Err(anyhow!(
+            "expected one operation for every character, but got {} operations and \
         {} characters for input\n{s}",
-        operations.len(),
-        chars.len()
-    );
+            operations.len(),
+            chars.len()
+        ));
+    };
 
     let mut output = String::new();
     for (idx, (char, op)) in chars.iter().zip(operations.iter()).enumerate() {
@@ -126,12 +135,16 @@ pub fn repair(s: &str, operations: &[WhitespaceOperation], use_graphemes: bool) 
             output.push_str(char.str);
         }
     }
-    output
+    Ok(output)
 }
 
 #[pyfunction(use_graphemes = "true")]
 #[pyo3(name = "repair")]
-fn repair_py(s: &str, operations: Vec<WhitespaceOperation>, use_graphemes: bool) -> String {
+fn repair_py(
+    s: &str,
+    operations: Vec<WhitespaceOperation>,
+    use_graphemes: bool,
+) -> anyhow::Result<String> {
     repair(s, &operations, use_graphemes)
 }
 
@@ -147,8 +160,8 @@ pub fn find_substring_ignoring_whitespace(
         .filter(|c| !c.is_whitespace())
         .map(|c| escape(c.str))
         .join(r"\s*");
-    let re = Regex::new(substring.as_str()).expect("invalid regex, should not happen");
-    re.find(s).map(|m| (m.start(), m.end()))
+    let re = Regex::new(substring.as_str()).expect("invalid pattern, should never happen");
+    re.find(s).map_or(None, |m| Some((m.start(), m.end())))
 }
 
 /// A submodule containing functionality specific to handle whitespaces in text.
@@ -190,15 +203,16 @@ mod tests {
         let from = " t  h isis a test  ";
         let to = "this is a test";
         assert_eq!(
-            operations(from, from, true),
+            operations(from, from, true).unwrap(),
             vec![WhitespaceOperation::Keep; from.chars().count()]
         );
         assert_eq!(
-            operations(to, to, true),
+            operations(to, to, true).unwrap(),
             vec![WhitespaceOperation::Keep; to.chars().count()]
         );
         assert_eq!(
             operations(from, to, true)
+                .unwrap()
                 .into_iter()
                 .map(|op| op as u8)
                 .collect::<Vec<u8>>(),
@@ -210,13 +224,19 @@ mod tests {
     fn test_repair() {
         let from = "t h isis a test";
         let to = "this is a test";
-        assert_eq!(repair(from, &operations(from, to, true), true), to);
         assert_eq!(
-            repair(to, &operations(to, from, true), true),
+            repair(from, &operations(from, to, true).unwrap(), true).unwrap(),
+            to
+        );
+        assert_eq!(
+            repair(to, &operations(to, from, true).unwrap(), true).unwrap(),
             "t h isis a test"
         );
-        assert_eq!(repair("t", &vec![WhitespaceOperation::Delete,], true,), "t");
-        assert_eq!(repair("", &vec![], true), "");
+        assert_eq!(
+            repair("t", &vec![WhitespaceOperation::Delete,], true,).unwrap(),
+            "t"
+        );
+        assert_eq!(repair("", &vec![], true).unwrap(), "");
     }
 
     #[test]

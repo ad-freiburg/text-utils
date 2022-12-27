@@ -145,7 +145,6 @@ pub fn find_subsequences_of_max_size_k<T, SeqSize>(
 where
     SeqSize: Fn(&[T]) -> usize,
 {
-    assert!(!values.is_empty(), "values cannot be empty");
     // fast forward to first valid starting element
     let mut start = 0;
     while start < values.len() && size_fn(&values[start..start + 1]) > k {

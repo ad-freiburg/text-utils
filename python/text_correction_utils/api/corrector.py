@@ -109,7 +109,9 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
 
         self.device = torch.device(device)
 
-        self.cfg = configuration.load_config(os.path.join(model_dir, "config.yaml"))
+        info = configuration.load_config(os.path.join(model_dir, "info.yaml"))
+        self.logger.debug(f"loaded info:\n{info}")
+        self.cfg = configuration.load_config(os.path.join(model_dir, info["config_name"]))
         self.logger.debug(f"loaded config:\n{self.cfg}")
 
         self.model = self._model_from_config(self.cfg)

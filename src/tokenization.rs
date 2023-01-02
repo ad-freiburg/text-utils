@@ -17,8 +17,32 @@ pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
 pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
 pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
 
+#[pyclass]
+pub struct SpecialTokens {}
+
+#[pymethods]
+impl SpecialTokens {
+    #[classattr]
+    const UNK: &str = UNK;
+    #[classattr]
+    const BOS: &str = BOS;
+    #[classattr]
+    const EOS: &str = EOS;
+    #[classattr]
+    const PAD: &str = PAD;
+}
+
 // language tokens
 pub const LANG_UNK: &str = "[unk]";
+
+#[pyclass]
+pub struct LanguageTokens {}
+
+#[pymethods]
+impl LanguageTokens {
+    #[classattr]
+    const UNK: &str = LANG_UNK;
+}
 
 /// This is a tokenizer config, containing language options
 /// and the actual tokenize config inside it.
@@ -782,11 +806,13 @@ impl PyTokenizer {
 /// - character level tokenization
 /// - byte level tokenization
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "tokenization")?;
+    let m = PyModule::new(py, "tokenization_rs")?;
     m.add_class::<PyTokenizer>()?;
     m.add_class::<Tokenization>()?;
     m.add_class::<TokenizerConfig>()?;
     m.add_class::<LanguageConfig>()?;
+    m.add_class::<SpecialTokens>()?;
+    m.add_class::<LanguageTokens>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

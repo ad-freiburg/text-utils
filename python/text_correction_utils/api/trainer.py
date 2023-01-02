@@ -91,9 +91,9 @@ training will resume from latest checkpoint."
 
         torch.use_deterministic_algorithms(False)
 
-        self.input_tokenizer = self._tokenizer_from_config(self.cfg["input_tokenizer"])
+        self.input_tokenizer = tokenization.tokenizer_from_config(self.cfg["input_tokenizer"])
         if "output_tokenizer" in self.cfg:
-            self.output_tokenizer = self._tokenizer_from_config(self.cfg["output_tokenizer"])
+            self.output_tokenizer = tokenization.tokenizer_from_config(self.cfg["output_tokenizer"])
         else:
             self.output_tokenizer = None
 
@@ -148,8 +148,8 @@ training will resume from latest checkpoint."
         else:
             raise ValueError(f"unknown mixed precision type {mixed_precision_dtype}, must fp16 or bfp16")
 
-        eval_interval = self.cfg["eval_interval"]
-        log_interval = self.cfg["log_interval"]
+        eval_interval = self.cfg["train"].get("eval_interval", 0.1)
+        log_interval = self.cfg["train"].get("log_interval", 0.01)
 
         def clamp(v: int, low: int, up: int) -> int:
             return min(max(low, v), up)
@@ -214,22 +214,6 @@ training will resume from latest checkpoint."
         raise NotImplementedError
 
     @classmethod
-    def _tokenizer_config(cls, cfg: Dict[str, Any]) -> tokenization.TokenizerConfig:
-        cfg = copy.deepcopy(cfg)
-        if "language" in cfg:
-            language = tokenization.LanguageConfig(**cfg.pop("language"))
-        else:
-            language = None
-        return tokenization.TokenizerConfig(
-            **cfg,
-            language=language
-        )
-
-    @classmethod
-    def _tokenizer_from_config(cls, cfg: Dict[str, Any]) -> tokenization.Tokenizer:
-        return tokenization.Tokenizer.from_config(cls._tokenizer_config(cfg))
-
-    @classmethod
     def _copy_file_to_tmp_dir(cls, path: str, dir: str) -> str:
         _, file_name = os.path.split(path)
         # make temp path unique by hashing the full input path, because only
@@ -244,7 +228,8 @@ training will resume from latest checkpoint."
         src_paths = []
         src_langs = []
         for src in sources:
-            src_type = copy.deepcopy(src)
+            src = copy.deepcopy(src)
+            src_type = src.pop("type")
             if src_type == "file":
                 lang = src.get("language")
                 path = src["path"]
@@ -269,7 +254,11 @@ training will resume from latest checkpoint."
         if all(lang is None for lang in src_langs):
             return src_paths, None
         else:
-            return src_paths, [lang if lang is not None else data.UNK_LANG for lang in src_langs]
+            return src_paths, [
+                lang if lang is not None
+                else tokenization.LanguageTokens.UNK
+                for lang in src_langs
+            ]
 
     @classmethod
     def _data_from_config(
@@ -297,7 +286,7 @@ training will resume from latest checkpoint."
             preprocessing=pipeline.get("preprocessing", []),
             labeling=pipeline["labeling"],
         )
-        tokenizer_config = cls._tokenizer_config(input_tokenizer_cfg)
+        tokenizer_config = tokenization.tokenizer_config(input_tokenizer_cfg)
         train_loader = data.DataLoader.from_files(
             train_sources,
             pipeline_config,
@@ -369,8 +358,9 @@ training will resume from latest checkpoint."
                 inz.extractall(tmp_dir)
                 return configuration.load_config(os.path.join(tmp_dir, info["config_name"]))
 
-    @staticmethod
+    @classmethod
     def _train_local_distributed(
+        cls,
         rank: int,
         world_size: int,
         port: int,
@@ -396,7 +386,7 @@ training will resume from latest checkpoint."
             local_world_size=world_size
         )
 
-        Trainer(cfg, directories, info).run()
+        cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
     @classmethod
@@ -464,7 +454,7 @@ training will resume from latest checkpoint."
             "tensorboard": os.path.join(experiment_dir, "tensorboard")
         }
 
-        Trainer(cfg, directories, info).run()
+        cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
     @classmethod
@@ -478,7 +468,7 @@ training will resume from latest checkpoint."
             os.path.join(experiment_dir, "checkpoints", "checkpoint_last.pt")
         )
         if not resuming:
-            cfg = configuration.load_config(experiment_dir)
+            cfg = configuration.load_config(config_path)
             assert config_path is not None, "specify config if not resuming an existing experiment"
             cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
             logger.info(f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
@@ -491,9 +481,9 @@ training will resume from latest checkpoint."
             "tensorboard": os.path.join(experiment_dir, "tensorboard")
         }
         mp.spawn(
-            fn=Trainer._train_local_distributed,
+            fn=cls._train_local_distributed,
             nprocs=num_gpus,
-            args=(num_gpus, port, cfg, directories, resuming),
+            args=(num_gpus, port, cfg, directories),
             join=True
         )
 

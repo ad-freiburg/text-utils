@@ -1,16 +1,35 @@
 import math
+import copy
 from typing import Dict, Any, Optional, Tuple
 
 import torch
 from torch import nn
 
+from text_correction_utils import tokenization
+
+
+class Embedding(nn.Module):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        raise NotImplementedError
+
 
 def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tokenizer) -> Embedding:
-    return Embedding(
-        num_embeddings=input_tokenizer.vocab_size(),
-        pad_token_id=input_tokenizer.pad_token_id(),
-        **cfg
-    )
+    cfg = copy.deepcopy(cfg)
+    emb_type = cfg.pop("type")
+    if emb_type == "standard":
+        return StandardEmbedding(
+            num_embeddings=input_tokenizer.vocab_size(),
+            pad_token_id=input_tokenizer.pad_token_id(),
+            **cfg
+        )
+    elif emb_type == "combinatorial":
+        return CombinatorialEmbedding(
+            num_embeddings=input_tokenizer.vocab_size(),
+            pad_token_id=input_tokenizer.pad_token_id(),
+            **cfg
+        )
+    else:
+        raise ValueError(f"unknown embedding type {emb_type}")
 
 
 class TokenEmbedding(nn.Module):
@@ -51,7 +70,7 @@ class LearnedPositionalEmbedding(TokenEmbedding):
         super().__init__(embedding_dim, num_embeddings)
 
 
-class Embedding(nn.Module):
+class StandardEmbedding(Embedding):
     def __init__(
         self,
         num_embeddings: int,
@@ -95,3 +114,7 @@ class Embedding(nn.Module):
         else:
             pos_emb = None
         return emb, pos_emb
+
+
+class CombinatorialEmbedding(Embedding):
+    pass

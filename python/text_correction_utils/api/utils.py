@@ -4,7 +4,9 @@ import platform
 import re
 import shutil
 import zipfile
-from typing import Union, Dict
+import subprocess
+from pathlib import Path
+from typing import Union, Dict, Optional, List
 
 import requests
 import torch
@@ -104,6 +106,21 @@ def gpu_info(device: Union[torch.device, str, int]) -> str:
 
 def device_info(device: torch.device) -> str:
     return gpu_info(device) if device.type == "cuda" else cpu_info()
+
+
+def _run_cmd(path: str, cmd: List[str]) -> str:
+    return subprocess.check_output(
+        cmd,
+        cwd=Path(path).resolve()
+    ).strip().decode("utf8")
+
+
+def git_branch(path: str) -> str:
+    return _run_cmd(path, ["git", "branch", "--show-current"])
+
+
+def git_commit(path: str) -> str:
+    return _run_cmd(path, ["git", "rev-parse", "HEAD"])
 
 
 def num_parameters(module: nn.Module) -> Dict[str, int]:

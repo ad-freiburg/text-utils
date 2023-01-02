@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any, List
 from typing_extensions import override
 
 import torch
@@ -107,3 +107,21 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
     def log_info(self, logger: logging.Logger, step: int):
         s = self._get_string()
         logger.info(f"[step {step}] {self.name}\n{s}")
+
+
+def metrics_from_config(
+    cfg: Dict[str, Any],
+    input_tokenizer: tokenization.Tokenizer,
+    output_tokenizer: tokenization.Tokenizer,
+    prefix: Optional[str] = None
+) -> List[TensorboardMetric]:
+    metrics = []
+    if prefix is not None and not prefix.endswith("_"):
+        prefix += "_"
+    for metric_type, metric_opts in cfg.items():
+        if metric_type == "whitespace_correction":
+            metric = WhitespaceCorrectionMetric(f"{prefix}whitespace_correction", input_tokenizer, **metric_opts)
+        else:
+            raise ValueError(f"unknown metric type {metric_type}")
+        metrics.append(metric)
+    return metrics

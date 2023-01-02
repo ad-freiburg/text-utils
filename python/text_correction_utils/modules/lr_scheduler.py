@@ -1,6 +1,7 @@
+import copy
 import math
 from functools import reduce
-from typing import Union, List
+from typing import Union, List, Any, Dict
 
 from torch import optim
 
@@ -137,3 +138,22 @@ def constant_with_warmup(
     :return: lr scheduler
     """
     return multi_step_with_warmup(optimizer, training_steps, warmup_steps, [], [])
+
+
+def lr_scheduler_from_config(
+    optimizer: optim.Optimizer,
+    training_steps: int,
+    cfg: Dict[str, Any]
+) -> optim.lr_scheduler.SequentialLR:
+    cfg = copy.deepcopy(cfg)
+    lr_type = cfg.pop("type")
+    if lr_type == "linear_with_warmup":
+        return linear_with_warmup(optimizer, training_steps, **cfg)
+    elif lr_type == "cosine_with_warmup":
+        return cosine_with_warmup(optimizer, training_steps, **cfg)
+    elif lr_type == "multi_step_with_warmup":
+        return multi_step_with_warmup(optimizer, training_steps, **cfg)
+    elif lr_type == "constant_with_warmup":
+        return constant_with_warmup(optimizer, training_steps, **cfg)
+    else:
+        raise ValueError(f"unknown lr scheduler type {lr_type}")

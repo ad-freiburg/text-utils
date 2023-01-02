@@ -1,4 +1,5 @@
 import functools
+import copy
 from typing import Optional, List, Tuple, Any, Dict
 
 import einops
@@ -11,6 +12,36 @@ from torch.nn.utils import rnn
 from text_correction_utils import mask
 from text_correction_utils.modules import utils
 from text_correction_utils.modules.grouping import Grouping
+
+
+class Encoder(nn.Module):
+    def additional_losses(self) -> Dict[str, torch.Tensor]:
+        return {}
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        lengths: List[int],
+        pos: Optional[torch.Tensor],
+        **kwargs: Dict[str, Any]
+    ) -> torch.Tensor:
+        raise NotImplementedError
+
+
+def encoder_from_config(cfg: Dict[str, Any]) -> Encoder:
+    cfg = copy.deepcopy(cfg)
+    enc_type = cfg.pop("type")
+    if enc_type == "transformer":
+        return TransformerEncoder(**cfg)
+    elif enc_type == "rnn":
+        return RNNEncoder(**cfg)
+    elif enc_type == "cnn":
+        return CNNEncoder(**cfg)
+    elif enc_type == "grouping":
+        encoder = encoder_from_config(cfg.pop("encoder", {}))
+        return GroupingEncoder(encoder, **cfg)
+    else:
+        raise ValueError(f"unknown encoder type {enc_type}")
 
 
 # modified version of pytorch transformer encoder layer
@@ -107,20 +138,6 @@ class _TransformerEncoderLayer(nn.Module):
         return self.dropout2(x)
 
 
-class Encoder(nn.Module):
-    def additional_losses(self) -> Dict[str, torch.Tensor]:
-        return {}
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        lengths: List[int],
-        pos: Optional[torch.Tensor],
-        **kwargs: Dict[str, Any]
-    ) -> torch.Tensor:
-        raise NotImplementedError
-
-
 class TransformerEncoder(Encoder):
     def __init__(
         self,
@@ -130,21 +147,12 @@ class TransformerEncoder(Encoder):
         ffw_dim: int,
         dropout: float,
         with_pos: str,
-        activation: str = "gelu_approximate",
+        activation: str = "gelu",
         share_parameters: bool = False
     ):
         super().__init__()
         self.num_layers = num_layers
         self.share_parameters = share_parameters
-
-        if activation == "gelu_approximate":
-            act_fn = functools.partial(F.gelu, approximate="tanh")
-        elif activation == "gelu":
-            act_fn = F.gelu
-        elif activation == "relu":
-            act_fn = F.relu
-        else:
-            raise ValueError(f"unknown activation function {activation}")
 
         self.transformer = nn.ModuleList(
             _TransformerEncoderLayer(
@@ -153,11 +161,11 @@ class TransformerEncoder(Encoder):
                 add_pos=with_pos == "attention",
                 dim_feedforward=ffw_dim,
                 dropout=dropout,
-                activation=act_fn
+                activation=utils.activation(activation)
             ) for _ in range(1 if self.share_parameters else num_layers)
         )
 
-        self.with_pos = with_pos 
+        self.with_pos = with_pos
         if self.with_pos == "add_norm":
             self.input_norm = nn.LayerNorm(dim)
         else:
@@ -259,7 +267,7 @@ class CNNEncoder(Encoder):
         dropout: float,
         kernel_sizes: Optional[Tuple[int, ...]] = None,
         strides: Optional[Tuple[int, ...]] = None,
-        activation: str = "gelu_approximate"
+        activation: str = "gelu"
     ):
         super().__init__()
         if kernel_sizes is None:

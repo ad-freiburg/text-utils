@@ -1,8 +1,16 @@
 import math
-from typing import Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 import torch
 from torch import nn
+
+
+def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tokenizer) -> Embedding:
+    return Embedding(
+        num_embeddings=input_tokenizer.vocab_size(),
+        pad_token_id=input_tokenizer.pad_token_id(),
+        **cfg
+    )
 
 
 class TokenEmbedding(nn.Module):

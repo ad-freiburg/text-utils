@@ -1,4 +1,5 @@
 from typing import List, Any, Dict
+import copy
 
 import torch
 from torch import nn
@@ -11,6 +12,17 @@ class Head(nn.Module):
         raise NotImplementedError
 
 
+def head_from_config(cfg: Dict[str, Any]) -> Head:
+    cfg = copy.deepcopy(cfg)
+    head_type = cfg.pop("type")
+    if head_type == "classification":
+        return ClassificationHead(**cfg)
+    elif head_type == "sequence_classification":
+        return SequenceClassificationHead(**cfg)
+    else:
+        raise ValueError(f"unknown head type {head_type}")
+
+
 class ClassificationHead(Head):
     def __init__(
             self,
@@ -18,7 +30,7 @@ class ClassificationHead(Head):
             num_classes: int,
             num_layers: int,
             dropout: float,
-            activation: str = "gelu_approximate"
+            activation: str = "gelu"
     ):
         super().__init__()
 

@@ -1,6 +1,6 @@
 import math
 import copy
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -9,7 +9,11 @@ from text_correction_utils import tokenization
 
 
 class Embedding(nn.Module):
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def forward(
+        self,
+        x: Union[list[list[int]], torch.Tensor],
+        **kwargs: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         raise NotImplementedError
 
 
@@ -22,8 +26,8 @@ def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tok
             pad_token_id=input_tokenizer.pad_token_id(),
             **cfg
         )
-    elif emb_type == "combinatorial":
-        return CombinatorialEmbedding(
+    elif emb_type == "byte":
+        return CodePointEmbedding(
             num_embeddings=input_tokenizer.vocab_size(),
             pad_token_id=input_tokenizer.pad_token_id(),
             **cfg
@@ -70,6 +74,36 @@ class LearnedPositionalEmbedding(TokenEmbedding):
         super().__init__(embedding_dim, num_embeddings)
 
 
+class PositionalEmbedding(nn.Module):
+    def __init__(
+        self,
+        positional_embeddings: str,
+        embedding_dim: int,
+        max_length: int,
+        dropout: float
+    ):
+        super().__init__()
+        if positional_embeddings == "learned":
+            self.pos_embedding = LearnedPositionalEmbedding(
+                embedding_dim,
+                max_length
+            )
+        elif positional_embeddings == "sinusoidal":
+            self.pos_embedding = SinusoidalPositionalEmbedding(
+                embedding_dim,
+                max_length
+            )
+        else:
+            assert positional_embeddings, "positional embeddings must be learned or sinusoidal, " \
+                f"but got {positional_embeddings}"
+
+        self.pos_drop = nn.Dropout1d(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0).repeat(x.shape[0], 1)
+        return self.pos_drop(self.pos_embedding(positions))
+
+
 class StandardEmbedding(Embedding):
     def __init__(
         self,
@@ -77,8 +111,8 @@ class StandardEmbedding(Embedding):
         embedding_dim: int,
         pad_token_id: int,
         dropout: float,
-        positional_embeddings: str,
-        max_length: int
+        max_length: Optional[int] = None,
+        positional_embeddings: Optional[str] = None,
     ):
         super().__init__()
         self.positional_embeddings = positional_embeddings
@@ -89,32 +123,53 @@ class StandardEmbedding(Embedding):
             pad_token_id
         )
 
-        if self.positional_embeddings == "learned":
-            self.pos_embedding = LearnedPositionalEmbedding(
-                embedding_dim,
-                max_length
-            )
-        elif self.positional_embeddings == "sinusoidal":
-            self.pos_embedding = SinusoidalPositionalEmbedding(
-                embedding_dim,
-                max_length
-            )
+        if positional_embeddings is not None:
+            assert max_length is not None, "max length must be specified together with positional embeddings"
+            self.pos_embedding = PositionalEmbedding(positional_embeddings, embedding_dim, max_length, dropout)
         else:
-            assert self.positional_embeddings, "positional embeddings must be one of learned, sinusoidal, or none, " \
-                                               f"but got {self.positional_embeddings}"
+            self.pos_embedding = None
 
         self.token_drop = nn.Dropout1d(dropout)
-        self.pos_drop = nn.Dropout1d(dropout)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def forward(self, x: Union[list[list[int]], torch.Tensor], **kwargs: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))
-        if self.positional_embeddings != "none":
-            positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0).repeat(x.shape[0], 1)
-            pos_emb = self.pos_drop(self.pos_embedding(positions))
+        if self.pos_embedding is not None:
+            pos_emb = self.pos_embedding(x)
         else:
             pos_emb = None
         return emb, pos_emb
 
 
-class CombinatorialEmbedding(Embedding):
-    pass
+class CodePointEmbedding(Embedding):
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        pad_token_id: int,
+        dropout: float,
+        max_length: Optional[int] = None,
+        positional_embeddings: Optional[str] = None,
+    ):
+        super().__init__()
+
+        self.embedding = nn.Linear(32, embedding_dim)
+
+        if positional_embeddings is not None:
+            assert max_length is not None, "max length must be specified together with positional embeddings"
+            self.pos_embedding = PositionalEmbedding(positional_embeddings, embedding_dim, max_length, dropout)
+        else:
+            self.pos_embedding = None
+
+        self.token_drop = nn.Dropout1d(dropout)
+
+    def forward(
+        self,
+        x: Union[list[list[int]], torch.Tensor],
+        **kwargs: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        emb = self.token_drop(self.embedding(x))
+        if self.pos_embedding is not None:
+            pos_emb = self.pos_embedding(x)
+        else:
+            pos_emb = None
+        return emb, pos_emb

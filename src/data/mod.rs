@@ -141,7 +141,7 @@ impl<'a> FromPyObject<'a> for Label {
     }
 }
 
-#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
+#[derive(Clone, Debug)]
 #[pyclass]
 pub struct Item {
     #[pyo3(get)]
@@ -151,6 +151,7 @@ pub struct Item {
     #[pyo3(get)]
     label: Label,
 }
+
 impl ItemSize for Item {
     fn size(&self) -> usize {
         self.tokenization.token_ids.len()
@@ -170,17 +171,7 @@ impl Item {
 #[pymethods]
 impl Item {
     fn __len__(&self) -> usize {
-        self.tokenization.token_ids.len()
-    }
-
-    fn __hash__(&self) -> u64 {
-        let mut s = DefaultHasher::new();
-        self.hash(&mut s);
-        s.finish()
-    }
-
-    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
-        op.matches(self.cmp(other))
+        self.size()
     }
 }
 
@@ -263,7 +254,7 @@ impl InferenceData {
     }
 }
 
-#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
+#[derive(Clone, Debug)]
 #[pyclass]
 pub struct InferenceItem {
     #[pyo3(get)]
@@ -306,16 +297,6 @@ impl ItemSize for InferenceItem {
 impl InferenceItem {
     fn __len__(&self) -> usize {
         self.size()
-    }
-
-    fn __hash__(&self) -> u64 {
-        let mut s = DefaultHasher::new();
-        self.hash(&mut s);
-        s.finish()
-    }
-
-    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
-        op.matches(self.cmp(other))
     }
 }
 
@@ -469,7 +450,7 @@ impl TextDataPipeline {
         Pipeline::new(Arc::new(move |data, _, seed| -> anyhow::Result<Item> {
             let data = preprocess_fn(data, seed)?;
             Ok(Item {
-                tokenization: tok.tokenize(&data.processed, None, None),
+                tokenization: tok.tokenize(&data.processed, data.language.as_deref()),
                 label: label_fn(&data)?,
                 data,
             })
@@ -498,7 +479,7 @@ impl InferencePipeline {
                 .iter()
                 .enumerate()
                 .map(|(w_idx, w)| {
-                    let tokenization = tok.tokenize(w.str, None, None);
+                    let tokenization = tok.tokenize(w.str, data.language.as_deref());
                     let boundaries = w.boundaries();
                     InferenceItem::new(data.clone(), tokenization, idx, w_idx, boundaries)
                 })

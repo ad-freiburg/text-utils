@@ -90,8 +90,8 @@ fn bench_tokenizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("tokenizer");
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     let fx: Vec<&str> = vec!["test"];
-    let char_tok = CharTokenizer::new(true, &fx, &fx);
-    let byte_tok = ByteTokenizer::new(true, &fx, &fx);
+    let char_tok = CharTokenizer::new(true, &fx, &fx, None);
+    let byte_tok = ByteTokenizer::new(true, &fx, &fx, None);
     for size in INPUT_SIZES.iter() {
         let str: String = (&mut rng)
             .sample_iter::<char, _>(rand::distributions::Standard)
@@ -101,14 +101,14 @@ fn bench_tokenizer(c: &mut Criterion) {
             BenchmarkId::new("char", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| char_tok.tokenize(str, None, None));
+                b.iter(|| char_tok.tokenize(str, None));
             },
         );
         group.bench_with_input(
             BenchmarkId::new("byte", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| byte_tok.tokenize(str, None, None));
+                b.iter(|| byte_tok.tokenize(str, None));
             },
         );
     }

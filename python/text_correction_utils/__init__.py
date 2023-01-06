@@ -8,7 +8,8 @@ from text_correction_utils._internal import (
     whitespace,
     data,
     windows,
-    metrics
+    metrics,
+    unicode
 )
 
 # import python modules

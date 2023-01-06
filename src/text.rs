@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::unicode::{Character, CS};
 use crate::utils::{find_subsequences_of_max_size_k, Matrix};
 
-#[pyfunction]
+#[pyfunction(use_graphemes = "true")]
 #[inline]
 pub fn clean(s: &str, use_graphemes: bool) -> String {
     let cs = CS::new(s, use_graphemes);

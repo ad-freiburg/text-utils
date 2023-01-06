@@ -12,7 +12,7 @@ def generate_table(
     data: List[List[str]],
     alignments: Optional[List[str]] = None,
     horizontal_lines: Optional[List[int]] = None,
-    bold_cells: Optional[Set[Tuple[int, int]]] = None,
+    mark_bold: Optional[Set[Tuple[int, int]]] = None,
     vertical_lines: bool = False,
     fmt: str = "markdown"
 ) -> str:
@@ -28,14 +28,30 @@ def generate_table(
     if alignments is None:
         alignments = ["left"] + ["right"] * (header_length - 1)
 
+    if mark_bold is None:
+        mark_bold = set()
+
+    # get max width for each column in headers and data
+    max_widths = []
+    for i in range(header_length):
+        max_widths.append(
+            max(
+                # markdown needs at least three - for a proper horizontal line
+                3,
+                # add 4 to width if cell is bold because of the two **s left and right
+                max(len(h[i]) + (4 * ((i, j) in mark_bold)) for j, h in enumerate(headers)),
+                max(len(d[i]) + (4 * ((i, j) in mark_bold)) for j, d in enumerate(data))
+            )
+        )
+
     if horizontal_lines is None or fmt == "markdown":
         horizontal_lines = [0] * len(data)
     horizontal_lines[-1] = fmt == "latex"  # always a horizontal line after last line for latex, but not for markdown
 
-    if bold_cells is None:
-        bold_cells = [[False] * len(item) for item in data]
-    else:
-        bold_cells = [[(i, j) in bold_cells for j in range(len(data[i]))] for i in range(len(data))]
+    bold_cells = [
+        [(i, j) in mark_bold for j in range(len(data[i]))]
+        for i in range(len(data))
+    ]
 
     tables_lines = []
 
@@ -44,15 +60,15 @@ def generate_table(
         tables_lines.append(opening_str)
 
     tables_lines.extend([
-        _table_row(fmt, header, [False] * header_length)
-        + (_table_horizontal_line(fmt, header_length, alignments, 2) if i == len(headers) - 1 else "")
+        _table_row(fmt, header, [False] * header_length, alignments, max_widths)
+        + (_table_horizontal_line(fmt, max_widths, 2) if i == len(headers) - 1 else "")
         for i, header in enumerate(headers)
     ])
 
     for item, horizontal_line, bold in zip(data, horizontal_lines, bold_cells):
-        line = _table_row(fmt, item, bold)
+        line = _table_row(fmt, item, bold, alignments, max_widths)
         if horizontal_line > 0:
-            line += _table_horizontal_line(fmt, len(item), alignments, horizontal_line)
+            line += _table_horizontal_line(fmt, max_widths, horizontal_line)
         tables_lines.append(line)
 
     closing_str = _close_table(fmt)
@@ -61,12 +77,6 @@ def generate_table(
 
     return "\n".join(tables_lines)
 
-
-_MARK_DOWN_ALIGNMENTS = {
-    "center": ":---:",
-    "left": ":--",
-    "right": "--:"
-}
 
 _LATEX_ALIGNMENTS = {
     "center": "c",
@@ -81,8 +91,8 @@ def _open_table(fmt: str, alignments: List[str], vertical_lines: bool) -> str:
     else:
         divider = "|" if vertical_lines else ""
         return f"\\begin{{tabular}}{{{divider}" \
-               + f"{divider}".join(_LATEX_ALIGNMENTS[align] for align in alignments) \
-               + f"{divider}}} \\hline"
+            + f"{divider}".join(_LATEX_ALIGNMENTS[align] for align in alignments) \
+            + f"{divider}}} \\hline"
 
 
 def _close_table(fmt: str) -> str:
@@ -102,26 +112,30 @@ def _format_latex(s: str, bold: bool) -> str:
     return s
 
 
-def _format_markdown(s: str, bold: bool) -> str:
+def _format_markdown(s: str, bold: bool, alignment: str, width: int) -> str:
     if bold:
         s = "**" + s + "**"
+    if alignment == "left":
+        s = s.ljust(width)
+    elif alignment == "right":
+        s = s.rjust(width)
+    else:
+        s = s.center(width)
     return s
 
 
-def _table_row(fmt: str, data: List[str], bold: List[bool]) -> str:
+def _table_row(fmt: str, data: List[str], bold: List[bool], alignments: List[str], widths: List[int]) -> str:
     assert len(data) == len(bold)
 
     if fmt == "markdown":
-        return "| " + " | ".join(_format_markdown(s, b) for s, b in zip(data, bold)) + " |"
+        return "| " + " | ".join(_format_markdown(*args) for args in zip(data, bold, alignments, widths)) + " |"
     else:
-        return " & ".join(_format_latex(s, b) for s, b in zip(data, bold)) + " \\\\ "
+        return " & ".join(_format_latex(*args) for args in zip(data, bold)) + " \\\\ "
 
 
-def _table_horizontal_line(fmt: str, num_cols: int, alignments: List[str], num_lines: int) -> str:
-    assert num_cols == len(alignments) and all(align in {"left", "right", "center"} for align in alignments)
-
+def _table_horizontal_line(fmt: str, widths: List[int], num_lines: int) -> str:
     if fmt == "markdown":
-        return "\n| " + " | ".join(_MARK_DOWN_ALIGNMENTS[align] for align in alignments) + " |"
+        return "\n| " + " | ".join("-" * w for w in widths) + " |"
     else:
         assert num_lines in {1, 2}
         return "\\hline" * num_lines

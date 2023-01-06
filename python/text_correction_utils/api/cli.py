@@ -2,13 +2,24 @@ import argparse
 import sys
 import time
 import logging
-from typing import Any, Iterator, Tuple, Generator
+from typing import Any, Iterator, Tuple, Generator, Optional
 
 import torch
 
 from text_correction_utils.api.corrector import TextCorrector
 from text_correction_utils.api.server import TextCorrectionServer
 from text_correction_utils.api.table import generate_report
+
+
+# a utility class capturing the return value from a generator,
+# using yield from
+class _GeneratorHelper:
+    def __init__(self, gen: Generator[Any, Any, Any]):
+        self.gen = gen
+        self.value: Optional[Any] = None
+
+    def __iter__(self):
+        self.value = yield from self.gen
 
 
 class TextCorrectionCli:
@@ -110,13 +121,6 @@ class TextCorrectionCli:
             help="List all available models with short descriptions"
         )
         parser.add_argument(
-            "-p",
-            "--pipe",
-            action="store_true",
-            help=f"Pass this flag when using {cls.text_corrector_cls.task} in a pipe because input and output is then treated as an "
-                 "iterator"
-        )
-        parser.add_argument(
             "--precision",
             choices=["fp32", "fp16", "bfp16"],
             default="fp32",
@@ -187,7 +191,7 @@ class TextCorrectionCli:
         raise NotImplementedError
 
     def correct_single(self, corrector: TextCorrector, s: str) -> str:
-        return self.correct_iter(corrector, iter([s]))
+        return next(self.correct_iter(corrector, iter([s])))
 
     def run(self, args: argparse.Namespace):
         if args.version:
@@ -242,7 +246,7 @@ class TextCorrectionCli:
             print(self.correct_single(cor, args.correct))
 
         elif args.file is not None:
-            corrected, num_bytes = self.correct_file(args.file)
+            corrected = _GeneratorHelper(self.correct_file(cor, args.file))
             if args.out_path is None:
                 for line in corrected:
                     print(line)
@@ -251,14 +255,14 @@ class TextCorrectionCli:
                     torch.cuda.synchronize(cor.device)
                 end = time.perf_counter()
 
-                with open(args.file, "r", encoding="utf8") as inf:
-                    lines = [line.strip() for line in inf]
+                num_lines, num_bytes = corrected.value
 
                 generate_report(
                     cor.task,
                     cor.name,
                     cor.model,
-                    lines,
+                    num_lines,
+                    num_bytes,
                     end - start,
                     cor._mixed_precision_dtype,
                     args.batch_size,
@@ -271,7 +275,7 @@ class TextCorrectionCli:
             while True:
                 try:
                     line = input()
-                    corrected = self.correct_single(line)
+                    corrected = self.correct_single(cor, line)
                     print(self.format_output(corrected))
                 except KeyboardInterrupt:
                     pass
@@ -281,31 +285,37 @@ class TextCorrectionCli:
                 return
 
             try:
-                if args.pipe:
+                if args.unsorted:
                     # correct lines from stdin as they come
-                    for corrected in self.correct_iter(sys.stdin):
-                        print(self.format_output(corrected))
+                    corrected = _GeneratorHelper(self.correct_iter(cor, sys.stdin))
+                    for line in corrected:
+                        print(self.format_output(line))
                 else:
                     # read stdin completely, then potentially sort and correct
                     lines = [line.strip() for line in sys.stdin]
-                    for corrected in self.correct_iter(iter(lines)):
+                    corrected = _GeneratorHelper(self.correct_iter(cor, iter(lines)))
+                    for line in corrected:
                         print(self.format_output(corrected))
 
-                    if args.report:
-                        if is_cuda:
-                            torch.cuda.synchronize(cor.device)
-                        generate_report(
-                            cor.task,
-                            cor.name,
-                            cor.model,
-                            lines,
-                            time.perf_counter() - start,
-                            cor._mixed_precision_dtype,
-                            args.batch_size,
-                            not args.unsorted,
-                            cor.device,
-                            file_path=args.report
-                        )
+                if args.report:
+                    if is_cuda:
+                        torch.cuda.synchronize(cor.device)
+
+                    num_lines, num_bytes = corrected.value
+
+                    report = generate_report(
+                        cor.task,
+                        cor.name,
+                        cor.model,
+                        num_lines,
+                        num_bytes,
+                        time.perf_counter() - start,
+                        cor._mixed_precision_dtype,
+                        args.batch_size,
+                        not args.unsorted,
+                        cor.device,
+                    )
+                    print(report)
 
             except BrokenPipeError:
                 pass

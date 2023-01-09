@@ -1,4 +1,5 @@
 import os
+import math
 from typing import List, Optional, Set, Tuple
 
 import torch
@@ -13,11 +14,8 @@ def generate_table(
     alignments: Optional[List[str]] = None,
     horizontal_lines: Optional[List[int]] = None,
     mark_bold: Optional[Set[Tuple[int, int]]] = None,
-    vertical_lines: bool = False,
-    fmt: str = "markdown"
+    max_column_width: int = 48
 ) -> str:
-    assert fmt in {"markdown", "latex"}
-
     assert len(headers), "got no headers"
     assert len(set(len(header) for header in headers)) == 1, "all headers must have the same length"
     header_length = len(headers[0])
@@ -31,22 +29,28 @@ def generate_table(
     if mark_bold is None:
         mark_bold = set()
 
+    max_column_width = max(3, max_column_width)
+
     # get max width for each column in headers and data
-    max_widths = []
+    column_widths = []
     for i in range(header_length):
-        max_widths.append(
-            max(
-                # markdown needs at least three - for a proper horizontal line
-                3,
-                # add 4 to width if cell is bold because of the two **s left and right
-                max(len(h[i]) + (4 * ((i, j) in mark_bold)) for j, h in enumerate(headers)),
-                max(len(d[i]) + (4 * ((i, j) in mark_bold)) for j, d in enumerate(data))
+        # add 4 to width if cell is bold because of the two **s left and right
+        header_width = max(len(h[i]) + (4 * ((i, j) in mark_bold)) for j, h in enumerate(headers))
+        data_width = max(min(max_column_width, len(d[i]) + (4 * ((i, j) in mark_bold))) for j, d in enumerate(data))
+        column_widths.append(
+            min(
+                max_column_width,
+                max(
+                    # markdown needs at least three - for a proper horizontal line
+                    3,
+                    header_width,
+                    data_width
+                )
             )
         )
 
-    if horizontal_lines is None or fmt == "markdown":
+    if horizontal_lines is None:
         horizontal_lines = [0] * len(data)
-    horizontal_lines[-1] = fmt == "latex"  # always a horizontal line after last line for latex, but not for markdown
 
     bold_cells = [
         [(i, j) in mark_bold for j in range(len(data[i]))]
@@ -55,66 +59,23 @@ def generate_table(
 
     tables_lines = []
 
-    opening_str = _open_table(fmt, alignments, vertical_lines)
-    if opening_str:
-        tables_lines.append(opening_str)
-
     tables_lines.extend([
-        _table_row(fmt, header, [False] * header_length, alignments, max_widths)
-        + (_table_horizontal_line(fmt, max_widths, 2) if i == len(headers) - 1 else "")
+        _table_row(header, [False] * header_length, alignments, column_widths, max_column_width)
+        + (_table_horizontal_line(column_widths) if i == len(headers) - 1 else "")
         for i, header in enumerate(headers)
     ])
 
     for item, horizontal_line, bold in zip(data, horizontal_lines, bold_cells):
-        line = _table_row(fmt, item, bold, alignments, max_widths)
+        line = _table_row(item, bold, alignments, column_widths, max_column_width)
         if horizontal_line > 0:
-            line += _table_horizontal_line(fmt, max_widths, horizontal_line)
+            line += _table_horizontal_line(column_widths)
         tables_lines.append(line)
-
-    closing_str = _close_table(fmt)
-    if closing_str:
-        tables_lines.append(closing_str)
 
     return "\n".join(tables_lines)
 
 
-_LATEX_ALIGNMENTS = {
-    "center": "c",
-    "left": "l",
-    "right": "r"
-}
-
-
-def _open_table(fmt: str, alignments: List[str], vertical_lines: bool) -> str:
-    if fmt == "markdown":
-        return ""
-    else:
-        divider = "|" if vertical_lines else ""
-        return f"\\begin{{tabular}}{{{divider}" \
-            + f"{divider}".join(_LATEX_ALIGNMENTS[align] for align in alignments) \
-            + f"{divider}}} \\hline"
-
-
-def _close_table(fmt: str) -> str:
-    if fmt == "markdown":
-        return ""
-    else:
-        return "\\end{tabular}"
-
-
-_LATEX_ESCAPE_CHARS = {"_", "%"}  # "&", "%", "$", "#", "_", "{", "}"}
-
-
-def _format_latex(s: str, bold: bool) -> str:
-    s = "".join("\\" + char if char in _LATEX_ESCAPE_CHARS else char for char in s)
-    if bold:
-        s = "\\textbf{" + s + "}"
-    return s
-
-
-def _format_markdown(s: str, bold: bool, alignment: str, width: int) -> str:
-    if bold:
-        s = "**" + s + "**"
+def _table_cell(s: str, prefix: str, suffix: str, alignment: str, width: int) -> str:
+    s = prefix + s + suffix
     if alignment == "left":
         s = s.ljust(width)
     elif alignment == "right":
@@ -124,21 +85,26 @@ def _format_markdown(s: str, bold: bool, alignment: str, width: int) -> str:
     return s
 
 
-def _table_row(fmt: str, data: List[str], bold: List[bool], alignments: List[str], widths: List[int]) -> str:
+def _table_row(data: List[str], bold: List[bool], alignments: List[str], widths: List[int], max_width: int) -> str:
     assert len(data) == len(bold)
+    num_lines = [math.ceil(len(d) / max_width) for d in data]
+    max_num_lines = max(num_lines)
+    lines = []
+    for i in range(max_num_lines):
+        line_data = [d[i*max_width: (i + 1) * max_width] for d in data]
+        line = "| " + " | ".join(_table_cell(
+            d,
+            "**" if b and i == 0 else "",
+            "**" if b and i == max_num_lines - 1 else "",
+            a,
+            w
+        ) for d, b, a, w in zip(line_data, bold, alignments, widths)) + " |"
+        lines.append(line)
+    return "\n".join(lines)
 
-    if fmt == "markdown":
-        return "| " + " | ".join(_format_markdown(*args) for args in zip(data, bold, alignments, widths)) + " |"
-    else:
-        return " & ".join(_format_latex(*args) for args in zip(data, bold)) + " \\\\ "
 
-
-def _table_horizontal_line(fmt: str, widths: List[int], num_lines: int) -> str:
-    if fmt == "markdown":
-        return "\n| " + " | ".join("-" * w for w in widths) + " |"
-    else:
-        assert num_lines in {1, 2}
-        return "\\hline" * num_lines
+def _table_horizontal_line(widths: List[int]) -> str:
+    return "\n| " + " | ".join("-" * w for w in widths) + " |"
 
 
 def generate_report(
@@ -164,7 +130,7 @@ def generate_report(
         raise ValueError("expected precision to be one of torch.float16, torch.bfloat16 or torch.float32")
 
     report = generate_table(
-        headers=[["Report", task]],
+        headers=[["REPORT", task]],
         data=[
             ["Model", model_name],
             ["Input size 1", f"{input_size} sequences"],

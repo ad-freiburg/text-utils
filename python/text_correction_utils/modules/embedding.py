@@ -1,6 +1,6 @@
 import math
 import copy
-from typing import Dict, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -11,7 +11,7 @@ from text_correction_utils import tokenization
 class Embedding(nn.Module):
     def forward(
         self,
-        x: Union[list[list[int]], torch.Tensor],
+        x: Union[List[List[int]], torch.Tensor],
         **kwargs: Dict[str, Any]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         raise NotImplementedError
@@ -26,7 +26,7 @@ def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tok
             pad_token_id=input_tokenizer.pad_token_id(),
             **cfg
         )
-    elif emb_type == "byte":
+    elif emb_type == "code_point":
         return CodePointEmbedding(
             num_embeddings=input_tokenizer.vocab_size(),
             pad_token_id=input_tokenizer.pad_token_id(),
@@ -131,7 +131,7 @@ class StandardEmbedding(Embedding):
 
         self.token_drop = nn.Dropout1d(dropout)
 
-    def forward(self, x: Union[list[list[int]], torch.Tensor], **kwargs: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def forward(self, x: Union[List[List[int]], torch.Tensor], **kwargs: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))
         if self.pos_embedding is not None:
             pos_emb = self.pos_embedding(x)
@@ -164,7 +164,7 @@ class CodePointEmbedding(Embedding):
 
     def forward(
         self,
-        x: Union[list[list[int]], torch.Tensor],
+        x: Union[List[List[int]], torch.Tensor],
         **kwargs: Dict[str, Any]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))

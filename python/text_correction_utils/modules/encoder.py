@@ -177,13 +177,13 @@ class Alibi(nn.Module):
         r = torch.arange(s)
         rel_pos = r[None, :] - r[:, None]
         rel_pos = einops.repeat(torch.abs(rel_pos), "s t -> n s t", n=self.heads)
-        return rel_pos * self.slopes
+        return rel_pos.to(self.slopes.device) * self.slopes
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, s = x.shape[:2]
 
         if self.mask is None or s > self.mask.shape[1]:
-            self.mask = self.get_mask(s).to(x.device)
+            self.mask = self.get_mask(s)
 
         return einops.repeat(self.mask[:, :s, :s], "n s t -> (b n) s t", b=b)
 
@@ -240,7 +240,6 @@ class TransformerEncoder(Encoder):
             pos = None
         elif self.with_pos == "alibi":
             attn_mask = self.alibi(x)
-            print(attn_mask)
         else:
             raise ValueError(f"unknown with_pos={self.with_pos}")
 

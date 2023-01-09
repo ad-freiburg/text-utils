@@ -2,13 +2,13 @@ import argparse
 import sys
 import time
 import logging
-from typing import Any, Iterator, Tuple, Generator, Optional
+from typing import Any, Iterator, Tuple, Generator, Optional, Type
 
 import torch
 
 from text_correction_utils.api.corrector import TextCorrector
 from text_correction_utils.api.server import TextCorrectionServer
-from text_correction_utils.api.table import generate_report
+from text_correction_utils.api.table import generate_report, generate_table
 
 
 # a utility class capturing the return value from a generator,
@@ -23,8 +23,8 @@ class _GeneratorHelper:
 
 
 class TextCorrectionCli:
-    text_corrector_cls: TextCorrector
-    text_correction_server_cls: TextCorrectionServer
+    text_corrector_cls: Type[TextCorrector]
+    text_correction_server_cls: Type[TextCorrectionServer]
 
     @classmethod
     def parser(
@@ -158,10 +158,8 @@ class TextCorrectionCli:
         )
         parser.add_argument(
             "--report",
-            type=str,
-            default=None,
-            help="Save a runtime report (ignoring startup time) formatted as markdown table to a file, append new line "
-                 "if the file already exists"
+            action="store_true",
+            help="Print a runtime report (ignoring startup time) at the end of the correction procedure"
         )
         parser.add_argument(
             "--log-level",
@@ -193,71 +191,70 @@ class TextCorrectionCli:
     def correct_single(self, corrector: TextCorrector, s: str) -> str:
         return next(self.correct_iter(corrector, iter([s])))
 
-    def run(self, args: argparse.Namespace):
-        if args.version:
+    def run(self):
+        if self.args.version:
             print(self.version())
             return
-        elif args.list:
-            model_names = []
-            model_descriptions = []
-            for model in self.text_corrector_cls.available_models():
-                model_names.append(model.name)
-                model_descriptions.append(model.description)
-            max_model_name_len = max(len(n) for n in model_names)
-            print("\n".join(
-                f"{name.ljust(max_model_name_len)}: {desc}"
-                for name, desc in zip(model_names, model_descriptions)
-            ))
+        elif self.args.list:
+            table = generate_table(
+                headers=[["Model", "Description", "Tags"]],
+                data=[
+                    [model.name, model.description, ", ".join(str(tag) for tag in model.tags)]
+                    for model in self.text_corrector_cls.available_models()
+                ],
+                alignments=["left", "left", "left"],
+            )
+            print(table)
             return
-        elif args.server:
-            self.text_correction_server_cls.from_config(args.server).run()
+        elif self.args.server:
+            self.text_correction_server_cls.from_config(self.args.server).run()
             return
 
-        if args.log_level == "info":
+        if self.args.log_level == "info":
             logging.basicConfig(level=logging.INFO)
-        elif args.log_level == "debug":
+        elif self.args.log_level == "debug":
             logging.basicConfig(level=logging.DEBUG)
         else:
             logging.disable(logging.CRITICAL)
 
-        device = "cpu" if args.cpu else "cuda"
-        if args.experiment:
+        device = "cpu" if self.args.cpu else "cuda"
+        if self.args.experiment:
             cor = self.text_corrector_cls.from_experiment(
-                experiment_dir=args.experiment,
+                experiment_dir=self.args.experiment,
                 device=device
             )
         else:
             cor = self.text_corrector_cls.from_pretrained(
-                model=args.model,
+                model=self.args.model,
                 device=device,
-                download_dir=args.download_dir,
-                cache_dir=args.cache_dir,
-                force_download=args.force_download
+                download_dir=self.args.download_dir,
+                cache_dir=self.args.cache_dir,
+                force_download=self.args.force_download
             )
 
-        cor.set_precision(args.precision)
+        cor.set_precision(self.args.precision)
         is_cuda = cor.device.type == "cuda"
 
         if is_cuda:
             torch.cuda.reset_peak_memory_stats(cor.device)
 
         start = time.perf_counter()
-        if args.correct is not None:
-            print(self.correct_single(cor, args.correct))
+        if self.args.correct is not None:
+            print(self.correct_single(cor, self.args.correct))
 
-        elif args.file is not None:
-            corrected = _GeneratorHelper(self.correct_file(cor, args.file))
-            if args.out_path is None:
+        elif self.args.file is not None:
+            corrected = _GeneratorHelper(self.correct_file(cor, self.args.file))
+            if self.args.out_path is None:
                 for line in corrected:
                     print(line)
-            if args.report:
+            if self.args.report:
                 if is_cuda:
                     torch.cuda.synchronize(cor.device)
                 end = time.perf_counter()
 
                 num_lines, num_bytes = corrected.value
 
-                generate_report(
+                report = generate_report(
                     cor.task,
                     cor.name,
                     cor.model,
@@ -265,13 +262,13 @@ class TextCorrectionCli:
                     num_bytes,
                     end - start,
                     cor._mixed_precision_dtype,
-                    args.batch_size,
-                    not args.unsorted,
+                    self.args.batch_size,
+                    not self.args.unsorted,
                     cor.device,
-                    file_path=args.report
                 )
+                print(report)
 
-        elif args.interactive:
+        elif self.args.interactive:
             while True:
                 try:
                     line = input()
@@ -285,7 +282,7 @@ class TextCorrectionCli:
                 return
 
             try:
-                if args.unsorted:
+                if self.args.unsorted:
                     # correct lines from stdin as they come
                     corrected = _GeneratorHelper(self.correct_iter(cor, sys.stdin))
                     for line in corrected:
@@ -297,7 +294,7 @@ class TextCorrectionCli:
                     for line in corrected:
                         print(self.format_output(corrected))
 
-                if args.report:
+                if self.args.report:
                     if is_cuda:
                         torch.cuda.synchronize(cor.device)
 
@@ -311,8 +308,8 @@ class TextCorrectionCli:
                         num_bytes,
                         time.perf_counter() - start,
                         cor._mixed_precision_dtype,
-                        args.batch_size,
-                        not args.unsorted,
+                        self.args.batch_size,
+                        not self.args.unsorted,
                         cor.device,
                     )
                     print(report)

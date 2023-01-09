@@ -36,6 +36,12 @@ criterion = "0.4"
 [features]
 benchmark-utils = []
 
+# optimize for binary size in release mode
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
 [[bench]]
 required-features = ["benchmark-utils"]
 name = "benchmark"

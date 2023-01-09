@@ -1,5 +1,6 @@
 import functools
 import copy
+import math
 from typing import Optional, List, Tuple, Any, Dict
 
 import einops
@@ -93,20 +94,22 @@ class _TransformerEncoderLayer(nn.Module):
         self,
         src: torch.Tensor,
         pos: Optional[torch.Tensor] = None,
-        padding_mask: Optional[torch.Tensor] = None
+        padding_mask: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         r"""Pass the input through the encoder layer.
         Args:
             src: the sequence to the encoder layer (required).
             pos: sequence of positional features (optional).
             padding_mask: the mask for the src keys per batch (optional).
+            attn_mask: mask added to the attention weights (optional).
         Shape:
             see the docs in Transformer class.
         """
 
         # see Fig. 1 of https://arxiv.org/pdf/2002.04745v1.pdf
         x = src
-        x = self.norm1(x + self._sa_block(x, pos, padding_mask))
+        x = self.norm1(x + self._sa_block(x, pos, padding_mask, attn_mask))
         x = self.norm2(x + self._ff_block(x))
         return x
 
@@ -121,13 +124,15 @@ class _TransformerEncoderLayer(nn.Module):
         self,
         x: torch.Tensor,
         pos: Optional[torch.Tensor],
-        padding_mask: Optional[torch.Tensor]
+        padding_mask: Optional[torch.Tensor],
+        attn_mask: Optional[torch.Tensor]
     ) -> torch.Tensor:
         x = self.self_attn(
             self._add_pos(x, pos),
             self._add_pos(x, pos),
             x,
             key_padding_mask=padding_mask,
+            attn_mask=attn_mask,
             need_weights=True
         )[0]
         return self.dropout1(x)
@@ -136,6 +141,51 @@ class _TransformerEncoderLayer(nn.Module):
     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
         return self.dropout2(x)
+
+
+class Alibi(nn.Module):
+    def __init__(self, heads: int):
+        super().__init__()
+        self.heads = heads
+        self.register_buffer(
+            "slopes",
+            torch.tensor(self.get_slopes(self.heads)).unsqueeze(-1).unsqueeze(-1) * -1,
+            persistent=False
+        )
+        # mask has shape [b * n, s, s]
+        self.mask: Optional[torch.Tensor] = None
+
+    @classmethod
+    def get_slopes(cls, n: int):
+        def get_slopes_power_of_2(n):
+            start = (2**(-2**-(math.log2(n)-3)))
+            ratio = start
+            return [start*ratio**i for i in range(n)]
+
+        if math.log2(n).is_integer():
+            # In the paper, we only train models that have 2^a heads for some a. This function has
+            return get_slopes_power_of_2(n)
+        else:
+            # some good properties that only occur when the input is a power of 2. To maintain that even
+            # when the number of heads is not a power of 2, we use this workaround.
+            closest_power_of_2 = 2**math.floor(math.log2(n))
+            return get_slopes_power_of_2(closest_power_of_2) + cls.get_slopes(
+                2*closest_power_of_2
+            )[0::2][:n-closest_power_of_2]
+
+    def get_mask(self, s: int) -> torch.Tensor:
+        r = torch.arange(s)
+        rel_pos = r[None, :] - r[:, None]
+        rel_pos = einops.repeat(torch.abs(rel_pos), "s t -> n s t", n=self.heads)
+        return rel_pos * self.slopes
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, s = x.shape[:2]
+
+        if self.mask is None or s > self.mask.shape[1]:
+            self.mask = self.get_mask(s).to(x.device)
+
+        return einops.repeat(self.mask[:, :s, :s], "n s t -> (b n) s t", b=b)
 
 
 class TransformerEncoder(Encoder):
@@ -168,8 +218,8 @@ class TransformerEncoder(Encoder):
         self.with_pos = with_pos
         if self.with_pos == "add_norm":
             self.input_norm = nn.LayerNorm(dim)
-        else:
-            self.input_norm = nn.Identity()
+        elif self.with_pos == "alibi":
+            self.alibi = Alibi(heads)
 
     def forward(
         self,
@@ -179,14 +229,26 @@ class TransformerEncoder(Encoder):
         **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
         padding_mask = mask.padding_mask(lengths, x.device)
-        if self.with_pos == "add" or self.with_pos == "add_norm":
+        attn_mask = None
+        if self.with_pos == "add_norm":
             assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
             x = self.input_norm(x + pos)
             pos = None
+        elif self.with_pos == "add":
+            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
+            x = x + pos
+            pos = None
+        elif self.with_pos == "alibi":
+            attn_mask = self.alibi(x)
+            print(attn_mask)
+        else:
+            raise ValueError(f"unknown with_pos={self.with_pos}")
 
         enc = x
         for i in range(self.num_layers):
-            enc = self.transformer[0 if self.share_parameters else i](enc, pos, padding_mask=padding_mask)
+            enc = self.transformer[0 if self.share_parameters else i](
+                enc, pos, padding_mask=padding_mask, attn_mask=attn_mask
+            )
         return enc
 
 

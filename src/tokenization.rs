@@ -111,7 +111,7 @@ impl LanguageConfig {
 #[derive(Clone, Debug)]
 pub enum TokenizeConfig {
     Character(bool),
-    Byte(bool),
+    Byte(bool, ByteGroups),
     Dummy(Duration),
 }
 
@@ -123,8 +123,9 @@ impl IntoPy<PyObject> for TokenizeConfig {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "character"
             }
-            TokenizeConfig::Byte(use_g) => {
+            TokenizeConfig::Byte(use_g, groups) => {
                 d.set_item("use_graphemes", use_g).unwrap();
+                d.set_item("groups", groups.into_py(py)).unwrap();
                 "byte"
             }
             TokenizeConfig::Dummy(delay) => {
@@ -145,17 +146,24 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
         };
         let tokenizer_type: String = tokenizer_type.extract()?;
         let tokenizer_config = match tokenizer_type.as_str() {
-            "character" | "byte" => {
+            "character" => {
                 let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
                     value.extract()?
                 } else {
                     true
                 };
-                if tokenizer_type.as_str() == "character" {
-                    TokenizeConfig::Character(use_graphemes)
+                TokenizeConfig::Character(use_graphemes)
+            }
+            "byte" => {
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
                 } else {
-                    TokenizeConfig::Byte(use_graphemes)
-                }
+                    true
+                };
+                let Some(groups) = d.get_item("groups") else {
+                    return Err(py_required_key_error("groups", "byte tokenizer config"));
+                };
+                TokenizeConfig::Byte(use_graphemes, groups.extract()?)
             }
             "dummy" => {
                 let millis: u64 = if let Some(value) = d.get_item("delay") {
@@ -581,6 +589,34 @@ impl Tokenize for CharTokenizer {
 }
 
 #[derive(Clone, Debug)]
+pub enum ByteGroups {
+    Bytes,
+    CodePoints,
+}
+
+impl IntoPy<PyObject> for ByteGroups {
+    fn into_py(self, py: Python) -> PyObject {
+        match self {
+            ByteGroups::Bytes => "bytes",
+            ByteGroups::CodePoints => "code_points",
+        }
+        .into_py(py)
+    }
+}
+
+impl<'a> FromPyObject<'a> for ByteGroups {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let s: String = ob.extract()?;
+        let groups = match s.as_str() {
+            "bytes" => ByteGroups::Bytes,
+            "code_points" => ByteGroups::CodePoints,
+            k => return Err(py_invalid_type_error(k, "byte groups")),
+        };
+        Ok(groups)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ByteTokenizer {
     _prefix_token_ids: Vec<u32>,
     _suffix_token_ids: Vec<u32>,
@@ -589,11 +625,13 @@ pub struct ByteTokenizer {
     reverse_special_vocab: HashMap<u32, String>,
     unk_token: String,
     use_graphemes: bool,
+    groups: ByteGroups,
 }
 
 impl ByteTokenizer {
     pub fn new(
         use_graphemes: bool,
+        groups: ByteGroups,
         prefix_tokens: &[&str],
         suffix_tokens: &[&str],
         language_config: Option<LanguageConfig>,
@@ -616,6 +654,7 @@ impl ByteTokenizer {
             reverse_special_vocab,
             unk_token,
             use_graphemes,
+            groups,
         };
         tokenizer.add_special_tokens(prefix_tokens);
         tokenizer.add_special_tokens(suffix_tokens);
@@ -643,15 +682,46 @@ impl ByteTokenizer {
     }
 
     pub fn default() -> Self {
-        Self::new(true, &DEFAULT_PREFIX_TOKENS, &DEFAULT_SUFFIX_TOKENS, None)
+        Self::new(
+            true,
+            ByteGroups::Bytes,
+            &DEFAULT_PREFIX_TOKENS,
+            &DEFAULT_SUFFIX_TOKENS,
+            None,
+        )
     }
 
-    fn split(&self, s: &str) -> (Vec<u32>, Vec<usize>) {
+    fn split(&self, s: &str) -> (Vec<u32>, HashMap<String, Vec<usize>>) {
         let tokens = s.as_bytes().iter().map(|b| *b as u32).collect();
-        (
-            tokens,
-            run_length_decode(&CS::new(s, self.use_graphemes).rle_cluster_lengths),
-        )
+        let groups = match self.groups {
+            ByteGroups::Bytes => {
+                let cs = CS::new(s, self.use_graphemes);
+                let mut groups = vec![1; self.num_prefix_tokens()];
+                groups.extend(run_length_decode(&cs.rle_cluster_lengths));
+                groups.extend(vec![1; self.num_suffix_tokens()]);
+                HashMap::from([("byte_groups".to_string(), groups)])
+            }
+            ByteGroups::CodePoints => {
+                let cs = CS::new(s, self.use_graphemes);
+                let mut byte_groups = vec![1; self.num_prefix_tokens()];
+                let mut code_point_groups = vec![1; self.num_prefix_tokens()];
+                for char in cs.chars() {
+                    let mut num_chars = 0;
+                    for code_point in char.code_points() {
+                        byte_groups.push(code_point.len_utf8());
+                        num_chars += 1;
+                    }
+                    code_point_groups.push(num_chars);
+                }
+                byte_groups.extend(vec![1; self.num_suffix_tokens()]);
+                code_point_groups.extend(vec![1; self.num_suffix_tokens()]);
+                HashMap::from([
+                    ("byte_groups".to_string(), byte_groups),
+                    ("code_point_groups".to_string(), code_point_groups),
+                ])
+            }
+        };
+        (tokens, groups)
     }
 }
 
@@ -702,14 +772,11 @@ impl Tokenize for ByteTokenizer {
     }
 
     fn tokenize(&self, s: &str, lang: Option<&str>) -> Tokenization {
-        let (bytes, mut token_groups) = self.split(s);
-        let mut groups: Vec<usize> = vec![1; self.num_prefix_tokens()];
-        groups.append(&mut token_groups);
-        groups.append(&mut vec![1; self.num_suffix_tokens()]);
+        let (bytes, token_groups) = self.split(s);
 
         Tokenization::new(
             self.add_prefix_and_suffix(bytes, lang),
-            TokenizationInfo::TokenGroups(HashMap::from([("groups".to_string(), groups)])),
+            TokenizationInfo::TokenGroups(token_groups),
         )
     }
 
@@ -744,9 +811,13 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
         TokenizeConfig::Character(use_g) => {
             Box::new(CharTokenizer::new(use_g, &prefix, &suffix, cfg.language))
         }
-        TokenizeConfig::Byte(use_g) => {
-            Box::new(ByteTokenizer::new(use_g, &prefix, &suffix, cfg.language))
-        }
+        TokenizeConfig::Byte(use_g, groups) => Box::new(ByteTokenizer::new(
+            use_g,
+            groups,
+            &prefix,
+            &suffix,
+            cfg.language,
+        )),
         TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
     }
 }
@@ -766,7 +837,7 @@ impl PyTokenizer {
         PyTokenizer {
             name: match config.tokenize {
                 TokenizeConfig::Character(_) => "character",
-                TokenizeConfig::Byte(_) => "byte",
+                TokenizeConfig::Byte(_, _) => "byte",
                 TokenizeConfig::Dummy(_) => "dummy",
             }
             .to_string(),
@@ -843,7 +914,12 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use crate::tokenization::{ByteTokenizer, CharTokenizer, Tokenization, Tokenize, BOS, EOS};
+    use std::collections::HashMap;
+
+    use crate::tokenization::{
+        ByteGroups, ByteTokenizer, CharTokenizer, Tokenization, TokenizationInfo, Tokenize, BOS,
+        EOS,
+    };
 
     #[test]
     fn test_char_tokenizer() {
@@ -861,9 +937,9 @@ mod tests {
     fn test_byte_tokenizer() {
         let pfx = vec![BOS];
         let sfx = vec![EOS];
-        let tok = ByteTokenizer::new(true, &pfx, &sfx, None);
+        let tok = ByteTokenizer::new(true, ByteGroups::Bytes, &pfx, &sfx, None);
         let text = "a täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None);
+        let Tokenization { token_ids, info } = tok.tokenize(text, None);
         assert_eq!(
             token_ids[1..token_ids.len() - 1]
                 .iter()
@@ -871,7 +947,41 @@ mod tests {
                 .collect::<Vec<u8>>(),
             text.as_bytes().clone()
         );
+        match info {
+            TokenizationInfo::Empty => panic!("wrong info"),
+            TokenizationInfo::TokenGroups(groups) => {
+                assert_eq!(
+                    groups,
+                    HashMap::from([("byte_groups".to_string(), vec![1, 1, 1, 1, 2, 1, 1, 1])])
+                )
+            }
+        };
         assert_eq!(token_ids.len(), 7 + 2);
         assert_eq!(tok.de_tokenize(&token_ids), text.to_string());
+        let tok = ByteTokenizer::new(true, ByteGroups::CodePoints, &pfx, &sfx, None);
+        let text = "a täst";
+        let Tokenization { token_ids, info } = tok.tokenize(text, None);
+        assert_eq!(
+            token_ids[1..token_ids.len() - 1]
+                .iter()
+                .map(|tok| *tok as u8)
+                .collect::<Vec<u8>>(),
+            text.as_bytes().clone()
+        );
+        match info {
+            TokenizationInfo::Empty => panic!("wrong info"),
+            TokenizationInfo::TokenGroups(groups) => {
+                assert_eq!(
+                    groups,
+                    HashMap::from([
+                        ("byte_groups".to_string(), vec![1, 1, 1, 1, 2, 1, 1, 1]),
+                        (
+                            "code_point_groups".to_string(),
+                            vec![1, 1, 1, 1, 1, 1, 1, 1]
+                        )
+                    ])
+                )
+            }
+        };
     }
 }

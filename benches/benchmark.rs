@@ -4,7 +4,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
-use text_correction_utils::tokenization::{ByteTokenizer, CharTokenizer, Tokenize};
+use text_correction_utils::tokenization::{ByteGroups, ByteTokenizer, CharTokenizer, Tokenize};
 use text_correction_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
 };
@@ -91,7 +91,9 @@ fn bench_tokenizer(c: &mut Criterion) {
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     let fx: Vec<&str> = vec!["test"];
     let char_tok = CharTokenizer::new(true, &fx, &fx, None);
-    let byte_tok = ByteTokenizer::new(true, &fx, &fx, None);
+    let byte_tok_byte_groups = ByteTokenizer::new(true, ByteGroups::Bytes, &fx, &fx, None);
+    let byte_tok_code_point_groups =
+        ByteTokenizer::new(true, ByteGroups::CodePoints, &fx, &fx, None);
     for size in INPUT_SIZES.iter() {
         let str: String = (&mut rng)
             .sample_iter::<char, _>(rand::distributions::Standard)
@@ -105,10 +107,17 @@ fn bench_tokenizer(c: &mut Criterion) {
             },
         );
         group.bench_with_input(
-            BenchmarkId::new("byte", format!("{}", size)),
+            BenchmarkId::new("byte (byte groups)", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| byte_tok.tokenize(str, None));
+                b.iter(|| byte_tok_byte_groups.tokenize(str, None));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("byte (code point groups)", format!("{}", size)),
+            str.as_str(),
+            |b, str| {
+                b.iter(|| byte_tok_code_point_groups.tokenize(str, None));
             },
         );
     }

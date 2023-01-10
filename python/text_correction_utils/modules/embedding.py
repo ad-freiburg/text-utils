@@ -14,8 +14,9 @@ class Embedding(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        lengths: List[int],
         **kwargs: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, List[int], Optional[torch.Tensor]]:
         raise NotImplementedError
 
 
@@ -136,14 +137,15 @@ class StandardEmbedding(Embedding):
     def forward(
         self,
         x: torch.Tensor,
+        lengths: List[int],
         **kwargs: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, List[int], Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))
         if self.pos_embedding is not None:
             pos_emb = self.pos_embedding(x)
         else:
             pos_emb = None
-        return emb, pos_emb
+        return emb, lengths, pos_emb
 
 
 class ByteEmbedding(Embedding):
@@ -192,20 +194,21 @@ all additional embeddings are assumed to be special tokens"
     def forward(
         self,
         x: torch.Tensor,
+        lengths: List[int],
         byte_groups: Optional[List[List[int]]] = None,
         code_point_groups: Optional[List[List[int]]] = None,
-        **_: Dict[str, Any]
+        **kwargs: Dict[str, Any]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         byte_emb = self.embedding(x)
 
         if self.groups == "code_points":
             assert byte_groups is not None and code_point_groups is not None
-            byte_emb, _ = self.byte_grouping(byte_emb, groups=byte_groups)
+            byte_emb, lengths = self.byte_grouping(byte_emb, groups=byte_groups)
             code_point_emb = self.code_point_proj(byte_emb)
-            emb, _ = self.code_point_grouping(code_point_emb, groups=code_point_groups)
+            emb, lengths = self.code_point_grouping(code_point_emb, groups=code_point_groups)
         else:
             assert byte_groups is not None
-            emb, _ = self.byte_grouping(byte_emb, groups=byte_groups)
+            emb, lengths = self.byte_grouping(byte_emb, groups=byte_groups)
 
         emb = self.out_proj(emb)
         emb = self.token_drop(emb)
@@ -213,4 +216,4 @@ all additional embeddings are assumed to be special tokens"
             pos_emb = self.pos_embedding(emb)
         else:
             pos_emb = None
-        return emb, pos_emb
+        return emb, lengths, pos_emb

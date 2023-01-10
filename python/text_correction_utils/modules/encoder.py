@@ -362,11 +362,12 @@ class GroupingEncoder(Encoder):
         self,
         encoder: Encoder,
         group_first: bool = False,
-        group_aggregation: str = "mean"
+        group_aggregation: str = "mean",
+        group_names: Tuple[str] = ("groups",)
     ):
         super().__init__()
         self.encoder = encoder
-        self.grouping = Grouping(group_aggregation)
+        self.grouping = Grouping(group_aggregation, group_names)
         self.group_first = group_first
 
     def forward(
@@ -374,17 +375,15 @@ class GroupingEncoder(Encoder):
         x: torch.Tensor,
         lengths: List[int],
         pos: Optional[torch.Tensor],
-        groups: Optional[List[List[int]]] = None,
         **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
-        assert groups is not None, "grouping encoder expects groups keyword argument"
         if self.group_first:
-            x, lengths = self.grouping(x, groups)
+            x, lengths = self.grouping(x, **kwargs)
             if pos is not None:
-                pos, _ = self.grouping(pos, groups)
+                pos, _ = self.grouping(pos, **kwargs)
         x = self.encoder(x, lengths, pos, **kwargs)
         if not self.group_first:
-            x, _ = self.grouping(x, groups)
+            x, _ = self.grouping(x, **kwargs)
         return x
 
 

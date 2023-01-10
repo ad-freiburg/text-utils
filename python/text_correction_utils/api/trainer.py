@@ -519,8 +519,13 @@ training will resume from latest checkpoint."
             token_ids = []
             token_lengths = [len(item.tokenization.token_ids) for item in batch]
             max_tokens = max(token_lengths)
-            if self.cfg["model"]["encoder"]["type"] == "grouping":
-                max_groups = max(len(item.tokenization.info["groups"]) for item in batch)
+            first_info = next(iter(batch)).tokenization.info
+            if first_info["type"] == "token_groups":
+                if "code_point_groups" in first_info:
+                    group_name = "code_point_groups"
+                else:
+                    group_name = "byte_groups"
+                max_groups = max(len(item.tokenization.info[group_name]) for item in batch)
             else:
                 max_groups = max_tokens
             labels = []
@@ -661,7 +666,7 @@ training will resume from latest checkpoint."
 
                 end = time.perf_counter()
                 self.logger.info(
-                    f"[step {self.step}] [train_time {self.step - log_interval}\u2192{self.step}] "
+                    f"[step {self.step}] [train_time {self.step - self.log_interval}\u2192{self.step}] "
                     f"{(end - start) / 60:.2f} minutes"
                 )
                 self.logger.info(

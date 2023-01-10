@@ -2,16 +2,18 @@ import math
 import copy
 from typing import Dict, List, Any, Optional, Tuple, Union
 
+import einops
 import torch
 from torch import nn
 
 from text_correction_utils import tokenization
+from text_correction_utils.modules import grouping
 
 
 class Embedding(nn.Module):
     def forward(
         self,
-        x: Union[List[List[int]], torch.Tensor],
+        x: torch.Tensor,
         **kwargs: Dict[str, Any]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         raise NotImplementedError
@@ -26,8 +28,8 @@ def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tok
             pad_token_id=input_tokenizer.pad_token_id(),
             **cfg
         )
-    elif emb_type == "code_point":
-        return CodePointEmbedding(
+    elif emb_type == "byte":
+        return ByteEmbedding(
             num_embeddings=input_tokenizer.vocab_size(),
             pad_token_id=input_tokenizer.pad_token_id(),
             **cfg
@@ -100,7 +102,7 @@ class PositionalEmbedding(nn.Module):
         self.pos_drop = nn.Dropout1d(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0).repeat(x.shape[0], 1)
+        positions = einops.repeat(torch.arange(x.shape[1], device=x.device), "s -> b s", b=x.shape[0])
         return self.pos_drop(self.pos_embedding(positions))
 
 
@@ -131,7 +133,11 @@ class StandardEmbedding(Embedding):
 
         self.token_drop = nn.Dropout1d(dropout)
 
-    def forward(self, x: Union[List[List[int]], torch.Tensor], **kwargs: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))
         if self.pos_embedding is not None:
             pos_emb = self.pos_embedding(x)
@@ -140,19 +146,40 @@ class StandardEmbedding(Embedding):
         return emb, pos_emb
 
 
-class CodePointEmbedding(Embedding):
+class ByteEmbedding(Embedding):
     def __init__(
         self,
         num_embeddings: int,
+        groups: str,
         embedding_dim: int,
         pad_token_id: int,
         dropout: float,
         max_length: Optional[int] = None,
         positional_embeddings: Optional[str] = None,
+        byte_embedding_dim: Optional[int] = None,
+        aggregation: str = "mean"
     ):
         super().__init__()
+        assert groups in {"bytes", "code_points"}, "groups must be either bytes or code_points"
+        self.groups = groups
 
-        self.embedding = nn.Linear(32, embedding_dim)
+        if byte_embedding_dim is None:
+            byte_embedding_dim = embedding_dim // 8
+        else:
+            assert byte_embedding_dim <= embedding_dim, \
+                "byte embedding dim must be smaller than or equal to embedding dim"
+
+        self.byte_grouping = grouping.Grouping(aggregation)
+        if self.groups == "code_points":
+            self.code_point_proj = nn.Linear(byte_embedding_dim, byte_embedding_dim, bias=False)
+            self.code_point_grouping = grouping.Grouping(aggregation)
+
+        self.out_proj = nn.Linear(byte_embedding_dim, embedding_dim, bias=False)
+
+        assert num_embeddings >= 256, "number of embeddings must be at least 256, one for each byte, \
+all additional embeddings are assumed to be special tokens"
+
+        self.embedding = TokenEmbedding(byte_embedding_dim, num_embeddings, pad_token_id)
 
         if positional_embeddings is not None:
             assert max_length is not None, "max length must be specified together with positional embeddings"
@@ -164,12 +191,26 @@ class CodePointEmbedding(Embedding):
 
     def forward(
         self,
-        x: Union[List[List[int]], torch.Tensor],
-        **kwargs: Dict[str, Any]
+        x: torch.Tensor,
+        byte_groups: Optional[List[List[int]]] = None,
+        code_point_groups: Optional[List[List[int]]] = None,
+        **_: Dict[str, Any]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        emb = self.token_drop(self.embedding(x))
+        byte_emb = self.embedding(x)
+
+        if self.groups == "code_points":
+            assert byte_groups is not None and code_point_groups is not None
+            byte_emb, _ = self.byte_grouping(byte_emb, groups=byte_groups)
+            code_point_emb = self.code_point_proj(byte_emb)
+            emb, _ = self.code_point_grouping(code_point_emb, groups=code_point_groups)
+        else:
+            assert byte_groups is not None
+            emb, _ = self.byte_grouping(byte_emb, groups=byte_groups)
+
+        emb = self.out_proj(emb)
+        emb = self.token_drop(emb)
         if self.pos_embedding is not None:
-            pos_emb = self.pos_embedding(x)
+            pos_emb = self.pos_embedding(emb)
         else:
             pos_emb = None
         return emb, pos_emb

@@ -466,7 +466,7 @@ fn whitespace_correction_label(use_graphemes: bool) -> Box<LabelingFn> {
         Ok(Label::SeqClassification(
             operations(&item.processed, &item.original, use_graphemes)?
                 .into_iter()
-                .map(|l| l as usize)
+                .map(|l| l as i32)
                 .collect(),
         ))
     })

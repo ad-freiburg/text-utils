@@ -3,11 +3,13 @@ use crate::data::loading::{
 };
 use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingConfig};
 use crate::text::clean;
-use crate::tokenization::{tokenizer, Tokenization, TokenizerConfig};
+use crate::tokenization::{tokenizer, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig};
 use crate::unicode::{normalize, Normalization};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
 use anyhow::anyhow;
+use numpy::ndarray::prelude::*;
+use numpy::{IntoPyArray, PyArray2, PyArrayDyn};
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -20,7 +22,7 @@ use std::vec::IntoIter;
 
 use self::loading::{
     inference_data_generator_from_file, inference_data_generator_from_python,
-    text_data_generator_from_files, ItemSize, TextIterator,
+    text_data_generator_from_files, BufferedIterator, ItemSize, Tensorize, TextIterator,
 };
 
 pub mod loading;
@@ -73,9 +75,9 @@ impl TextData {
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Label {
-    Classification(usize),
-    SeqClassification(Vec<usize>),
-    Seq2Seq(Vec<usize>),
+    Classification(i32),
+    SeqClassification(Vec<i32>),
+    Seq2Seq(Vec<i32>),
 }
 
 impl IntoPy<PyObject> for Label {
@@ -348,6 +350,124 @@ impl ItemBatch {
     }
 }
 
+#[inline]
+fn max_groups<'a>(tokenizations: impl Iterator<Item = &'a Tokenization>) -> usize {
+    #[inline]
+    fn size(tokenization: &Tokenization) -> usize {
+        match &tokenization.info {
+            TokenizationInfo::TokenGroups(token_groups)
+                if token_groups.contains_key("code_point_groups") =>
+            {
+                token_groups["code_point_groups"].len()
+            }
+            TokenizationInfo::TokenGroups(token_groups)
+                if token_groups.contains_key("byte_groups") =>
+            {
+                token_groups["byte_groups"].len()
+            }
+            _ => tokenization.token_ids.len(),
+        }
+    }
+    tokenizations.map(|t| size(t)).max().unwrap_or(0)
+}
+
+#[inline]
+fn join<T>(vectors: Vec<Vec<T>>) -> Vec<T> {
+    let mut joined = vec![];
+    for mut v in vectors {
+        joined.append(&mut v);
+    }
+    joined
+}
+
+#[inline]
+fn prepare(
+    tokenizations: Vec<&Tokenization>,
+    pad_token_id: u32,
+) -> (Py<PyArray2<u32>>, Vec<usize>, Py<PyDict>) {
+    let batch_size = tokenizations.len();
+    let max_token_ids = tokenizations
+        .iter()
+        .map(|t| t.token_ids.len())
+        .max()
+        .unwrap_or(0);
+    let mut token_ids = Vec::with_capacity(max_token_ids * tokenizations.len());
+    let mut lengths = Vec::with_capacity(tokenizations.len());
+    Python::with_gil(|py| {
+        let d = PyDict::new(py);
+        for tokenization in tokenizations {
+            let num_token_ids = tokenization.token_ids.len();
+            token_ids.append(&mut join(vec![
+                tokenization.token_ids.clone(),
+                vec![pad_token_id; max_token_ids - num_token_ids],
+            ]));
+            lengths.push(num_token_ids);
+        }
+        let token_id_arr = Array2::from_shape_vec((batch_size, max_token_ids), token_ids).unwrap();
+        (
+            token_id_arr.into_pyarray(py).into_py(py),
+            lengths,
+            d.into_py(py),
+        )
+    })
+}
+
+impl Tensorize for ItemBatch {
+    type Output = (
+        ItemBatch,
+        (
+            Py<PyArray2<u32>>,
+            Vec<usize>,
+            Py<PyDict>,
+            Py<PyArrayDyn<i32>>,
+        ),
+    );
+
+    fn tensorize(self, tokenizer: &Tokenizer) -> Self::Output {
+        assert!(!self.batch.items.is_empty());
+        let (token_id_arr, lengths, info) = prepare(
+            self.batch.items.iter().map(|i| &i.tokenization).collect(),
+            tokenizer.pad_token_id(),
+        );
+
+        let batch_size = self.batch.len();
+        let max_groups = max_groups(self.batch.items.iter().map(|i| &i.tokenization));
+        let mut labels = Vec::with_capacity(batch_size * max_groups);
+
+        for item in &self.batch.items {
+            labels.append(&mut match &item.label {
+                Label::Classification(label) => vec![*label],
+                Label::SeqClassification(labels) => join(vec![
+                    vec![-1; tokenizer.num_prefix_tokens()],
+                    labels.clone(),
+                    vec![
+                        -1;
+                        max_groups.saturating_sub(tokenizer.num_prefix_tokens() + labels.len())
+                    ],
+                ]),
+                Label::Seq2Seq(_) => todo!(),
+            });
+        }
+        let label_arr = match labels.len() {
+            n if n == batch_size => Array1::from_vec(labels).into_dyn(),
+            n => Array2::from_shape_vec((batch_size, n / batch_size), labels)
+                .unwrap()
+                .into_dyn(),
+        };
+        Python::with_gil(|py| {
+            (
+                self,
+                (
+                    token_id_arr,
+                    lengths,
+                    info,
+                    label_arr.into_pyarray(py).into_py(py),
+                ),
+            )
+        })
+    }
+}
+
 #[pyclass]
 pub struct InferenceItemBatch {
     batch: Batch<InferenceItem>,
@@ -378,6 +498,21 @@ impl InferenceItemBatch {
         } else {
             None
         }
+    }
+}
+
+impl Tensorize for InferenceItemBatch {
+    type Output = (
+        InferenceItemBatch,
+        (Py<PyArray2<u32>>, Vec<usize>, Py<PyDict>),
+    );
+
+    fn tensorize(self, tokenizer: &Tokenizer) -> Self::Output {
+        let (token_id_arr, lengths, infos) = prepare(
+            self.batch.items.iter().map(|i| &i.tokenization).collect(),
+            tokenizer.pad_token_id(),
+        );
+        (self, (token_id_arr, lengths, infos))
     }
 }
 
@@ -506,10 +641,9 @@ impl InferenceLoader {
         normalization: Option<Normalization>,
         use_graphemes: bool,
         num_threads: u8,
-        mut buffer_size: usize,
+        buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
-        batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
@@ -522,9 +656,6 @@ impl InferenceLoader {
         let splits: Vec<usize> = generators.iter().map(|g| g.min_len()).collect();
         let min_items = splits.iter().sum();
         let prefetch_factor = prefetch_factor.max(1);
-        if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit * prefetch_factor);
-        }
         let text_iter = TextIterator::new(generators, TextIterationStrategy::Sequential, None)?;
         let iter_err = Arc::new(Mutex::new(None));
         let text_iter_err = iter_err.clone();
@@ -538,7 +669,7 @@ impl InferenceLoader {
                     d.ok()
                 }
             })
-            .pipe(&pipeline, num_threads, buffer_size, None)
+            .pipe(&pipeline, num_threads, None)
             .scan((), move |_, i| {
                 if i.is_err() {
                     *pipe_iter_err.lock().unwrap() = Some(i.unwrap_err());
@@ -554,9 +685,9 @@ impl InferenceLoader {
                 prefetch_factor,
                 batch_limit,
                 batch_limit_type,
-                batch_buffer_size,
                 None,
-            );
+            )
+            .buffered(buffer_size);
         Ok(InferenceLoader {
             iter: Box::new(iter),
             iter_err,
@@ -576,7 +707,6 @@ impl InferenceLoader {
         buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
-        batch_buffer_size = "8",
         prefetch_factor = "4",
         sort = "false"
     )]
@@ -590,7 +720,6 @@ impl InferenceLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
-        batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
@@ -605,7 +734,6 @@ impl InferenceLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
-            batch_buffer_size,
             prefetch_factor,
             sort,
         )
@@ -621,7 +749,6 @@ impl InferenceLoader {
         buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
-        batch_buffer_size = "8",
         prefetch_factor = "4",
         sort = "false"
     )]
@@ -637,7 +764,6 @@ impl InferenceLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
-        batch_buffer_size: usize,
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
@@ -672,7 +798,6 @@ impl InferenceLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
-            batch_buffer_size,
             prefetch_factor,
             sort,
         )
@@ -709,7 +834,6 @@ struct DataLoader {
     buffer_size: usize,
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
-    batch_buffer_size: usize,
     epoch: usize,
     fast_forward: usize,
     limit: usize,
@@ -734,10 +858,9 @@ impl DataLoader {
         tokenizer_config: TokenizerConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
-        mut buffer_size: usize,
+        buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
-        batch_buffer_size: usize,
         shuffle: bool,
         prefetch_factor: usize,
         sort: bool,
@@ -752,9 +875,6 @@ impl DataLoader {
             ));
         }
         let prefetch_factor = prefetch_factor.max(1);
-        if batch_limit_type == BatchLimitType::BatchSize {
-            buffer_size = buffer_size.max(batch_limit * prefetch_factor);
-        }
         let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config);
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
@@ -772,7 +892,6 @@ impl DataLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
-            batch_buffer_size,
             iter: None,
             min_items: None,
             epoch: 0,
@@ -799,7 +918,6 @@ impl DataLoader {
         buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
-        batch_buffer_size = "8",
         shuffle = "false",
         prefetch_factor = "4",
         sort = "false",
@@ -818,7 +936,6 @@ impl DataLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
-        batch_buffer_size: usize,
         shuffle: bool,
         prefetch_factor: usize,
         sort: bool,
@@ -848,7 +965,6 @@ impl DataLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
-            batch_buffer_size,
             shuffle,
             prefetch_factor,
             sort,
@@ -884,7 +1000,7 @@ impl DataLoader {
             .skip(slf.skip + slf.fast_forward + slf.rank)
             .step_by(slf.world_size)
             .filter_map(|d| d.ok())
-            .pipe(&slf.pipeline, slf.num_threads, slf.buffer_size, seed)
+            .pipe(&slf.pipeline, slf.num_threads, seed)
             .filter_map(|i| i.ok())
             .batched(
                 slf.sort,
@@ -892,9 +1008,9 @@ impl DataLoader {
                 slf.prefetch_factor,
                 slf.batch_limit,
                 slf.batch_limit_type,
-                slf.batch_buffer_size,
                 seed,
-            );
+            )
+            .buffered(slf.buffer_size);
         slf.iter = Some(Box::new(batch_iter));
         Ok(slf)
     }

@@ -29,6 +29,7 @@ num = "0.4"
 anyhow = "1.0"
 num_cpus = "1.14"
 bitvec = "1"
+numpy = "0.17"
 
 [dev-dependencies]
 criterion = "0.4"

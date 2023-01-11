@@ -607,7 +607,7 @@ training will resume from latest checkpoint."
                 batch_size = len(batch) * self.info.world_size
                 mean_bsz.add(batch_size)
                 for item in batch:
-                    mean_seq_length.add(len(item.tokenization.token_ids))
+                    mean_seq_length.add(len(item))
                 mean_batch_load.add((end_batch - start_batch) * 1000)
                 mean_batch_preparation.add((end_preparation - start_preparation) * 1000)
 

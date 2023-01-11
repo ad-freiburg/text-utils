@@ -648,7 +648,7 @@ impl InferenceLoader {
         sort: bool,
     ) -> anyhow::Result<Self> {
         let pipeline = InferencePipeline::with_windows(
-            tokenizer_config,
+            tokenizer_config.clone(),
             window_config,
             normalization,
             use_graphemes,
@@ -687,6 +687,7 @@ impl InferenceLoader {
                 batch_limit_type,
                 None,
             )
+            // .tensorized(tokenizer_config)
             .buffered(buffer_size);
         Ok(InferenceLoader {
             iter: Box::new(iter),
@@ -830,6 +831,7 @@ struct DataLoader {
     files: Vec<String>,
     languages: Option<Vec<String>>,
     strategy: TextIterationStrategy,
+    tokenizer_config: TokenizerConfig,
     num_threads: u8,
     buffer_size: usize,
     batch_limit: usize,
@@ -875,7 +877,7 @@ impl DataLoader {
             ));
         }
         let prefetch_factor = prefetch_factor.max(1);
-        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config);
+        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config.clone());
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
@@ -888,6 +890,7 @@ impl DataLoader {
             files,
             languages,
             strategy,
+            tokenizer_config,
             num_threads,
             buffer_size,
             batch_limit,
@@ -1010,6 +1013,7 @@ impl DataLoader {
                 slf.batch_limit_type,
                 seed,
             )
+            .tensorized(slf.tokenizer_config.clone())
             .buffered(slf.buffer_size);
         slf.iter = Some(Box::new(batch_iter));
         Ok(slf)

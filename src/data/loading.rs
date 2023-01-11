@@ -1,5 +1,5 @@
 use crate::data::{Batch, InferenceData, Pipeline, TextData};
-use crate::tokenization::Tokenizer;
+use crate::tokenization::{tokenizer, Tokenizer, TokenizerConfig};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
 use pyo3::{intern, prelude::*, PyClass};
@@ -516,7 +516,7 @@ pub trait ItemSize {
 
 pub trait BatchedIterator<T>
 where
-    Self: Iterator<Item = T> + 'static,
+    Self: Iterator<Item = T> + Send + 'static,
     T: ItemSize,
 {
     fn batched(
@@ -777,37 +777,37 @@ pub trait Tensorize {
     fn tensorize(self, tokenizer: &Tokenizer) -> Self::Output;
 }
 
-pub trait TensorIterator<'a, T>
+pub trait TensorizedIterator<T>
 where
-    Self: Iterator<Item = Batch<T>>,
-    Batch<T>: Tensorize,
+    Self: Iterator<Item = T> + Send + 'static,
+    T: Tensorize,
 {
-    fn tensorized(self, tokenizer: &'a Tokenizer) -> Tensorized<T>;
+    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> Tensorized<T>;
 }
 
-impl<'a, I, T> TensorIterator<'a, T> for I
+impl<I, T> TensorizedIterator<T> for I
 where
-    I: Iterator<Item = Batch<T>> + 'static,
-    Batch<T>: Tensorize,
+    I: Iterator<Item = T> + Send + 'static,
+    T: Tensorize,
 {
-    fn tensorized(self, tokenizer: &'a Tokenizer) -> Tensorized<T> {
-        Tensorized::new(self, tokenizer)
+    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> Tensorized<T> {
+        Tensorized::new(self, tokenizer(tokenizer_cfg))
     }
 }
 
-pub struct Tensorized<'a, T>
+pub struct Tensorized<T>
 where
-    Batch<T>: Tensorize,
+    T: Tensorize,
 {
-    inner: Box<dyn Iterator<Item = Batch<T>>>,
-    tokenizer: &'a Tokenizer,
+    inner: Box<dyn Iterator<Item = T> + Send + 'static>,
+    tokenizer: Tokenizer,
 }
 
-impl<'a, T> Tensorized<'a, T>
+impl<T> Tensorized<T>
 where
-    Batch<T>: Tensorize,
+    T: Tensorize,
 {
-    pub fn new(inner: impl Iterator<Item = Batch<T>> + 'static, tokenizer: &'a Tokenizer) -> Self {
+    pub fn new(inner: impl Iterator<Item = T> + Send + 'static, tokenizer: Tokenizer) -> Self {
         Self {
             inner: Box::new(inner),
             tokenizer,
@@ -815,11 +815,11 @@ where
     }
 }
 
-impl<'a, T> Iterator for Tensorized<'a, T>
+impl<T> Iterator for Tensorized<T>
 where
-    Batch<T>: Tensorize,
+    T: Tensorize,
 {
-    type Item = <Batch<T> as Tensorize>::Output;
+    type Item = T::Output;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|b| b.tensorize(&self.tokenizer))

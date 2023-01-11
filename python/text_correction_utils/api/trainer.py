@@ -113,7 +113,6 @@ training will resume from latest checkpoint."
                 f"and minimum train loader items."
             )
         for idx, batch in enumerate(self.train_loader):
-            print(idx)
             if idx >= num_batches:
                 break
             avg_batch_size.add(len(batch))

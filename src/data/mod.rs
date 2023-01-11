@@ -321,6 +321,7 @@ impl<T> Batch<T> {
 #[pyclass]
 pub struct DataBatch {
     batch: Batch<Item>,
+    #[pyo3(get)]
     tensorized: <Batch<Item> as Tensorize>::Output,
     iter: Option<Box<dyn Iterator<Item = Item> + Send>>,
 }
@@ -467,6 +468,7 @@ impl Tensorize for Batch<Item> {
 #[pyclass]
 pub struct InferenceBatch {
     batch: Batch<InferenceItem>,
+    #[pyo3(get)]
     tensorized: <Batch<InferenceItem> as Tensorize>::Output,
     iter: Option<Box<dyn Iterator<Item = InferenceItem> + Send>>,
 }

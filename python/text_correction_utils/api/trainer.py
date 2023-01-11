@@ -113,6 +113,7 @@ training will resume from latest checkpoint."
                 f"and minimum train loader items."
             )
         for idx, batch in enumerate(self.train_loader):
+            print(idx)
             if idx >= num_batches:
                 break
             avg_batch_size.add(len(batch))
@@ -512,7 +513,7 @@ training will resume from latest checkpoint."
         else:
             raise ValueError(f"unknown info type {info_type}")
 
-    def _prepare_batch(self, batch: data.ItemBatch) -> Tuple[Dict[str, Any], torch.Tensor]:
+    def _prepare_batch(self, batch: data.DataBatch) -> Tuple[Dict[str, Any], torch.Tensor]:
         assert len(batch) > 0, "got empty batch"
         if self.cfg["model"]["type"] == "encoder_with_head":
             pad_token_id = self.input_tokenizer.pad_token_id()
@@ -580,7 +581,13 @@ training will resume from latest checkpoint."
                 break
 
             start_preparation = time.perf_counter()
-            inputs, labels = self._prepare_batch(batch)
+            # inputs, labels = self._prepare_batch(batch)
+            inputs = {
+                "token_ids": torch.from_numpy(batch.tensorized[0]).to(device=self.info.device),
+                "lengths": batch.tensorized[1],
+                **batch.tensorized[2]
+            }
+            labels = torch.from_numpy(batch.tensorized[3]).to(device=self.info.device)
             end_preparation = time.perf_counter()
 
             self.optimizer.zero_grad()

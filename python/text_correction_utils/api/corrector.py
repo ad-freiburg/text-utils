@@ -129,11 +129,11 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
     def _build_inference_loader_config(self) -> Dict[str, Any]:
         raise NotImplementedError
 
-    def _prepare_batch(self, batch: data.InferenceItemBatch) -> Dict[str, Any]:
+    def _prepare_batch(self, batch: data.InferenceBatch) -> Dict[str, Any]:
         raise NotImplementedError
 
     @torch.inference_mode()
-    def _run_model(self, batch: data.InferenceItemBatch) -> Any:
+    def _run_model(self, batch: data.InferenceBatch) -> Any:
         # this is a slight hack for now, because fp32 on cpu throws an error even when enabled=False
         inputs = self._prepare_batch(batch)
         if self.mixed_precision_enabled:

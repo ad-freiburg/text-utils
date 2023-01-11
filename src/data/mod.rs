@@ -22,7 +22,8 @@ use std::vec::IntoIter;
 
 use self::loading::{
     inference_data_generator_from_file, inference_data_generator_from_python,
-    text_data_generator_from_files, BufferedIterator, ItemSize, Tensorize, TextIterator,
+    text_data_generator_from_files, BufferedIterator, ItemSize, Tensorize, TensorizedIterator,
+    TextIterator,
 };
 
 pub mod loading;
@@ -318,13 +319,14 @@ impl<T> Batch<T> {
 }
 
 #[pyclass]
-pub struct ItemBatch {
+pub struct DataBatch {
     batch: Batch<Item>,
+    tensorized: <Batch<Item> as Tensorize>::Output,
     iter: Option<Box<dyn Iterator<Item = Item> + Send>>,
 }
 
 #[pymethods]
-impl ItemBatch {
+impl DataBatch {
     fn __len__(&self) -> usize {
         self.batch.len()
     }
@@ -412,29 +414,26 @@ fn prepare(
     })
 }
 
-impl Tensorize for ItemBatch {
+impl Tensorize for Batch<Item> {
     type Output = (
-        ItemBatch,
-        (
-            Py<PyArray2<u32>>,
-            Vec<usize>,
-            Py<PyDict>,
-            Py<PyArrayDyn<i32>>,
-        ),
+        Py<PyArray2<u32>>,
+        Vec<usize>,
+        Py<PyDict>,
+        Py<PyArrayDyn<i32>>,
     );
 
-    fn tensorize(self, tokenizer: &Tokenizer) -> Self::Output {
-        assert!(!self.batch.items.is_empty());
+    fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
+        assert!(!self.items.is_empty());
         let (token_id_arr, lengths, info) = prepare(
-            self.batch.items.iter().map(|i| &i.tokenization).collect(),
+            self.items.iter().map(|i| &i.tokenization).collect(),
             tokenizer.pad_token_id(),
         );
 
-        let batch_size = self.batch.len();
-        let max_groups = max_groups(self.batch.items.iter().map(|i| &i.tokenization));
+        let batch_size = self.len();
+        let max_groups = max_groups(self.items.iter().map(|i| &i.tokenization));
         let mut labels = Vec::with_capacity(batch_size * max_groups);
 
-        for item in &self.batch.items {
+        for item in &self.items {
             labels.append(&mut match &item.label {
                 Label::Classification(label) => vec![*label],
                 Label::SeqClassification(labels) => join(vec![
@@ -456,26 +455,24 @@ impl Tensorize for ItemBatch {
         };
         Python::with_gil(|py| {
             (
-                self,
-                (
-                    token_id_arr,
-                    lengths,
-                    info,
-                    label_arr.into_pyarray(py).into_py(py),
-                ),
+                token_id_arr,
+                lengths,
+                info,
+                label_arr.into_pyarray(py).into_py(py),
             )
         })
     }
 }
 
 #[pyclass]
-pub struct InferenceItemBatch {
+pub struct InferenceBatch {
     batch: Batch<InferenceItem>,
+    tensorized: <Batch<InferenceItem> as Tensorize>::Output,
     iter: Option<Box<dyn Iterator<Item = InferenceItem> + Send>>,
 }
 
 #[pymethods]
-impl InferenceItemBatch {
+impl InferenceBatch {
     fn __len__(&self) -> usize {
         self.batch.len()
     }
@@ -501,18 +498,14 @@ impl InferenceItemBatch {
     }
 }
 
-impl Tensorize for InferenceItemBatch {
-    type Output = (
-        InferenceItemBatch,
-        (Py<PyArray2<u32>>, Vec<usize>, Py<PyDict>),
-    );
+impl Tensorize for Batch<InferenceItem> {
+    type Output = (Py<PyArray2<u32>>, Vec<usize>, Py<PyDict>);
 
-    fn tensorize(self, tokenizer: &Tokenizer) -> Self::Output {
-        let (token_id_arr, lengths, infos) = prepare(
-            self.batch.items.iter().map(|i| &i.tokenization).collect(),
+    fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
+        prepare(
+            self.items.iter().map(|i| &i.tokenization).collect(),
             tokenizer.pad_token_id(),
-        );
-        (self, (token_id_arr, lengths, infos))
+        )
     }
 }
 
@@ -625,7 +618,14 @@ impl InferencePipeline {
 
 #[pyclass]
 struct InferenceLoader {
-    iter: Box<dyn Iterator<Item = Batch<InferenceItem>> + Send>,
+    iter: Box<
+        dyn Iterator<
+                Item = (
+                    Batch<InferenceItem>,
+                    <Batch<InferenceItem> as Tensorize>::Output,
+                ),
+            > + Send,
+    >,
     iter_err: Arc<Mutex<Option<anyhow::Error>>>,
     #[pyo3(get)]
     min_items: usize,
@@ -687,7 +687,7 @@ impl InferenceLoader {
                 batch_limit_type,
                 None,
             )
-            // .tensorized(tokenizer_config)
+            .tensorized(tokenizer_config)
             .buffered(buffer_size);
         Ok(InferenceLoader {
             iter: Box::new(iter),
@@ -808,11 +808,15 @@ impl InferenceLoader {
         slf
     }
 
-    fn __next__(&mut self) -> anyhow::Result<Option<Py<InferenceItemBatch>>> {
-        if let Some(batch) = self.iter.next() {
+    fn __next__(&mut self) -> anyhow::Result<Option<Py<InferenceBatch>>> {
+        if let Some((batch, tensorized)) = self.iter.next() {
             Ok(Some(Python::with_gil(|py| {
-                let item_batch = InferenceItemBatch { batch, iter: None };
-                Py::new(py, item_batch).expect("should not fail")
+                let inf_batch = InferenceBatch {
+                    batch,
+                    tensorized,
+                    iter: None,
+                };
+                Py::new(py, inf_batch).expect("should not fail")
             })))
         } else {
             // check if batch is None because iterator is stopped,
@@ -849,7 +853,8 @@ struct DataLoader {
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
-    iter: Option<Box<dyn Iterator<Item = Batch<Item>> + Send>>,
+    iter:
+        Option<Box<dyn Iterator<Item = (Batch<Item>, <Batch<Item> as Tensorize>::Output)> + Send>>,
 }
 
 impl DataLoader {
@@ -1019,15 +1024,19 @@ impl DataLoader {
         Ok(slf)
     }
 
-    fn __next__(&mut self) -> Option<Py<ItemBatch>> {
+    fn __next__(&mut self) -> Option<Py<DataBatch>> {
         assert!(
             self.iter.is_some(),
             "call iter() on the dataloader before iterating with next()"
         );
-        if let Some(batch) = self.iter.as_mut().unwrap().next() {
+        if let Some((batch, tensorized)) = self.iter.as_mut().unwrap().next() {
             Some(Python::with_gil(|py| {
-                let item_batch = ItemBatch { batch, iter: None };
-                Py::new(py, item_batch).expect("should not fail")
+                let data_batch = DataBatch {
+                    batch,
+                    tensorized,
+                    iter: None,
+                };
+                Py::new(py, data_batch).expect("should not fail")
             }))
         } else {
             None
@@ -1060,8 +1069,8 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_class::<InferenceData>()?;
     m.add_class::<Item>()?;
     m.add_class::<InferenceItem>()?;
-    m.add_class::<ItemBatch>()?;
-    m.add_class::<InferenceItemBatch>()?;
+    m.add_class::<DataBatch>()?;
+    m.add_class::<InferenceBatch>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

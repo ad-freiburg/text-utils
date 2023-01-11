@@ -774,13 +774,13 @@ impl BatchLimit {
 pub trait Tensorize {
     type Output;
 
-    fn tensorize(self, tokenizer: &Tokenizer) -> Self::Output;
+    fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output;
 }
 
 pub trait TensorizedIterator<T>
 where
     Self: Iterator<Item = T> + Send + 'static,
-    T: Tensorize,
+    T: Tensorize + Send + 'static,
 {
     fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> Tensorized<T>;
 }
@@ -788,7 +788,7 @@ where
 impl<I, T> TensorizedIterator<T> for I
 where
     I: Iterator<Item = T> + Send + 'static,
-    T: Tensorize,
+    T: Tensorize + Send + 'static,
 {
     fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> Tensorized<T> {
         Tensorized::new(self, tokenizer(tokenizer_cfg))
@@ -797,7 +797,7 @@ where
 
 pub struct Tensorized<T>
 where
-    T: Tensorize,
+    T: Tensorize + Send + 'static,
 {
     inner: Box<dyn Iterator<Item = T> + Send + 'static>,
     tokenizer: Tokenizer,
@@ -805,7 +805,7 @@ where
 
 impl<T> Tensorized<T>
 where
-    T: Tensorize,
+    T: Tensorize + Send + 'static,
 {
     pub fn new(inner: impl Iterator<Item = T> + Send + 'static, tokenizer: Tokenizer) -> Self {
         Self {
@@ -817,12 +817,15 @@ where
 
 impl<T> Iterator for Tensorized<T>
 where
-    T: Tensorize,
+    T: Tensorize + Send + 'static,
 {
-    type Item = T::Output;
+    type Item = (T, <T as Tensorize>::Output);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|b| b.tensorize(&self.tokenizer))
+        self.inner.next().map(|b| {
+            let tensorized = b.tensorize(&self.tokenizer);
+            (b, tensorized)
+        })
     }
 }
 

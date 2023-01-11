@@ -117,12 +117,12 @@ training will resume from latest checkpoint."
                 break
             avg_batch_size.add(len(batch))
 
-        training_steps_per_epoch = int(self.train_loader.min_items // avg_batch_size.value)
-        self.training_steps = self.cfg["train"]["num_epochs"] * training_steps_per_epoch
-        self.logger.info(f"Got an average batch size of {avg_batch_size.value:.2f} after {num_batches} batches. "
+        self.training_steps_per_epoch = int(self.train_loader.min_items // avg_batch_size.value)
+        self.training_steps = self.cfg["train"]["num_epochs"] * self.training_steps_per_epoch
+        self.logger.info(f"Got an average batch size of {avg_batch_size.value:.2f} after {num_batches:,} batches. "
                          f"The train loader contains at least {self.train_loader.min_items} items, so the estimated "
                          f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
-                         f"is {self.training_steps:,} ({training_steps_per_epoch:,} per epoch).")
+                         f"is {self.training_steps:,} ({self.training_steps_per_epoch:,} per epoch).")
         self.optimizer = optimizer_from_config(
             self.model,
             self.cfg["train"]["optimizer"]
@@ -155,12 +155,12 @@ training will resume from latest checkpoint."
             return min(max(low, v), up)
 
         if isinstance(eval_interval, float):
-            eval_interval = int(eval_interval * training_steps_per_epoch)
+            eval_interval = int(eval_interval * self.training_steps_per_epoch)
         if isinstance(log_interval, float):
-            log_interval = int(log_interval * training_steps_per_epoch)
+            log_interval = int(log_interval * self.training_steps_per_epoch)
 
-        self.eval_interval = clamp(eval_interval, 1, training_steps_per_epoch)
-        self.log_interval = clamp(log_interval, 1, training_steps_per_epoch)
+        self.eval_interval = clamp(eval_interval, 1, self.training_steps_per_epoch)
+        self.log_interval = clamp(log_interval, 1, self.training_steps_per_epoch)
 
         if self.info.is_main_process:
             self.summary_writer = SummaryWriter(log_dir=self.directories["tensorboard"])
@@ -671,7 +671,7 @@ training will resume from latest checkpoint."
                 )
                 self.logger.info(
                     f"[step {self.step}] [epoch {self.epoch + 1}] "
-                    f"{logging.eta_minutes_message((end - begin_of_epoch) / 60, self.epoch_step, self.training_steps)}"
+                    f"{logging.eta_minutes_message((end - begin_of_epoch) / 60, self.epoch_step, self.training_steps_per_epoch)}"
                 )
 
                 mean_loss.reset()

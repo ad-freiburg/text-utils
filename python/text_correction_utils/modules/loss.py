@@ -54,14 +54,13 @@ class FocalLoss(nn.Module):
         log_p = torch.log_softmax(outputs, dim=-1)
         ce = self.nll_loss(log_p, labels)
 
-        if self.training:
-            log_pt = log_p[torch.arange(len(outputs), device=outputs.device), labels]
-            pt = log_pt.exp()
-            gamma = self.init_gamma
-            if self.gamma_schedule is not None:
-                gamma *= self.gamma_schedule(self._step.item())
-            focal_term = torch.pow((1 - pt).clamp(0, 1), gamma)
-            ce = focal_term * ce
+        log_pt = log_p[torch.arange(len(outputs), device=outputs.device), labels]
+        pt = log_pt.exp()
+        gamma = self.init_gamma
+        if self.gamma_schedule is not None:
+            gamma *= self.gamma_schedule(self._step.item())
+        focal_term = torch.pow((1 - pt).clamp(0, 1), gamma)
+        ce = focal_term * ce
 
         if self.reduction == "mean":
             ce = ce.mean()

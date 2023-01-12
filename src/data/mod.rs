@@ -831,6 +831,7 @@ impl InferenceLoader {
     }
 }
 
+type DataIter = dyn Iterator<Item = (Batch<Item>, <Batch<Item> as Tensorize>::Output)> + Send;
 #[pyclass]
 struct DataLoader {
     pipeline: TextDataPipeline,
@@ -855,8 +856,7 @@ struct DataLoader {
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
-    iter:
-        Option<Box<dyn Iterator<Item = (Batch<Item>, <Batch<Item> as Tensorize>::Output)> + Send>>,
+    iter: Option<Box<DataIter>>,
 }
 
 impl DataLoader {
@@ -915,6 +915,52 @@ impl DataLoader {
             prefetch_factor,
             sort,
         })
+    }
+
+    fn init_iter(&mut self) -> anyhow::Result<()> {
+        let seed = if self.seed.is_some() {
+            Some(self.seed.unwrap() + self.epoch as u64)
+        } else {
+            None
+        };
+        let mut generators = vec![];
+        for (idx, file) in self.files.iter().enumerate() {
+            let lang = if self.languages.is_some() {
+                Some(self.languages.as_ref().unwrap()[idx].clone())
+            } else {
+                None
+            };
+            let generator = text_data_generator_from_files(Path::new(file), None, lang)?;
+            generators.push(generator);
+        }
+
+        let text_iter = TextIterator::new(generators, self.strategy, seed)?;
+        self.min_items = Some(
+            text_iter
+                .min_len()
+                .min(self.limit)
+                .saturating_sub(self.skip)
+                / self.world_size,
+        );
+        let batch_iter = text_iter
+            .take(self.limit)
+            .skip(self.skip + self.fast_forward + self.rank)
+            .step_by(self.world_size)
+            .filter_map(|d| d.ok())
+            .pipe(&self.pipeline, self.num_threads, seed)
+            .filter_map(|i| i.ok())
+            .batched(
+                self.sort,
+                self.shuffle,
+                self.prefetch_factor,
+                self.batch_limit,
+                self.batch_limit_type,
+                seed,
+            )
+            .tensorized(self.tokenizer_config.clone())
+            .buffered(self.buffer_size);
+        self.iter = Some(Box::new(batch_iter));
+        Ok(())
     }
 }
 
@@ -986,62 +1032,25 @@ impl DataLoader {
     }
 
     fn __iter__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<PyRefMut<'_, Self>> {
-        let seed = if slf.seed.is_some() {
-            Some(slf.seed.unwrap() + slf.epoch as u64)
-        } else {
-            None
-        };
-        let mut generators = vec![];
-        for (idx, file) in slf.files.iter().enumerate() {
-            let lang = if slf.languages.is_some() {
-                Some(slf.languages.as_ref().unwrap()[idx].clone())
-            } else {
-                None
-            };
-            let generator = text_data_generator_from_files(Path::new(file), None, lang)?;
-            generators.push(generator);
-        }
-
-        let text_iter = TextIterator::new(generators, slf.strategy, seed)?;
-        slf.min_items =
-            Some(text_iter.min_len().min(slf.limit).saturating_sub(slf.skip) / slf.world_size);
-        let batch_iter = text_iter
-            .take(slf.limit)
-            .skip(slf.skip + slf.fast_forward + slf.rank)
-            .step_by(slf.world_size)
-            .filter_map(|d| d.ok())
-            .pipe(&slf.pipeline, slf.num_threads, seed)
-            .filter_map(|i| i.ok())
-            .batched(
-                slf.sort,
-                slf.shuffle,
-                slf.prefetch_factor,
-                slf.batch_limit,
-                slf.batch_limit_type,
-                seed,
-            )
-            .tensorized(slf.tokenizer_config.clone())
-            .buffered(slf.buffer_size);
-        slf.iter = Some(Box::new(batch_iter));
+        slf.init_iter()?;
         Ok(slf)
     }
 
-    fn __next__(&mut self) -> Option<Py<DataBatch>> {
-        assert!(
-            self.iter.is_some(),
-            "call iter() on the dataloader before iterating with next()"
-        );
+    fn __next__(&mut self) -> anyhow::Result<Option<Py<DataBatch>>> {
+        if self.iter.is_none() {
+            self.init_iter()?;
+        }
         if let Some((batch, tensorized)) = self.iter.as_mut().unwrap().next() {
-            Some(Python::with_gil(|py| {
+            Ok(Some(Python::with_gil(|py| {
                 let data_batch = DataBatch {
                     batch,
                     tensorized,
                     iter: None,
                 };
                 Py::new(py, data_batch).expect("should not fail")
-            }))
+            })))
         } else {
-            None
+            Ok(None)
         }
     }
 

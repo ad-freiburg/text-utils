@@ -1,6 +1,10 @@
+use anyhow::anyhow;
 use pyo3::prelude::*;
 use rand::Rng;
 use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
 use crate::unicode::{Character, CS};
 use crate::utils::{find_subsequences_of_max_size_k, Matrix};
@@ -372,6 +376,22 @@ pub fn edit_word(
     }
 }
 
+pub fn file_size(path: &Path) -> anyhow::Result<(usize, usize)> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(anyhow!("{} is not a file", path.display()));
+    }
+    let num_lines = BufReader::new(File::open(path)?).lines().count();
+    Ok((num_lines, metadata.len() as usize))
+}
+
+#[pyfunction(name = "file_size")]
+fn file_size_py(path: &str) -> PyResult<(usize, usize)> {
+    let path = Path::new(path);
+    let (num_lines, size) = file_size(path)?;
+    Ok((num_lines, size))
+}
+
 /// A submodule containing useful functions on text, like cleaning text or
 /// calculating word boundaries of all words in a text.
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
@@ -379,6 +399,7 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
     m.add_function(wrap_pyfunction!(word_boundaries, m)?)?;
     m.add_function(wrap_pyfunction!(clean, m)?)?;
     m.add_function(wrap_pyfunction!(match_words, m)?)?;
+    m.add_function(wrap_pyfunction!(file_size_py, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())

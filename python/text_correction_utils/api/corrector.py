@@ -2,8 +2,7 @@ import collections
 import math
 import os
 import pprint
-import sys
-from typing import Dict, Iterable, List, Optional, Sized, Union, Tuple, Iterator, Any
+from typing import Dict, List, Optional, Union, Tuple, Iterator, Any
 
 import torch
 from torch import autocast, nn
@@ -89,9 +88,16 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
     def max_length(self) -> int:
         raise NotImplementedError
 
-    @property
-    def context_length(self) -> int:
-        raise NotImplementedError
+    def supported_languages(self) -> List[str]:
+        return []
+
+    @classmethod
+    def supported_input_formats(cls) -> List[str]:
+        return ["text", "text_language"]
+
+    @classmethod
+    def supported_output_formats(cls) -> List[str]:
+        return cls.supported_input_formats()
 
     def __init__(
         self,
@@ -134,8 +140,8 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
 
     @torch.inference_mode()
     def _run_model(self, batch: data.InferenceBatch) -> Any:
-        # this is a slight hack for now, because fp32 on cpu throws an error even when enabled=False
         inputs = self._prepare_batch(batch)
+        # this is a slight hack for now, because fp32 on cpu throws an error even when enabled=False
         if self.mixed_precision_enabled:
             with autocast(
                     device_type=self.device.type,
@@ -147,31 +153,33 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             outputs, _ = self.model(**inputs)
         return outputs
 
-    def _process_results(self, items: List[data.InferenceItem], outputs: List[Any]) -> Any:
+    def _process_results(
+        self,
+        items: List[data.InferenceItem],
+        outputs: List[Any]
+    ) -> data.InferenceData:
         raise NotImplementedError
 
     def _get_loader(
             self,
-            inputs: Union[List[str], Iterator[str], Iterator[Tuple[str, Optional[str]]]],
-            input_type: str,
-            languages: Optional[List[str]],
+            inputs: Union[Tuple[List[str], Optional[List[str]]], Iterator[data.InferenceData]],
             batch_size: int = 16,
             batch_max_tokens: Optional[int] = None,
             sort: bool = True,
             num_threads: Optional[int] = None,
-            **kwargs: Dict[str, Any]
+            **kwargs: Any
     ) -> data.InferenceLoader:
         if num_threads is None:
             num_threads = min(len(os.sched_getaffinity(0)), 4)
         if batch_max_tokens is None:
             batch_limit = prefetch_factor = max(1, batch_size)
             batch_limit_type = "batch_size"
-            buffer_size = batch_limit * batch_limit
+            buffer_size = batch_limit
         else:
             batch_limit = max(batch_max_tokens, self.max_length)
             batch_limit_type = "padded_item_size"
             min_items_per_batch = math.ceil(batch_limit / self.max_length)
-            buffer_size = min_items_per_batch * min_items_per_batch
+            buffer_size = min_items_per_batch
             prefetch_factor = min_items_per_batch
 
         self._inference_loader_cfg.update({
@@ -183,40 +191,27 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             "sort": sort
         })
         self._inference_loader_cfg.update(kwargs)
-        if input_type == "files":
-            self._inference_loader_cfg.update({
-                "languages": languages
-            })
+        if isinstance(inputs, tuple):
+            files, languages = inputs
             loader = data.InferenceLoader.from_files(
+                files=files,
+                languages=languages,
+                **self._inference_loader_cfg
+            )
+        elif isinstance(inputs, Iterator):
+            # threading currently not supported with python iterators
+            self._inference_loader_cfg["num_threads"] = 0
+            loader = data.InferenceLoader.from_iterator(
                 inputs,
                 **self._inference_loader_cfg
             )
-        elif input_type == "sequences":
-            # threading currently not supported with python iterators
-            self._inference_loader_cfg["num_threads"] = 0
-            if sort:
-                # make sure all sequences are loaded into buffer for
-                # best possible sorting if sequences are in memory
-                max_usize = sys.maxsize * 2 + 1
-                self._inference_loader_cfg["prefetch_factor"] = max_usize
-                self._inference_loader_cfg["buffer_size"] = max_usize
-            loader = data.InferenceLoader.from_iterator(
-                ((seq, languages[i] if languages is not None else None)
-                 for i, seq in enumerate(inputs)),
-                **self._inference_loader_cfg
-            )
-        elif input_type == "iterator":
-            # threading currently not supported with python iterators
-            self._inference_loader_cfg["num_threads"] = 0
-            loader = data.InferenceLoader.from_iterator(
-                ((seq, lang) for seq, lang in inputs),
-                **self._inference_loader_cfg
-            )
         else:
-            raise ValueError(f"unknown input type {input_type}")
+            raise ValueError(
+                f"unknown input type {type(inputs)}, must either be a tuple of files and languages or an iterator \
+                over sequence language pairs")
         return loader
 
-    def _correct_sorted(self, loader: data.InferenceLoader) -> List[Any]:
+    def _correct_sorted(self, loader: data.InferenceLoader) -> List[data.InferenceData]:
         results = {}
         for batch in loader:
             outputs = self._run_model(batch)
@@ -235,7 +230,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             outputs.append(self._process_results(window_items, window_outputs))
         return outputs
 
-    def _correct_unsorted(self, loader: data.InferenceLoader) -> Iterator[Any]:
+    def _correct_unsorted(self, loader: data.InferenceLoader) -> Iterator[data.InferenceData]:
         prev_item_idx = 0
         window_items = []
         window_outputs = []
@@ -274,6 +269,6 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
 
         self._mixed_precision_dtype = mixed_precision_dtype
 
-    @property
+    @ property
     def mixed_precision_enabled(self) -> bool:
         return self._mixed_precision_dtype != torch.float32

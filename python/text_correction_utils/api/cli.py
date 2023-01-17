@@ -1,8 +1,10 @@
 import argparse
+from collections import deque
+from io import TextIOWrapper
 import sys
 import time
 import logging
-from typing import Any, Iterator, Tuple, Generator, Optional, Type
+from typing import Any, Iterator, Union, Optional, Type, List
 
 import torch
 
@@ -10,16 +12,25 @@ from text_correction_utils.api.corrector import TextCorrector
 from text_correction_utils.api.server import TextCorrectionServer
 from text_correction_utils.api.table import generate_report, generate_table
 
+from text_correction_utils import data, text
 
-# a utility class capturing the return value from a generator,
-# using yield from
-class _GeneratorHelper:
-    def __init__(self, gen: Generator[Any, Any, Any]):
-        self.gen = gen
-        self.value: Optional[Any] = None
+
+class _SizedIterator:
+    # a utility class capturing the number and size of items passed
+    # through an iterator of inference data
+    def __init__(self, it: Iterator[data.InferenceData]):
+        self.it = it
+        self.num_items = 0
+        self.num_bytes = 0
 
     def __iter__(self):
-        self.value = yield from self.gen
+        return self
+
+    def __next__(self):
+        item = next(self.it)
+        self.num_items += 1
+        self.num_bytes += len(item.text.encode("utf8"))
+        return item
 
 
 class TextCorrectionCli:
@@ -63,6 +74,20 @@ class TextCorrectionCli:
             type=str,
             default=None,
             help="Path to a text file which will be corrected line by line"
+        )
+        parser.add_argument(
+            "-if",
+            "--input-format",
+            choices=cls.text_corrector_cls.supported_input_formats(),
+            default=cls.text_corrector_cls.supported_input_formats()[0],
+            help="Format of the text input"
+        )
+        parser.add_argument(
+            "-of",
+            "--output-format",
+            choices=cls.text_corrector_cls.supported_output_formats(),
+            default=cls.text_corrector_cls.supported_output_formats()[0],
+            help="Format of the text output"
         )
         parser.add_argument(
             "-o",
@@ -168,6 +193,13 @@ class TextCorrectionCli:
             default="none",
             help="Sets the logging level for the underlying loggers"
         )
+        parser.add_argument(
+            "--lang",
+            type=str,
+            default=None,
+            help="Specify the language of the input, only allowed if the chosen model supports multiple languages. \
+            This language setting is ignored if the input format already specifies a language for each input."
+        )
         return parser
 
     def __init__(self, args: argparse.Namespace):
@@ -176,20 +208,27 @@ class TextCorrectionCli:
     def version(self) -> str:
         raise NotImplementedError
 
-    def parse_input(self, ipt: str) -> Any:
+    def parse_input(self, ipt: str, lang: Optional[str]) -> data.InferenceData:
+        item = data.InferenceData.from_str(ipt, self.args.input_format)
+        if item.language is None and lang is not None:
+            item.language = lang
+        return item
+
+    def correct_iter(
+        self,
+        corrector: TextCorrector,
+        iter: Iterator[data.InferenceData]
+    ) -> Iterator[data.InferenceData]:
         raise NotImplementedError
 
-    def format_output(self, pred: Any) -> str:
+    def correct_file(
+        self,
+        corrector: TextCorrector,
+        path: str,
+        lang: Optional[str],
+        out_file: Union[str, TextIOWrapper]
+    ):
         raise NotImplementedError
-
-    def correct_iter(self, corrector: TextCorrector, iter: Iterator[str]) -> Generator[str, None, Tuple[int, int]]:
-        raise NotImplementedError
-
-    def correct_file(self, corrector: TextCorrector, path: str) -> Generator[str, None, Tuple[int, int]]:
-        raise NotImplementedError
-
-    def correct_single(self, corrector: TextCorrector, s: str) -> str:
-        return next(self.correct_iter(corrector, iter([s])))
 
     def run(self):
         if self.args.version:
@@ -203,10 +242,11 @@ class TextCorrectionCli:
                     for model in self.text_corrector_cls.available_models()
                 ],
                 alignments=["left", "left", "left"],
+                max_column_width=80
             )
             print(table)
             return
-        elif self.args.server:
+        elif self.args.server is not None:
             self.text_correction_server_cls.from_config(self.args.server).run()
             return
 
@@ -232,6 +272,13 @@ class TextCorrectionCli:
                 force_download=self.args.force_download
             )
 
+        if self.args.lang is not None:
+            supported_languages = cor.supported_languages()
+            assert supported_languages is not None, f"language {self.args.lang} specified but model does not \
+support multiple languages"
+            assert self.args.lang in supported_languages, f"the model supports the languages {supported_languages}, \
+but {self.args.lang} was specified"
+
         cor.set_precision(self.args.precision)
         is_cuda = cor.device.type == "cuda"
 
@@ -240,19 +287,26 @@ class TextCorrectionCli:
 
         start = time.perf_counter()
         if self.args.correct is not None:
-            print(self.correct_single(cor, self.args.correct))
+            ipt = self.parse_input(self.args.correct, self.args.lang)
+            opt = next(self.correct_iter(cor, iter([ipt])))
+            print(opt.to_str(self.args.output_format))
 
         elif self.args.file is not None:
-            corrected = _GeneratorHelper(self.correct_file(cor, self.args.file))
             if self.args.out_path is None:
-                for line in corrected:
-                    print(line)
+                out = sys.stdout
+            else:
+                out = open(self.args.out_path, "w", encoding="utf8")
+
+            assert isinstance(out, TextIOWrapper)
+            self.correct_file(cor, self.args.file, self.args.lang, out)
+            out.close()
+
             if self.args.report:
                 if is_cuda:
                     torch.cuda.synchronize(cor.device)
                 end = time.perf_counter()
 
-                num_lines, num_bytes = corrected.value
+                num_lines, num_bytes = text.file_size(self.args.file)
 
                 report = generate_report(
                     cor.task,
@@ -271,9 +325,9 @@ class TextCorrectionCli:
         elif self.args.interactive:
             while True:
                 try:
-                    line = input()
-                    corrected = self.correct_single(cor, line)
-                    print(self.format_output(corrected))
+                    ipt = self.parse_input(input(), self.args.lang)
+                    opt = next(self.correct_iter(cor, iter([ipt])))
+                    print(opt.to_str(self.args.output_format))
                 except KeyboardInterrupt:
                     pass
 
@@ -284,28 +338,29 @@ class TextCorrectionCli:
             try:
                 if self.args.unsorted:
                     # correct lines from stdin as they come
-                    corrected = _GeneratorHelper(self.correct_iter(cor, sys.stdin))
-                    for line in corrected:
-                        print(self.format_output(line))
+                    input_it = (self.parse_input(line.strip(), self.args.lang) for line in sys.stdin)
+                    sized_it = _SizedIterator(input_it)
+                    outputs = self.correct_iter(cor, sized_it)
+                    for opt in outputs:
+                        print(opt.to_str(self.args.output_format))
                 else:
                     # read stdin completely, then potentially sort and correct
-                    lines = [line.strip() for line in sys.stdin]
-                    corrected = _GeneratorHelper(self.correct_iter(cor, iter(lines)))
-                    for line in corrected:
-                        print(self.format_output(corrected))
+                    inputs = [self.parse_input(line.strip(), self.args.lang) for line in sys.stdin]
+                    sized_it = _SizedIterator(iter(inputs))
+                    outputs = self.correct_iter(cor, sized_it)
+                    for opt in outputs:
+                        print(opt.to_str(self.args.output_format))
 
                 if self.args.report:
                     if is_cuda:
                         torch.cuda.synchronize(cor.device)
 
-                    num_lines, num_bytes = corrected.value
-
                     report = generate_report(
                         cor.task,
                         cor.name,
                         cor.model,
-                        num_lines,
-                        num_bytes,
+                        sized_it.num_items,
+                        sized_it.num_bytes,
                         time.perf_counter() - start,
                         cor._mixed_precision_dtype,
                         self.args.batch_size,

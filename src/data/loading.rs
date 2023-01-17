@@ -1,4 +1,4 @@
-use crate::data::{Batch, InferenceData, Pipeline, TextData};
+use crate::data::{Batch, InferenceData, InferenceDataFormat, Pipeline, TextData};
 use crate::tokenization::{tokenizer, Tokenizer, TokenizerConfig};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
@@ -18,14 +18,12 @@ use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 use std::{panic, process};
 
-use super::InferenceDataFileFormat;
-
 pub trait DataGen: Iterator + Send {
     fn min_len(&self) -> usize;
 }
 
 fn open(p: &Path) -> anyhow::Result<File> {
-    Ok(File::open(p).with_context(|| format!("could not open file at {:?}", p))?)
+    Ok(File::open(p).with_context(|| format!("could not open file at {}", p.display()))?)
 }
 
 fn count_lines(p: &Path) -> anyhow::Result<usize> {
@@ -157,13 +155,13 @@ pub fn text_data_generator_from_files(
 
 pub fn inference_data_generator_from_file(
     path: &Path,
-    format: InferenceDataFileFormat,
+    format: InferenceDataFormat,
     lang: Option<String>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>> {
     let iter = LossyUtf8Reader::new(BufReader::new(open(path)?))
         .lines()
         .map(move |s| {
-            let mut data = InferenceData::from_str(&(s?), &format);
+            let mut data = InferenceData::from_str(&(s?), &format)?;
             if data.language.is_none() && lang.is_some() {
                 data.language = lang.clone();
             };

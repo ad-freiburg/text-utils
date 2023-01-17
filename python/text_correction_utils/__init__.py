@@ -7,6 +7,7 @@ from text_correction_utils._internal import (
     text,
     whitespace,
     data,
+    tokenization,
     windows,
     metrics,
     unicode
@@ -19,7 +20,6 @@ from text_correction_utils import (
     modules,
     logging,
     distributed,
-    tokenization,
     mask,
     io
 )

@@ -46,7 +46,6 @@ impl LanguageTokens {
 /// This is a tokenizer config, containing language options
 /// and the actual tokenize config inside it.
 #[derive(Clone, Debug)]
-#[pyclass]
 pub struct TokenizerConfig {
     tokenize: TokenizeConfig,
     prefix: Vec<String>,
@@ -54,10 +53,7 @@ pub struct TokenizerConfig {
     language: Option<LanguageConfig>,
 }
 
-#[pymethods]
 impl TokenizerConfig {
-    #[new]
-    #[args(prefix = "vec![]", suffix = "vec![]", language = "None")]
     pub fn new(
         tokenize: TokenizeConfig,
         prefix: Vec<String>,
@@ -73,9 +69,41 @@ impl TokenizerConfig {
     }
 }
 
+impl<'a> FromPyObject<'a> for TokenizerConfig {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        Ok(Self {
+            tokenize: d
+                .get_item("tokenize")
+                .ok_or(py_required_key_error("tokenize", "tokenizer config"))?
+                .extract()?,
+            prefix: if let Some(value) = d.get_item("prefix") {
+                value.extract()?
+            } else {
+                DEFAULT_PREFIX_TOKENS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            },
+            suffix: if let Some(value) = d.get_item("suffix") {
+                value.extract()?
+            } else {
+                DEFAULT_SUFFIX_TOKENS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            },
+            language: if let Some(value) = d.get_item("language") {
+                Some(value.extract()?)
+            } else {
+                None
+            },
+        })
+    }
+}
+
 /// This configures the language a tokenizer can work with
 #[derive(Clone, Debug)]
-#[pyclass]
 pub struct LanguageConfig {
     add_language_token_to_prefix: bool,
     add_language_token_to_suffix: bool,
@@ -83,15 +111,7 @@ pub struct LanguageConfig {
     default_language: String,
 }
 
-#[pymethods]
 impl LanguageConfig {
-    #[new]
-    #[args(
-        add_language_token_to_prefix = "true",
-        add_language_token_to_suffix = "false",
-        languages = "vec![]",
-        default_language = "LANG_UNK.to_string()"
-    )]
     pub fn new(
         add_language_token_to_prefix: bool,
         add_language_token_to_suffix: bool,
@@ -104,6 +124,38 @@ impl LanguageConfig {
             languages,
             default_language,
         }
+    }
+}
+
+impl<'a> FromPyObject<'a> for LanguageConfig {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        Ok(Self {
+            add_language_token_to_prefix: if let Some(value) =
+                d.get_item("add_language_token_to_prefix")
+            {
+                value.extract()?
+            } else {
+                true
+            },
+            add_language_token_to_suffix: if let Some(value) =
+                d.get_item("add_language_token_to_suffix")
+            {
+                value.extract()?
+            } else {
+                false
+            },
+            languages: if let Some(value) = d.get_item("languages") {
+                value.extract()?
+            } else {
+                vec![]
+            },
+            default_language: if let Some(value) = d.get_item("default_language") {
+                value.extract()?
+            } else {
+                LANG_UNK.to_string()
+            },
+        })
     }
 }
 
@@ -295,11 +347,22 @@ pub trait Tokenize: Send + Sync + 'static {
 
     fn language_config(&self) -> Option<&LanguageConfig>;
 
-    fn add_prefix_and_suffix(&self, mut token_ids: Vec<u32>, lang: Option<&str>) -> Vec<u32> {
+    fn add_prefix_and_suffix(
+        &self,
+        mut token_ids: Vec<u32>,
+        lang: Option<&str>,
+    ) -> anyhow::Result<Vec<u32>> {
         let mut prefix = self.prefix_token_ids().to_vec();
         let mut suffix = self.suffix_token_ids().to_vec();
         if let Some(lang_cfg) = self.language_config() {
-            let lang_id = self.special_token_to_id(lang.unwrap_or(&lang_cfg.default_language));
+            let lang = lang.unwrap_or(&lang_cfg.default_language);
+            let lang_id = self.special_token_to_id(lang);
+            if lang_id == self.unk_token_id() {
+                return Err(anyhow!(
+                    "language {} is not supported by this tokenizer",
+                    lang
+                ));
+            }
             if lang_cfg.add_language_token_to_prefix {
                 prefix.push(lang_id);
             }
@@ -310,7 +373,7 @@ pub trait Tokenize: Send + Sync + 'static {
         prefix.reserve_exact(token_ids.len() + suffix.len());
         prefix.append(&mut token_ids);
         prefix.append(&mut suffix);
-        prefix
+        Ok(prefix)
     }
 
     fn add_special_token(&mut self, special_token: &str);
@@ -321,7 +384,7 @@ pub trait Tokenize: Send + Sync + 'static {
         }
     }
 
-    fn tokenize(&self, s: &str, lang: Option<&str>) -> Tokenization;
+    fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization>;
 
     fn de_tokenize(&self, token_ids: &[u32]) -> String;
 
@@ -390,9 +453,9 @@ impl Tokenize for DummyTokenizer {
 
     fn add_special_token(&mut self, _: &str) {}
 
-    fn tokenize(&self, _: &str, _: Option<&str>) -> Tokenization {
+    fn tokenize(&self, _: &str, _: Option<&str>) -> anyhow::Result<Tokenization> {
         sleep(self.delay);
-        Tokenization::new(vec![], TokenizationInfo::Empty)
+        Ok(Tokenization::new(vec![], TokenizationInfo::Empty))
     }
 
     fn de_tokenize(&self, _: &[u32]) -> String {
@@ -540,7 +603,7 @@ impl Tokenize for CharTokenizer {
             .insert(token_id, special_token.to_string());
     }
 
-    fn tokenize(&self, s: &str, lang: Option<&str>) -> Tokenization {
+    fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization> {
         let token_ids = CS::new(s, self.use_graphemes)
             .chars()
             .map(|c| {
@@ -559,10 +622,10 @@ impl Tokenize for CharTokenizer {
                 }
             })
             .collect();
-        Tokenization::new(
-            self.add_prefix_and_suffix(token_ids, lang),
+        Ok(Tokenization::new(
+            self.add_prefix_and_suffix(token_ids, lang)?,
             TokenizationInfo::Empty,
-        )
+        ))
     }
 
     fn de_tokenize(&self, token_ids: &[u32]) -> String {
@@ -771,13 +834,13 @@ impl Tokenize for ByteTokenizer {
             .insert(token_id, special_token.to_string());
     }
 
-    fn tokenize(&self, s: &str, lang: Option<&str>) -> Tokenization {
+    fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization> {
         let (bytes, token_groups) = self.split(s);
 
-        Tokenization::new(
-            self.add_prefix_and_suffix(bytes, lang),
+        Ok(Tokenization::new(
+            self.add_prefix_and_suffix(bytes, lang)?,
             TokenizationInfo::TokenGroups(token_groups),
-        )
+        ))
     }
 
     fn de_tokenize(&self, token_ids: &[u32]) -> String {
@@ -846,7 +909,7 @@ impl PyTokenizer {
     }
 
     #[args(lang = "None")]
-    fn tokenize(&self, s: &str, lang: Option<&str>) -> Tokenization {
+    fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization> {
         self.tokenizer.tokenize(s, lang)
     }
 
@@ -903,8 +966,6 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     let m = PyModule::new(py, "tokenization_rs")?;
     m.add_class::<PyTokenizer>()?;
     m.add_class::<Tokenization>()?;
-    m.add_class::<TokenizerConfig>()?;
-    m.add_class::<LanguageConfig>()?;
     m.add_class::<SpecialTokens>()?;
     m.add_class::<LanguageTokens>()?;
     parent_module.add_submodule(m)?;
@@ -927,7 +988,7 @@ mod tests {
         let sfx = vec![EOS];
         let tok = CharTokenizer::new(true, &pfx, &sfx, None);
         let text = "a täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None);
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None).unwrap();
         assert_eq!(token_ids.len(), 6 + 2);
         assert_eq!(token_ids[4], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&token_ids), "a tst".to_string());
@@ -939,7 +1000,7 @@ mod tests {
         let sfx = vec![EOS];
         let tok = ByteTokenizer::new(true, ByteGroups::Bytes, &pfx, &sfx, None);
         let text = "a täst";
-        let Tokenization { token_ids, info } = tok.tokenize(text, None);
+        let Tokenization { token_ids, info } = tok.tokenize(text, None).unwrap();
         assert_eq!(
             token_ids[1..token_ids.len() - 1]
                 .iter()
@@ -960,7 +1021,7 @@ mod tests {
         assert_eq!(tok.de_tokenize(&token_ids), text.to_string());
         let tok = ByteTokenizer::new(true, ByteGroups::CodePoints, &pfx, &sfx, None);
         let text = "a täst";
-        let Tokenization { token_ids, info } = tok.tokenize(text, None);
+        let Tokenization { token_ids, info } = tok.tokenize(text, None).unwrap();
         assert_eq!(
             token_ids[1..token_ids.len() - 1]
                 .iter()

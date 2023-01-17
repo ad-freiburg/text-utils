@@ -6,7 +6,7 @@ import shutil
 import zipfile
 import subprocess
 from pathlib import Path
-from typing import Union, Dict, Optional, List
+from typing import Union, Dict, List
 
 import requests
 import torch
@@ -141,10 +141,11 @@ def num_parameters(module: nn.Module) -> Dict[str, int]:
     return {"trainable": trainable, "fixed": fixed, "total": trainable + fixed}
 
 
-def byte_progress_bar(desc: str, total: int) -> tqdm:
+def byte_progress_bar(desc: str, total: int, disable: bool = False) -> tqdm:
     return tqdm(
         desc=desc,
         total=total,
+        disable=disable,
         ascii=True,
         leave=False,
         unit="iB",

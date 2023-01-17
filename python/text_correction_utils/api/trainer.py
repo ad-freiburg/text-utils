@@ -91,9 +91,9 @@ training will resume from latest checkpoint."
 
         torch.use_deterministic_algorithms(False)
 
-        self.input_tokenizer = tokenization.tokenizer_from_config(self.cfg["input_tokenizer"])
+        self.input_tokenizer = tokenization.Tokenizer.from_config(self.cfg["input_tokenizer"])
         if "output_tokenizer" in self.cfg:
-            self.output_tokenizer = tokenization.tokenizer_from_config(self.cfg["output_tokenizer"])
+            self.output_tokenizer = tokenization.Tokenizer.from_config(self.cfg["output_tokenizer"])
         else:
             self.output_tokenizer = None
 
@@ -264,7 +264,7 @@ training will resume from latest checkpoint."
     def _data_from_config(
         cls,
         cfg: Dict[str, Any],
-        input_tokenizer_cfg: Dict[str, Any],
+        tokenizer_config: Dict[str, Any],
         seed: Optional[int],
         info: distributed.DistributedInfo
     ) -> Tuple[data.DataLoader, data.DataLoader]:
@@ -281,15 +281,9 @@ training will resume from latest checkpoint."
 
         train_sources, train_languages = cls._parse_data_sources(cfg.pop("sources"))
 
-        pipeline = cfg.pop("pipeline")
-        pipeline_config = data.PreprocessingPipelineConfig(
-            preprocessing=pipeline.get("preprocessing", []),
-            labeling=pipeline["labeling"],
-        )
-        tokenizer_config = tokenization.tokenizer_config(input_tokenizer_cfg)
         train_loader = data.DataLoader.from_files(
             train_sources,
-            pipeline_config,
+            cfg["pipeline"],
             tokenizer_config,
             train_languages,
             seed=seed,
@@ -301,7 +295,7 @@ training will resume from latest checkpoint."
         if val_limit is not None:
             val_loader = data.DataLoader.from_files(
                 train_sources,
-                pipeline_config,
+                cfg["pipeline"],
                 tokenizer_config,
                 train_languages,
                 seed=seed,
@@ -312,7 +306,7 @@ training will resume from latest checkpoint."
         else:
             val_loader = data.DataLoader.from_files(
                 val_sources,
-                pipeline_config,
+                cfg["pipeline"],
                 tokenizer_config,
                 val_languages,
                 seed=seed,

@@ -1,13 +1,17 @@
 use crate::data::loading::{
-    BatchLimitType, BatchedIterator, DataGen, PipelineIterator, TextIterationStrategy,
+    inference_data_generator_from_file, inference_data_generator_from_python,
+    text_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator, DataGen,
+    ItemSize, PipelineIterator, Tensorize, TensorizedIterator, TextIterationStrategy, TextIterator,
 };
 use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingConfig};
 use crate::text::clean;
-use crate::tokenization::{tokenizer, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig};
+use crate::tokenization::{
+    tokenizer, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig, LANG_UNK,
+};
 use crate::unicode::{normalize, Normalization};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use numpy::ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArray2, PyArrayDyn};
 use pyo3::basic::CompareOp;
@@ -19,12 +23,6 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::vec::IntoIter;
-
-use self::loading::{
-    inference_data_generator_from_file, inference_data_generator_from_python,
-    text_data_generator_from_files, BufferedIterator, ItemSize, Tensorize, TensorizedIterator,
-    TextIterator,
-};
 
 pub mod loading;
 pub mod preprocessing;
@@ -178,23 +176,23 @@ impl Item {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum InferenceDataFileFormat {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InferenceDataFormat {
     Text,
     TextPlusDetections,
     TextPlusLanguage,
     TextPlusDetectionsPlusLanguage,
 }
 
-impl<'a> FromPyObject<'a> for InferenceDataFileFormat {
+impl<'a> FromPyObject<'a> for InferenceDataFormat {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let s: String = ob.extract()?;
         let format = match s.as_str() {
-            "text" => InferenceDataFileFormat::Text,
-            "text_detections" => InferenceDataFileFormat::TextPlusDetections,
-            "text_language" => InferenceDataFileFormat::TextPlusLanguage,
-            "text_detections_language" => InferenceDataFileFormat::TextPlusDetectionsPlusLanguage,
-            k => return Err(py_invalid_type_error(k, "inference data file format")),
+            "text" => InferenceDataFormat::Text,
+            "text_detections" => InferenceDataFormat::TextPlusDetections,
+            "text_language" => InferenceDataFormat::TextPlusLanguage,
+            "text_detections_language" => InferenceDataFormat::TextPlusDetectionsPlusLanguage,
+            k => return Err(py_invalid_type_error(k, "inference data format")),
         };
         Ok(format)
     }
@@ -203,57 +201,136 @@ impl<'a> FromPyObject<'a> for InferenceDataFileFormat {
 #[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
 #[pyclass]
 pub struct InferenceData {
-    #[pyo3(get)]
-    original: String,
-    #[pyo3(get)]
+    #[pyo3(get, set)]
+    text: String,
+    #[pyo3(get, set)]
     detections: Option<Vec<bool>>,
-    #[pyo3(get)]
+    #[pyo3(get, set)]
     language: Option<String>,
 }
 
 impl InferenceData {
-    pub fn new(original: String, detections: Option<Vec<bool>>, language: Option<String>) -> Self {
+    #[inline]
+    fn parse_detections(str: &str) -> anyhow::Result<Vec<bool>> {
+        str.split(char::is_whitespace)
+            .map(|s| Ok(str::parse::<u8>(s.trim())? != 0))
+            .collect::<anyhow::Result<Vec<bool>>>()
+            .with_context(|| format!("failed to parse '{}' to detections", str))
+    }
+
+    #[inline]
+    fn detection_str(&self) -> anyhow::Result<String> {
+        if let Some(detections) = &self.detections {
+            Ok(detections
+                .iter()
+                .map(|d| (*d as u8).to_string())
+                .collect::<Vec<String>>()
+                .join(" "))
+        } else {
+            Err(anyhow!("expected detections to be set, but got none"))
+        }
+    }
+
+    pub fn from_str(s: &str, format: &InferenceDataFormat) -> anyhow::Result<Self> {
+        let splits: Vec<&str> = s.split("\t").collect();
+        let (text, detections, language) = match format {
+            InferenceDataFormat::Text => (s, None, None),
+            InferenceDataFormat::TextPlusDetections => {
+                if splits.len() < 2 {
+                    return Err(anyhow!(
+                        "expected at least 2 tab separated values in '{}', got {}",
+                        s,
+                        splits.len()
+                    ));
+                }
+                (
+                    &s[0..splits.len() - 2
+                        + splits
+                            .iter()
+                            .take(splits.len() - 1)
+                            .map(|s| s.len())
+                            .sum::<usize>()],
+                    Some(Self::parse_detections(splits[splits.len() - 1])?),
+                    None,
+                )
+            }
+            InferenceDataFormat::TextPlusLanguage => {
+                let splits: Vec<&str> = s.split("\t").collect();
+                if splits.len() < 2 {
+                    return Err(anyhow!(
+                        "expected at least 2 tab separated values in '{}', got {}",
+                        s,
+                        splits.len()
+                    ));
+                }
+                (
+                    &s[0..splits.len() - 2
+                        + splits
+                            .iter()
+                            .take(splits.len() - 1)
+                            .map(|s| s.len())
+                            .sum::<usize>()],
+                    None,
+                    Some(splits[splits.len() - 1].trim().to_string()),
+                )
+            }
+            InferenceDataFormat::TextPlusDetectionsPlusLanguage => {
+                let splits: Vec<&str> = s.split("\t").collect();
+                if splits.len() < 3 {
+                    return Err(anyhow!(
+                        "expected at least 3 tab separated values in '{}', got {}",
+                        s,
+                        splits.len()
+                    ));
+                }
+                (
+                    &s[0..splits.len() - 3
+                        + splits
+                            .iter()
+                            .take(splits.len() - 2)
+                            .map(|s| s.len())
+                            .sum::<usize>()],
+                    Some(Self::parse_detections(splits[splits.len() - 2])?),
+                    Some(splits[splits.len() - 1].trim().to_string()),
+                )
+            }
+        };
+        Ok(Self::new(text.trim().to_string(), detections, language))
+    }
+}
+
+#[pymethods]
+impl InferenceData {
+    #[new]
+    pub fn new(s: String, detections: Option<Vec<bool>>, language: Option<String>) -> Self {
         Self {
-            original,
+            text: s,
             detections,
             language,
         }
     }
-
-    fn parse_detections(str: &str) -> Vec<bool> {
-        str.split(char::is_whitespace)
-            .map(|s| {
-                str::parse::<u8>(s.trim())
-                    .expect(format!("failed to parse {s} to integer").as_str())
-                    != 0
-            })
-            .collect()
+    #[staticmethod]
+    #[pyo3(name = "from_str")]
+    #[args(format = "InferenceDataFormat::Text")]
+    pub fn from_str_py(s: String, format: InferenceDataFormat) -> anyhow::Result<Self> {
+        Self::from_str(&s, &format)
     }
 
-    pub fn from_str(s: &str, format: &InferenceDataFileFormat) -> Self {
-        let (original, detections, language) = match format {
-            InferenceDataFileFormat::Text => (s, None, None),
-            InferenceDataFileFormat::TextPlusDetections => {
-                let splits: Vec<&str> = s.split("\t").collect();
-                assert_eq!(splits.len(), 2);
-                (splits[0], Some(Self::parse_detections(splits[1])), None)
-            }
-            InferenceDataFileFormat::TextPlusLanguage => {
-                let splits: Vec<&str> = s.split("\t").collect();
-                assert_eq!(splits.len(), 2);
-                (splits[0], None, Some(splits[1].trim().to_string()))
-            }
-            InferenceDataFileFormat::TextPlusDetectionsPlusLanguage => {
-                let splits: Vec<&str> = s.split("\t").collect();
-                assert_eq!(splits.len(), 3);
-                (
-                    splits[0],
-                    Some(Self::parse_detections(splits[1])),
-                    Some(splits[2].trim().to_string()),
-                )
-            }
-        };
-        Self::new(original.trim().to_string(), detections, language)
+    #[args(format = "InferenceDataFormat::Text")]
+    pub fn to_str(&self, format: InferenceDataFormat) -> anyhow::Result<String> {
+        let mut s = self.text.clone();
+        if format == InferenceDataFormat::Text {
+            return Ok(s);
+        }
+        if format == InferenceDataFormat::TextPlusDetections
+            || format == InferenceDataFormat::TextPlusDetectionsPlusLanguage
+        {
+            s.push_str("\t");
+            s.push_str(&self.detection_str()?);
+        }
+        s.push_str("\t");
+        s.push_str(self.language.as_deref().unwrap_or(LANG_UNK));
+        Ok(s)
     }
 }
 
@@ -521,11 +598,8 @@ impl<T> IntoIterator for Batch<T> {
 }
 
 #[derive(Debug, Clone)]
-#[pyclass]
 pub struct PreprocessingPipelineConfig {
-    #[pyo3(get)]
     preprocessing: Vec<PreprocessingConfig>,
-    #[pyo3(get)]
     labeling: LabelingConfig,
 }
 
@@ -538,11 +612,21 @@ impl PreprocessingPipelineConfig {
     }
 }
 
-#[pymethods]
-impl PreprocessingPipelineConfig {
-    #[new]
-    fn py_new(preprocessing: Vec<PreprocessingConfig>, labeling: LabelingConfig) -> PyResult<Self> {
-        Ok(Self::new(preprocessing, labeling))
+impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
+    fn extract(obj: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = obj.extract()?;
+        let preprocessing = if let Some(value) = d.get_item("preprocessing") {
+            value.extract()?
+        } else {
+            vec![]
+        };
+        let Some(labeling) = d.get_item("labeling") else {
+            return Err(py_required_key_error("labeling", "preprocessing pipeline config"));
+        };
+        Ok(PreprocessingPipelineConfig {
+            preprocessing,
+            labeling: labeling.extract()?,
+        })
     }
 }
 
@@ -580,7 +664,7 @@ impl TextDataPipeline {
         Pipeline::new(Arc::new(move |data, _, seed| -> anyhow::Result<Item> {
             let data = preprocess_fn(data, seed)?;
             Ok(Item {
-                tokenization: tok.tokenize(&data.processed, data.language.as_deref()),
+                tokenization: tok.tokenize(&data.processed, data.language.as_deref())?,
                 label: label_fn(&data)?,
                 data,
             })
@@ -599,35 +683,40 @@ impl InferencePipeline {
         let tok = tokenizer(tokenizer_cfg);
         Pipeline::new(Arc::new(move |data, idx, _| {
             let mut data = InferenceData {
-                original: clean(&data.original, use_graphemes),
+                text: clean(&data.text, use_graphemes),
                 ..data
             };
             if normalization.is_some() {
-                data.original = normalize(&data.original, normalization.unwrap(), use_graphemes);
+                data.text = normalize(&data.text, normalization.unwrap(), use_graphemes);
             }
-            Ok(windows(&data.original, &window_cfg)?
+            windows(&data.text, &window_cfg)?
                 .iter()
                 .enumerate()
                 .map(|(w_idx, w)| {
-                    let tokenization = tok.tokenize(w.str, data.language.as_deref());
+                    let tokenization = tok.tokenize(w.str, data.language.as_deref())?;
                     let boundaries = w.boundaries();
-                    InferenceItem::new(data.clone(), tokenization, idx, w_idx, boundaries)
+                    Ok(InferenceItem::new(
+                        data.clone(),
+                        tokenization,
+                        idx,
+                        w_idx,
+                        boundaries,
+                    ))
                 })
-                .collect())
+                .collect()
         }))
     }
 }
 
+type InferenceDataIter = dyn Iterator<
+        Item = (
+            Batch<InferenceItem>,
+            <Batch<InferenceItem> as Tensorize>::Output,
+        ),
+    > + Send;
 #[pyclass]
 struct InferenceLoader {
-    iter: Box<
-        dyn Iterator<
-                Item = (
-                    Batch<InferenceItem>,
-                    <Batch<InferenceItem> as Tensorize>::Output,
-                ),
-            > + Send,
-    >,
+    iter: Box<InferenceDataIter>,
     iter_err: Arc<Mutex<Option<anyhow::Error>>>,
     #[pyo3(get)]
     min_items: usize,
@@ -744,7 +833,7 @@ impl InferenceLoader {
 
     #[staticmethod]
     #[args(
-        file_format = "InferenceDataFileFormat::Text",
+        file_format = "InferenceDataFormat::Text",
         normalization = "Normalization::NFKC",
         use_graphemes = "true",
         languages = "None",
@@ -759,7 +848,7 @@ impl InferenceLoader {
         files: Vec<String>,
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
-        file_format: InferenceDataFileFormat,
+        file_format: InferenceDataFormat,
         normalization: Option<Normalization>,
         use_graphemes: bool,
         languages: Option<Vec<String>>,
@@ -1066,7 +1155,6 @@ impl DataLoader {
 /// A submodule containing functionality for text data loading.
 /// Currently supported:
 /// - loading text files
-/// - loading in memory lists of strings
 /// - several loading strategies (sequential, interleaved, weighted)
 /// - single or multi-threaded preprocessing
 /// - batched loading (limited by a max batch size or a max number of tokens)
@@ -1075,7 +1163,6 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     let m = PyModule::new(py, "data")?;
     m.add_class::<DataLoader>()?;
     m.add_class::<InferenceLoader>()?;
-    m.add_class::<PreprocessingPipelineConfig>()?;
     m.add_class::<TextData>()?;
     m.add_class::<InferenceData>()?;
     m.add_class::<Item>()?;

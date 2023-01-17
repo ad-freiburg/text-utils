@@ -281,9 +281,10 @@ training will resume from latest checkpoint."
 
         train_sources, train_languages = cls._parse_data_sources(cfg.pop("sources"))
 
+        pipeline_cfg = cfg.pop("pipeline")
         train_loader = data.DataLoader.from_files(
             train_sources,
-            cfg["pipeline"],
+            pipeline_cfg,
             tokenizer_config,
             train_languages,
             seed=seed,
@@ -295,7 +296,7 @@ training will resume from latest checkpoint."
         if val_limit is not None:
             val_loader = data.DataLoader.from_files(
                 train_sources,
-                cfg["pipeline"],
+                pipeline_cfg,
                 tokenizer_config,
                 train_languages,
                 seed=seed,
@@ -306,7 +307,7 @@ training will resume from latest checkpoint."
         else:
             val_loader = data.DataLoader.from_files(
                 val_sources,
-                cfg["pipeline"],
+                pipeline_cfg,
                 tokenizer_config,
                 val_languages,
                 seed=seed,
@@ -481,62 +482,16 @@ training will resume from latest checkpoint."
             join=True
         )
 
-    def _prepare_label(
-        self,
-        label: Optional[Dict[str, Any]],
-        max_length: int
-    ) -> Any:
-        assert label is not None
-        if label["type"] == "classification":
-            return label["label"]
-        elif label["type"] == "sequence_classification":
-            num_prefix_tokens = self.input_tokenizer.num_prefix_tokens()
-            return (
-                [-1] * num_prefix_tokens
-                + label["labels"]
-                + [-1] * (max_length - len(label["labels"]) - num_prefix_tokens)
-            )
-        else:
-            raise ValueError(f"unknown labels type {label['type']}")
-
-    def _prepare_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
-        info_type = info.pop("type")
-        if info_type in {"empty", "token_groups"}:
-            return info
-        else:
-            raise ValueError(f"unknown info type {info_type}")
-
     def _prepare_batch(self, batch: data.DataBatch) -> Tuple[Dict[str, Any], torch.Tensor]:
         assert len(batch) > 0, "got empty batch"
         if self.cfg["model"]["type"] == "encoder_with_head":
-            pad_token_id = self.input_tokenizer.pad_token_id()
-            token_ids = []
-            token_lengths = [len(item.tokenization.token_ids) for item in batch]
-            max_tokens = max(token_lengths)
-            first_info = next(iter(batch)).tokenization.info
-            if first_info["type"] == "token_groups":
-                if "code_point_groups" in first_info:
-                    group_name = "code_point_groups"
-                else:
-                    group_name = "byte_groups"
-                max_groups = max(len(item.tokenization.info[group_name]) for item in batch)
-            else:
-                max_groups = max_tokens
-            labels = []
-            kwargs = collections.defaultdict(list)
-            for i, item in enumerate(batch):
-                token_ids.append(item.tokenization.token_ids + [pad_token_id] * (max_tokens - token_lengths[i]))
-                for k, v in self._prepare_info(item.tokenization.info).items():
-                    kwargs[k].append(v)
-
-                labels.append(self._prepare_label(item.label, max_groups))
-
+            token_ids_np, lengths, info, labels_np = batch.tensors
             inputs = {
-                "token_ids": torch.as_tensor(token_ids, dtype=torch.long, device=self.info.device),
-                "lengths": token_lengths,
-                **kwargs
+                "token_ids": torch.from_numpy(token_ids_np).to(device=self.info.device),
+                "lengths": lengths,
+                **info
             }
-            labels = torch.as_tensor(labels, dtype=torch.long, device=self.info.device)
+            labels = torch.from_numpy(labels_np).to(dtype=torch.long, device=self.info.device)
 
         else:
             raise ValueError(f"unknown model type {self.cfg['model']['type']}")
@@ -574,13 +529,7 @@ training will resume from latest checkpoint."
                 break
 
             start_preparation = time.perf_counter()
-            # inputs, labels = self._prepare_batch(batch)
-            inputs = {
-                "token_ids": torch.from_numpy(batch.tensorized[0]).to(device=self.info.device),
-                "lengths": batch.tensorized[1],
-                **batch.tensorized[2]
-            }
-            labels = torch.from_numpy(batch.tensorized[3]).to(device=self.info.device)
+            inputs, labels = self._prepare_batch(batch)
             end_preparation = time.perf_counter()
 
             self.optimizer.zero_grad()
@@ -606,8 +555,8 @@ training will resume from latest checkpoint."
                 # have the same batch size
                 batch_size = len(batch) * self.info.world_size
                 mean_bsz.add(batch_size)
-                for item in batch:
-                    mean_seq_length.add(len(item))
+                for length in inputs["lengths"]:
+                    mean_seq_length.add(length)
                 mean_batch_load.add((end_batch - start_batch) * 1000)
                 mean_batch_preparation.add((end_preparation - start_preparation) * 1000)
 
@@ -647,8 +596,9 @@ training will resume from latest checkpoint."
                 mean_seq_length.log_tensorboard(self.summary_writer, self.step)
                 mean_seq_length.log_info(self.logger, self.step)
 
+                items = batch.items
                 for metric in metrics:
-                    metric.set_values(batch, outputs)
+                    metric.set_values(items, outputs)
                     metric.log_tensorboard(self.summary_writer, self.step)
                     metric.log_info(self.logger, self.step)
 
@@ -707,8 +657,9 @@ training will resume from latest checkpoint."
 
             mean_loss.add(loss.detach())
             if batch_num == 0:
+                items = batch.items
                 for metric in metrics:
-                    metric.set_values(batch, outputs)
+                    metric.set_values(items, outputs)
                     metric.log_tensorboard(self.summary_writer, self.step)
                     metric.log_info(self.logger, self.step)
 

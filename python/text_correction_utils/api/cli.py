@@ -147,10 +147,11 @@ class TextCorrectionCli:
         )
         parser.add_argument(
             "--precision",
-            choices=["fp32", "fp16", "bfp16"],
-            default="fp32",
+            choices=["auto", "fp32", "fp16", "bfp16"],
+            default="auto",
             help="Choose the precision for inference, fp16 or bfp16 can result in faster runtimes when running on a "
-                 "new GPU that supports lower precision, but it can be slower on older GPUs"
+                 "new GPU that supports lower precision, but it can be slower on older GPUs. Auto will set the precision to "
+                 "the precision used for training if it is available, otherwise it will use fp32."
         )
         parser.add_argument(
             "-v",
@@ -279,7 +280,9 @@ support multiple languages"
             assert self.args.lang in supported_languages, f"the model supports the languages {supported_languages}, \
 but {self.args.lang} was specified"
 
-        cor.set_precision(self.args.precision)
+        if self.args.precision != "auto":
+            cor.set_precision(self.args.precision)
+
         is_cuda = cor.device.type == "cuda"
 
         if is_cuda:
@@ -294,12 +297,12 @@ but {self.args.lang} was specified"
         elif self.args.file is not None:
             if self.args.out_path is None:
                 out = sys.stdout
+                assert isinstance(out, TextIOWrapper)
             else:
-                out = open(self.args.out_path, "w", encoding="utf8")
+                assert isinstance(self.args.out_path, str)
+                out = self.args.out_path
 
-            assert isinstance(out, TextIOWrapper)
             self.correct_file(cor, self.args.file, self.args.lang, out)
-            out.close()
 
             if self.args.report:
                 if is_cuda:

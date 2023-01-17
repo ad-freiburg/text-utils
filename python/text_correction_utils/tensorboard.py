@@ -45,27 +45,27 @@ class AverageTracker(TensorboardLogger):
 
 
 class TensorboardMetric(TensorboardLogger):
-    def set_values(self, batch: data.DataBatch, outputs: torch.Tensor):
+    def set_values(self, items: List[data.Item], outputs: torch.Tensor):
         raise NotImplementedError
 
 
 class WhitespaceCorrectionMetric(TensorboardMetric):
     def __init__(self, name: str, input_tokenizer: tokenization.Tokenizer, max_items: Optional[int] = None):
-        self.batch = None
+        self.items = None
         self.outputs = None
         self.max_items = max_items
         self.name = name
         self.input_tokenizer = input_tokenizer
 
     @override
-    def set_values(self, batch: data.DataBatch, outputs: torch.Tensor):
-        self.batch = batch.batch
+    def set_values(self, items: List[data.Item], outputs: torch.Tensor):
+        self.items = items
         self.outputs = torch.argmax(outputs, dim=-1).tolist()
 
     def _get_string(self) -> str:
-        assert self.batch is not None and self.outputs is not None, "call set_values before logging"
+        assert self.items is not None and self.outputs is not None, "call set_values before logging"
         strings = []
-        for item, output in zip(self.batch, self.outputs):
+        for item, output in zip(self.items, self.outputs):
             if self.max_items is not None and len(strings) >= self.max_items:
                 break
 

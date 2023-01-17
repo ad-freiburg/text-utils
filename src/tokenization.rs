@@ -963,7 +963,7 @@ impl PyTokenizer {
 /// - character level tokenization
 /// - byte level tokenization
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "tokenization_rs")?;
+    let m = PyModule::new(py, "tokenization")?;
     m.add_class::<PyTokenizer>()?;
     m.add_class::<Tokenization>()?;
     m.add_class::<SpecialTokens>()?;

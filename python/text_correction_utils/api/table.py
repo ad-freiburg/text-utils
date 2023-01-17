@@ -143,9 +143,8 @@ def generate_report(
             ["Precision", precision_str],
             ["Batch size", f"{batch_size:,}"],
             ["Sorted", "yes" if sort_by_length else "no"],
-            ["Device",  f"{torch.cuda.get_device_name(device)}, {utils.device_info(device)}"]
+            ["Device",  f"{utils.cpu_info()}{', ' + utils.device_info(device) if device.type == 'cuda' else ''}"],
         ],
-        fmt="markdown"
     )
     if file_path is not None:
         if os.path.dirname(file_path):

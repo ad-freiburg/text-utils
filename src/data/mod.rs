@@ -19,10 +19,10 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::vec::IntoIter;
 
 pub mod loading;
 pub mod preprocessing;
@@ -380,53 +380,53 @@ impl InferenceItem {
     }
 }
 
-#[derive(Debug)]
-pub struct Batch<T> {
-    items: Vec<T>,
-}
-
-impl<T> Batch<T> {
-    pub fn new(items: Vec<T>) -> Self {
-        Batch { items }
-    }
-
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-}
+pub type Batch<T> = Vec<T>;
 
 #[pyclass]
 pub struct DataBatch {
-    batch: Batch<Item>,
-    #[pyo3(get)]
-    tensorized: <Batch<Item> as Tensorize>::Output,
-    iter: Option<Box<dyn Iterator<Item = Item> + Send>>,
+    len: usize,
+    batch: Option<Batch<Item>>,
+    tensorized: Option<<Batch<Item> as Tensorize>::Output>,
 }
 
 #[pymethods]
 impl DataBatch {
     fn __len__(&self) -> usize {
-        self.batch.len()
+        self.len
     }
 
     #[getter]
-    fn items(&self) -> Vec<Item> {
-        self.batch.items.clone()
-    }
-
-    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
-        slf.iter = Some(Box::new(slf.batch.items.clone().into_iter()));
-        slf
-    }
-
-    fn __next__(&mut self) -> Option<Py<Item>> {
-        if let Some(item) = self.iter.as_mut().unwrap().next() {
-            Some(Python::with_gil(|py| {
-                Py::new(py, item).expect("should not fail")
-            }))
-        } else {
-            None
+    fn items(&mut self) -> anyhow::Result<Batch<Item>> {
+        if self.batch.is_none() {
+            return Err(anyhow!(
+                "can only get items once, because their data is moved"
+            ));
         }
+        Ok(self.batch.take().unwrap())
+    }
+
+    #[getter]
+    fn tensors(
+        &mut self,
+        py: Python<'_>,
+    ) -> anyhow::Result<(
+        Py<PyArray2<i32>>,
+        Vec<usize>,
+        Py<PyDict>,
+        Py<PyArrayDyn<i32>>,
+    )> {
+        if self.tensorized.is_none() {
+            return Err(anyhow!(
+                "can only get tensors once, because their data is moved"
+            ));
+        }
+        let tensorized = self.tensorized.take().unwrap();
+        Ok((
+            tensorized.0.into_pyarray(py).into_py(py),
+            tensorized.1,
+            PyDict::new(py).into_py(py),
+            tensorized.3.into_pyarray(py).into_py(py),
+        ))
     }
 }
 
@@ -464,7 +464,11 @@ fn join<T>(vectors: Vec<Vec<T>>) -> Vec<T> {
 fn prepare(
     tokenizations: Vec<&Tokenization>,
     pad_token_id: u32,
-) -> (Py<PyArray2<u32>>, Vec<usize>, Py<PyDict>) {
+) -> (
+    Array2<i32>,
+    Vec<usize>,
+    HashMap<String, Box<dyn ToPyObject + Send + 'static>>,
+) {
     let batch_size = tokenizations.len();
     let max_token_ids = tokenizations
         .iter()
@@ -473,45 +477,44 @@ fn prepare(
         .unwrap_or(0);
     let mut token_ids = Vec::with_capacity(max_token_ids * tokenizations.len());
     let mut lengths = Vec::with_capacity(tokenizations.len());
-    Python::with_gil(|py| {
-        let d = PyDict::new(py);
-        for tokenization in tokenizations {
-            let num_token_ids = tokenization.token_ids.len();
-            token_ids.append(&mut join(vec![
-                tokenization.token_ids.clone(),
-                vec![pad_token_id; max_token_ids - num_token_ids],
-            ]));
-            lengths.push(num_token_ids);
-        }
-        let token_id_arr = Array2::from_shape_vec((batch_size, max_token_ids), token_ids).unwrap();
-        (
-            token_id_arr.into_pyarray(py).into_py(py),
-            lengths,
-            d.into_py(py),
-        )
-    })
+    let info = HashMap::new();
+    for tokenization in tokenizations {
+        let num_token_ids = tokenization.token_ids.len();
+        token_ids.append(&mut join(vec![
+            tokenization
+                .token_ids
+                .clone()
+                .into_iter()
+                .map(|t| t as i32)
+                .collect(),
+            vec![pad_token_id as i32; max_token_ids - num_token_ids],
+        ]));
+        lengths.push(num_token_ids);
+    }
+    let token_id_arr = Array2::from_shape_vec((batch_size, max_token_ids), token_ids).unwrap();
+    (token_id_arr, lengths, info)
 }
 
 impl Tensorize for Batch<Item> {
     type Output = (
-        Py<PyArray2<u32>>,
+        Array2<i32>,
         Vec<usize>,
-        Py<PyDict>,
-        Py<PyArrayDyn<i32>>,
+        HashMap<String, Box<dyn ToPyObject + Send + 'static>>,
+        ArrayD<i32>,
     );
 
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
-        assert!(!self.items.is_empty());
+        assert!(!self.is_empty());
         let (token_id_arr, lengths, info) = prepare(
-            self.items.iter().map(|i| &i.tokenization).collect(),
+            self.iter().map(|i| &i.tokenization).collect(),
             tokenizer.pad_token_id(),
         );
 
         let batch_size = self.len();
-        let max_groups = max_groups(self.items.iter().map(|i| &i.tokenization));
+        let max_groups = max_groups(self.iter().map(|i| &i.tokenization));
         let mut labels = Vec::with_capacity(batch_size * max_groups);
 
-        for item in &self.items {
+        for item in self.iter() {
             labels.append(&mut match &item.label {
                 Label::Classification(label) => vec![*label],
                 Label::SeqClassification(labels) => join(vec![
@@ -531,69 +534,63 @@ impl Tensorize for Batch<Item> {
                 .unwrap()
                 .into_dyn(),
         };
-        Python::with_gil(|py| {
-            (
-                token_id_arr,
-                lengths,
-                info,
-                label_arr.into_pyarray(py).into_py(py),
-            )
-        })
+        (token_id_arr, lengths, info, label_arr)
     }
 }
 
 #[pyclass]
 pub struct InferenceBatch {
-    batch: Batch<InferenceItem>,
-    #[pyo3(get)]
-    tensorized: <Batch<InferenceItem> as Tensorize>::Output,
-    iter: Option<Box<dyn Iterator<Item = InferenceItem> + Send>>,
+    len: usize,
+    batch: Option<Batch<InferenceItem>>,
+    tensorized: Option<<Batch<InferenceItem> as Tensorize>::Output>,
 }
 
 #[pymethods]
 impl InferenceBatch {
     fn __len__(&self) -> usize {
-        self.batch.len()
+        self.len
     }
 
     #[getter]
-    fn items(&self) -> Vec<InferenceItem> {
-        self.batch.items.clone()
-    }
-
-    fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
-        slf.iter = Some(Box::new(slf.batch.items.clone().into_iter()));
-        slf
-    }
-
-    fn __next__(&mut self) -> Option<Py<InferenceItem>> {
-        if let Some(item) = self.iter.as_mut().unwrap().next() {
-            Some(Python::with_gil(|py| {
-                Py::new(py, item).expect("should not fail")
-            }))
-        } else {
-            None
+    fn items(&mut self) -> anyhow::Result<Batch<InferenceItem>> {
+        if self.batch.is_none() {
+            return Err(anyhow!(
+                "can only get items once, because their data is moved"
+            ));
         }
+        Ok(self.batch.take().unwrap())
+    }
+
+    #[getter]
+    fn tensors(
+        &mut self,
+        py: Python<'_>,
+    ) -> anyhow::Result<(Py<PyArray2<i32>>, Vec<usize>, Py<PyDict>)> {
+        if self.tensorized.is_none() {
+            return Err(anyhow!(
+                "can only get tensors once, because their data is moved"
+            ));
+        }
+        let tensorized = self.tensorized.take().unwrap();
+        Ok((
+            tensorized.0.into_pyarray(py).into_py(py),
+            tensorized.1,
+            PyDict::new(py).into_py(py),
+        ))
     }
 }
 
 impl Tensorize for Batch<InferenceItem> {
-    type Output = (Py<PyArray2<u32>>, Vec<usize>, Py<PyDict>);
-
+    type Output = (
+        Array2<i32>,
+        Vec<usize>,
+        HashMap<String, Box<dyn ToPyObject + Send + 'static>>,
+    );
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
         prepare(
-            self.items.iter().map(|i| &i.tokenization).collect(),
+            self.iter().map(|i| &i.tokenization).collect(),
             tokenizer.pad_token_id(),
         )
-    }
-}
-
-impl<T> IntoIterator for Batch<T> {
-    type Item = T;
-    type IntoIter = IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.items.into_iter()
     }
 }
 
@@ -899,20 +896,23 @@ impl InferenceLoader {
         slf
     }
 
-    fn __next__(&mut self) -> anyhow::Result<Option<Py<InferenceBatch>>> {
-        if let Some((batch, tensorized)) = self.iter.next() {
-            Ok(Some(Python::with_gil(|py| {
-                let inf_batch = InferenceBatch {
-                    batch,
-                    tensorized,
-                    iter: None,
-                };
-                Py::new(py, inf_batch).expect("should not fail")
-            })))
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<InferenceBatch>>> {
+        if let Some((batch, tensorized)) = slf.iter.next() {
+            Ok(Some(
+                Py::new(
+                    slf.py(),
+                    InferenceBatch {
+                        len: batch.len(),
+                        batch: Some(batch),
+                        tensorized: Some(tensorized),
+                    },
+                )
+                .expect("should not fail"),
+            ))
         } else {
             // check if batch is None because iterator is stopped,
             // or because an error was encountered
-            match self.iter_err.lock().unwrap().as_ref() {
+            match slf.iter_err.lock().unwrap().as_ref() {
                 Some(e) => Err(anyhow!("error during inference iterator: {e}")),
                 None => Ok(None),
             }
@@ -1125,19 +1125,22 @@ impl DataLoader {
         Ok(slf)
     }
 
-    fn __next__(&mut self) -> anyhow::Result<Option<Py<DataBatch>>> {
-        if self.iter.is_none() {
-            self.init_iter()?;
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<DataBatch>>> {
+        if slf.iter.is_none() {
+            slf.init_iter()?;
         }
-        if let Some((batch, tensorized)) = self.iter.as_mut().unwrap().next() {
-            Ok(Some(Python::with_gil(|py| {
-                let data_batch = DataBatch {
-                    batch,
-                    tensorized,
-                    iter: None,
-                };
-                Py::new(py, data_batch).expect("should not fail")
-            })))
+        if let Some((batch, tensorized)) = slf.iter.as_mut().unwrap().next() {
+            Ok(Some(
+                Py::new(
+                    slf.py(),
+                    DataBatch {
+                        len: batch.len(),
+                        batch: Some(batch),
+                        tensorized: Some(tensorized),
+                    },
+                )
+                .expect("should not fail"),
+            ))
         } else {
             Ok(None)
         }

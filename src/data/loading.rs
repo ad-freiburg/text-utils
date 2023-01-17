@@ -2,14 +2,13 @@ use crate::data::{Batch, InferenceData, InferenceDataFormat, Pipeline, TextData}
 use crate::tokenization::{tokenizer, Tokenizer, TokenizerConfig};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
-use pyo3::{intern, prelude::*, PyClass};
+use pyo3::{intern, prelude::*};
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
@@ -23,7 +22,7 @@ pub trait DataGen: Iterator + Send {
 }
 
 fn open(p: &Path) -> anyhow::Result<File> {
-    Ok(File::open(p).with_context(|| format!("could not open file at {}", p.display()))?)
+    Ok(File::open(p).with_context(|| format!("could not open file at {:}", p.display()))?)
 }
 
 fn count_lines(p: &Path) -> anyhow::Result<usize> {
@@ -211,50 +210,47 @@ pub fn text_data_generator_from_sequences(
     Ok(Box::new(DataGenerator { iter, min_len: len }))
 }
 
-pub struct PyIterator<T>
-where
-    T: PyClass + Clone,
-{
-    obj: PyObject,
-    _phantom: Option<PhantomData<T>>,
+pub struct InferenceIteratorPy {
+    iterator: PyObject,
 }
 
-impl<T> Iterator for PyIterator<T>
-where
-    T: PyClass + Clone,
-{
-    type Item = anyhow::Result<T>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl InferenceIteratorPy {
+    fn get_next(&mut self) -> anyhow::Result<Option<InferenceData>> {
+        println!("getting next");
+        // return Err(anyhow!("not implemented"));
         Python::with_gil(|py| {
-            let return_value = match self.obj.call_method0(py, intern!(py, "__next__")) {
+            let return_value = match self.iterator.call_method0(py, intern!(py, "__next__")) {
                 Ok(value) => value,
                 Err(_) => {
-                    return Some(Err(anyhow!(
+                    return Err(anyhow!(
                         "calling __next__ on python object failed, it is not an iterator"
-                    )))
+                    ))
                 }
             };
-            match return_value.extract::<'_, Option<T>>(py) {
-                Ok(value) => match value {
-                    Some(t) => Some(Ok(t)),
-                    None => None,
-                },
-                Err(e) => Some(Err(anyhow!(
-                    "failed to extract expected type from iterator: {e}"
-                ))),
-            }
+            let extracted = return_value.extract(py)?;
+            Ok(extracted)
+            // Err(anyhow!("not implemented"))
         })
     }
 }
 
+impl Iterator for InferenceIteratorPy {
+    type Item = anyhow::Result<InferenceData>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let nxt = self.get_next();
+        match nxt {
+            Ok(Some(v)) => Some(Ok(v)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
 pub fn inference_data_generator_from_python(
-    obj: PyObject,
+    iterator: PyObject,
 ) -> impl DataGen<Item = anyhow::Result<InferenceData>> {
-    let iter = PyIterator {
-        obj,
-        _phantom: None,
-    };
+    let iter = InferenceIteratorPy { iterator };
     DataGenerator { iter, min_len: 0 }
 }
 
@@ -663,13 +659,13 @@ where
                     // since we always need to return at least one item, just return the last
                     // and set the second last to the remainder, this should always work
                     // since the shuffle buffer contains at least two items
-                    let batch = Batch::new(vec![buf.pop().unwrap()]);
+                    let batch = vec![buf.pop().unwrap()];
                     return Some(batch);
                 }
                 let index = rng.gen_range(0..sub_sequences.len());
                 let (start_range, end_range) = sub_sequences[index];
                 let items_in_range: Vec<T> = buf.splice(start_range..end_range, vec![]).collect();
-                return Some(Batch::new(items_in_range));
+                return Some(items_in_range);
             }
         } else if shuffle {
             // shuffle the buffer
@@ -698,7 +694,7 @@ where
             let Some(item) = f() else {
                 return if items.is_empty() {
                     (None, None)
-                } else {(Some(Batch::new(items)), None)};
+                } else {(Some(items), None)};
             };
             batch_limit = batch_limit.update(&item);
             if batch_limit.limit() > limit && !items.is_empty() {
@@ -711,7 +707,7 @@ where
                 items.push(item);
             }
         };
-        (Some(Batch::new(items)), remainder)
+        (Some(items), remainder)
     }
 }
 
@@ -1204,7 +1200,6 @@ mod tests {
                     lines.iter().cloned().map(|l| (l, 0)).collect();
                 for batch in pipe_it {
                     let item_lengths: Vec<usize> = batch
-                        .items
                         .iter()
                         .map(|item| item.tokenization.token_ids.len())
                         .collect();

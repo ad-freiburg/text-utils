@@ -215,7 +215,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         results = {}
         for batch in loader:
             outputs = self._run_model(batch)
-            for item, output in zip(batch, outputs):
+            for item, output in zip(batch.items, outputs):
                 if item.item_idx not in results:
                     results[item.item_idx] = {}
                 results[item.item_idx][item.window_idx] = (item, output)
@@ -236,7 +236,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         window_outputs = []
         for batch in loader:
             outputs = self._run_model(batch)
-            for item, output in zip(batch, outputs):
+            for item, output in zip(batch.items, outputs):
                 if item.item_idx == prev_item_idx:
                     window_items.append(item)
                     window_outputs.append(output)

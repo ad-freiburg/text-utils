@@ -467,7 +467,7 @@ fn prepare(
 ) -> (
     Array2<i32>,
     Vec<usize>,
-    HashMap<String, Box<dyn ToPyObject + Send + 'static>>,
+    HashMap<String, Vec<Box<dyn ToPyObject + Send>>>,
 ) {
     let batch_size = tokenizations.len();
     let max_token_ids = tokenizations
@@ -477,7 +477,7 @@ fn prepare(
         .unwrap_or(0);
     let mut token_ids = Vec::with_capacity(max_token_ids * tokenizations.len());
     let mut lengths = Vec::with_capacity(tokenizations.len());
-    let info = HashMap::new();
+    let mut info = HashMap::new();
     for tokenization in tokenizations {
         let num_token_ids = tokenization.token_ids.len();
         token_ids.append(&mut join(vec![
@@ -490,6 +490,19 @@ fn prepare(
             vec![pad_token_id as i32; max_token_ids - num_token_ids],
         ]));
         lengths.push(num_token_ids);
+        match &tokenization.info {
+            TokenizationInfo::TokenGroups(token_groups) => {
+                for (key, groups) in token_groups {
+                    if !info.contains_key(key) {
+                        let value: Box<dyn ToPyObject + Send> = Box::new(groups.clone());
+                        info.insert(key.clone(), vec![value]);
+                    } else {
+                        info.get_mut(key).unwrap().push(Box::new(groups.clone()));
+                    }
+                }
+            }
+            _ => (),
+        }
     }
     let token_id_arr = Array2::from_shape_vec((batch_size, max_token_ids), token_ids).unwrap();
     (token_id_arr, lengths, info)
@@ -499,7 +512,7 @@ impl Tensorize for Batch<Item> {
     type Output = (
         Array2<i32>,
         Vec<usize>,
-        HashMap<String, Box<dyn ToPyObject + Send + 'static>>,
+        HashMap<String, Vec<Box<dyn ToPyObject + Send>>>,
         ArrayD<i32>,
     );
 
@@ -572,10 +585,20 @@ impl InferenceBatch {
             ));
         }
         let tensorized = self.tensorized.take().unwrap();
+        let d = PyDict::new(py);
+        for (key, value) in tensorized.2 {
+            d.set_item(
+                key,
+                value
+                    .into_iter()
+                    .map(|v| v.to_object(py))
+                    .collect::<Vec<PyObject>>(),
+            )?;
+        }
         Ok((
             tensorized.0.into_pyarray(py).into_py(py),
             tensorized.1,
-            PyDict::new(py).into_py(py),
+            d.into_py(py),
         ))
     }
 }
@@ -584,7 +607,7 @@ impl Tensorize for Batch<InferenceItem> {
     type Output = (
         Array2<i32>,
         Vec<usize>,
-        HashMap<String, Box<dyn ToPyObject + Send + 'static>>,
+        HashMap<String, Vec<Box<dyn ToPyObject + Send>>>,
     );
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
         prepare(
@@ -796,7 +819,7 @@ impl InferenceLoader {
         buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
-        prefetch_factor = "4",
+        prefetch_factor = "1",
         sort = "false"
     )]
     pub fn from_iterator(
@@ -812,9 +835,15 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
-        let text_gen = Box::new(inference_data_generator_from_python(iterator));
+        // we have to convert the full python iterator
+        // here already, because of some weird issues with pyo3 and threading
+        let gen = inference_data_generator_from_python(iterator);
+        let mut values = vec![];
+        for value in gen {
+            values.push(Ok(value?));
+        }
         Self::new(
-            vec![text_gen],
+            vec![Box::new(values.into_iter())],
             tokenizer_config,
             window_config,
             normalization,
@@ -838,7 +867,7 @@ impl InferenceLoader {
         buffer_size = "128",
         batch_limit = "16",
         batch_limit_type = "BatchLimitType::BatchSize",
-        prefetch_factor = "4",
+        prefetch_factor = "1",
         sort = "false"
     )]
     pub fn from_files(
@@ -913,7 +942,7 @@ impl InferenceLoader {
             // check if batch is None because iterator is stopped,
             // or because an error was encountered
             match slf.iter_err.lock().unwrap().as_ref() {
-                Some(e) => Err(anyhow!("error during inference iterator: {e}")),
+                Some(e) => Err(anyhow!("error in inference iterator: {e}")),
                 None => Ok(None),
             }
         }

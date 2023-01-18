@@ -2,15 +2,16 @@ use crate::data::{Batch, InferenceData, InferenceDataFormat, Pipeline, TextData}
 use crate::tokenization::{tokenizer, Tokenizer, TokenizerConfig};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
-use pyo3::{intern, prelude::*};
+use pyo3::prelude::*;
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
@@ -26,7 +27,9 @@ fn open(p: &Path) -> anyhow::Result<File> {
 }
 
 fn count_lines(p: &Path) -> anyhow::Result<usize> {
-    Ok(BufReader::new(open(p)?).lines().count())
+    Ok(LossyUtf8Reader::new(BufReader::new(open(p)?))
+        .lines()
+        .count())
 }
 
 pub struct LossyUtf8Reader<R>
@@ -210,48 +213,62 @@ pub fn text_data_generator_from_sequences(
     Ok(Box::new(DataGenerator { iter, min_len: len }))
 }
 
-pub struct InferenceIteratorPy {
+// do not use this for now, since it causes some weird locking issues
+struct IteratorPy<T>
+where
+    T: for<'a> FromPyObject<'a>,
+{
     iterator: PyObject,
+    _phantom: PhantomData<T>,
 }
 
-impl InferenceIteratorPy {
-    fn get_next(&mut self) -> anyhow::Result<Option<InferenceData>> {
-        println!("getting next");
-        // return Err(anyhow!("not implemented"));
-        Python::with_gil(|py| {
-            let return_value = match self.iterator.call_method0(py, intern!(py, "__next__")) {
-                Ok(value) => value,
-                Err(_) => {
-                    return Err(anyhow!(
-                        "calling __next__ on python object failed, it is not an iterator"
-                    ))
-                }
-            };
-            let extracted = return_value.extract(py)?;
-            Ok(extracted)
-            // Err(anyhow!("not implemented"))
-        })
-    }
-}
-
-impl Iterator for InferenceIteratorPy {
-    type Item = anyhow::Result<InferenceData>;
+impl<T> Iterator for IteratorPy<T>
+where
+    T: for<'a> FromPyObject<'a>,
+{
+    type Item = anyhow::Result<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let nxt = self.get_next();
-        match nxt {
-            Ok(Some(v)) => Some(Ok(v)),
-            Ok(None) => None,
-            Err(e) => Some(Err(e)),
-        }
+        Python::with_gil(|py| {
+            let mut it = match self.iterator.as_ref(py).iter() {
+                Err(e) => {
+                    return Some(Err(anyhow!("failed to get iterator: {e}")));
+                }
+                Ok(it) => it,
+            };
+            match it.next() {
+                None => None,
+                Some(Err(e)) => Some(Err(anyhow!(
+                    "failed to extract next item from iterator: {e}",
+                ))),
+                Some(Ok(value)) => {
+                    let data = value
+                        .extract()
+                        .map_err(|e| anyhow!("failed to extract data from iterator item: {e}"));
+                    Some(data)
+                }
+            }
+        })
     }
 }
 
 pub fn inference_data_generator_from_python(
     iterator: PyObject,
 ) -> impl DataGen<Item = anyhow::Result<InferenceData>> {
-    let iter = InferenceIteratorPy { iterator };
+    let iter = IteratorPy {
+        iterator,
+        _phantom: PhantomData,
+    };
     DataGenerator { iter, min_len: 0 }
+}
+
+impl<I> DataGen for I
+where
+    I: ExactSizeIterator + Send,
+{
+    fn min_len(&self) -> usize {
+        self.len()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -396,63 +413,52 @@ where
     }
 }
 
-pub struct Pipe<T>
+pub struct Pipe<O>
 where
-    T: Send + 'static,
+    O: Send + 'static,
 {
-    inner: Box<dyn Iterator<Item = T> + Send + 'static>,
+    output: Receiver<O>,
 }
 
-impl<T> Pipe<T>
+impl<O> Pipe<O>
 where
-    T: Send + 'static,
+    O: Send + 'static,
 {
     fn new<I: Send + 'static>(
         inner: impl Iterator<Item = I> + Send + 'static,
-        pipeline: Pipeline<I, T>,
+        pipeline: Pipeline<I, O>,
         num_threads: u8,
         seed: Option<u64>,
     ) -> Self {
-        let iter = Arc::new(Mutex::new(inner.enumerate()));
         let num_threads = num_threads.min(num_cpus::get() as u8).max(1) as usize;
+        let inner = Arc::new(Mutex::new(inner.enumerate()));
         let (tx, rx) = sync_channel(num_threads);
-        let sent_counter = Arc::new(AtomicU64::new(0));
+        let sent_counter = Arc::new(AtomicUsize::new(0));
         panic::set_hook(Box::new(move |info| {
-            println!("pipeline worker thread panicked: {info}");
+            println!("thread panicked: {info}");
             process::exit(1);
         }));
         for idx in 0..num_threads {
-            let iter_arc = iter.clone();
+            let inner_clone = inner.clone();
             let tx_clone = tx.clone();
             let pipe_clone = pipeline.clone();
             let send_next = sent_counter.clone();
             let _: JoinHandle<()> = Builder::new()
-                .name(format!("pipeline iterator thread {}", idx))
+                .name(format!("pipeline worker thread {}", idx))
                 .spawn(move || {
                     loop {
-                        let data;
-                        let idx;
-                        // open new scope for proper mutex unlocking
-                        {
-                            let mut iter_lock = iter_arc.lock().unwrap();
-                            let next = iter_lock.next();
-                            if next.is_some() {
-                                let next = next.unwrap();
-                                idx = next.0 as u64;
-                                data = next.1;
-                            } else {
-                                // we received none from the underlying iterator,
-                                // stop this sender
-                                return;
-                            }
-                        }
+                        let (idx, data) =
+                            match inner_clone.lock().expect("failed to lock receiver").next() {
+                                Some(value) => value,
+                                None => return,
+                            };
                         let item = pipe_clone.apply(
                             data,
-                            idx as usize,
+                            idx,
                             if seed.is_none() {
                                 None
                             } else {
-                                Some(seed.unwrap() + idx)
+                                Some(seed.unwrap() + idx as u64)
                             },
                         );
                         // wait until we are the next to send out item
@@ -460,29 +466,27 @@ where
                             sleep(Duration::from_micros(100));
                         }
                         let send_result = tx_clone.send(item);
-                        send_next.swap(idx as u64 + 1, Ordering::SeqCst);
+                        send_next.swap(idx + 1, Ordering::SeqCst);
                         if send_result.is_err() {
                             // receiver is closed, so we can return this thread
                             return;
                         }
                     }
                 })
-                .expect(&format!("failed building thread {}", idx));
+                .expect(&format!("failed building worker thread {}", idx));
         }
-        Pipe {
-            inner: Box::new(rx.into_iter()),
-        }
+        Pipe { output: rx }
     }
 }
 
-impl<T> Iterator for Pipe<T>
+impl<O> Iterator for Pipe<O>
 where
-    T: Send + 'static,
+    O: Send + 'static,
 {
-    type Item = T;
+    type Item = O;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.output.recv().ok()
     }
 }
 

@@ -8,6 +8,7 @@ from text_correction_utils._internal import (
     whitespace,
     data,
     tokenization,
+    dictionary,
     windows,
     metrics,
     unicode

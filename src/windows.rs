@@ -118,6 +118,9 @@ impl<'a> FromPyObject<'a> for WindowConfig {
 }
 
 pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> anyhow::Result<Vec<Window<'a>>> {
+    if s.is_empty() {
+        return Ok(vec![Window::new(0, 0, 0, 0, s)]);
+    }
     match *config {
         WindowConfig::Character(max_chars, context_chars, use_graphemes) => {
             char_windows(s, max_chars, context_chars, use_graphemes)
@@ -235,10 +238,10 @@ pub fn byte_windows<'a>(
     while window_start < cs.len() {
         let window_length = max_bytes - (1 + (window_start > 0) as usize) * context_bytes;
         let window_end = window_start + count_until(window_start..cs.len(), window_length, &cs);
-        if window_end > window_start {
+        if window_end <= window_start {
             return Err(anyhow!(
-                "single character at position {window_start} has more bytes \
-                ({}) than the window length {window_length}, \
+                "single character in '{s}' at position {window_start} has more bytes \
+                ({}) than the window length ({window_length}), \
                 this suggests that something with your input string is wrong or the window length \
                 is too small",
                 cs.char_byte_len(window_start)

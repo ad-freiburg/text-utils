@@ -1,6 +1,8 @@
 use crate::text::match_words;
 use crate::unicode::{CharString, Character, CS};
+use anyhow::anyhow;
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use std::collections::HashSet;
 
 use crate::utils::{py_invalid_type_error, Matrix};
@@ -199,6 +201,61 @@ pub fn distance(
     d[d.len() - 1][d[0].len() - 1] as f64 / norm
 }
 
+pub fn distances(
+    a: &[&str],
+    b: &[&str],
+    use_graphemes: bool,
+    with_swap: bool,
+    spaces_insert_delete_only: bool,
+    normalized: bool,
+) -> anyhow::Result<Vec<f64>> {
+    if a.len() != b.len() {
+        return Err(anyhow!(
+            "a and b must have the same length, but got {} and {}",
+            a.len(),
+            b.len()
+        ));
+    }
+    Ok(a.par_iter()
+        .zip(b.par_iter())
+        .map(|(a, b)| {
+            distance(
+                a,
+                b,
+                use_graphemes,
+                with_swap,
+                spaces_insert_delete_only,
+                normalized,
+            )
+        })
+        .collect())
+}
+
+#[pyfunction(
+    use_graphemes = "true",
+    with_swap = "true",
+    spaces_insert_delete_only = "false",
+    normalized = "false"
+)]
+#[pyo3(name = "distances")]
+fn distances_py(
+    a: Vec<&str>,
+    b: Vec<&str>,
+    use_graphemes: bool,
+    with_swap: bool,
+    spaces_insert_delete_only: bool,
+    normalized: bool,
+) -> anyhow::Result<Vec<f64>> {
+    distances(
+        &a,
+        &b,
+        use_graphemes,
+        with_swap,
+        spaces_insert_delete_only,
+        normalized,
+    )
+}
+
 #[pyfunction]
 pub fn edited_words(a: &str, b: &str) -> (HashSet<usize>, HashSet<usize>) {
     let (matching_words, a_len, b_len) = match_words(a, b, false);
@@ -223,6 +280,7 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
     let m_name = "edit";
     let m = PyModule::new(py, m_name)?;
     m.add_function(wrap_pyfunction!(distance, m)?)?;
+    m.add_function(wrap_pyfunction!(distances_py, m)?)?;
     m.add_function(wrap_pyfunction!(operations, m)?)?;
     m.add_function(wrap_pyfunction!(edited_words, m)?)?;
     parent_module.add_submodule(m)?;

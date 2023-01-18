@@ -421,10 +421,20 @@ impl DataBatch {
             ));
         }
         let tensorized = self.tensorized.take().unwrap();
+        let d = PyDict::new(py);
+        for (key, value) in tensorized.2 {
+            d.set_item(
+                key,
+                value
+                    .into_iter()
+                    .map(|v| v.to_object(py))
+                    .collect::<Vec<PyObject>>(),
+            )?;
+        }
         Ok((
             tensorized.0.into_pyarray(py).into_py(py),
             tensorized.1,
-            PyDict::new(py).into_py(py),
+            d.into_py(py),
             tensorized.3.into_pyarray(py).into_py(py),
         ))
     }

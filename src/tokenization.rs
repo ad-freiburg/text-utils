@@ -2,8 +2,10 @@ use crate::unicode::CS;
 use crate::utils::{py_invalid_type_error, py_required_key_error, run_length_decode};
 use anyhow::anyhow;
 use itertools::Itertools;
+use numpy::ndarray::{Array1, Array2};
+use numpy::IntoPyArray;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
 use std::thread::sleep;
 use std::time::Duration;
@@ -163,7 +165,7 @@ impl<'a> FromPyObject<'a> for LanguageConfig {
 #[derive(Clone, Debug)]
 pub enum TokenizeConfig {
     Character(bool),
-    Byte(bool, ByteGroups),
+    Byte(bool, ByteGroups, GroupAggregation),
     Dummy(Duration),
 }
 
@@ -175,9 +177,10 @@ impl IntoPy<PyObject> for TokenizeConfig {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "character"
             }
-            TokenizeConfig::Byte(use_g, groups) => {
+            TokenizeConfig::Byte(use_g, groups, agg) => {
                 d.set_item("use_graphemes", use_g).unwrap();
                 d.set_item("groups", groups.into_py(py)).unwrap();
+                d.set_item("aggregation", agg.into_py(py)).unwrap();
                 "byte"
             }
             TokenizeConfig::Dummy(delay) => {
@@ -215,7 +218,12 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 let Some(groups) = d.get_item("groups") else {
                     return Err(py_required_key_error("groups", "byte tokenizer config"));
                 };
-                TokenizeConfig::Byte(use_graphemes, groups.extract()?)
+                let agg: GroupAggregation = if let Some(value) = d.get_item("aggregation") {
+                    value.extract()?
+                } else {
+                    GroupAggregation::Mean
+                };
+                TokenizeConfig::Byte(use_graphemes, groups.extract()?, agg)
             }
             "dummy" => {
                 let millis: u64 = if let Some(value) = d.get_item("delay") {
@@ -233,6 +241,7 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
     }
 }
 
+pub type Grouping = (Vec<Vec<usize>>, GroupAggregation);
 /// This enum defines all possible additional infos that can be returned by
 /// a tokenizers tokenize function in addition to the token ids themselves.
 #[derive(Clone, Debug)]
@@ -242,7 +251,170 @@ pub enum TokenizationInfo {
     /// Token groups specify which subsequent tokens belong to the same group.
     /// Useful e.g. when defining a byte tokenizer that should also return
     /// information about which byte belongs to which character.
-    TokenGroups(HashMap<String, Vec<usize>>),
+    TokenGroups(HashMap<String, Grouping>),
+}
+
+pub enum TensorizedTokenizationInfo {
+    Empty,
+    TokenGroups(HashMap<String, SparseCoo>),
+}
+
+pub struct SparseCoo {
+    indices: Array2<usize>,
+    values: Array1<f32>,
+    size: Vec<usize>,
+    group_lengths: Vec<usize>,
+}
+
+impl IntoPy<PyObject> for SparseCoo {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        (
+            self.indices.into_pyarray(py),
+            self.values.into_pyarray(py),
+            self.size,
+            self.group_lengths,
+        )
+            .into_py(py)
+    }
+}
+
+impl IntoPy<PyObject> for TensorizedTokenizationInfo {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            TensorizedTokenizationInfo::Empty => PyDict::new(py),
+            TensorizedTokenizationInfo::TokenGroups(matrices) => {
+                let d = PyDict::new(py);
+                for (name, matrix) in matrices {
+                    d.set_item(name, matrix.into_py(py)).unwrap();
+                }
+                d
+            }
+        }
+        .into_py(py)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupAggregation {
+    Mean,
+    Sum,
+}
+
+impl IntoPy<PyObject> for GroupAggregation {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            GroupAggregation::Mean => "mean",
+            GroupAggregation::Sum => "sum",
+        }
+        .into_py(py)
+    }
+}
+
+impl ToPyObject for GroupAggregation {
+    fn to_object(&self, py: Python<'_>) -> PyObject {
+        self.into_py(py)
+    }
+}
+
+impl<'a> FromPyObject<'a> for GroupAggregation {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let agg: String = ob.extract()?;
+        match agg.as_str() {
+            "mean" => Ok(GroupAggregation::Mean),
+            "sum" => Ok(GroupAggregation::Sum),
+            k => Err(py_invalid_type_error(k, "group aggregation")),
+        }
+    }
+}
+
+#[inline]
+fn expand_grouping(
+    s_idx: usize,
+    groups: &Vec<Vec<usize>>,
+    pow: i32,
+) -> (Vec<Vec<f32>>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
+    let num_groups = groups[s_idx].len();
+    if s_idx > 0 {
+        let mut new_weights = vec![vec![]; num_groups];
+        let mut new_group_indices = vec![];
+        let mut new_seq_indices = vec![vec![]; num_groups];
+        let (prev_weights, _, mut prev_seq_indices) = expand_grouping(s_idx - 1, groups, pow);
+        assert_eq!(prev_weights.len(), groups[s_idx].iter().sum::<usize>());
+        let mut cum_g = 0;
+        for (i, &g) in groups[s_idx].iter().enumerate() {
+            let fac = (g as f32).powi(pow);
+            for j in cum_g..cum_g + g {
+                new_weights[i].extend(prev_weights[j].iter().map(|w| w * fac));
+                new_seq_indices[i].append(&mut prev_seq_indices[j]);
+            }
+            new_group_indices.push(vec![i; new_weights[i].len()]);
+            cum_g += g;
+        }
+        (new_weights, new_group_indices, new_seq_indices)
+    } else {
+        let mut weights = vec![];
+        let mut group_indices = vec![];
+        let mut seq_indices = vec![];
+        let mut cum_g = 0;
+        for (i, &g) in groups[s_idx].iter().enumerate() {
+            let fac = (g as f32).powi(pow);
+            weights.push(vec![fac; g]);
+            group_indices.push(vec![i; g]);
+            seq_indices.push((cum_g..cum_g + g).collect());
+            cum_g += g;
+        }
+        (weights, group_indices, seq_indices)
+    }
+}
+
+#[inline]
+fn group_values(grouping: &Grouping) -> (Vec<f32>, Vec<usize>, Vec<usize>, usize) {
+    let (groups, agg) = grouping;
+    assert!(!groups.is_empty());
+    let pow = match agg {
+        GroupAggregation::Mean => -1,
+        GroupAggregation::Sum => 0,
+    };
+    let s_idx = groups.len() - 1;
+    let num_groups = groups[s_idx].len();
+    let (values, group_indices, seq_indices) = expand_grouping(s_idx, groups, pow);
+    (
+        values.into_iter().flatten().collect(),
+        group_indices.into_iter().flatten().collect(),
+        seq_indices.into_iter().flatten().collect(),
+        num_groups,
+    )
+}
+
+pub fn token_groups_to_sparse_coo_matrix(
+    groupings: &[&Grouping],
+    lengths: &[usize],
+) -> anyhow::Result<SparseCoo> {
+    let mut indices = vec![vec![]; 3];
+    let mut values = vec![];
+    let mut group_lengths = vec![];
+
+    for (i, grouping) in groupings.iter().enumerate() {
+        let (mut v, mut g, mut s, l) = group_values(grouping);
+        values.append(&mut v);
+        indices[0].append(&mut vec![i; g.len()]);
+        indices[1].append(&mut g);
+        indices[2].append(&mut s);
+        group_lengths.push(l);
+    }
+
+    let max_group_length = group_lengths.iter().max().copied().unwrap_or(0);
+    let max_length = lengths.iter().max().copied().unwrap_or(0);
+    let size = vec![groupings.len(), max_group_length, max_length];
+    Ok(SparseCoo {
+        indices: Array2::from_shape_vec(
+            (3, indices[0].len()),
+            indices.into_iter().flatten().collect(),
+        )?,
+        values: Array1::from_vec(values),
+        size,
+        group_lengths,
+    })
 }
 
 impl IntoPy<PyObject> for TokenizationInfo {
@@ -251,8 +423,15 @@ impl IntoPy<PyObject> for TokenizationInfo {
         let info_type = match self {
             TokenizationInfo::Empty => "empty",
             TokenizationInfo::TokenGroups(token_groups) => {
-                for (key, groups) in token_groups.iter() {
-                    d.set_item(key, groups).unwrap();
+                for (group_name, (stages, agg)) in token_groups.iter() {
+                    let l = PyList::empty(py);
+                    for groups in stages.iter() {
+                        l.append(groups).unwrap();
+                    }
+                    let gd = PyDict::new(py);
+                    gd.set_item("groups", l).unwrap();
+                    gd.set_item("aggregation", agg.into_py(py)).unwrap();
+                    d.set_item(group_name, gd).unwrap();
                 }
                 "token_groups"
             }
@@ -278,10 +457,10 @@ impl<'a> FromPyObject<'a> for TokenizationInfo {
                     if key_s == "type" {
                         continue;
                     }
-                    let groups = d
-                        .get_item(key)
-                        .ok_or_else(|| anyhow!("should not happen"))?;
-                    token_groups.insert(key_s, groups.extract()?);
+                    let gd = d.get_item(key).unwrap();
+                    let groups = gd.get_item("groups")?.extract()?;
+                    let agg = gd.get_item("aggregation")?.extract()?;
+                    token_groups.insert(key_s, (groups, agg));
                 }
                 TokenizationInfo::TokenGroups(token_groups)
             }
@@ -689,12 +868,14 @@ pub struct ByteTokenizer {
     unk_token: String,
     use_graphemes: bool,
     groups: ByteGroups,
+    aggregation: GroupAggregation,
 }
 
 impl ByteTokenizer {
     pub fn new(
         use_graphemes: bool,
         groups: ByteGroups,
+        aggregation: GroupAggregation,
         prefix_tokens: &[&str],
         suffix_tokens: &[&str],
         language_config: Option<LanguageConfig>,
@@ -718,6 +899,7 @@ impl ByteTokenizer {
             unk_token,
             use_graphemes,
             groups,
+            aggregation,
         };
         tokenizer.add_special_tokens(prefix_tokens);
         tokenizer.add_special_tokens(suffix_tokens);
@@ -748,13 +930,14 @@ impl ByteTokenizer {
         Self::new(
             true,
             ByteGroups::Bytes,
+            GroupAggregation::Mean,
             &DEFAULT_PREFIX_TOKENS,
             &DEFAULT_SUFFIX_TOKENS,
             None,
         )
     }
 
-    fn split(&self, s: &str) -> (Vec<u32>, HashMap<String, Vec<usize>>) {
+    fn split(&self, s: &str) -> (Vec<u32>, HashMap<String, Grouping>) {
         let tokens = s.as_bytes().iter().map(|b| *b as u32).collect();
         let groups = match self.groups {
             ByteGroups::Bytes => {
@@ -762,7 +945,7 @@ impl ByteTokenizer {
                 let mut groups = vec![1; self.num_prefix_tokens()];
                 groups.extend(run_length_decode(&cs.rle_cluster_lengths));
                 groups.extend(vec![1; self.num_suffix_tokens()]);
-                HashMap::from([("byte_groups".to_string(), groups)])
+                HashMap::from([("byte_groups".to_string(), (vec![groups], self.aggregation))])
             }
             ByteGroups::CodePoints => {
                 let cs = CS::new(s, self.use_graphemes);
@@ -778,10 +961,10 @@ impl ByteTokenizer {
                 }
                 byte_groups.extend(vec![1; self.num_suffix_tokens()]);
                 code_point_groups.extend(vec![1; self.num_suffix_tokens()]);
-                HashMap::from([
-                    ("byte_groups".to_string(), byte_groups),
-                    ("code_point_groups".to_string(), code_point_groups),
-                ])
+                HashMap::from([(
+                    "code_point_groups".to_string(),
+                    (vec![byte_groups, code_point_groups], self.aggregation),
+                )])
             }
         };
         (tokens, groups)
@@ -874,9 +1057,10 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
         TokenizeConfig::Character(use_g) => {
             Box::new(CharTokenizer::new(use_g, &prefix, &suffix, cfg.language))
         }
-        TokenizeConfig::Byte(use_g, groups) => Box::new(ByteTokenizer::new(
+        TokenizeConfig::Byte(use_g, groups, agg) => Box::new(ByteTokenizer::new(
             use_g,
             groups,
+            agg,
             &prefix,
             &suffix,
             cfg.language,
@@ -900,7 +1084,7 @@ impl PyTokenizer {
         PyTokenizer {
             name: match config.tokenize {
                 TokenizeConfig::Character(_) => "character",
-                TokenizeConfig::Byte(_, _) => "byte",
+                TokenizeConfig::Byte(_, _, _) => "byte",
                 TokenizeConfig::Dummy(_) => "dummy",
             }
             .to_string(),
@@ -977,10 +1161,14 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 mod tests {
     use std::collections::HashMap;
 
+    use numpy::ndarray::{Array1, Array2};
+
     use crate::tokenization::{
-        ByteGroups, ByteTokenizer, CharTokenizer, Tokenization, TokenizationInfo, Tokenize, BOS,
-        EOS,
+        ByteGroups, ByteTokenizer, CharTokenizer, SparseCoo, Tokenization, TokenizationInfo,
+        Tokenize, BOS, EOS,
     };
+
+    use super::{token_groups_to_sparse_coo_matrix, GroupAggregation};
 
     #[test]
     fn test_char_tokenizer() {
@@ -998,7 +1186,14 @@ mod tests {
     fn test_byte_tokenizer() {
         let pfx = vec![BOS];
         let sfx = vec![EOS];
-        let tok = ByteTokenizer::new(true, ByteGroups::Bytes, &pfx, &sfx, None);
+        let tok = ByteTokenizer::new(
+            true,
+            ByteGroups::Bytes,
+            GroupAggregation::Mean,
+            &pfx,
+            &sfx,
+            None,
+        );
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, None).unwrap();
         assert_eq!(
@@ -1013,13 +1208,23 @@ mod tests {
             TokenizationInfo::TokenGroups(groups) => {
                 assert_eq!(
                     groups,
-                    HashMap::from([("byte_groups".to_string(), vec![1, 1, 1, 1, 2, 1, 1, 1])])
+                    HashMap::from([(
+                        "byte_groups".to_string(),
+                        (vec![vec![1, 1, 1, 1, 2, 1, 1, 1]], GroupAggregation::Mean)
+                    )])
                 )
             }
         };
         assert_eq!(token_ids.len(), 7 + 2);
         assert_eq!(tok.de_tokenize(&token_ids), text.to_string());
-        let tok = ByteTokenizer::new(true, ByteGroups::CodePoints, &pfx, &sfx, None);
+        let tok = ByteTokenizer::new(
+            true,
+            ByteGroups::CodePoints,
+            GroupAggregation::Mean,
+            &pfx,
+            &sfx,
+            None,
+        );
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, None).unwrap();
         assert_eq!(
@@ -1034,15 +1239,71 @@ mod tests {
             TokenizationInfo::TokenGroups(groups) => {
                 assert_eq!(
                     groups,
-                    HashMap::from([
-                        ("byte_groups".to_string(), vec![1, 1, 1, 1, 2, 1, 1, 1]),
+                    HashMap::from([(
+                        "code_point_groups".to_string(),
                         (
-                            "code_point_groups".to_string(),
-                            vec![1, 1, 1, 1, 1, 1, 1, 1]
+                            vec![vec![1, 1, 1, 1, 2, 1, 1, 1], vec![1, 1, 1, 1, 1, 1, 1, 1]],
+                            GroupAggregation::Mean
                         )
-                    ])
+                    )])
                 )
             }
         };
+    }
+
+    #[test]
+    fn test_token_groups_to_sparse_coo_matrix() {
+        // one stage grouping
+        let grouping = (vec![vec![1, 1, 1, 1, 2, 1, 1, 1]], GroupAggregation::Mean);
+        let SparseCoo {
+            indices,
+            values,
+            size,
+            group_lengths,
+        } = token_groups_to_sparse_coo_matrix(&[&grouping], &[9]).unwrap();
+        assert_eq!(
+            indices,
+            Array2::from_shape_vec(
+                (3, 9),
+                vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 8
+                ]
+            )
+            .unwrap()
+        );
+        assert_eq!(size, vec![1, 8, 9]);
+        assert_eq!(
+            values,
+            Array1::from_vec(vec![1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 1.0])
+        );
+        assert_eq!(group_lengths, vec![8]);
+
+        // two stage grouping
+        let grouping = (
+            vec![vec![1, 1, 1, 1, 2, 1, 1, 1], vec![4, 4]],
+            GroupAggregation::Mean,
+        );
+        let SparseCoo {
+            indices,
+            values,
+            size,
+            group_lengths,
+        } = token_groups_to_sparse_coo_matrix(&[&grouping], &[9]).unwrap();
+        assert_eq!(
+            indices,
+            Array2::from_shape_vec(
+                (3, 9),
+                vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8
+                ]
+            )
+            .unwrap()
+        );
+        assert_eq!(size, vec![1, 2, 9]);
+        assert_eq!(
+            values,
+            Array1::from_vec(vec![0.25, 0.25, 0.25, 0.25, 0.125, 0.125, 0.25, 0.25, 0.25])
+        );
+        assert_eq!(group_lengths, vec![2]);
     }
 }

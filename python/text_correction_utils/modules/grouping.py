@@ -2,6 +2,7 @@ import math
 from itertools import chain
 from typing import Dict, Any, List, Tuple
 
+import numpy as np
 import torch
 from torch import nn
 from torch.cuda import amp
@@ -35,15 +36,14 @@ class Grouping(nn.Module):
     True
     """
 
-    def __init__(self, aggregation: str = "mean", group_names: Tuple[str] = ("groups",)):
+    def __init__(self, aggregation: str = "mean", group_name: str = "groups"):
         super().__init__()
         assert aggregation in {"mean", "sum"}, "aggregation must be either 'mean' or 'sum'"
         if aggregation == "mean":
             self.pow = -1
         else:
             self.pow = 0
-        assert len(group_names) > 0, "need at least one group name"
-        self.group_names = group_names
+        self.group_name = group_name
 
     def _get_sparse_matrix(self, groups: List[List[int]]) -> Tuple[List[List[List[int]]], List[List[float]]]:
         indices = [[], [], []]
@@ -81,22 +81,14 @@ class Grouping(nn.Module):
                 cum_g += g
         return new_indices, new_values
 
-    def forward(self, feats: torch.Tensor, **kwargs: Dict[str, Any]) -> Tuple[torch.Tensor, List[int]]:
+    def forward(self, feats: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, List[int]]:
         assert feats.ndim == 3, f"feats must have a shape of [B, S, H], but got {feats.shape}"
-        assert all(gn in kwargs for gn in self.group_names), \
-            f"expected groups {self.group_names} in kwargs, but got {list(kwargs)}"
-        all_groups = [kwargs[gn] for gn in self.group_names]
-        group_lengths = [len(group) for group in all_groups[-1]]
+        assert self.group_name in kwargs, \
+            f"expected group {self.group_name} in kwargs, but got {list(kwargs)}"
 
-        # create sparse weight matrix of dense shape [B, max(G), S]
-        indices, values = self._get_sparse_matrix(all_groups[0])
-        for groups in all_groups[1:]:
-            indices, values = self._adapt_sparse_matrix(indices, values, groups)
+        indices, values, size, group_lengths = kwargs[self.group_name]
+        assert isinstance(indices, np.ndarray) and isinstance(values, np.ndarray)
+        weights = torch.sparse_coo_tensor(indices, values, size, device=feats.device)
 
-        # flatten indices and values
-        flat_indices = [list(chain.from_iterable(indices_)) for indices_ in indices]
-        flat_values = list(chain.from_iterable(values))
-
-        weights = torch.sparse_coo_tensor(flat_indices, flat_values, device=feats.device)
         with amp.autocast(enabled=False):
             return torch.bmm(weights.float(), feats.float()), group_lengths

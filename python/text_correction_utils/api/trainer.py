@@ -62,6 +62,13 @@ training will resume from latest checkpoint."
             required=True,
             help="Platform used for training."
         )
+        parser.add_argument(
+            "--profile",
+            type=str,
+            default=None,
+            help="Run cProfile python profile on main process and output stats to this file "
+            "(only respected if platform=local)"
+        )
         return parser
 
     def __init__(self, cfg: Dict[str, Any], directories: Dict[str, str], info: distributed.DistributedInfo):
@@ -375,6 +382,7 @@ training will resume from latest checkpoint."
         port: int,
         cfg: Dict[str, Any],
         directories: Dict[str, str],
+        profile: Optional[str] = None
     ):
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = str(port)
@@ -395,7 +403,11 @@ training will resume from latest checkpoint."
             local_world_size=world_size
         )
 
-        cls(cfg, directories, info).run()
+        if info.is_main_process and profile is not None:
+            import cProfile
+            cProfile.runctx("cls(cfg, directories, info).run()", globals(), locals(), filename=profile)
+        else:
+            cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
     @classmethod
@@ -467,7 +479,7 @@ training will resume from latest checkpoint."
         dist.destroy_process_group()
 
     @classmethod
-    def train_local(cls, work_dir: str, experiment_dir: str, config_path: str):
+    def train_local(cls, work_dir: str, experiment_dir: str, config_path: str, profile: Optional[str] = None):
         logger = logging.get_logger("LOCAL_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
         assert num_gpus > 0, "need at least one GPU for local training"
@@ -492,7 +504,7 @@ training will resume from latest checkpoint."
         mp.spawn(
             fn=cls._train_local_distributed,
             nprocs=num_gpus,
-            args=(num_gpus, port, cfg, directories),
+            args=(num_gpus, port, cfg, directories, profile),
             join=True
         )
 
@@ -501,11 +513,11 @@ training will resume from latest checkpoint."
         if self.cfg["model"]["type"] == "encoder_with_head":
             token_ids_np, lengths, info, labels_np = batch.tensors
             inputs = {
-                "token_ids": torch.from_numpy(token_ids_np).to(device=self.info.device),
+                "token_ids": torch.from_numpy(token_ids_np).to(non_blocking=True, device=self.info.device),
                 "lengths": lengths,
                 **info
             }
-            labels = torch.from_numpy(labels_np).to(dtype=torch.long, device=self.info.device)
+            labels = torch.from_numpy(labels_np).to(non_blocking=True, dtype=torch.long, device=self.info.device)
 
         else:
             raise ValueError(f"unknown model type {self.cfg['model']['type']}")
@@ -729,7 +741,7 @@ training will resume from latest checkpoint."
                 self._evaluate_and_checkpoint()
                 end = time.perf_counter()
                 self.logger.info(f"final evaluation and checkpointing took {end - start:.2f}s")
-            if self.info.is_local_main_process:
+            if len(self.cleanup) > 0 and self.info.is_local_main_process:
                 self.logger.info(f"deleting temporary data sources on local main process with rank {self.info.rank}")
                 for path in self.cleanup:
                     os.remove(path)

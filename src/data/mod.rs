@@ -6,7 +6,8 @@ use crate::data::loading::{
 use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingConfig};
 use crate::text::clean;
 use crate::tokenization::{
-    tokenizer, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig, LANG_UNK,
+    token_groups_to_sparse_coo_matrix, tokenizer, TensorizedTokenizationInfo, Tokenization,
+    TokenizationInfo, Tokenizer, TokenizerConfig, LANG_UNK,
 };
 use crate::unicode::{normalize, Normalization};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
@@ -409,32 +410,17 @@ impl DataBatch {
     fn tensors(
         &mut self,
         py: Python<'_>,
-    ) -> anyhow::Result<(
-        Py<PyArray2<i32>>,
-        Vec<usize>,
-        Py<PyDict>,
-        Py<PyArrayDyn<i32>>,
-    )> {
+    ) -> anyhow::Result<(Py<PyArray2<i32>>, Vec<usize>, PyObject, Py<PyArrayDyn<i32>>)> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
                 "can only get tensors once, because their data is moved"
             ));
         }
         let tensorized = self.tensorized.take().unwrap();
-        let d = PyDict::new(py);
-        for (key, value) in tensorized.2 {
-            d.set_item(
-                key,
-                value
-                    .into_iter()
-                    .map(|v| v.to_object(py))
-                    .collect::<Vec<PyObject>>(),
-            )?;
-        }
         Ok((
             tensorized.0.into_pyarray(py).into_py(py),
             tensorized.1,
-            d.into_py(py),
+            tensorized.2.into_py(py),
             tensorized.3.into_pyarray(py).into_py(py),
         ))
     }
@@ -448,12 +434,12 @@ fn max_groups<'a>(tokenizations: impl Iterator<Item = &'a Tokenization>) -> usiz
             TokenizationInfo::TokenGroups(token_groups)
                 if token_groups.contains_key("code_point_groups") =>
             {
-                token_groups["code_point_groups"].len()
+                token_groups["code_point_groups"].0.last().unwrap().len()
             }
             TokenizationInfo::TokenGroups(token_groups)
                 if token_groups.contains_key("byte_groups") =>
             {
-                token_groups["byte_groups"].len()
+                token_groups["byte_groups"].0.last().unwrap().len()
             }
             _ => tokenization.token_ids.len(),
         }
@@ -471,14 +457,36 @@ fn join<T>(vectors: Vec<Vec<T>>) -> Vec<T> {
 }
 
 #[inline]
+fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> TensorizedTokenizationInfo {
+    match tokenizations[0].info {
+        TokenizationInfo::Empty => TensorizedTokenizationInfo::Empty,
+        TokenizationInfo::TokenGroups(_) => {
+            let mut info = HashMap::new();
+            let mut all_groupings = HashMap::new();
+            for &tokenization in tokenizations {
+                if let TokenizationInfo::TokenGroups(token_groups) = &tokenization.info {
+                    for (key, grouping) in token_groups {
+                        all_groupings.entry(key).or_insert(vec![]).push(grouping);
+                    }
+                } else {
+                    panic!("should not happen");
+                }
+            }
+            for (name, groupings) in all_groupings {
+                let sparse_mat = token_groups_to_sparse_coo_matrix(&groupings, lengths)
+                    .expect("should not fail");
+                info.insert(name.clone(), sparse_mat);
+            }
+            TensorizedTokenizationInfo::TokenGroups(info)
+        }
+    }
+}
+
+#[inline]
 fn prepare(
-    tokenizations: Vec<&Tokenization>,
+    tokenizations: &[&Tokenization],
     pad_token_id: u32,
-) -> (
-    Array2<i32>,
-    Vec<usize>,
-    HashMap<String, Vec<Box<dyn ToPyObject + Send>>>,
-) {
+) -> (Array2<i32>, Vec<usize>, TensorizedTokenizationInfo) {
     let batch_size = tokenizations.len();
     let max_token_ids = tokenizations
         .iter()
@@ -487,8 +495,7 @@ fn prepare(
         .unwrap_or(0);
     let mut token_ids = Vec::with_capacity(max_token_ids * tokenizations.len());
     let mut lengths = Vec::with_capacity(tokenizations.len());
-    let mut info = HashMap::new();
-    for tokenization in tokenizations {
+    for &tokenization in tokenizations {
         let num_token_ids = tokenization.token_ids.len();
         token_ids.append(&mut join(vec![
             tokenization
@@ -500,21 +507,9 @@ fn prepare(
             vec![pad_token_id as i32; max_token_ids - num_token_ids],
         ]));
         lengths.push(num_token_ids);
-        match &tokenization.info {
-            TokenizationInfo::TokenGroups(token_groups) => {
-                for (key, groups) in token_groups {
-                    if !info.contains_key(key) {
-                        let value: Box<dyn ToPyObject + Send> = Box::new(groups.clone());
-                        info.insert(key.clone(), vec![value]);
-                    } else {
-                        info.get_mut(key).unwrap().push(Box::new(groups.clone()));
-                    }
-                }
-            }
-            _ => (),
-        }
     }
     let token_id_arr = Array2::from_shape_vec((batch_size, max_token_ids), token_ids).unwrap();
+    let info = prepare_info(tokenizations, &lengths);
     (token_id_arr, lengths, info)
 }
 
@@ -522,14 +517,14 @@ impl Tensorize for Batch<Item> {
     type Output = (
         Array2<i32>,
         Vec<usize>,
-        HashMap<String, Vec<Box<dyn ToPyObject + Send>>>,
+        TensorizedTokenizationInfo,
         ArrayD<i32>,
     );
 
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
         assert!(!self.is_empty());
         let (token_id_arr, lengths, info) = prepare(
-            self.iter().map(|i| &i.tokenization).collect(),
+            &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),
             tokenizer.pad_token_id(),
         );
 
@@ -588,40 +583,26 @@ impl InferenceBatch {
     fn tensors(
         &mut self,
         py: Python<'_>,
-    ) -> anyhow::Result<(Py<PyArray2<i32>>, Vec<usize>, Py<PyDict>)> {
+    ) -> anyhow::Result<(Py<PyArray2<i32>>, Vec<usize>, PyObject)> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
                 "can only get tensors once, because their data is moved"
             ));
         }
         let tensorized = self.tensorized.take().unwrap();
-        let d = PyDict::new(py);
-        for (key, value) in tensorized.2 {
-            d.set_item(
-                key,
-                value
-                    .into_iter()
-                    .map(|v| v.to_object(py))
-                    .collect::<Vec<PyObject>>(),
-            )?;
-        }
         Ok((
             tensorized.0.into_pyarray(py).into_py(py),
             tensorized.1,
-            d.into_py(py),
+            tensorized.2.into_py(py),
         ))
     }
 }
 
 impl Tensorize for Batch<InferenceItem> {
-    type Output = (
-        Array2<i32>,
-        Vec<usize>,
-        HashMap<String, Vec<Box<dyn ToPyObject + Send>>>,
-    );
+    type Output = (Array2<i32>, Vec<usize>, TensorizedTokenizationInfo);
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
         prepare(
-            self.iter().map(|i| &i.tokenization).collect(),
+            &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),
             tokenizer.pad_token_id(),
         )
     }

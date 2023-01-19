@@ -138,7 +138,7 @@ training will resume from latest checkpoint."
         else:
             self.lr_scheduler = None
 
-        self.loss_fn = loss_from_config(self.training_steps, self.cfg["train"]["loss"]).train()
+        self.loss_fn = loss_from_config(self.training_steps, self.cfg["train"]["loss"]).to(self.info.device).train()
         self.grad_scaler = amp.GradScaler(enabled=self.cfg["train"].get("mixed_precision", False))
         mixed_precision_dtype = self.cfg["train"].get("mixed_precision_dtype", "fp16")
         if mixed_precision_dtype == "fp16":

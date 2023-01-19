@@ -361,7 +361,7 @@ class GroupingEncoder(Encoder):
     def __init__(
         self,
         encoder: Encoder,
-        group_first: bool = False,
+        group_first: bool = True,
         group_aggregation: str = "mean",
         group_names: Tuple[str] = ("groups",)
     ):

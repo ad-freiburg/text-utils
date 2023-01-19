@@ -1,8 +1,8 @@
 import argparse
 import copy
 import random
-import collections
 import os
+import hashlib
 import shutil
 import tempfile
 import time
@@ -99,7 +99,7 @@ training will resume from latest checkpoint."
 
         self.model = self._model_from_config(self.cfg).to(self.info.device).train()
 
-        self.train_loader, self.val_loader = self._data_from_config(
+        self.train_loader, self.val_loader, self.cleanup = self._data_from_config(
             self.cfg["train"]["data"],
             self.cfg["input_tokenizer"],
             seed=self.cfg["seed"],
@@ -214,19 +214,27 @@ training will resume from latest checkpoint."
         raise NotImplementedError
 
     @classmethod
-    def _copy_file_to_tmp_dir(cls, path: str, dir: str) -> str:
+    def _copy_file_to_tmp_dir(cls, path: str, dir: str, info: distributed.DistributedInfo) -> str:
+        path = os.path.abspath(path)
         _, file_name = os.path.split(path)
         # make temp path unique by hashing the full input path, because only
         # using the file name could cause issues if some files are named the same
         os.makedirs(dir, exist_ok=True)
-        temp_path = os.path.join(dir, f"{hash(path) % 10 ** 8}_{file_name}")
-        shutil.copy2(path, temp_path)
+        hash = hashlib.sha256(path.encode("utf8")).hexdigest()
+        temp_path = os.path.join(dir, f"{hash}_{file_name}")
+        if info.is_local_main_process:
+            shutil.copy2(path, temp_path)
         return temp_path
 
     @classmethod
-    def _parse_data_sources(cls, sources: List[Dict[str, Any]]) -> Tuple[List[str], Optional[List[str]]]:
+    def _prepare_data_sources(
+        cls,
+        sources: List[Dict[str, Any]],
+        info: distributed.DistributedInfo
+    ) -> Tuple[List[str], Optional[List[str]], List[str]]:
         src_paths = []
         src_langs = []
+        cleanup_paths = []
         for src in sources:
             src = copy.deepcopy(src)
             src_type = src.pop("type")
@@ -236,7 +244,8 @@ training will resume from latest checkpoint."
                 assert os.path.isfile(path), f"{path} is not a file"
                 temp_dir = src.get("temp_dir")
                 if temp_dir is not None:
-                    path = cls._copy_file_to_tmp_dir(path, temp_dir)
+                    path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
+                    cleanup_paths.append(path)
                 src_paths.append(path)
                 src_langs.append(lang)
             elif src_type == "file_glob":
@@ -245,20 +254,21 @@ training will resume from latest checkpoint."
                 for path in io.glob_safe(src["glob"]):
                     assert os.path.isfile(path), f"{path} is not a file"
                     if temp_dir is not None:
-                        path = cls._copy_file_to_tmp_dir(path, temp_dir)
+                        path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
+                        cleanup_paths.append(path)
                     src_paths.append(path)
                     src_langs.append(lang)
             else:
                 raise ValueError(f"unknown source type {src_type}")
         assert len(src_paths) > 0, "got no data sources"
         if all(lang is None for lang in src_langs):
-            return src_paths, None
+            return src_paths, None, cleanup_paths
         else:
             return src_paths, [
                 lang if lang is not None
                 else tokenization.LanguageTokens.UNK
                 for lang in src_langs
-            ]
+            ], cleanup_paths
 
     @classmethod
     def _data_from_config(
@@ -267,19 +277,23 @@ training will resume from latest checkpoint."
         tokenizer_config: Dict[str, Any],
         seed: Optional[int],
         info: distributed.DistributedInfo
-    ) -> Tuple[data.DataLoader, data.DataLoader]:
+    ) -> Tuple[data.DataLoader, data.DataLoader, List[str]]:
         cfg = copy.deepcopy(cfg)
         val_cfg = cfg.pop("val")
         if isinstance(val_cfg, int):
             val_limit = val_cfg
             val_sources = val_languages = None
+            val_cleanup = []
         elif isinstance(val_cfg, list):
             val_limit = None
-            val_sources, val_languages = cls._parse_data_sources(val_cfg)
+            val_sources, val_languages, val_cleanup = cls._prepare_data_sources(val_cfg, info)
         else:
             raise ValueError("val data must either be an integer or a list of data sources")
 
-        train_sources, train_languages = cls._parse_data_sources(cfg.pop("sources"))
+        train_sources, train_languages, train_cleanup = cls._prepare_data_sources(
+            cfg.pop("sources"),
+            info
+        )
 
         pipeline_cfg = cfg.pop("pipeline")
         train_loader = data.DataLoader.from_files(
@@ -314,7 +328,7 @@ training will resume from latest checkpoint."
                 distributed=None,
                 **cfg
             )
-        return train_loader, val_loader
+        return train_loader, val_loader, list(set(train_cleanup + val_cleanup))
 
     @classmethod
     def _setup_experiment(cls, work_dir: str, exp_dir: str, config_path: str, cfg: Dict[str, Any]):
@@ -715,3 +729,7 @@ training will resume from latest checkpoint."
                 self._evaluate_and_checkpoint()
                 end = time.perf_counter()
                 self.logger.info(f"final evaluation and checkpointing took {end - start:.2f}s")
+            if self.info.is_local_main_process:
+                self.logger.info(f"deleting temporary data sources on local main process with rank {self.info.rank}")
+                for path in self.cleanup:
+                    os.remove(path)

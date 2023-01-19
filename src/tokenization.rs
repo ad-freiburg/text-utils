@@ -260,7 +260,7 @@ pub enum TensorizedTokenizationInfo {
 }
 
 pub struct SparseCoo {
-    indices: Array2<usize>,
+    indices: Array2<i32>,
     values: Array1<f32>,
     size: Vec<usize>,
     group_lengths: Vec<usize>,
@@ -332,7 +332,7 @@ fn expand_grouping(
     s_idx: usize,
     groups: &Vec<Vec<usize>>,
     pow: i32,
-) -> (Vec<Vec<f32>>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
+) -> (Vec<Vec<f32>>, Vec<Vec<i32>>, Vec<Vec<i32>>) {
     let num_groups = groups[s_idx].len();
     if s_idx > 0 {
         let mut new_weights = vec![vec![]; num_groups];
@@ -347,7 +347,7 @@ fn expand_grouping(
                 new_weights[i].extend(prev_weights[j].iter().map(|w| w * fac));
                 new_seq_indices[i].append(&mut prev_seq_indices[j]);
             }
-            new_group_indices.push(vec![i; new_weights[i].len()]);
+            new_group_indices.push(vec![i as i32; new_weights[i].len()]);
             cum_g += g;
         }
         (new_weights, new_group_indices, new_seq_indices)
@@ -359,8 +359,9 @@ fn expand_grouping(
         for (i, &g) in groups[s_idx].iter().enumerate() {
             let fac = (g as f32).powi(pow);
             weights.push(vec![fac; g]);
-            group_indices.push(vec![i; g]);
-            seq_indices.push((cum_g..cum_g + g).collect());
+            group_indices.push(vec![i as i32; g]);
+            let cum_g_i = cum_g as i32;
+            seq_indices.push((cum_g_i..cum_g_i + g as i32).collect());
             cum_g += g;
         }
         (weights, group_indices, seq_indices)
@@ -368,7 +369,7 @@ fn expand_grouping(
 }
 
 #[inline]
-fn group_values(grouping: &Grouping) -> (Vec<f32>, Vec<usize>, Vec<usize>, usize) {
+fn group_values(grouping: &Grouping) -> (Vec<f32>, Vec<i32>, Vec<i32>, usize) {
     let (groups, agg) = grouping;
     assert!(!groups.is_empty());
     let pow = match agg {
@@ -397,7 +398,7 @@ pub fn token_groups_to_sparse_coo_matrix(
     for (i, grouping) in groupings.iter().enumerate() {
         let (mut v, mut g, mut s, l) = group_values(grouping);
         values.append(&mut v);
-        indices[0].append(&mut vec![i; g.len()]);
+        indices[0].append(&mut vec![i as i32; g.len()]);
         indices[1].append(&mut g);
         indices[2].append(&mut s);
         group_lengths.push(l);

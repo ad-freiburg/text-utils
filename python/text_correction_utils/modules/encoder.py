@@ -363,11 +363,11 @@ class GroupingEncoder(Encoder):
         encoder: Encoder,
         group_first: bool = True,
         group_aggregation: str = "mean",
-        group_names: Tuple[str] = ("groups",)
+        group_name: str = "groups"
     ):
         super().__init__()
         self.encoder = encoder
-        self.grouping = Grouping(group_aggregation, group_names)
+        self.grouping = Grouping(group_aggregation, group_name)
         self.group_first = group_first
 
     def forward(

@@ -45,42 +45,6 @@ class Grouping(nn.Module):
             self.pow = 0
         self.group_name = group_name
 
-    def _get_sparse_matrix(self, groups: List[List[int]]) -> Tuple[List[List[List[int]]], List[List[float]]]:
-        indices = [[], [], []]
-        values = []
-        for i, group in enumerate(groups):
-            cum_group_length = 0
-            for j, g in enumerate(group):
-                indices[0].append([i] * g)
-                indices[1].append([j] * g)
-                indices[2].append(list(range(cum_group_length, cum_group_length + g)))
-                fac = math.pow(g, self.pow)
-                values.append([fac] * g)
-                cum_group_length += g
-        return indices, values
-
-    def _adapt_sparse_matrix(
-        self,
-        indices: List[List[List[int]]],
-        values: List[List[float]],
-        groups: List[List[int]]
-    ) -> Tuple[List[List[int]], List[List[float]]]:
-        new_indices = [[], [], []]
-        new_values = []
-        cum_g = 0
-        for group in groups:
-            for i, g in enumerate(group):
-                # batch indices
-                new_indices[0].append(list(chain.from_iterable(indices[0][cum_g:cum_g+g])))
-                # group indices
-                new_indices[1].append([i] * sum(len(indices_) for indices_ in indices[1][cum_g:cum_g+g]))
-                # sequence indices
-                new_indices[2].append(list(chain.from_iterable(indices[2][cum_g:cum_g+g])))
-                fac = math.pow(g, self.pow)
-                new_values.append(list(fac * v for v in chain.from_iterable(values[cum_g:cum_g+g])))
-                cum_g += g
-        return new_indices, new_values
-
     def forward(self, feats: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, List[int]]:
         assert feats.ndim == 3, f"feats must have a shape of [B, S, H], but got {feats.shape}"
         assert self.group_name in kwargs, \

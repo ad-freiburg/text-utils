@@ -376,10 +376,10 @@ pub fn edit_word(
     }
 }
 
-pub fn file_size(path: &Path) -> anyhow::Result<(usize, usize)> {
-    let metadata = fs::metadata(path)?;
+pub fn file_size(path: impl AsRef<Path>) -> anyhow::Result<(usize, usize)> {
+    let metadata = fs::metadata(path.as_ref())?;
     if !metadata.is_file() {
-        return Err(anyhow!("{} is not a file", path.display()));
+        return Err(anyhow!("{} is not a file", path.as_ref().display()));
     }
     let num_lines = BufReader::new(File::open(path)?).lines().count();
     Ok((num_lines, metadata.len() as usize))

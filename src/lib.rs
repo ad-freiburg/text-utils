@@ -15,8 +15,6 @@ pub mod windows;
 
 #[pymodule]
 fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    let _ = pyo3_log::try_init();
-
     // add submodules
     edit::add_submodule(py, m)?;
     text::add_submodule(py, m)?;

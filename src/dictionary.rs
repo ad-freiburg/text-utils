@@ -1,13 +1,21 @@
 use anyhow::anyhow;
+use itertools::Itertools;
 use pyo3::prelude::*;
 use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader, Write},
     path::Path,
+    sync::{mpsc::sync_channel, Arc, Mutex},
+    thread,
 };
 
-use crate::{edit::distances, utils::py_invalid_type_error};
+use crate::{
+    edit::distances,
+    text::{clean, file_size},
+    unicode::{normalize, Normalization},
+    utils::{progress_bar, py_invalid_type_error},
+};
 
 #[pyclass]
 pub struct Dictionary {
@@ -33,9 +41,64 @@ impl Dictionary {
         Ok(Self { inner })
     }
 
-    pub fn create(files: &[impl AsRef<Path>]) -> anyhow::Result<Self> {
+    pub fn create(
+        files: &[impl AsRef<Path>],
+        num_threads: u8,
+        show_progress: bool,
+    ) -> anyhow::Result<Self> {
+        let inner = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = sync_channel::<Vec<String>>(num_threads as usize);
+        let rx = Arc::new(Mutex::new(rx));
+        let mut threads = vec![];
+        for _ in 0..num_threads.max(1) {
+            let rx_clone = rx.clone();
+            let inner_clone = inner.clone();
+            let t_handle = thread::spawn(move || {
+                while let Ok(lines) = rx_clone.lock().unwrap().recv() {
+                    let mut counts = HashMap::new();
+                    for line in lines {
+                        let line = clean(&line, true);
+                        let line = normalize(&line, Normalization::NFKC, true);
+                        let words: Vec<String> =
+                            line.split_whitespace().map(|s| s.to_string()).collect();
+                        for word in words {
+                            *counts.entry(word).or_insert(0) += 1;
+                        }
+                    }
+                    let mut inner = inner_clone.lock().unwrap();
+                    for (word, freq) in counts {
+                        *inner.entry(word).or_insert(0) += freq;
+                    }
+                }
+            });
+            threads.push(t_handle);
+        }
+        let file_p_bar = progress_bar("processing files", files.len() as u64, !show_progress);
+        for file in files {
+            let (num_lines, _) = file_size(file)?;
+            let chunk_size = (num_lines / num_threads as usize).max(1).min(4096);
+            let line_p_bar = progress_bar(
+                &format!("processing lines of {}", file.as_ref().display()),
+                num_lines as u64,
+                !show_progress,
+            );
+            let lines = BufReader::new(File::open(file)?).lines();
+            for line_chunk in &lines.chunks(chunk_size) {
+                let line_chunk: Vec<String> = line_chunk.filter_map(|l| l.ok()).collect();
+                let line_chunk_len = line_chunk.len();
+                tx.send(line_chunk)?;
+                line_p_bar.inc(line_chunk_len as u64);
+            }
+            file_p_bar.inc(1);
+        }
+        // we are done sending, drop the sender to signal
+        // to the thread receiver the should stop
+        drop(tx);
+        for t in threads {
+            t.join().expect("failed to join thread");
+        }
         Ok(Self {
-            inner: HashMap::new(),
+            inner: Arc::try_unwrap(inner).unwrap().into_inner().unwrap(),
         })
     }
 
@@ -80,9 +143,12 @@ impl Dictionary {
     }
 
     #[staticmethod]
-    #[pyo3(name = "create")]
-    fn create_py(files: Vec<&str>) -> anyhow::Result<Self> {
-        Self::create(&files)
+    #[pyo3(
+        name = "create",
+        signature = (files, num_threads=(num_cpus::get() as u8).min(4), show_progress=false),
+    )]
+    fn create_py(files: Vec<&str>, num_threads: u8, show_progress: bool) -> anyhow::Result<Self> {
+        Self::create(&files, num_threads, show_progress)
     }
 
     fn __len__(&self) -> usize {
@@ -105,7 +171,7 @@ impl Dictionary {
         self.inner.is_empty()
     }
 
-    #[args(measure = "DictionaryDistanceMeasure::EditDistance")]
+    #[pyo3(signature = (s, measure = DictionaryDistanceMeasure::EditDistance))]
     pub fn get_closest(
         &self,
         s: &str,
@@ -186,7 +252,12 @@ mod tests {
     }
 
     #[test]
-    fn test_dictionary_creation() {}
+    fn test_dictionary_creation() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let path1 = base.clone().join("resources/test/multi30k.txt");
+        let path2 = base.clone().join("resources/test/multi30k_rev.txt");
+        let _d = Dictionary::create(&[path1, path2], (num_cpus::get() as u8).min(4), true).unwrap();
+    }
 
     #[test]
     fn test_dictionary_functionality() {

@@ -112,7 +112,7 @@ training will resume from latest checkpoint."
             seed=self.cfg["seed"],
             info=self.info
         )
-        num_batches = 200
+        num_batches = 1024
         avg_batch_size = tensorboard.AverageTracker("batch_size")
         if self.info.is_main_process:
             self.logger.info(
@@ -127,7 +127,7 @@ training will resume from latest checkpoint."
         self.training_steps_per_epoch = int(self.train_loader.min_items // avg_batch_size.value)
         self.training_steps = self.cfg["train"]["num_epochs"] * self.training_steps_per_epoch
         self.logger.info(f"Got an average batch size of {avg_batch_size.value:.2f} after {num_batches:,} batches. "
-                         f"The train loader contains at least {self.train_loader.min_items} items, so the estimated "
+                         f"The train loader contains at least {self.train_loader.min_items:,} items, so the estimated "
                          f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
                          f"is {self.training_steps:,} ({self.training_steps_per_epoch:,} per epoch).")
         self.optimizer = optimizer_from_config(
@@ -542,8 +542,6 @@ training will resume from latest checkpoint."
             )
         else:
             metrics = []
-
-        self.logger.info(f"[rank {self.info.rank}] [epoch {self.epoch + 1}] training_steps: {self.training_steps}")
 
         train_iter = iter(self.train_loader)
         while True:

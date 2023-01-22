@@ -703,12 +703,16 @@ training will resume from latest checkpoint."
         for batch_num, batch in enumerate(self.val_loader):
             inputs, labels = self._prepare_batch(batch=batch)
 
-            with amp.autocast(enabled=self.grad_scaler.is_enabled(), dtype=self.mixed_prec_dtype):
+            with torch.inference_mode(), amp.autocast(
+                enabled=self.grad_scaler.is_enabled(),
+                dtype=self.mixed_prec_dtype
+            ):
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
                 loss = loss + sum(loss_dict.values())
 
-            mean_loss.add(loss.detach())
+                mean_loss.add(loss.item())
+
             if batch_num == 0:
                 items = batch.items
                 for metric in metrics:

@@ -227,7 +227,7 @@ training will resume from latest checkpoint."
             if self.info.is_main_process:
                 self.logger.info(
                     f"Resuming training from checkpoint {last_checkpoint}\n"
-                    f"Starting at epoch {self.epoch + 1} at global step {self.step:,} (epoch step {self.epoch_step}) "
+                    f"Starting at epoch {self.epoch + 1} at global step {self.step:,} (epoch step {self.epoch_step:,}) "
                     f"with a best validation loss of {self.best_val_loss:.6f}\n"
                     f"Fast forwarding {self.epoch_items:,} items."
                 )

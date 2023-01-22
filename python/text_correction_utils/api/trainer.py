@@ -105,6 +105,12 @@ training will resume from latest checkpoint."
             self.output_tokenizer = None
 
         self.model = self._model_from_config(self.cfg).to(self.info.device).train()
+        if torch.__version__.startswith("2."):
+            self.logger.info(f"Compiling model (torch={torch.__version__})")
+            from torch import _dynamo
+            torch._dynamo.config.suppress_errors = True
+            # torch._dynamo.config.verbose = True
+            self.model = torch.compile(self.model)
 
         self.train_loader, self.val_loader, self.cleanup = self._data_from_config(
             self.cfg["train"]["data"],

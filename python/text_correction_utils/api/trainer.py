@@ -145,7 +145,7 @@ training will resume from latest checkpoint."
         self.training_steps, self.training_steps_per_epoch = training_steps_tensor.tolist()
         self.logger.info(
             f"[rank:{self.info.rank}] Received from main process the estimated number of training steps: "
-            f"total={self.training_steps}, per_epoch={self.training_steps_per_epoch}"
+            f"total={self.training_steps:,}, per_epoch={self.training_steps_per_epoch:,}"
         )
 
         self.optimizer = optimizer_from_config(

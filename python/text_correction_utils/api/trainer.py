@@ -112,24 +112,42 @@ training will resume from latest checkpoint."
             seed=self.cfg["seed"],
             info=self.info
         )
-        num_batches = 1024
-        avg_batch_size = tensorboard.AverageTracker("batch_size")
+
+        # estimate train loader length only on main process, and then broadcast the resulting length
+        # to all other processes
+        # this is important, since the learning rate scheduler depends on the number of training steps
+        # and should give the same learning rate for every steps on all processes
+        training_steps_tensor = torch.zeros(2, dtype=torch.long, device=self.info.device)
         if self.info.is_main_process:
+            num_batches = 1024
+            avg_batch_size = tensorboard.AverageTracker("batch_size")
             self.logger.info(
-                f"Estimating train loader length from average batch size of first {num_batches} batches "
+                f"Estimating train loader length on main process from average batch size of first {num_batches} batches "
                 f"and minimum train loader items."
             )
-        for idx, batch in enumerate(self.train_loader):
-            if idx >= num_batches:
-                break
-            avg_batch_size.add(len(batch))
+            for idx, batch in enumerate(self.train_loader):
+                if idx >= num_batches:
+                    break
+                avg_batch_size.add(len(batch))
 
-        self.training_steps_per_epoch = int(self.train_loader.min_items // avg_batch_size.value)
-        self.training_steps = self.cfg["train"]["num_epochs"] * self.training_steps_per_epoch
-        self.logger.info(f"Got an average batch size of {avg_batch_size.value:.2f} after {num_batches:,} batches. "
-                         f"The train loader contains at least {self.train_loader.min_items:,} items, so the estimated "
-                         f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
-                         f"is {self.training_steps:,} ({self.training_steps_per_epoch:,} per epoch).")
+            training_steps_per_epoch = int(self.train_loader.min_items // avg_batch_size.value)
+            training_steps = self.cfg["train"]["num_epochs"] * training_steps_per_epoch
+            self.logger.info(f"Got an average batch size of {avg_batch_size.value:.2f} after {num_batches:,} batches. "
+                             f"The train loader contains at least {self.train_loader.min_items:,} items, so the estimated "
+                             f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
+                             f"is {training_steps:,} ({training_steps_per_epoch:,} per epoch).")
+            training_steps_tensor[0] = training_steps
+            training_steps_tensor[1] = training_steps_per_epoch
+
+        # distribute training step information across processes
+        dist.broadcast(training_steps_tensor, 0)
+
+        self.training_steps, self.training_steps_per_epoch = training_steps_tensor.tolist()
+        self.logger.info(
+            f"[rank:{self.info.rank}] Received from main process the estimated number of training steps: "
+            f"total={self.training_steps}, per_epoch={self.training_steps_per_epoch}"
+        )
+
         self.optimizer = optimizer_from_config(
             self.model,
             self.cfg["train"]["optimizer"]
@@ -308,6 +326,13 @@ training will resume from latest checkpoint."
         )
 
         pipeline_cfg = cfg.pop("pipeline")
+
+        # adapt config to multi gpu usage
+        assert "batch_limit" in cfg, "batch_limit must be in data config"
+        cfg["batch_limit"] = max(1, cfg["batch_limit"] // info.world_size)
+        if "num_threads" in cfg:
+            cfg["num_threads"] = cfg["num_threads"] // info.local_world_size
+
         train_loader = data.DataLoader.from_files(
             train_sources,
             pipeline_cfg,

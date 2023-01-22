@@ -229,8 +229,13 @@ training will resume from latest checkpoint."
         os.makedirs(dir, exist_ok=True)
         hash = hashlib.sha256(path.encode("utf8")).hexdigest()
         temp_path = os.path.join(dir, f"{hash}_{file_name}")
+        # only copy file to temp dir once on local main process
         if info.is_local_main_process:
             shutil.copy2(path, temp_path)
+        else:
+            # on the other processes wait until the temp file is copied
+            while not os.path.exists(temp_path):
+                time.sleep(1)
         return temp_path
 
     @classmethod

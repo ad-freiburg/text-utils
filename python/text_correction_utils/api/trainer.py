@@ -250,10 +250,9 @@ training will resume from latest checkpoint."
         # only copy file to temp dir once on local main process
         if info.is_local_main_process:
             shutil.copy2(path, temp_path)
-        else:
-            # on the other processes wait until the temp file is copied
-            while not os.path.exists(temp_path):
-                time.sleep(1)
+        # wait on the other processes until file is copied,
+        # otherwise errors occurr later
+        dist.barrier()
         return temp_path
 
     @classmethod

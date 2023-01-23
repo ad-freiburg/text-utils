@@ -32,7 +32,6 @@ class FocalLoss(nn.Module):
         super().__init__()
         self.alpha = alpha
         self.init_gamma = gamma
-        self.gamma = gamma
         self.reduction = reduction
         self.ignore_index = ignore_index
         self.nll_loss = nn.NLLLoss(

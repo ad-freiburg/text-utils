@@ -75,6 +75,13 @@ class TextCorrectionCli:
             default=None,
             help="Path to a text file which will be corrected line by line"
         )
+        input_group.add_argument(
+            "-i",
+            "--interactive",
+            action="store_true",
+            default=None,
+            help="Start an interactive session where your command line input is corrected"
+        )
         parser.add_argument(
             "-if",
             "--input-format",
@@ -95,13 +102,6 @@ class TextCorrectionCli:
             type=str,
             default=None,
             help="Path where corrected text should be saved to"
-        )
-        input_group.add_argument(
-            "-i",
-            "--interactive",
-            action="store_true",
-            default=None,
-            help="Start an interactive session where your command line input is corrected"
         )
         parser.add_argument(
             "--cpu",

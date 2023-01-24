@@ -52,10 +52,13 @@ impl Dictionary {
 
     pub fn create(
         files: &[impl AsRef<Path>],
-        max_size: usize,
+        max_size: Option<usize>,
+        max_sequences: Option<usize>,
         num_threads: u8,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
+        let max_size = max_size.unwrap_or(usize::MAX);
+        let max_sequences = max_sequences.unwrap_or(usize::MAX);
         let inner = Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = sync_channel::<Vec<String>>(num_threads as usize);
         let rx = Arc::new(Mutex::new(rx));
@@ -75,7 +78,11 @@ impl Dictionary {
                         .filter_map(|(_, parts)| parts)
                         .flatten()
                         .for_each(|w| {
-                            *counts.entry(w.to_string()).or_insert(0) += 1;
+                            if counts.contains_key(w) {
+                                *counts.get_mut(w).unwrap() += 1;
+                            } else {
+                                counts.insert(w.to_string(), 1);
+                            }
                         });
                 }
                 let mut inner = inner_clone.lock().unwrap();
@@ -88,7 +95,8 @@ impl Dictionary {
         let file_p_bar = progress_bar("processing files", files.len() as u64, !show_progress);
         let multi_p_bar = MultiProgress::new();
         multi_p_bar.add(file_p_bar.clone());
-        for file in files {
+        let mut num_sequences = 0;
+        'outer: for file in files {
             let (num_lines, _) = file_size(file)?;
             let chunk_size = (num_lines / num_threads as usize).max(1).min(4096);
             let mut file_name = file.as_ref().to_string_lossy().to_string();
@@ -103,10 +111,15 @@ impl Dictionary {
             multi_p_bar.insert_after(&file_p_bar, line_p_bar.clone());
             let lines = BufReader::new(File::open(file)?).lines();
             for line_chunk in &lines.chunks(chunk_size) {
-                let line_chunk: Vec<String> = line_chunk.filter_map(|l| l.ok()).collect();
+                let mut line_chunk: Vec<String> = line_chunk.filter_map(|l| l.ok()).collect();
+                line_chunk.truncate(max_sequences - num_sequences);
                 let line_chunk_len = line_chunk.len();
                 tx.send(line_chunk)?;
+                num_sequences += line_chunk_len;
                 line_p_bar.inc(line_chunk_len as u64);
+                if num_sequences >= max_sequences {
+                    break 'outer;
+                }
             }
             line_p_bar.finish_and_clear();
             file_p_bar.inc(1);
@@ -185,15 +198,16 @@ impl Dictionary {
     #[staticmethod]
     #[pyo3(
         name = "create",
-        signature = (files, max_size, num_threads=(num_cpus::get() as u8).min(4), show_progress=false),
+        signature = (files, max_size = None, max_sequences = None, num_threads=(num_cpus::get() as u8).min(4), show_progress=false),
     )]
     fn create_py(
         files: Vec<&str>,
-        max_size: usize,
+        max_size: Option<usize>,
+        max_sequences: Option<usize>,
         num_threads: u8,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
-        Self::create(&files, max_size, num_threads, show_progress)
+        Self::create(&files, max_size, max_sequences, num_threads, show_progress)
     }
 
     fn __len__(&self) -> usize {
@@ -343,10 +357,15 @@ mod tests {
     #[test]
     fn test_dictionary_creation() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let path1 = base.clone().join("resources/test/multi30k.txt");
-        let path2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let _d = Dictionary::create(&[path1, path2], 1000, (num_cpus::get() as u8).min(4), true)
-            .unwrap();
+        let path = base.clone().join("resources/test/multi30k.txt");
+        let _d = Dictionary::create(
+            &[path],
+            Some(100),
+            Some(1000),
+            (num_cpus::get() as u8).min(4),
+            true,
+        )
+        .unwrap();
     }
 
     #[test]

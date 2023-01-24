@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use indicatif::MultiProgress;
 use itertools::Itertools;
 use pyo3::prelude::*;
+use regex::Regex;
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
@@ -62,22 +63,24 @@ impl Dictionary {
         for _ in 0..num_threads.max(1) {
             let rx_clone = rx.clone();
             let inner_clone = inner.clone();
-            let t_handle = thread::spawn(move || {
-                while let Ok(lines) = rx_clone.lock().unwrap().recv() {
-                    let mut counts = HashMap::new();
-                    for line in lines {
-                        let line = clean(&line, true);
-                        let line = normalize(&line, Normalization::NFKC, true);
-                        let words: Vec<String> =
-                            line.split_whitespace().map(|s| s.to_string()).collect();
-                        for word in words {
-                            *counts.entry(word).or_insert(0) += 1;
-                        }
-                    }
-                    let mut inner = inner_clone.lock().unwrap();
-                    for (word, freq) in counts {
-                        *inner.entry(word).or_insert(0) += freq;
-                    }
+            let t_handle = thread::spawn(move || loop {
+                let Ok(lines) = rx_clone.lock().unwrap().recv() else {
+                    return;
+                };
+                let mut counts = HashMap::new();
+                for line in lines {
+                    let line = normalize(&clean(&line, true), Normalization::NFKC, true);
+                    Self::split_words(&line)
+                        .into_iter()
+                        .filter_map(|(_, parts)| parts)
+                        .flatten()
+                        .for_each(|w| {
+                            *counts.entry(w.to_string()).or_insert(0) += 1;
+                        });
+                }
+                let mut inner = inner_clone.lock().unwrap();
+                for (word, freq) in counts {
+                    *inner.entry(word).or_insert(0) += freq;
                 }
             });
             threads.push(t_handle);
@@ -211,13 +214,26 @@ impl Dictionary {
         }
     }
 
+    #[staticmethod]
+    pub fn split_words(s: &str) -> Vec<(&str, Option<Vec<&str>>)> {
+        let re = Regex::new(r"\b[\p{Alphabetic}\p{M}\p{Pc}\p{Join_Control}]+\b").unwrap();
+        s.split_whitespace()
+            .map(|word| {
+                let parts: Vec<_> = re.find_iter(word).map(|m| m.as_str()).collect();
+                (word, if !parts.is_empty() { Some(parts) } else { None })
+            })
+            .collect()
+    }
+
     pub fn contains(&self, s: &str) -> bool {
-        self.inner.contains_key(s)
+        let ns = normalize(s, Normalization::NFKC, true);
+        self.inner.contains_key(&ns)
     }
 
     pub fn get(&self, s: &str) -> Option<(usize, f64)> {
+        let ns = normalize(s, Normalization::NFKC, true);
         self.inner
-            .get(s)
+            .get(&ns)
             .copied()
             .map(|freq| (freq as usize, freq as f64 / self.freq_sum as f64))
     }
@@ -235,7 +251,8 @@ impl Dictionary {
         if self.is_empty() {
             return None;
         }
-        let a: Vec<&str> = (0..self.len()).map(|_| s).collect();
+        let ns = normalize(s, Normalization::NFKC, true);
+        let a: Vec<_> = (0..self.len()).map(|_| ns.as_str()).collect();
         let mut b: Vec<&str> = Vec::with_capacity(self.len());
         let mut v: Vec<usize> = Vec::with_capacity(self.len());
         for (key, value) in &self.inner {
@@ -301,9 +318,26 @@ mod tests {
         assert!(d.is_err());
         let path = base.clone().join("resources/test/good_dict.txt");
         let d = Dictionary::load(path).unwrap();
-        assert_eq!(d.get("this").unwrap(), 7);
-        assert_eq!(d.get("is").unwrap(), 4);
-        assert_eq!(d.get("good").unwrap(), 8);
+        assert_eq!(d.get("this").unwrap(), (7, 7.0 / 19.0));
+        assert_eq!(d.get("is").unwrap(), (4, 4.0 / 19.0));
+        assert_eq!(d.get("good").unwrap(), (8, 8.0 / 19.0));
+    }
+
+    #[test]
+    fn test_dictionary_split() {
+        let text = "This is 123 a 'socalled' unit-test!";
+        let words = Dictionary::split_words(text);
+        assert_eq!(
+            words,
+            vec![
+                ("This", Some(vec!["This"])),
+                ("is", Some(vec!["is"])),
+                ("123", None),
+                ("a", Some(vec!["a"])),
+                ("'socalled'", Some(vec!["socalled"])),
+                ("unit-test!", Some(vec!["unit", "test"]))
+            ]
+        );
     }
 
     #[test]
@@ -311,7 +345,8 @@ mod tests {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let path1 = base.clone().join("resources/test/multi30k.txt");
         let path2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let _d = Dictionary::create(&[path1, path2], (num_cpus::get() as u8).min(4), true).unwrap();
+        let _d = Dictionary::create(&[path1, path2], 1000, (num_cpus::get() as u8).min(4), true)
+            .unwrap();
     }
 
     #[test]
@@ -322,12 +357,12 @@ mod tests {
         assert_eq!(
             d.get_closest("god", DictionaryDistanceMeasure::EditDistance)
                 .unwrap(),
-            ("good".to_string(), 8)
+            ("good".to_string(), 8, 8.0 / 19.0)
         );
         assert_eq!(
             d.get_closest("his", DictionaryDistanceMeasure::EditDistance)
                 .unwrap(),
-            ("this".to_string(), 7)
+            ("this".to_string(), 7, 7.0 / 19.0)
         );
     }
 }

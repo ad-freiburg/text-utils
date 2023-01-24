@@ -27,6 +27,10 @@ def create_dictionary(args: argparse.Namespace) -> None:
         args.num_threads,
         args.progress
     )
+
+    output_dir = os.path.dirname(args.output_file)
+    if output_dir != "":
+        os.makedirs(output_dir, exist_ok=True)
     d.save(args.output_file)
 
 

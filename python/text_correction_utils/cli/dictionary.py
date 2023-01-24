@@ -20,7 +20,13 @@ def create_dictionary(args: argparse.Namespace) -> None:
     if args.num_threads is None:
         args.num_threads = len(os.sched_getaffinity(0)) // 2
 
-    d = dictionary.Dictionary.create(args.input_files, args.max_size, args.num_threads, args.progress)
+    d = dictionary.Dictionary.create(
+        args.input_files,
+        args.max_size,
+        args.max_sequences,
+        args.num_threads,
+        args.progress
+    )
     d.save(args.output_file)
 
 

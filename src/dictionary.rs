@@ -1,8 +1,10 @@
 use anyhow::anyhow;
+use indicatif::MultiProgress;
 use itertools::Itertools;
 use pyo3::prelude::*;
 use std::{
-    collections::HashMap,
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap},
     fs::File,
     io::{BufRead, BufReader, Write},
     path::Path,
@@ -13,18 +15,24 @@ use std::{
 use crate::{
     edit::distances,
     text::{clean, file_size},
-    unicode::{normalize, Normalization},
+    unicode::{normalize, Normalization, CS},
     utils::{progress_bar, py_invalid_type_error},
 };
 
 #[pyclass]
 pub struct Dictionary {
     inner: HashMap<String, usize>,
+    freq_sum: usize,
 }
 
 impl Dictionary {
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    fn new(inner: HashMap<String, usize>) -> Self {
+        let freq_sum = inner.values().sum();
+        Self { inner, freq_sum }
     }
 
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
@@ -38,11 +46,12 @@ impl Dictionary {
             }
             inner.insert(splits[0].to_string(), splits[1].parse()?);
         }
-        Ok(Self { inner })
+        Ok(Self::new(inner))
     }
 
     pub fn create(
         files: &[impl AsRef<Path>],
+        max_size: usize,
         num_threads: u8,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
@@ -74,14 +83,21 @@ impl Dictionary {
             threads.push(t_handle);
         }
         let file_p_bar = progress_bar("processing files", files.len() as u64, !show_progress);
+        let multi_p_bar = MultiProgress::new();
+        multi_p_bar.add(file_p_bar.clone());
         for file in files {
             let (num_lines, _) = file_size(file)?;
             let chunk_size = (num_lines / num_threads as usize).max(1).min(4096);
+            let mut file_name = file.as_ref().to_string_lossy().to_string();
+            if file_name.len() > 16 {
+                file_name = "...".to_string() + &file_name[file_name.len() - 13..];
+            }
             let line_p_bar = progress_bar(
-                &format!("processing lines of {}", file.as_ref().display()),
+                &format!("processing lines of {}", file_name),
                 num_lines as u64,
                 !show_progress,
             );
+            multi_p_bar.insert_after(&file_p_bar, line_p_bar.clone());
             let lines = BufReader::new(File::open(file)?).lines();
             for line_chunk in &lines.chunks(chunk_size) {
                 let line_chunk: Vec<String> = line_chunk.filter_map(|l| l.ok()).collect();
@@ -89,22 +105,43 @@ impl Dictionary {
                 tx.send(line_chunk)?;
                 line_p_bar.inc(line_chunk_len as u64);
             }
+            line_p_bar.finish_and_clear();
             file_p_bar.inc(1);
         }
+        file_p_bar.finish();
         // we are done sending, drop the sender to signal
-        // to the thread receiver the should stop
+        // to the thread receivers they should stop
         drop(tx);
         for t in threads {
             t.join().expect("failed to join thread");
         }
-        Ok(Self {
-            inner: Arc::try_unwrap(inner).unwrap().into_inner().unwrap(),
-        })
+        // filter for the top max size words
+        // build a binary heap for this and always pop the top element
+        let mut heap = BinaryHeap::with_capacity(max_size + 1);
+        let inner = Arc::try_unwrap(inner)
+            .expect("should not fail")
+            .into_inner()
+            .expect("should not fail");
+        for (word, freq) in inner {
+            heap.push(Reverse((freq, word)));
+            if heap.len() > max_size {
+                heap.pop();
+            }
+        }
+        let mut inner = HashMap::with_capacity(max_size);
+        while let Some(Reverse((freq, word))) = heap.pop() {
+            inner.insert(word, freq);
+        }
+        Ok(Self::new(inner))
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let mut file = File::create(path)?;
-        for (key, value) in self.inner.iter() {
+        // when saving dictionary, do it in sorted order
+        // because the file looks nicer this way
+        let mut items: Vec<_> = self.inner.iter().collect();
+        items.sort_by_key(|item| Reverse(item.1));
+        for &(key, value) in items.iter() {
             writeln!(file, "{}\t{}", key, value)?;
         }
         Ok(())
@@ -145,26 +182,44 @@ impl Dictionary {
     #[staticmethod]
     #[pyo3(
         name = "create",
-        signature = (files, num_threads=(num_cpus::get() as u8).min(4), show_progress=false),
+        signature = (files, max_size, num_threads=(num_cpus::get() as u8).min(4), show_progress=false),
     )]
-    fn create_py(files: Vec<&str>, num_threads: u8, show_progress: bool) -> anyhow::Result<Self> {
-        Self::create(&files, num_threads, show_progress)
+    fn create_py(
+        files: Vec<&str>,
+        max_size: usize,
+        num_threads: u8,
+        show_progress: bool,
+    ) -> anyhow::Result<Self> {
+        Self::create(&files, max_size, num_threads, show_progress)
     }
 
     fn __len__(&self) -> usize {
         self.len()
     }
 
-    pub fn rel_frequency(&self, freq: usize) -> f64 {
-        freq as f64 / self.inner.values().sum::<usize>() as f64
+    #[pyo3(signature = (weighted_by_freq = true))]
+    pub fn avg_length(&self, weighted_by_freq: bool) -> f64 {
+        let sum = self
+            .inner
+            .iter()
+            .map(|(s, freq)| CS::new(s, true).len() * if weighted_by_freq { *freq } else { 1 })
+            .sum::<usize>();
+        if weighted_by_freq {
+            sum as f64 / self.freq_sum as f64
+        } else {
+            sum as f64 / self.len() as f64
+        }
     }
 
     pub fn contains(&self, s: &str) -> bool {
         self.inner.contains_key(s)
     }
 
-    pub fn get(&self, s: &str) -> Option<usize> {
-        self.inner.get(s).copied()
+    pub fn get(&self, s: &str) -> Option<(usize, f64)> {
+        self.inner
+            .get(s)
+            .copied()
+            .map(|freq| (freq as usize, freq as f64 / self.freq_sum as f64))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -176,7 +231,7 @@ impl Dictionary {
         &self,
         s: &str,
         measure: DictionaryDistanceMeasure,
-    ) -> Option<(String, usize)> {
+    ) -> Option<(String, usize, f64)> {
         if self.is_empty() {
             return None;
         }
@@ -195,7 +250,7 @@ impl Dictionary {
             false,
             measure == DictionaryDistanceMeasure::NormalizedEditDistance,
         )
-        .unwrap();
+        .expect("should not fail");
         let mut min_dist = f64::INFINITY;
         let mut terms = vec![];
         let mut freqs = vec![];
@@ -214,7 +269,7 @@ impl Dictionary {
             .zip(freqs.into_iter())
             .max_by(|(_, a), (_, b)| a.cmp(b))
         {
-            Some((term.to_string(), freq))
+            Some((term.to_string(), freq, freq as f64 / self.freq_sum as f64))
         } else {
             None
         }

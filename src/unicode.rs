@@ -206,7 +206,7 @@ impl IntoPy<PyObject> for Normalization {
     }
 }
 
-#[pyfunction(use_graphemes = "true")]
+#[pyfunction(signature = (s, normalization = Normalization::NFKC, use_graphemes = true))]
 #[inline]
 pub fn normalize(s: &str, normalization: Normalization, use_graphemes: bool) -> String {
     if use_graphemes {

@@ -125,7 +125,7 @@ training will resume from latest checkpoint."
         # and should give the same learning rate for every steps on all processes
         training_steps_tensor = torch.zeros(2, dtype=torch.long, device=self.info.device)
         if self.info.is_main_process:
-            num_batches = 1024
+            num_batches = 4096
             avg_batch_size = tensorboard.AverageTracker("batch_size")
             self.logger.info(
                 f"Estimating train loader length on main process from average batch size of first {num_batches} batches "

@@ -1093,7 +1093,7 @@ impl PyTokenizer {
         }
     }
 
-    #[args(lang = "None")]
+    #[pyo3(signature = (s, lang = None))]
     fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization> {
         self.tokenizer.tokenize(s, lang)
     }

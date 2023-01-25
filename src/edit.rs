@@ -119,11 +119,7 @@ impl IntoPy<PyObject> for EditOperation {
     }
 }
 
-#[pyfunction(
-    use_graphemes = "true",
-    with_swap = "true",
-    spaces_insert_delete_only = "false"
-)]
+#[pyfunction(signature = (a, b, use_graphemes = true, with_swap = true, spaces_insert_delete_only = false))]
 pub fn operations(
     a: &str,
     b: &str,
@@ -176,12 +172,7 @@ pub fn operations(
     edit_ops
 }
 
-#[pyfunction(
-    use_graphemes = "true",
-    with_swap = "true",
-    spaces_insert_delete_only = "false",
-    normalized = "false"
-)]
+#[pyfunction(signature = (a, b, use_graphemes = true, with_swap = true, spaces_insert_delete_only = false, normalized = false))]
 pub fn distance(
     a: &str,
     b: &str,
@@ -231,13 +222,7 @@ pub fn distances(
         .collect())
 }
 
-#[pyfunction(
-    use_graphemes = "true",
-    with_swap = "true",
-    spaces_insert_delete_only = "false",
-    normalized = "false"
-)]
-#[pyo3(name = "distances")]
+#[pyfunction(name = "distances", signature = (a, b, use_graphemes = true, with_swap = true, spaces_insert_delete_only = false, normalized = false))]
 fn distances_py(
     a: Vec<&str>,
     b: Vec<&str>,

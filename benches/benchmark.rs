@@ -177,7 +177,7 @@ fn bench_tokenizer(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("sparse_coo_three_stage_batched_32", format!("{size}")),
             &(&groupings, &sizes),
-            |b, (grouping, sizes)| b.iter(|| token_groups_to_sparse_coo_matrix(&groupings, sizes)),
+            |b, (groupings, sizes)| b.iter(|| token_groups_to_sparse_coo_matrix(&groupings, sizes)),
         );
     }
 }

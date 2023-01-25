@@ -56,8 +56,7 @@ pub fn mean_edit_distance(
     )
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "mean_edit_distance")]
+#[pyfunction(name = "mean_edit_distance", signature = (sequences, target_sequences, use_graphemes = true))]
 fn mean_edit_distance_py(
     sequences: Vec<String>,
     target_sequences: Vec<String>,
@@ -80,8 +79,7 @@ pub fn mean_normalized_edit_distance(
     )
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "mean_normalized_edit_distance")]
+#[pyfunction(name = "mean_normalized_edit_distance", signature = (sequences, target_sequences, use_graphemes = true))]
 fn mean_normalized_edit_distance_py(
     sequences: Vec<String>,
     target_sequences: Vec<String>,
@@ -104,8 +102,7 @@ pub fn accuracy<T: Ord>(predictions: &[T], targets: &[T]) -> anyhow::Result<f64>
         / predictions.len().max(1) as f64)
 }
 
-#[pyfunction]
-#[pyo3(name = "accuracy")]
+#[pyfunction(name = "accuracy", signature = (predictions, targets))]
 fn accuracy_py(predictions: Vec<&str>, targets: Vec<&str>) -> anyhow::Result<f64> {
     let predictions: Vec<String> = predictions
         .into_iter()
@@ -193,8 +190,7 @@ pub fn binary_f1(predictions: &[bool], targets: &[bool], beta: f64) -> anyhow::R
     Ok(tp_fp_fn.f1(beta))
 }
 
-#[pyfunction(beta = "1.0")]
-#[pyo3(name = "binary_f1")]
+#[pyfunction(name = "binary_f1", signature = (predictions, targets, beta = 1.0))]
 fn binary_f1_py(
     predictions: Vec<bool>,
     targets: Vec<bool>,
@@ -392,8 +388,10 @@ pub fn spelling_correction_f1(
     )
 }
 
-#[pyfunction(beta = "1.0", sequence_averaged = "false", use_graphemes = "true")]
-#[pyo3(name = "spelling_correction_f1")]
+#[pyfunction(
+    name = "spelling_correction_f1", 
+    signature = (input_sequences, predicted_sequences, target_sequences, beta=1.0, sequence_averaged=true, use_graphemes=true)
+)]
 fn spelling_correction_f1_py(
     input_sequences: Vec<String>,
     predicted_sequences: Vec<String>,
@@ -500,12 +498,9 @@ pub fn whitespace_correction_f1(
 }
 
 #[pyfunction(
-    beta = "1.0",
-    sequence_averaged = "true",
-    mode = "WhitespaceCorrectionMode::InsertionsAndDeletions",
-    use_graphemes = "true"
+    name = "whitespace_correction_f1", 
+    signature = (input_sequences, predicted_sequences, target_sequences, beta=1.0, sequence_averaged=true, mode=WhitespaceCorrectionMode::InsertionsAndDeletions, use_graphemes=true)
 )]
-#[pyo3(name = "whitespace_correction_f1")]
 fn whitespace_correction_f1_py(
     input_sequences: Vec<String>,
     predicted_sequences: Vec<String>,

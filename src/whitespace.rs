@@ -5,7 +5,7 @@ use itertools::Itertools;
 use pyo3::prelude::*;
 use regex::{escape, Regex};
 
-#[pyfunction(use_graphemes = "true")]
+#[pyfunction(signature = (s, use_graphemes = true))]
 pub fn remove(s: &str, use_graphemes: bool) -> String {
     CS::new(s, use_graphemes)
         .chars()
@@ -13,7 +13,7 @@ pub fn remove(s: &str, use_graphemes: bool) -> String {
         .join("")
 }
 
-#[pyfunction(use_graphemes = "true")]
+#[pyfunction(signature = (s, use_graphemes = true))]
 pub fn full(s: &str, use_graphemes: bool) -> String {
     CS::new(s, use_graphemes)
         .chars()
@@ -62,7 +62,7 @@ impl IntoPy<PyObject> for WhitespaceOperation {
     }
 }
 
-#[pyfunction(use_graphemes = "true")]
+#[pyfunction(signature = (from, to, use_graphemes = true))]
 pub fn operations(
     from: &str,
     to: &str,
@@ -138,8 +138,7 @@ pub fn repair(
     Ok(output)
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "repair")]
+#[pyfunction(name = "repair", signature = (s, operations, use_graphemes = true))]
 fn repair_py(
     s: &str,
     operations: Vec<WhitespaceOperation>,
@@ -148,7 +147,7 @@ fn repair_py(
     repair(s, &operations, use_graphemes)
 }
 
-#[pyfunction]
+#[pyfunction(signature = (s, substring, use_graphemes = true))]
 pub fn find_substring_ignoring_whitespace(
     s: &str,
     substring: &str,

@@ -53,7 +53,7 @@ impl TextData {
 #[pymethods]
 impl TextData {
     #[new]
-    #[args(processed = "None", language = "None")]
+    #[pyo3(signature = (original, processed = None, language = None))]
     fn new_py(
         original: String,
         processed: Option<String>,
@@ -311,13 +311,12 @@ impl InferenceData {
         }
     }
     #[staticmethod]
-    #[pyo3(name = "from_str")]
-    #[args(format = "InferenceDataFormat::Text")]
+    #[pyo3(name = "from_str", signature = (s, format = InferenceDataFormat::Text))]
     pub fn from_str_py(s: String, format: InferenceDataFormat) -> anyhow::Result<Self> {
         Self::from_str(&s, &format)
     }
 
-    #[args(format = "InferenceDataFormat::Text")]
+    #[pyo3(signature = (format = InferenceDataFormat::Text))]
     pub fn to_str(&self, format: InferenceDataFormat) -> anyhow::Result<String> {
         let mut s = self.text.clone();
         if format == InferenceDataFormat::Text {
@@ -803,16 +802,19 @@ impl InferenceLoader {
 #[pymethods]
 impl InferenceLoader {
     #[staticmethod]
-    #[args(
-        normalization = "Normalization::NFKC",
-        use_graphemes = "true",
-        num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "128",
-        batch_limit = "16",
-        batch_limit_type = "BatchLimitType::BatchSize",
-        prefetch_factor = "1",
-        sort = "false"
-    )]
+    #[pyo3(signature=(
+        iterator,
+        tokenizer_config,
+        window_config,
+        normalization = Normalization::NFKC,
+        use_graphemes = true,
+        num_threads = (num_cpus::get() as u8).min(4),
+        buffer_size = 128,
+        batch_limit = 16,
+        batch_limit_type = BatchLimitType::BatchSize,
+        prefetch_factor = 1,
+        sort = false
+    ))]
     pub fn from_iterator(
         iterator: PyObject,
         tokenizer_config: TokenizerConfig,
@@ -849,18 +851,21 @@ impl InferenceLoader {
     }
 
     #[staticmethod]
-    #[args(
-        file_format = "InferenceDataFormat::Text",
-        normalization = "Normalization::NFKC",
-        use_graphemes = "true",
-        languages = "None",
-        num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "128",
-        batch_limit = "16",
-        batch_limit_type = "BatchLimitType::BatchSize",
-        prefetch_factor = "1",
-        sort = "false"
-    )]
+    #[pyo3(signature=(
+        files,
+        tokenizer_config,
+        window_config,
+        file_format = InferenceDataFormat::Text,
+        normalization = Normalization::NFKC,
+        use_graphemes = true,
+        languages = None,
+        num_threads = (num_cpus::get() as u8).min(4),
+        buffer_size = 128,
+        batch_limit = 16,
+        batch_limit_type = BatchLimitType::BatchSize,
+        prefetch_factor = 1,
+        sort = false
+    ))]
     pub fn from_files(
         files: Vec<String>,
         tokenizer_config: TokenizerConfig,
@@ -1076,21 +1081,24 @@ impl DataLoader {
 #[pymethods]
 impl DataLoader {
     #[staticmethod]
-    #[args(
-        languages = "None",
-        strategy = "TextIterationStrategy::Sequential",
-        num_threads = "(num_cpus::get() as u8).min(4)",
-        buffer_size = "128",
-        batch_limit = "16",
-        batch_limit_type = "BatchLimitType::BatchSize",
-        shuffle = "false",
-        prefetch_factor = "4",
-        sort = "false",
-        seed = "None",
-        skip = "0",
-        limit = "None",
-        distributed = "None"
-    )]
+    #[pyo3(signature = (
+        files,
+        pipeline_config,
+        tokenizer_config,
+        languages = None,
+        strategy = TextIterationStrategy::Sequential,
+        num_threads = (num_cpus::get() as u8).min(4),
+        buffer_size = 128,
+        batch_limit = 16,
+        batch_limit_type = BatchLimitType::BatchSize,
+        shuffle = false,
+        prefetch_factor = 4,
+        sort = false,
+        seed = None,
+        skip = 0,
+        limit = None,
+        distributed = None
+    ))]
     pub fn from_files(
         files: Vec<String>,
         pipeline_config: PreprocessingPipelineConfig,

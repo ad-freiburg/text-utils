@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::unicode::{Character, CS};
 use crate::utils::{find_subsequences_of_max_size_k, Matrix};
 
-#[pyfunction(use_graphemes = "true")]
+#[pyfunction(signature = (s, use_graphemes = true))]
 #[inline]
 pub fn clean(s: &str, use_graphemes: bool) -> String {
     let cs = CS::new(s, use_graphemes);
@@ -33,13 +33,13 @@ pub fn clean(s: &str, use_graphemes: bool) -> String {
     output
 }
 
-#[pyfunction(use_graphemes = "true")]
+#[pyfunction(signature = (s, use_graphemes = true))]
 #[inline]
-pub fn word_boundaries(str: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
+pub fn word_boundaries(s: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
     let mut boundaries = vec![];
     let mut start: Option<usize> = None;
     let mut num_elements = 0;
-    for (idx, char) in CS::new(str, use_graphemes).chars().enumerate() {
+    for (idx, char) in CS::new(s, use_graphemes).chars().enumerate() {
         match (char.is_whitespace(), start) {
             (true, Some(start_idx)) => {
                 boundaries.push((start_idx, idx));
@@ -147,7 +147,7 @@ pub fn match_words_with(
     (matches, a_words.len(), b_words.len())
 }
 
-#[pyfunction(ignore_case = "false")]
+#[pyfunction(signature = (a, b, ignore_case = false))]
 #[inline]
 pub fn match_words(a: &str, b: &str, ignore_case: bool) -> (Vec<(usize, usize)>, usize, usize) {
     match_words_with(a, b, str_match_fn(ignore_case))

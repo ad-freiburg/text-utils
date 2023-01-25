@@ -191,8 +191,7 @@ pub fn char_windows<'a>(
     Ok(windows)
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "char_windows")]
+#[pyfunction(name = "char_windows", signature = (s, max_length, context_length, use_graphemes = true))]
 pub fn char_windows_py(
     s: String,
     max_length: usize,
@@ -264,8 +263,7 @@ pub fn byte_windows<'a>(
     Ok(windows)
 }
 
-#[pyfunction(use_graphemes = "true")]
-#[pyo3(name = "byte_windows")]
+#[pyfunction(name = "byte_windows", signature = (s, max_bytes, context_bytes, use_graphemes = true))]
 pub fn byte_windows_py(
     s: String,
     max_bytes: usize,

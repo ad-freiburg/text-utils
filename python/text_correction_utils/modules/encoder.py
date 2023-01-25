@@ -24,7 +24,7 @@ class Encoder(nn.Module):
         x: torch.Tensor,
         lengths: List[int],
         pos: Optional[torch.Tensor],
-        **kwargs: Dict[str, Any]
+        **kwargs: Any
     ) -> torch.Tensor:
         raise NotImplementedError
 
@@ -226,9 +226,10 @@ class TransformerEncoder(Encoder):
         x: torch.Tensor,
         lengths: List[int],
         pos: Optional[torch.Tensor],
+        padding_mask: Optional[torch.Tensor] = None,
         **kwargs: Dict[str, Any]
     ) -> torch.Tensor:
-        padding_mask = mask.padding_mask(lengths, x.device)
+        assert padding_mask is not None
         attn_mask = None
         if self.with_pos == "add_norm":
             assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
@@ -287,7 +288,7 @@ class RNNEncoder(Encoder):
         x: torch.Tensor,
         lengths: List[int],
         pos: Optional[torch.Tensor],
-        **kwargs: Dict[str, Any]
+        **kwargs: Any
     ) -> torch.Tensor:
         packed = rnn.pack_padded_sequence(
             x,
@@ -350,7 +351,7 @@ class CNNEncoder(Encoder):
         x: torch.Tensor,
         lengths: List[int],
         pos: Optional[torch.Tensor],
-        **kwargs: Dict[str, Any]
+        **kwargs: Any
     ) -> torch.Tensor:
         x = einops.rearrange(x, "b s c -> b c s")
         x = self.cnn(x)
@@ -375,15 +376,15 @@ class GroupingEncoder(Encoder):
         x: torch.Tensor,
         lengths: List[int],
         pos: Optional[torch.Tensor],
-        **kwargs: Dict[str, Any]
+        **kwargs: Any
     ) -> torch.Tensor:
         if self.group_first:
-            x, lengths = self.grouping(x, **kwargs)
+            x, lengths, kwargs = self.grouping(x, **kwargs)
             if pos is not None:
                 pos, _ = self.grouping(pos, **kwargs)
         x = self.encoder(x, lengths, pos, **kwargs)
         if not self.group_first:
-            x, _ = self.grouping(x, **kwargs)
+            x, _, kwargs = self.grouping(x, **kwargs)
         return x
 
 

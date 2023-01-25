@@ -6,9 +6,10 @@ import shutil
 import zipfile
 import subprocess
 from pathlib import Path
-from typing import Union, Dict, List
+from typing import Union, Dict, List, Any
 
 import requests
+import numpy as np
 import torch
 from torch import nn
 from tqdm import tqdm
@@ -20,6 +21,21 @@ def _unpack_zip(
 ) -> None:
     with zipfile.ZipFile(zip_file_path, "r") as zip_file:
         zip_file.extractall(directory)
+
+
+def to(v: Any, device: torch.device) -> Any:
+    if isinstance(v, torch.Tensor):
+        return v.to(device, non_blocking=True)
+    elif isinstance(v, np.ndarray):
+        return torch.from_numpy(v).to(device, non_blocking=True)
+    elif isinstance(v, dict):
+        return {k: to(v_, device) for k, v_ in v.items()}
+    elif isinstance(v, list):
+        return [to(v_, device) for v_ in v]
+    elif isinstance(v, tuple):
+        return tuple(to(v_, device) for v_ in v)
+    else:
+        return v
 
 
 def download_zip(

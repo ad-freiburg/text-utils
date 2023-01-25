@@ -551,11 +551,12 @@ training will resume from latest checkpoint."
     def _prepare_batch(self, batch: data.DataBatch) -> Tuple[Dict[str, Any], torch.Tensor]:
         assert len(batch) > 0, "got empty batch"
         if self.cfg["model"]["type"] == "encoder_with_head":
-            token_ids_np, lengths, info, labels_np = batch.tensors
+            token_ids_np, pad_mask_np, lengths, info, labels_np = batch.tensors
             inputs = {
                 "token_ids": torch.from_numpy(token_ids_np).to(non_blocking=True, device=self.info.device),
                 "lengths": lengths,
-                **info
+                "padding_mask": torch.from_numpy(pad_mask_np).to(non_blocking=True, device=self.info.device),
+                **api.to(info, self.info.device)
             }
             labels = torch.from_numpy(labels_np).to(non_blocking=True, dtype=torch.long, device=self.info.device)
 

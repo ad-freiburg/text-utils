@@ -1,5 +1,6 @@
 import argparse
 import copy
+import sys
 import random
 import os
 import hashlib
@@ -349,6 +350,9 @@ training will resume from latest checkpoint."
             **cfg
         )
 
+        # for validation always turn off shuffling and turn on sorting
+        cfg["shuffle"] = False
+        cfg["sort"] = True
         if val_limit is not None:
             val_loader = data.DataLoader.from_files(
                 train_sources,
@@ -569,6 +573,7 @@ training will resume from latest checkpoint."
         mean_batch_preparation = tensorboard.AverageTracker("train_batch_preparation")
         mean_bsz = tensorboard.AverageTracker("train_batch_size")
         mean_seq_length = tensorboard.AverageTracker("train_sequence_length")
+        mean_seq_length_ratio = tensorboard.AverageTracker("train_sequence_length_ratio")
 
         metric_cfg = self.cfg["train"].get("metrics")
         if metric_cfg is not None:
@@ -586,6 +591,8 @@ training will resume from latest checkpoint."
             if batch is None:
                 self.logger.info(f"[rank {self.info.rank}] finished epoch {self.epoch + 1}")
                 break
+            elif len(batch) == 0:
+                raise RuntimeError("got empty batch, this should not happen during training")
 
             start_preparation = time.perf_counter()
             inputs, labels = self._prepare_batch(batch)
@@ -614,10 +621,17 @@ training will resume from latest checkpoint."
                 # have the same batch size
                 batch_size = len(batch) * self.info.world_size
                 mean_bsz.add(batch_size)
+                min_length = sys.maxsize
+                max_length = 0
                 for length in inputs["lengths"]:
                     mean_seq_length.add(length)
+                    if length < min_length:
+                        min_length = length
+                    if length > max_length:
+                        max_length = length
                 mean_batch_load.add((end_batch - start_batch) * 1000)
                 mean_batch_preparation.add((end_preparation - start_preparation) * 1000)
+                mean_seq_length_ratio.add(max_length / max(1, min_length))
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -655,6 +669,9 @@ training will resume from latest checkpoint."
                 mean_seq_length.log_tensorboard(self.summary_writer, self.step)
                 mean_seq_length.log_info(self.logger, self.step)
 
+                mean_seq_length_ratio.log_tensorboard(self.summary_writer, self.step)
+                mean_seq_length_ratio.log_info(self.logger, self.step)
+
                 items = batch.items
                 for metric in metrics:
                     metric.set_values(items, outputs)
@@ -670,6 +687,12 @@ training will resume from latest checkpoint."
                 self.summary_writer.add_histogram(
                     "train_batch_sequence_length_hist",
                     torch.as_tensor(mean_seq_length.values),
+                    self.step
+                )
+
+                self.summary_writer.add_histogram(
+                    "train_sequence_length_ratio_hist",
+                    torch.as_tensor(mean_seq_length_ratio.values),
                     self.step
                 )
 

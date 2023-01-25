@@ -331,7 +331,7 @@ def beam_inference(
             decoder_inputs,
             batch_first=True,
             padding_value=pad_token_id
-        ).to(torch.long, device)
+        ).to(non_blocking=True, dtype=torch.long, device=device)
         decoder_log_probs_tensor = torch.tensor(decoder_log_probs, device=device)
         decoder_lengths_tensor = torch.tensor(decoder_lengths, device=device)
 

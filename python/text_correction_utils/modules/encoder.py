@@ -177,7 +177,7 @@ class Alibi(nn.Module):
         r = torch.arange(s)
         rel_pos = r[None, :] - r[:, None]
         rel_pos = einops.repeat(torch.abs(rel_pos), "s t -> n s t", n=self.heads)
-        return rel_pos.to(self.slopes.device) * self.slopes
+        return rel_pos.to(non_blocking=True, device=self.slopes.device) * self.slopes
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, s = x.shape[:2]

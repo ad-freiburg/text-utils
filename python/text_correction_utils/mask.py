@@ -53,4 +53,4 @@ def padding_mask(
     mask = torch.zeros(len(lengths), max(lengths), dtype=torch.bool)
     for i, length in enumerate(lengths):
         mask[i, length:] = True
-    return mask.to(device)
+    return mask.to(non_blocking=True, device=device)

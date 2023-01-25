@@ -6,8 +6,9 @@ use crate::data::loading::{
 use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingConfig};
 use crate::text::clean;
 use crate::tokenization::{
-    token_groups_to_sparse_coo_matrix, tokenizer, TensorizedTokenizationInfo, Tokenization,
-    TokenizationInfo, Tokenizer, TokenizerConfig, LANG_UNK,
+    padding_mask, token_groups_to_sparse_coo_matrix, tokenizer, PaddingMask,
+    TensorizedTokenizationInfo, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig,
+    LANG_UNK,
 };
 use crate::unicode::{normalize, Normalization};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
@@ -409,7 +410,13 @@ impl DataBatch {
     fn tensors(
         &mut self,
         py: Python<'_>,
-    ) -> anyhow::Result<(Py<PyArray2<i32>>, Vec<usize>, PyObject, Py<PyArrayDyn<i32>>)> {
+    ) -> anyhow::Result<(
+        Py<PyArray2<i32>>,
+        PyObject,
+        Vec<usize>,
+        PyObject,
+        Py<PyArrayDyn<i32>>,
+    )> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
                 "can only get tensors once, because their data is moved"
@@ -418,9 +425,10 @@ impl DataBatch {
         let tensorized = self.tensorized.take().unwrap();
         Ok((
             tensorized.0.into_pyarray(py).into_py(py),
-            tensorized.1,
-            tensorized.2.into_py(py),
-            tensorized.3.into_pyarray(py).into_py(py),
+            tensorized.1.into_py(py),
+            tensorized.2,
+            tensorized.3.into_py(py),
+            tensorized.4.into_pyarray(py).into_py(py),
         ))
     }
 }
@@ -474,7 +482,8 @@ fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> Tensorize
             for (name, groupings) in all_groupings {
                 let sparse_mat = token_groups_to_sparse_coo_matrix(&groupings, lengths)
                     .expect("should not fail");
-                info.insert(name.clone(), sparse_mat);
+                let pad_mask = padding_mask(&sparse_mat.group_lengths).expect("should not fail");
+                info.insert(name.clone(), (sparse_mat, pad_mask));
             }
             TensorizedTokenizationInfo::TokenGroups(info)
         }
@@ -485,7 +494,12 @@ fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> Tensorize
 fn prepare(
     tokenizations: &[&Tokenization],
     pad_token_id: u32,
-) -> (Array2<i32>, Vec<usize>, TensorizedTokenizationInfo) {
+) -> (
+    Array2<i32>,
+    PaddingMask,
+    Vec<usize>,
+    TensorizedTokenizationInfo,
+) {
     let batch_size = tokenizations.len();
     let max_token_ids = tokenizations
         .iter()
@@ -509,20 +523,22 @@ fn prepare(
     }
     let token_id_arr = Array2::from_shape_vec((batch_size, max_token_ids), token_ids).unwrap();
     let info = prepare_info(tokenizations, &lengths);
-    (token_id_arr, lengths, info)
+    let pad_mask = padding_mask(&lengths).unwrap();
+    (token_id_arr, pad_mask, lengths, info)
 }
 
 impl Tensorize for Batch<Item> {
     type Output = (
-        Array2<i32>,
-        Vec<usize>,
-        TensorizedTokenizationInfo,
-        ArrayD<i32>,
+        Array2<i32>,                // token ids
+        PaddingMask,                // padding mask
+        Vec<usize>,                 // lengths
+        TensorizedTokenizationInfo, // additional info
+        ArrayD<i32>,                // labels
     );
 
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
         assert!(!self.is_empty());
-        let (token_id_arr, lengths, info) = prepare(
+        let (token_id_arr, padding_mask, lengths, info) = prepare(
             &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),
             tokenizer.pad_token_id(),
         );
@@ -551,7 +567,7 @@ impl Tensorize for Batch<Item> {
                 .unwrap()
                 .into_dyn(),
         };
-        (token_id_arr, lengths, info, label_arr)
+        (token_id_arr, padding_mask, lengths, info, label_arr)
     }
 }
 
@@ -582,7 +598,7 @@ impl InferenceBatch {
     fn tensors(
         &mut self,
         py: Python<'_>,
-    ) -> anyhow::Result<(Py<PyArray2<i32>>, Vec<usize>, PyObject)> {
+    ) -> anyhow::Result<(Py<PyArray2<i32>>, PyObject, Vec<usize>, PyObject)> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
                 "can only get tensors once, because their data is moved"
@@ -591,14 +607,20 @@ impl InferenceBatch {
         let tensorized = self.tensorized.take().unwrap();
         Ok((
             tensorized.0.into_pyarray(py).into_py(py),
-            tensorized.1,
-            tensorized.2.into_py(py),
+            tensorized.1.into_py(py),
+            tensorized.2,
+            tensorized.3.into_py(py),
         ))
     }
 }
 
 impl Tensorize for Batch<InferenceItem> {
-    type Output = (Array2<i32>, Vec<usize>, TensorizedTokenizationInfo);
+    type Output = (
+        Array2<i32>,
+        PaddingMask,
+        Vec<usize>,
+        TensorizedTokenizationInfo,
+    );
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
         prepare(
             &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),

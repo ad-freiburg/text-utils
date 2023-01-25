@@ -5,7 +5,7 @@ use itertools::Itertools;
 use numpy::ndarray::{Array1, Array2};
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 use std::collections::HashMap;
 use std::thread::sleep;
 use std::time::Duration;
@@ -256,14 +256,14 @@ pub enum TokenizationInfo {
 
 pub enum TensorizedTokenizationInfo {
     Empty,
-    TokenGroups(HashMap<String, SparseCoo>),
+    TokenGroups(HashMap<String, (SparseCoo, PaddingMask)>),
 }
 
 pub struct SparseCoo {
     indices: Array2<i32>,
     values: Array1<f32>,
     size: Vec<usize>,
-    group_lengths: Vec<usize>,
+    pub(crate) group_lengths: Vec<usize>,
 }
 
 impl IntoPy<PyObject> for SparseCoo {
@@ -278,14 +278,25 @@ impl IntoPy<PyObject> for SparseCoo {
     }
 }
 
+pub struct PaddingMask {
+    inner: Array2<bool>,
+}
+
+impl IntoPy<PyObject> for PaddingMask {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        self.inner.into_pyarray(py).into_py(py)
+    }
+}
+
 impl IntoPy<PyObject> for TensorizedTokenizationInfo {
     fn into_py(self, py: Python<'_>) -> PyObject {
         match self {
             TensorizedTokenizationInfo::Empty => PyDict::new(py),
             TensorizedTokenizationInfo::TokenGroups(matrices) => {
                 let d = PyDict::new(py);
-                for (name, matrix) in matrices {
-                    d.set_item(name, matrix.into_py(py)).unwrap();
+                for (name, (scoo, pad_mask)) in matrices {
+                    let t = PyTuple::new(py, &[scoo.into_py(py), pad_mask.into_py(py)]);
+                    d.set_item(name, t).unwrap();
                 }
                 d
             }
@@ -415,6 +426,22 @@ pub fn token_groups_to_sparse_coo_matrix(
         values: Array1::from_vec(values),
         size,
         group_lengths,
+    })
+}
+
+pub fn padding_mask(lengths: &[usize]) -> anyhow::Result<PaddingMask> {
+    let max_length = lengths.iter().max().copied().unwrap_or(0);
+    let padding_mask_vec: Vec<_> = lengths
+        .iter()
+        .map(|l| {
+            let mut pad = vec![false; *l];
+            pad.append(&mut vec![true; max_length - l]);
+            pad
+        })
+        .flatten()
+        .collect();
+    Ok(PaddingMask {
+        inner: Array2::from_shape_vec((lengths.len(), max_length), padding_mask_vec)?,
     })
 }
 

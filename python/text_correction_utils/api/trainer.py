@@ -98,6 +98,7 @@ training will resume from latest checkpoint."
         torch.cuda.manual_seed(self.cfg["seed"])
 
         torch.use_deterministic_algorithms(False)
+        cudnn.benchmark = False
 
         self.input_tokenizer = tokenization.Tokenizer.from_config(self.cfg["input_tokenizer"])
         if "output_tokenizer" in self.cfg:

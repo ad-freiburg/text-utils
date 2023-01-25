@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Union, Tuple, Iterator, Any
 
 import torch
 from torch import autocast, nn
+from torch.backends import cudnn
 
 from text_correction_utils import api, logging, configuration, io, data
 
@@ -109,6 +110,7 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
 
         torch.set_num_threads(len(os.sched_getaffinity(0)))
         torch.use_deterministic_algorithms(False)
+        cudnn.benchmark = True
 
         if device != "cpu" and not torch.cuda.is_available():
             self.logger.info("could not find a GPU, using CPU as fallback option")

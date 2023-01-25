@@ -1,5 +1,6 @@
 import collections
 import math
+import sys
 import os
 import pprint
 from typing import Dict, List, Optional, Union, Tuple, Iterator, Any
@@ -171,8 +172,9 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
     ) -> data.InferenceLoader:
         if num_threads is None:
             num_threads = min(len(os.sched_getaffinity(0)), 4)
+
         if batch_max_tokens is None:
-            batch_limit = prefetch_factor = max(1, batch_size)
+            batch_limit = max(1, batch_size)
             batch_limit_type = "batch_size"
             buffer_size = batch_limit
         else:
@@ -180,7 +182,11 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             batch_limit_type = "padded_item_size"
             min_items_per_batch = math.ceil(batch_limit / self.max_length)
             buffer_size = min_items_per_batch
-            prefetch_factor = min_items_per_batch
+
+        if sorted:
+            prefetch_factor = sys.maxsize
+        else:
+            prefetch_factor = 1
 
         self._inference_loader_cfg.update({
             "num_threads": num_threads,
@@ -208,7 +214,8 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         else:
             raise ValueError(
                 f"unknown input type {type(inputs)}, must either be a tuple of files and languages or an iterator \
-                over sequence language pairs")
+                over sequence language pairs"
+            )
         return loader
 
     def _correct_sorted(self, loader: data.InferenceLoader) -> List[data.InferenceData]:

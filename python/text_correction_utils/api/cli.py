@@ -201,6 +201,12 @@ class TextCorrectionCli:
             help="Specify the language of the input, only allowed if the chosen model supports multiple languages. \
             This language setting is ignored if the input format already specifies a language for each input."
         )
+        parser.add_argument(
+            "--profile",
+            type=str,
+            default=None,
+            help="Profile the cli run and save the results to this file"
+        )
         return parser
 
     def __init__(self, args: argparse.Namespace):
@@ -231,8 +237,16 @@ class TextCorrectionCli:
     ):
         raise NotImplementedError
 
-    def run(self):
-        if self.args.version:
+    def _run_with_profiling(self, file: str) -> None:
+        import cProfile
+        cProfile.runctx("self.run()", globals(), locals(), file)
+
+    def run(self) -> None:
+        if self.args.profile is not None:
+            file = self.args.profile
+            self.args.profile = None
+            return self._run_with_profiling(file)
+        elif self.args.version:
             print(self.version())
             return
         elif self.args.list:

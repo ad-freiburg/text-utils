@@ -528,7 +528,7 @@ training will resume from latest checkpoint."
             cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
             logger.info(f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
         else:
-            cfg = cls._config_from_experiment(experiment_dir)
+            cfg = configuration.load_config_from_experiment(experiment_dir)
             logger.info(f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
         directories = {
             "experiment": experiment_dir,

@@ -348,6 +348,8 @@ pub struct InferenceItem {
     window_idx: usize,
     #[pyo3(get)]
     window: (usize, usize, usize, usize),
+    #[pyo3(get)]
+    byte_window: (usize, usize, usize, usize),
 }
 
 impl InferenceItem {
@@ -357,6 +359,7 @@ impl InferenceItem {
         item_idx: usize,
         window_idx: usize,
         window: (usize, usize, usize, usize),
+        byte_window: (usize, usize, usize, usize),
     ) -> Self {
         InferenceItem {
             data,
@@ -364,6 +367,7 @@ impl InferenceItem {
             item_idx,
             window_idx,
             window,
+            byte_window,
         }
     }
 }
@@ -378,6 +382,14 @@ impl ItemSize for InferenceItem {
 impl InferenceItem {
     fn __len__(&self) -> usize {
         self.size()
+    }
+
+    fn window_bytes(&self) -> usize {
+        self.byte_window.2 - self.byte_window.1
+    }
+
+    fn context_bytes(&self) -> usize {
+        self.byte_window.3 - self.byte_window.0
     }
 }
 
@@ -726,13 +738,13 @@ impl InferencePipeline {
                 .enumerate()
                 .map(|(w_idx, w)| {
                     let tokenization = tok.tokenize(w.str, data.language.as_deref())?;
-                    let boundaries = w.boundaries();
                     Ok(InferenceItem::new(
                         data.clone(),
                         tokenization,
                         idx,
                         w_idx,
-                        boundaries,
+                        w.boundaries(),
+                        w.byte_boundaries(),
                     ))
                 })
                 .collect()

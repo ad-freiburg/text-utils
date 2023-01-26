@@ -5,6 +5,7 @@ from text_correction_utils.api.trainer import Trainer
 from text_correction_utils.api.utils import (
     to,
     byte_progress_bar,
+    sequence_progress_bar,
     cpu_info,
     gpu_info,
     device_info,

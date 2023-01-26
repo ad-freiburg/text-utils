@@ -6,7 +6,7 @@ import shutil
 import zipfile
 import subprocess
 from pathlib import Path
-from typing import Union, Dict, List, Any
+from typing import Union, Dict, List, Any, Optional, Iterable
 
 import requests
 import numpy as np
@@ -157,7 +157,20 @@ def num_parameters(module: nn.Module) -> Dict[str, int]:
     return {"trainable": trainable, "fixed": fixed, "total": trainable + fixed}
 
 
-def byte_progress_bar(desc: str, total: int, disable: bool = False) -> tqdm:
+def sequence_progress_bar(desc: str, total: int, disable: bool = False) -> tqdm:
+    return tqdm(
+        desc=desc,
+        total=total,
+        disable=disable,
+        ascii=True,
+        leave=False,
+        unit="seq",
+        unit_scale=True,
+        unit_divisor=1000
+    )
+
+
+def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = False) -> tqdm:
     return tqdm(
         desc=desc,
         total=total,

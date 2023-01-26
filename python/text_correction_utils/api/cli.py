@@ -4,21 +4,26 @@ from io import TextIOWrapper
 import sys
 import time
 import logging
-from typing import Any, Iterator, Union, Optional, Type, List
+from typing import Iterator, Union, Optional, Type
 
 import torch
 
 from text_correction_utils.api.corrector import TextCorrector
 from text_correction_utils.api.server import TextCorrectionServer
 from text_correction_utils.api.table import generate_report, generate_table
+from text_correction_utils.api.utils import byte_progress_bar, sequence_progress_bar
 
 from text_correction_utils import data, text
 
 
-class _SizedIterator:
+class _ProgressIterator:
     # a utility class capturing the number and size of items passed
-    # through an iterator of inference data
-    def __init__(self, it: Iterator[data.InferenceData]):
+    # through an iterator of inference data, optionally
+    # displaying a progress bar
+    def __init__(
+        self,
+        it: Iterator[data.InferenceData],
+    ):
         self.it = it
         self.num_items = 0
         self.num_bytes = 0
@@ -186,6 +191,11 @@ class TextCorrectionCli:
             "--report",
             action="store_true",
             help="Print a runtime report (ignoring startup time) at the end of the correction procedure"
+        )
+        parser.add_argument(
+            "--progress",
+            action="store_true",
+            help="Show a progress bar while correcting"
         )
         parser.add_argument(
             "--log-level",
@@ -356,14 +366,14 @@ but {self.args.lang} was specified"
                 if self.args.unsorted:
                     # correct lines from stdin as they come
                     input_it = (self.parse_input(line.strip(), self.args.lang) for line in sys.stdin)
-                    sized_it = _SizedIterator(input_it)
+                    sized_it = _ProgressIterator(input_it)
                     outputs = self.correct_iter(cor, sized_it)
                     for opt in outputs:
                         print(opt.to_str(self.args.output_format))
                 else:
                     # read stdin completely, then potentially sort and correct
                     inputs = [self.parse_input(line.strip(), self.args.lang) for line in sys.stdin]
-                    sized_it = _SizedIterator(iter(inputs))
+                    sized_it = _ProgressIterator(iter(inputs))
                     outputs = self.correct_iter(cor, sized_it)
                     for opt in outputs:
                         print(opt.to_str(self.args.output_format))

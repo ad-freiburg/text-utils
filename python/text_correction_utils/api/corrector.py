@@ -5,6 +5,7 @@ import os
 import pprint
 from typing import Dict, List, Optional, Union, Tuple, Iterator, Any
 
+from tqdm import tqdm
 import torch
 from torch import autocast, nn
 from torch.backends import cudnn
@@ -218,15 +219,42 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
                 f"unknown input type {type(inputs)}, must either be a tuple of files and languages or an iterator \
                 over sequence language pairs"
             )
+
         return loader
 
-    def _correct_sorted(self, loader: data.InferenceLoader) -> List[data.InferenceData]:
+    def _pbar(
+        self,
+        progress_desc: str,
+        progress_total: int,
+        progress_unit: str = "seq",
+        show_progress: bool = False,
+    ) -> tqdm:
+        if progress_unit == "seq":
+            return api.sequence_progress_bar(progress_desc, progress_total, not show_progress)
+        elif progress_unit == "byte":
+            return api.byte_progress_bar(progress_desc, progress_total, not show_progress)
+        else:
+            raise ValueError(f"unknown progress unit {progress_unit}, must be either 'seq' or 'byte'")
+
+    def _correct_sorted(
+        self,
+        loader: data.InferenceLoader,
+        progress_desc: str,
+        progress_total: int,
+        progress_unit: str = "seq",
+        show_progress: bool = False,
+    ) -> List[data.InferenceData]:
         results = {}
+        pbar = self._pbar(progress_desc, progress_total, progress_unit, show_progress)
         for batch in loader:
             outputs = self._run_model(batch)
             for item, output in zip(batch.items, outputs):
                 if item.item_idx not in results:
                     results[item.item_idx] = {}
+                    if progress_unit == "seq":
+                        pbar.update(1)
+                if progress_unit == "byte":
+                    pbar.update(item.window_bytes())
                 results[item.item_idx][item.window_idx] = (item, output)
         outputs = []
         for item_idx in range(len(results)):
@@ -239,10 +267,18 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
             outputs.append(self._process_results(window_items, window_outputs))
         return outputs
 
-    def _correct_unsorted(self, loader: data.InferenceLoader) -> Iterator[data.InferenceData]:
+    def _correct_unsorted(
+        self,
+        loader: data.InferenceLoader,
+        progress_desc: str,
+        progress_total: int,
+        progress_unit: str = "seq",
+        show_progress: bool = False,
+    ) -> Iterator[data.InferenceData]:
         prev_item_idx = 0
         window_items = []
         window_outputs = []
+        pbar = self._pbar(progress_desc, progress_total, progress_unit, show_progress)
         for batch in loader:
             outputs = self._run_model(batch)
             for item, output in zip(batch.items, outputs):
@@ -251,6 +287,10 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
                     window_outputs.append(output)
                     continue
                 yield self._process_results(window_items, window_outputs)
+                if progress_unit == "seq":
+                    pbar.update(1)
+                else:
+                    pbar.update(sum(item.window_bytes() for item in window_items))
                 prev_item_idx = item.item_idx
                 window_items = [item]
                 window_outputs = [output]

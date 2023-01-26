@@ -28,18 +28,27 @@ impl<'a> FromPyObject<'a> for Result {
 
 #[derive(Debug, Clone)]
 pub struct Window<'a> {
-    pub ctx_start: usize,
+    ctx_start: usize,
     ctx_end: usize,
     window_start: usize,
     window_end: usize,
+    byte_ctx_start: usize,
+    byte_ctx_end: usize,
+    byte_window_start: usize,
+    byte_window_end: usize,
     pub str: &'a str,
 }
+
 impl<'a> Window<'a> {
     pub fn new(
         ctx_start: usize,
         window_start: usize,
         window_end: usize,
         ctx_end: usize,
+        byte_ctx_start: usize,
+        byte_window_start: usize,
+        byte_window_end: usize,
+        byte_ctx_end: usize,
         str: &'a str,
     ) -> Self {
         Self {
@@ -47,6 +56,10 @@ impl<'a> Window<'a> {
             window_start,
             ctx_end,
             window_end,
+            byte_ctx_start,
+            byte_window_start,
+            byte_window_end,
+            byte_ctx_end,
             str,
         }
     }
@@ -57,6 +70,15 @@ impl<'a> Window<'a> {
             self.window_start,
             self.window_end,
             self.ctx_end,
+        )
+    }
+
+    pub fn byte_boundaries(&self) -> (usize, usize, usize, usize) {
+        (
+            self.byte_ctx_start,
+            self.byte_window_start,
+            self.byte_window_end,
+            self.byte_ctx_end,
         )
     }
 }
@@ -119,7 +141,7 @@ impl<'a> FromPyObject<'a> for WindowConfig {
 
 pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> anyhow::Result<Vec<Window<'a>>> {
     if s.is_empty() {
-        return Ok(vec![Window::new(0, 0, 0, 0, s)]);
+        return Ok(vec![Window::new(0, 0, 0, 0, 0, 0, 0, 0, s)]);
     }
     match *config {
         WindowConfig::Character(max_chars, context_chars, use_graphemes) => {
@@ -178,11 +200,17 @@ pub fn char_windows<'a>(
         let ctx_start = window_start.saturating_sub(context_length);
         let ctx_end = cs.len().min(window_start + window_length + context_length);
         let window_end = cs.len().min(window_start + window_length);
+        let byte_ctx = cs.char_range_to_byte_range(ctx_start, ctx_end);
+        let byte_window = cs.char_range_to_byte_range(window_start, window_end);
         windows.push(Window::new(
             ctx_start,
             window_start,
             window_end,
             ctx_end,
+            byte_ctx.0,
+            byte_window.0,
+            byte_window.1,
+            byte_ctx.1,
             cs.sub(ctx_start, ctx_end),
         ));
 
@@ -249,12 +277,18 @@ pub fn byte_windows<'a>(
         let ctx_start =
             window_start.saturating_sub(count_until((0..window_start).rev(), context_bytes, &cs));
         let ctx_end = window_end + count_until(window_end..cs.len(), context_bytes, &cs);
+        let byte_ctx = cs.char_range_to_byte_range(ctx_start, ctx_end);
+        let byte_window = cs.char_range_to_byte_range(window_start, window_end);
 
         windows.push(Window::new(
             ctx_start,
             window_start,
             window_end,
             ctx_end,
+            byte_ctx.0,
+            byte_window.0,
+            byte_window.1,
+            byte_ctx.1,
             cs.sub(ctx_start, ctx_end),
         ));
 

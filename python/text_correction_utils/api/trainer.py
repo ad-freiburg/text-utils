@@ -129,17 +129,16 @@ training will resume from latest checkpoint."
         if self.info.is_main_process:
             skip_batches = 2048
             num_batches = 4096
-            avg_batch_size = tensorboard.AverageTracker("batch_size")
+            avg_batch_size = tensorboard.AverageTracker("avg_batch_size")
             self.logger.info(
-                f"Estimating train loader length on main process from average batch size of first {num_batches} batches "
+                f"Estimating train loader length on main process from average batch size over {num_batches} batches "
                 f"and minimum train loader items."
             )
             for idx, batch in enumerate(self.train_loader):
-                if idx < skip_batches:
-                    continue
-                elif idx >= skip_batches + num_batches:
+                if idx >= skip_batches + num_batches:
                     break
                 avg_batch_size.add(len(batch))
+            avg_batch_size.values = avg_batch_size.values[-num_batches:]
 
             training_steps_per_epoch = int(self.train_loader.min_items // avg_batch_size.value)
             training_steps = self.cfg["train"]["num_epochs"] * training_steps_per_epoch

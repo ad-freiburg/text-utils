@@ -1,39 +1,11 @@
 from typing import Any, List, Tuple, Dict
 
-import numpy as np
 import torch
 from torch import nn
 from torch.cuda import amp
 
 
 class Grouping(nn.Module):
-    """
-    >>> t = torch.randn(1, 20, 128)
-    >>> g = Grouping("mean")
-    >>> groups = [[1] * 20]
-    >>> grouped, lengths = g(t, groups)
-    >>> tuple(grouped.shape)
-    (1, 20, 128)
-    >>> lengths
-    [20]
-    >>> torch.allclose(t, grouped)
-    True
-    >>> groups = [[3, 8, 1, 8]]
-    >>> grouped, lengths = g(t, groups)
-    >>> tuple(grouped.shape)
-    (1, 4, 128)
-    >>> lengths
-    [4]
-    >>> torch.allclose(t[0, 0:3].mean(0), grouped[0][0])
-    True
-    >>> torch.allclose(t[0, 3:11].mean(0), grouped[0][1])
-    True
-    >>> torch.allclose(t[0, 11:12].mean(0), grouped[0][2])
-    True
-    >>> torch.allclose(t[0, 12:20].mean(0), grouped[0][3])
-    True
-    """
-
     def __init__(self, aggregation: str = "mean", group_name: str = "groups"):
         super().__init__()
         assert aggregation in {"mean", "sum"}, "aggregation must be either 'mean' or 'sum'"

@@ -1,5 +1,7 @@
 import os
 import re
+import tempfile
+import zipfile
 from typing import Any, Callable
 
 import yaml
@@ -107,6 +109,16 @@ def load_config(yaml_path: str) -> Any:
     base_dir = os.path.abspath(os.path.dirname(yaml_path))
     parsed_yaml = yaml.load(raw_yaml, Loader=yaml.FullLoader)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_env)
-    print(parsed_yaml)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env)
     return yaml.load(yaml.dump(parsed_yaml), Loader=yaml.FullLoader)
+
+
+def load_config_from_experiment(dir: str) -> Any:
+    info = load_config(os.path.join(dir, "info.yaml"))
+    if not os.path.exists(os.path.join(dir, "configs.zip")):
+        return load_config(os.path.join(dir, info["config_name"]))
+
+    with zipfile.ZipFile(os.path.join(dir, "configs.zip"), "r", zipfile.ZIP_DEFLATED) as inz:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            inz.extractall(tmp_dir)
+            return load_config(os.path.join(tmp_dir, info["config_name"]))

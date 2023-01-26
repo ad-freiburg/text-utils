@@ -409,14 +409,6 @@ training will resume from latest checkpoint."
         os.makedirs(os.path.join(exp_dir, "tensorboard"), exist_ok=True)
 
     @classmethod
-    def _config_from_experiment(cls, dir: str) -> Dict[str, Any]:
-        info = configuration.load_config(os.path.join(dir, "info.yaml"))
-        with zipfile.ZipFile(os.path.join(dir, "configs.zip"), "r", zipfile.ZIP_DEFLATED) as inz:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                inz.extractall(tmp_dir)
-                return configuration.load_config(os.path.join(tmp_dir, info["config_name"]))
-
-    @classmethod
     def _train_local_distributed(
         cls,
         rank: int,
@@ -507,7 +499,7 @@ training will resume from latest checkpoint."
                 cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
                 logger.info(f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
         else:
-            cfg = cls._config_from_experiment(experiment_dir)
+            cfg = configuration.load_config_from_experiment(experiment_dir)
             if info.is_main_process:
                 logger.info(f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
 

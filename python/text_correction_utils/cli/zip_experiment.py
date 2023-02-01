@@ -1,5 +1,6 @@
 import argparse
 import os
+import glob
 import zipfile
 
 import torch
@@ -25,18 +26,17 @@ def zip_experiment(args: argparse.Namespace) -> None:
 
         experiment_dir = os.path.join(args.experiment, "..")
 
-        config_path = os.path.join(args.experiment, "config.yaml")
+        yamls = glob.glob(os.path.join(args.experiment, "*.yaml"))
+        for yaml in yamls:
+            zip_file.write(
+                yaml,
+                os.path.relpath(yaml, experiment_dir)
+            )
 
         # best checkpoint
         zip_file.write(
             only_model_checkpoint_path,
             os.path.relpath(checkpoint_best[0], experiment_dir)
-        )
-
-        # config
-        zip_file.write(
-            config_path,
-            os.path.relpath(config_path, experiment_dir)
         )
 
         # delete only model checkpoint again
@@ -47,11 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         "Script for zipping text correction experiments for easy distribution. "
         "A experiment should be a directory that contains a 'checkpoints' subdirectory with a "
-        "'checkpoint_best.pt' file in it and a 'config.yaml' configuration file. The best checkpoint "
+        "'checkpoint_best.pt' file in it and yaml configuration files. The best checkpoint "
         "will be loaded and trimmed to only contain the 'model_state_dict' key to save space."
     )
-    parser.add_argument("--experiment", type=str, required=True)
-    parser.add_argument("--out-file", type=str, required=True)
+    parser.add_argument("-e", "--experiment", type=str, required=True)
+    parser.add_argument("-o", "--out-file", type=str, required=True)
     return parser.parse_args()
 
 

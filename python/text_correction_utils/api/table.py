@@ -136,7 +136,7 @@ def generate_report(
             ["Input size 1", f"{input_size} sequences"],
             ["Input size 2", f"{input_size_bytes / 1000:,.2f} kB"],
             ["Runtime", f"{runtime:,.1f} s"],
-            ["Throughput 1", f"{input_size / runtime:,.1f} seq/s"],
+            ["Throughput 1", f"{input_size / runtime:,.1f} Seq/s"],
             ["Throughput 2", f"{input_size_bytes / runtime / 1000:,.1f} kB/s"],
             ["GPU memory", f"{torch.cuda.max_memory_reserved(device) // 1024 ** 2:,} MiB"],
             ["Parameters", f"{utils.num_parameters(model)['total'] / 1000 ** 2:,.1f} M"],

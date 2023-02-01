@@ -1,7 +1,5 @@
-import functools
 import copy
-import math
-from typing import Optional, List, Tuple, Any, Dict
+from typing import Optional, Tuple, Any, Dict
 
 import einops
 import torch
@@ -10,9 +8,9 @@ from torch.nn import functional as F
 from torch.nn.modules.transformer import _get_activation_fn
 from torch.nn.utils import rnn
 
-from text_correction_utils import mask
 from text_correction_utils.modules import utils
 from text_correction_utils.modules.grouping import Grouping
+from text_correction_utils.modules.embedding import Alibi
 
 
 class Encoder(nn.Module):
@@ -22,10 +20,9 @@ class Encoder(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        lengths: List[int],
         pos: Optional[torch.Tensor],
         **kwargs: Any
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         raise NotImplementedError
 
 
@@ -143,51 +140,6 @@ class _TransformerEncoderLayer(nn.Module):
         return self.dropout2(x)
 
 
-class Alibi(nn.Module):
-    def __init__(self, heads: int):
-        super().__init__()
-        self.heads = heads
-        self.register_buffer(
-            "slopes",
-            torch.tensor(self.get_slopes(self.heads)).unsqueeze(-1).unsqueeze(-1) * -1,
-            persistent=False
-        )
-        # mask has shape [b * n, s, s]
-        self.mask: Optional[torch.Tensor] = None
-
-    @classmethod
-    def get_slopes(cls, n: int):
-        def get_slopes_power_of_2(n):
-            start = (2**(-2**-(math.log2(n)-3)))
-            ratio = start
-            return [start*ratio**i for i in range(n)]
-
-        if math.log2(n).is_integer():
-            # In the paper, we only train models that have 2^a heads for some a. This function has
-            return get_slopes_power_of_2(n)
-        else:
-            # some good properties that only occur when the input is a power of 2. To maintain that even
-            # when the number of heads is not a power of 2, we use this workaround.
-            closest_power_of_2 = 2**math.floor(math.log2(n))
-            return get_slopes_power_of_2(closest_power_of_2) + cls.get_slopes(
-                2*closest_power_of_2
-            )[0::2][:n-closest_power_of_2]
-
-    def get_mask(self, s: int) -> torch.Tensor:
-        r = torch.arange(s)
-        rel_pos = r[None, :] - r[:, None]
-        rel_pos = einops.repeat(torch.abs(rel_pos), "s t -> n s t", n=self.heads)
-        return rel_pos.to(non_blocking=True, device=self.slopes.device) * self.slopes
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, s = x.shape[:2]
-
-        if self.mask is None or s > self.mask.shape[1]:
-            self.mask = self.get_mask(s)
-
-        return einops.repeat(self.mask[:, :s, :s], "n s t -> (b n) s t", b=b)
-
-
 class TransformerEncoder(Encoder):
     def __init__(
         self,
@@ -198,11 +150,13 @@ class TransformerEncoder(Encoder):
         dropout: float,
         with_pos: str,
         activation: str = "gelu",
-        share_parameters: bool = False
+        share_parameters: bool = False,
+        padding_mask: str = "padding_mask"
     ):
         super().__init__()
         self.num_layers = num_layers
         self.share_parameters = share_parameters
+        self.padding_mask = padding_mask
 
         self.transformer = nn.ModuleList(
             _TransformerEncoderLayer(
@@ -224,12 +178,11 @@ class TransformerEncoder(Encoder):
     def forward(
         self,
         x: torch.Tensor,
-        lengths: List[int],
         pos: Optional[torch.Tensor],
-        padding_mask: Optional[torch.Tensor] = None,
-        **kwargs: Dict[str, Any]
-    ) -> torch.Tensor:
-        assert padding_mask is not None
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        padding_mask = kwargs.get(self.padding_mask)
+        assert padding_mask is not None, f"expected '{self.padding_mask}' in kwargs"
         attn_mask = None
         if self.with_pos == "add_norm":
             assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
@@ -249,7 +202,7 @@ class TransformerEncoder(Encoder):
             enc = self.transformer[0 if self.share_parameters else i](
                 enc, pos, padding_mask=padding_mask, attn_mask=attn_mask
             )
-        return enc
+        return enc, kwargs
 
 
 class RNNEncoder(Encoder):
@@ -286,10 +239,11 @@ class RNNEncoder(Encoder):
     def forward(
         self,
         x: torch.Tensor,
-        lengths: List[int],
-        pos: Optional[torch.Tensor],
+        _: Optional[torch.Tensor],
         **kwargs: Any
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        lengths = kwargs.get("lengths")
+        assert lengths is not None, "lengths must be given for RNNEncoder"
         packed = rnn.pack_padded_sequence(
             x,
             torch.as_tensor(lengths, dtype=torch.long),
@@ -301,7 +255,7 @@ class RNNEncoder(Encoder):
         padded = rnn.pad_sequence(unpacked)
         if self.bidirectional:
             padded = padded.view(*x.shape[:2], 2, -1).mean(2)
-        return padded
+        return padded, kwargs
 
 
 def _cnn_block(
@@ -349,13 +303,12 @@ class CNNEncoder(Encoder):
     def forward(
         self,
         x: torch.Tensor,
-        lengths: List[int],
-        pos: Optional[torch.Tensor],
+        _: Optional[torch.Tensor],
         **kwargs: Any
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         x = einops.rearrange(x, "b s c -> b c s")
         x = self.cnn(x)
-        return einops.rearrange(x, "b c s -> b s c")
+        return einops.rearrange(x, "b c s -> b s c"), kwargs
 
 
 class GroupingEncoder(Encoder):
@@ -364,28 +317,34 @@ class GroupingEncoder(Encoder):
         encoder: Encoder,
         group_first: bool = True,
         group_aggregation: str = "mean",
-        group_name: str = "groups"
+        group_name: str = "groups",
+        group_lengths: str = "group_lengths",
+        group_padding_mask: str = "group_padding_mask"
     ):
         super().__init__()
         self.encoder = encoder
-        self.grouping = Grouping(group_aggregation, group_name)
+        self.grouping = Grouping(
+            group_aggregation,
+            group_name,
+            group_lengths,
+            group_padding_mask
+        )
         self.group_first = group_first
 
     def forward(
         self,
         x: torch.Tensor,
-        lengths: List[int],
         pos: Optional[torch.Tensor],
         **kwargs: Any
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         if self.group_first:
-            x, lengths, kwargs = self.grouping(x, **kwargs)
             if pos is not None:
                 pos, _ = self.grouping(pos, **kwargs)
-        x = self.encoder(x, lengths, pos, **kwargs)
+            x, kwargs = self.grouping(x, **kwargs)
+        x, kwargs = self.encoder(x, pos, **kwargs)
         if not self.group_first:
-            x, _, kwargs = self.grouping(x, **kwargs)
-        return x
+            x, kwargs = self.grouping(x, **kwargs)
+        return x, kwargs
 
 
 def encoder(config: Dict[str, Any]) -> Encoder:

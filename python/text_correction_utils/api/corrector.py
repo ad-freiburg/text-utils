@@ -142,6 +142,9 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
     def _prepare_batch(self, batch: data.InferenceBatch) -> Dict[str, Any]:
         raise NotImplementedError
 
+    def _inference(self, inputs: Dict[str, Any]) -> Any:
+        raise NotImplementedError
+
     @torch.inference_mode()
     def _run_model(self, batch: data.InferenceBatch) -> Any:
         inputs = self._prepare_batch(batch)
@@ -152,9 +155,9 @@ one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
                     dtype=self._mixed_precision_dtype,
                     enabled=self.mixed_precision_enabled
             ):
-                outputs, _ = self.model(**inputs)
+                outputs = self._inference(inputs)
         else:
-            outputs, _ = self.model(**inputs)
+            outputs = self._inference(inputs)
         return outputs
 
     def _process_results(

@@ -10,7 +10,7 @@ use crate::tokenization::{
     TensorizedTokenizationInfo, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig,
     LANG_UNK,
 };
-use crate::unicode::{normalize, Normalization};
+use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
 use anyhow::{anyhow, Context};
@@ -390,6 +390,30 @@ impl InferenceItem {
 
     fn context_bytes(&self) -> usize {
         self.byte_window.3 - self.byte_window.0
+    }
+
+    fn window_str(&self) -> String {
+        self.data.text[self.byte_window.1..self.byte_window.2].to_string()
+    }
+
+    fn context_str(&self) -> String {
+        self.data.text[self.byte_window.0..self.byte_window.3].to_string()
+    }
+
+    fn window_chars(&self) -> Vec<String> {
+        let cs = CS::new(
+            &self.data.text[self.byte_window.1..self.byte_window.2],
+            true,
+        );
+        cs.chars().map(|c| c.str.to_string()).collect()
+    }
+
+    fn context_chars(&self) -> Vec<String> {
+        let cs = CS::new(
+            &self.data.text[self.byte_window.0..self.byte_window.3],
+            true,
+        );
+        cs.chars().map(|c| c.str.to_string()).collect()
     }
 }
 

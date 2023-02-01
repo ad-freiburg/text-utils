@@ -1,22 +1,20 @@
 import math
 import copy
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, Any, Optional, Tuple
 
 import einops
 import torch
 from torch import nn
 
 from text_correction_utils import tokenization
-from text_correction_utils.modules import grouping
 
 
 class Embedding(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        lengths: List[int],
-        **kwargs: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, List[int], Optional[torch.Tensor]]:
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         raise NotImplementedError
 
 
@@ -25,12 +23,6 @@ def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tok
     emb_type = cfg.pop("type")
     if emb_type == "standard":
         return StandardEmbedding(
-            num_embeddings=input_tokenizer.vocab_size(),
-            pad_token_id=input_tokenizer.pad_token_id(),
-            **cfg
-        )
-    elif emb_type == "byte":
-        return ByteEmbedding(
             num_embeddings=input_tokenizer.vocab_size(),
             pad_token_id=input_tokenizer.pad_token_id(),
             **cfg
@@ -77,6 +69,53 @@ class LearnedPositionalEmbedding(TokenEmbedding):
         super().__init__(embedding_dim, num_embeddings)
 
 
+class Alibi(nn.Module):
+    def __init__(self, heads: int):
+        super().__init__()
+        self.heads = heads
+        self.register_buffer(
+            "slopes",
+            torch.tensor(self.get_slopes(self.heads)).unsqueeze(-1).unsqueeze(-1) * -1,
+            persistent=False
+        )
+        # mask has shape [b * n, s, s]
+        self.mask: Optional[torch.Tensor] = None
+
+    # mostly copied from original implementation at
+    # https://github.com/ofirpress/attention_with_linear_biases
+    @classmethod
+    def get_slopes(cls, n: int):
+        def get_slopes_power_of_2(n):
+            start = (2**(-2**-(math.log2(n)-3)))
+            ratio = start
+            return [start*ratio**i for i in range(n)]
+
+        if math.log2(n).is_integer():
+            # In the paper, we only train models that have 2^a heads for some a. This function has
+            return get_slopes_power_of_2(n)
+        else:
+            # some good properties that only occur when the input is a power of 2. To maintain that even
+            # when the number of heads is not a power of 2, we use this workaround.
+            closest_power_of_2 = 2**math.floor(math.log2(n))
+            return get_slopes_power_of_2(closest_power_of_2) + cls.get_slopes(
+                2*closest_power_of_2
+            )[0::2][:n-closest_power_of_2]
+
+    def get_mask(self, s: int) -> torch.Tensor:
+        r = torch.arange(s)
+        rel_pos = r[None, :] - r[:, None]
+        rel_pos = einops.repeat(torch.abs(rel_pos), "s t -> n s t", n=self.heads)
+        return rel_pos.to(non_blocking=True, device=self.slopes.device) * self.slopes
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, s = x.shape[:2]
+
+        if self.mask is None or s > self.mask.shape[1]:
+            self.mask = self.get_mask(s)
+
+        return einops.repeat(self.mask[:, :s, :s], "n s t -> (b n) s t", b=b)
+
+
 class PositionalEmbedding(nn.Module):
     def __init__(
         self,
@@ -103,7 +142,11 @@ class PositionalEmbedding(nn.Module):
         self.pos_drop = nn.Dropout1d(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        positions = einops.repeat(torch.arange(x.shape[1], device=x.device), "s -> b s", b=x.shape[0])
+        positions = einops.repeat(
+            torch.arange(x.shape[1], device=x.device),
+            "s -> b s",
+            b=x.shape[0]
+        )
         return self.pos_drop(self.pos_embedding(positions))
 
 
@@ -137,83 +180,11 @@ class StandardEmbedding(Embedding):
     def forward(
         self,
         x: torch.Tensor,
-        lengths: List[int],
-        **kwargs: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, List[int], Optional[torch.Tensor]]:
+        **_: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         emb = self.token_drop(self.embedding(x))
         if self.pos_embedding is not None:
             pos_emb = self.pos_embedding(x)
         else:
             pos_emb = None
-        return emb, lengths, pos_emb
-
-
-class ByteEmbedding(Embedding):
-    def __init__(
-        self,
-        num_embeddings: int,
-        groups: str,
-        embedding_dim: int,
-        pad_token_id: int,
-        dropout: float,
-        max_length: Optional[int] = None,
-        positional_embeddings: Optional[str] = None,
-        byte_embedding_dim: Optional[int] = None,
-        aggregation: str = "mean"
-    ):
-        super().__init__()
-        assert groups in {"bytes", "code_points"}, "groups must be either bytes or code_points"
-        self.groups = groups
-
-        if byte_embedding_dim is None:
-            byte_embedding_dim = embedding_dim // 8
-        else:
-            assert byte_embedding_dim <= embedding_dim, \
-                "byte embedding dim must be smaller than or equal to embedding dim"
-
-        self.byte_grouping = grouping.Grouping(aggregation)
-        if self.groups == "code_points":
-            self.code_point_proj = nn.Linear(byte_embedding_dim, byte_embedding_dim, bias=False)
-            self.code_point_grouping = grouping.Grouping(aggregation)
-
-        self.out_proj = nn.Linear(byte_embedding_dim, embedding_dim, bias=False)
-
-        assert num_embeddings >= 256, "number of embeddings must be at least 256, one for each byte, \
-all additional embeddings are assumed to be special tokens"
-
-        self.embedding = TokenEmbedding(byte_embedding_dim, num_embeddings, pad_token_id)
-
-        if positional_embeddings is not None:
-            assert max_length is not None, "max length must be specified together with positional embeddings"
-            self.pos_embedding = PositionalEmbedding(positional_embeddings, embedding_dim, max_length, dropout)
-        else:
-            self.pos_embedding = None
-
-        self.token_drop = nn.Dropout1d(dropout)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        lengths: List[int],
-        byte_groups: Optional[List[List[int]]] = None,
-        code_point_groups: Optional[List[List[int]]] = None,
-        **kwargs: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        byte_emb = self.embedding(x)
-
-        if self.groups == "code_points":
-            assert byte_groups is not None and code_point_groups is not None
-            byte_emb, lengths = self.byte_grouping(byte_emb, groups=byte_groups)
-            code_point_emb = self.code_point_proj(byte_emb)
-            emb, lengths = self.code_point_grouping(code_point_emb, groups=code_point_groups)
-        else:
-            assert byte_groups is not None
-            emb, lengths = self.byte_grouping(byte_emb, groups=byte_groups)
-
-        emb = self.out_proj(emb)
-        emb = self.token_drop(emb)
-        if self.pos_embedding is not None:
-            pos_emb = self.pos_embedding(emb)
-        else:
-            pos_emb = None
-        return emb, lengths, pos_emb
+        return emb, pos_emb

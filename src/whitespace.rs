@@ -147,26 +147,36 @@ fn repair_py(
     repair(s, &operations, use_graphemes)
 }
 
-#[pyfunction(signature = (s, substring, use_graphemes = true))]
-pub fn find_substring_ignoring_whitespace(
+pub fn find_substring_ignoring_whitespace<'a>(
+    s: &'a str,
+    substring: &str,
+    use_graphemes: bool,
+) -> Option<&'a str> {
+    let cs = CS::new(substring, use_graphemes);
+    let substring = r"\s*".to_string()
+        + &cs
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| escape(c.str))
+            .join(r"\s*")
+        + r"\s*";
+    let re = Regex::new(substring.as_str()).expect("invalid pattern, should never happen");
+    re.find(s).map_or(None, |m| Some(&s[m.start()..m.end()]))
+}
+
+#[pyfunction(name = "find_substring_ignoring_whitespace", signature = (s, substring, use_graphemes = true))]
+pub fn find_substring_ignoring_whitespace_py(
     s: &str,
     substring: &str,
     use_graphemes: bool,
-) -> Option<(usize, usize)> {
-    let cs = CS::new(substring, use_graphemes);
-    let substring = cs
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .map(|c| escape(c.str))
-        .join(r"\s*");
-    let re = Regex::new(substring.as_str()).expect("invalid pattern, should never happen");
-    re.find(s).map_or(None, |m| Some((m.start(), m.end())))
+) -> Option<String> {
+    find_substring_ignoring_whitespace(s, substring, use_graphemes).map(|s| s.to_string())
 }
 
 /// A submodule containing functionality specific to handle whitespaces in text.
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "whitespace")?;
-    m.add_function(wrap_pyfunction!(find_substring_ignoring_whitespace, m)?)?;
+    m.add_function(wrap_pyfunction!(find_substring_ignoring_whitespace_py, m)?)?;
     m.add_function(wrap_pyfunction!(repair_py, m)?)?;
     m.add_function(wrap_pyfunction!(operations, m)?)?;
     m.add_function(wrap_pyfunction!(full, m)?)?;
@@ -243,11 +253,7 @@ mod tests {
         let s = "this is a test sentence";
         let sub = "  a te s\n t";
         let result = find_substring_ignoring_whitespace(s, sub, true);
-        assert!(result.is_some());
-        let (start, end) = result.unwrap();
-        assert_eq!(start, 8);
-        assert_eq!(end, 14);
-        assert_eq!(&s[start..end], "a test");
+        assert_eq!(result.unwrap(), " a test ");
         let result = find_substring_ignoring_whitespace(s, "a täst", true);
         assert!(result.is_none());
         let s = "this is \" a \\w+ test \" sentence";

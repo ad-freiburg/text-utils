@@ -367,9 +367,9 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
         let idx = rng.gen_range(0..possible_substrings.len());
         let (start, end, _) = possible_substrings[idx];
         let processed = item.processed[start..end].to_string();
-        let (start, end) =
+        let original =
             match find_substring_ignoring_whitespace(&item.original, &processed, use_graphemes) {
-                Some(m) => m,
+                Some(s) => s.trim().to_string(),
                 None => {
                     return Err(anyhow!(
                         "original and processed sequences can only differ in \
@@ -378,7 +378,6 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
                     ))
                 }
             };
-        let original = item.original[start..end].to_string();
         Ok(TextData {
             original,
             processed,

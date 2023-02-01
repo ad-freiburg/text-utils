@@ -164,7 +164,7 @@ def sequence_progress_bar(desc: str, total: int, disable: bool = False) -> tqdm:
         disable=disable,
         ascii=True,
         leave=False,
-        unit="seq",
+        unit="Seq",
         unit_scale=True,
         unit_divisor=1000
     )
@@ -177,7 +177,7 @@ def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = Fa
         disable=disable,
         ascii=True,
         leave=False,
-        unit="iB",
+        unit="B",
         unit_scale=True,
-        unit_divisor=1024
+        unit_divisor=1000
     )

@@ -1,4 +1,4 @@
-name: Upload release to PyPi
+name: Build and upload release to PyPi
 
 on:
   release:
@@ -15,4 +15,4 @@ jobs:
           maturin-version: v0.13.7
           manylinux: auto
           command: publish
-          args: --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_PASSWORD }}
+          args: --release --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_PASSWORD }}

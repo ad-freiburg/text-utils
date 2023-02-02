@@ -51,8 +51,10 @@ pub fn word_boundaries(s: &str, use_graphemes: bool) -> Vec<(usize, usize)> {
         num_elements += 1;
     }
     // add potential last word (not captured by the for loop above)
-    if start.is_some() && start.unwrap() < num_elements {
-        boundaries.push((start.unwrap(), num_elements));
+    if let Some(start) = start {
+        if start < num_elements {
+            boundaries.push((start, num_elements));
+        }
     }
     boundaries
 }
@@ -244,7 +246,7 @@ pub fn edit_word(
         "edit word should only be called \
     on strings that do not contain whitespace"
     );
-    if edits.is_empty() || cs.len() == 0 {
+    if edits.is_empty() || cs.is_empty() {
         return (word.to_string(), exclude_indices);
     }
     let edit = &edits[rng.gen_range(0..edits.len())];

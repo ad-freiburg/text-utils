@@ -77,7 +77,7 @@ impl<'a> FromPyObject<'a> for TokenizerConfig {
         Ok(Self {
             tokenize: d
                 .get_item("tokenize")
-                .ok_or(py_required_key_error("tokenize", "tokenizer config"))?
+                .ok_or_else(|| py_required_key_error("tokenize", "tokenizer config"))?
                 .extract()?,
             prefix: if let Some(value) = d.get_item("prefix") {
                 value.extract()?
@@ -338,12 +338,10 @@ impl<'a> FromPyObject<'a> for GroupAggregation {
     }
 }
 
+type Values = Vec<Vec<f32>>;
+type Indices = Vec<Vec<i32>>;
 #[inline]
-fn expand_grouping(
-    s_idx: usize,
-    groups: &Vec<Vec<usize>>,
-    pow: i32,
-) -> (Vec<Vec<f32>>, Vec<Vec<i32>>, Vec<Vec<i32>>) {
+fn expand_grouping(s_idx: usize, groups: &Vec<Vec<usize>>, pow: i32) -> (Values, Indices, Indices) {
     let num_groups = groups[s_idx].len();
     if s_idx > 0 {
         let mut new_weights = vec![vec![]; num_groups];
@@ -433,12 +431,11 @@ pub fn padding_mask(lengths: &[usize]) -> anyhow::Result<PaddingMask> {
     let max_length = lengths.iter().max().copied().unwrap_or(0);
     let padding_mask_vec: Vec<_> = lengths
         .iter()
-        .map(|l| {
+        .flat_map(|l| {
             let mut pad = vec![false; *l];
             pad.append(&mut vec![true; max_length - l]);
             pad
         })
-        .flatten()
         .collect();
     Ok(PaddingMask {
         inner: Array2::from_shape_vec((lengths.len(), max_length), padding_mask_vec)?,
@@ -758,8 +755,10 @@ impl CharTokenizer {
         }
         tokenizer
     }
+}
 
-    pub fn default() -> Self {
+impl Default for CharTokenizer {
+    fn default() -> Self {
         Self::new(true, &DEFAULT_PREFIX_TOKENS, &DEFAULT_SUFFIX_TOKENS, None)
     }
 }
@@ -899,6 +898,19 @@ pub struct ByteTokenizer {
     aggregation: GroupAggregation,
 }
 
+impl Default for ByteTokenizer {
+    fn default() -> Self {
+        ByteTokenizer::new(
+            true,
+            ByteGroups::CodePoints,
+            GroupAggregation::Mean,
+            &[],
+            &[],
+            None,
+        )
+    }
+}
+
 impl ByteTokenizer {
     pub fn new(
         use_graphemes: bool,
@@ -952,17 +964,6 @@ impl ByteTokenizer {
             tokenizer.add_special_token(lang);
         }
         tokenizer
-    }
-
-    pub fn default() -> Self {
-        Self::new(
-            true,
-            ByteGroups::Bytes,
-            GroupAggregation::Mean,
-            &DEFAULT_PREFIX_TOKENS,
-            &DEFAULT_SUFFIX_TOKENS,
-            None,
-        )
     }
 
     fn split(&self, s: &str) -> (Vec<u32>, HashMap<String, Grouping>) {
@@ -1149,7 +1150,7 @@ impl PyTokenizer {
         self.tokenizer.num_suffix_tokens()
     }
 
-    fn add_special_tokens(&mut self, tokens: Vec<&str>) -> () {
+    fn add_special_tokens(&mut self, tokens: Vec<&str>) {
         self.tokenizer.add_special_tokens(&tokens);
     }
 

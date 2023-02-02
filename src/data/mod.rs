@@ -42,7 +42,7 @@ pub struct TextData {
 
 impl TextData {
     pub fn new(original: String, processed: Option<String>, language: Option<String>) -> Self {
-        let processed = processed.unwrap_or(original.clone());
+        let processed = processed.unwrap_or_else(|| original.clone());
         TextData {
             original,
             processed,
@@ -234,7 +234,7 @@ impl InferenceData {
     }
 
     pub fn from_str(s: &str, format: &InferenceDataFormat) -> anyhow::Result<Self> {
-        let splits: Vec<&str> = s.split("\t").collect();
+        let splits: Vec<&str> = s.split('\t').collect();
         let (text, detections, language) = match format {
             InferenceDataFormat::Text => (s, None, None),
             InferenceDataFormat::TextPlusDetections => {
@@ -257,7 +257,7 @@ impl InferenceData {
                 )
             }
             InferenceDataFormat::TextPlusLanguage => {
-                let splits: Vec<&str> = s.split("\t").collect();
+                let splits: Vec<&str> = s.split('\t').collect();
                 if splits.len() < 2 {
                     return Err(anyhow!(
                         "expected at least 2 tab separated values in '{}', got {}",
@@ -277,7 +277,7 @@ impl InferenceData {
                 )
             }
             InferenceDataFormat::TextPlusDetectionsPlusLanguage => {
-                let splits: Vec<&str> = s.split("\t").collect();
+                let splits: Vec<&str> = s.split('\t').collect();
                 if splits.len() < 3 {
                     return Err(anyhow!(
                         "expected at least 3 tab separated values in '{}', got {}",
@@ -326,10 +326,10 @@ impl InferenceData {
         if format == InferenceDataFormat::TextPlusDetections
             || format == InferenceDataFormat::TextPlusDetectionsPlusLanguage
         {
-            s.push_str("\t");
+            s.push('\t');
             s.push_str(&self.detection_str()?);
         }
-        s.push_str("\t");
+        s.push('\t');
         s.push_str(self.language.as_deref().unwrap_or(LANG_UNK));
         Ok(s)
     }
@@ -426,6 +426,13 @@ pub struct DataBatch {
     tensorized: Option<<Batch<Item> as Tensorize>::Output>,
 }
 
+type PyDataTensors = (
+    Py<PyArray2<i32>>,
+    PyObject,
+    Vec<usize>,
+    PyObject,
+    Py<PyArrayDyn<i32>>,
+);
 #[pymethods]
 impl DataBatch {
     fn __len__(&self) -> usize {
@@ -443,16 +450,7 @@ impl DataBatch {
     }
 
     #[getter]
-    fn tensors(
-        &mut self,
-        py: Python<'_>,
-    ) -> anyhow::Result<(
-        Py<PyArray2<i32>>,
-        PyObject,
-        Vec<usize>,
-        PyObject,
-        Py<PyArrayDyn<i32>>,
-    )> {
+    fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyDataTensors> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
                 "can only get tensors once, because their data is moved"
@@ -487,7 +485,7 @@ fn max_groups<'a>(tokenizations: impl Iterator<Item = &'a Tokenization>) -> usiz
             _ => tokenization.token_ids.len(),
         }
     }
-    tokenizations.map(|t| size(t)).max().unwrap_or(0)
+    tokenizations.map(size).max().unwrap_or(0)
 }
 
 #[inline]
@@ -505,11 +503,11 @@ fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> Tensorize
         TokenizationInfo::Empty => TensorizedTokenizationInfo::Empty,
         TokenizationInfo::TokenGroups(_) => {
             let mut info = HashMap::new();
-            let mut all_groupings = HashMap::new();
+            let mut all_groupings: HashMap<_, Vec<_>> = HashMap::new();
             for &tokenization in tokenizations {
                 if let TokenizationInfo::TokenGroups(token_groups) = &tokenization.info {
                     for (key, grouping) in token_groups {
-                        all_groupings.entry(key).or_insert(vec![]).push(grouping);
+                        all_groupings.entry(key).or_default().push(grouping);
                     }
                 } else {
                     panic!("should not happen");
@@ -614,6 +612,7 @@ pub struct InferenceBatch {
     tensorized: Option<<Batch<InferenceItem> as Tensorize>::Output>,
 }
 
+type PyInferenceTensors = (Py<PyArray2<i32>>, PyObject, Vec<usize>, PyObject);
 #[pymethods]
 impl InferenceBatch {
     fn __len__(&self) -> usize {
@@ -631,10 +630,7 @@ impl InferenceBatch {
     }
 
     #[getter]
-    fn tensors(
-        &mut self,
-        py: Python<'_>,
-    ) -> anyhow::Result<(Py<PyArray2<i32>>, PyObject, Vec<usize>, PyObject)> {
+    fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyInferenceTensors> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
                 "can only get tensors once, because their data is moved"
@@ -754,8 +750,8 @@ impl InferencePipeline {
                 text: clean(&data.text, use_graphemes),
                 ..data
             };
-            if normalization.is_some() {
-                data.text = normalize(&data.text, normalization.unwrap(), use_graphemes);
+            if let Some(normalization) = normalization {
+                data.text = normalize(&data.text, normalization, use_graphemes);
             }
             windows(&data.text, &window_cfg)?
                 .iter()
@@ -793,6 +789,7 @@ struct InferenceLoader {
 }
 
 impl InferenceLoader {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         generators: Vec<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>>,
         tokenizer_config: TokenizerConfig,
@@ -820,21 +817,21 @@ impl InferenceLoader {
         let text_iter_err = iter_err.clone();
         let pipe_iter_err = iter_err.clone();
         let iter = text_iter
-            .scan((), move |_, d| {
-                if d.is_err() {
-                    *text_iter_err.lock().unwrap() = Some(d.unwrap_err());
+            .scan((), move |_, data| {
+                if let Err(e) = data {
+                    *text_iter_err.lock().unwrap() = Some(e);
                     None
                 } else {
-                    d.ok()
+                    data.ok()
                 }
             })
             .pipe(&pipeline, num_threads, None)
-            .scan((), move |_, i| {
-                if i.is_err() {
-                    *pipe_iter_err.lock().unwrap() = Some(i.unwrap_err());
+            .scan((), move |_, item| {
+                if let Err(e) = item {
+                    *pipe_iter_err.lock().unwrap() = Some(e);
                     None
                 } else {
-                    i.ok()
+                    item.ok()
                 }
             })
             .flatten()
@@ -859,6 +856,7 @@ impl InferenceLoader {
 
 #[pymethods]
 impl InferenceLoader {
+    #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     #[pyo3(signature=(
         iterator,
@@ -908,6 +906,7 @@ impl InferenceLoader {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     #[pyo3(signature=(
         files,
@@ -1032,6 +1031,7 @@ struct DataLoader {
 }
 
 impl DataLoader {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         files: Vec<String>,
         languages: Option<Vec<String>>,
@@ -1138,6 +1138,7 @@ impl DataLoader {
 
 #[pymethods]
 impl DataLoader {
+    #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     #[pyo3(signature = (
         files,

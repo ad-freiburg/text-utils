@@ -277,13 +277,13 @@ fn switch(fns: Vec<PreprocessingConfig>, probs: Vec<f64>) -> Box<PreprocessingFn
         "all switch probabilities should sum to 1"
     );
 
-    let fns: Vec<Box<PreprocessingFn>> = fns.into_iter().map(|f| preprocessing_fn(f)).collect();
+    let fns: Vec<Box<PreprocessingFn>> = fns.into_iter().map(preprocessing_fn).collect();
 
     // return new function that switches between multiple preprocessing functions
     // based on the given probability distribution
     Box::new(move |item, seed| -> anyhow::Result<TextData> {
-        let mut rng = if seed.is_some() {
-            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        let mut rng = if let Some(seed) = seed {
+            ChaCha8Rng::seed_from_u64(seed)
         } else {
             ChaCha8Rng::from_entropy()
         };
@@ -324,8 +324,8 @@ fn noise_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<Preprocess
         "at least one of insert whitespace or delete whitespace probability must be greater 0"
     );
     Box::new(move |item, seed| {
-        let mut rng = if seed.is_some() {
-            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        let mut rng = if let Some(seed) = seed {
+            ChaCha8Rng::seed_from_u64(seed)
         } else {
             ChaCha8Rng::from_entropy()
         };
@@ -358,8 +358,8 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
     use_graphemes: bool,
 ) -> Box<PreprocessingFn> {
     Box::new(move |item, seed| {
-        let mut rng = if seed.is_some() {
-            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        let mut rng = if let Some(seed) = seed {
+            ChaCha8Rng::seed_from_u64(seed)
         } else {
             ChaCha8Rng::from_entropy()
         };
@@ -405,8 +405,8 @@ fn byte_substring(max_bytes: usize, use_graphemes: bool) -> Box<PreprocessingFn>
 fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
     let prob = constrain(prob, 0.0, 1.0);
     Box::new(move |item, seed| {
-        let mut rng = if seed.is_some() {
-            ChaCha8Rng::seed_from_u64(seed.unwrap())
+        let mut rng = if let Some(seed) = seed {
+            ChaCha8Rng::seed_from_u64(seed)
         } else {
             ChaCha8Rng::from_entropy()
         };
@@ -448,10 +448,7 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> 
 pub fn preprocessing(preprocessing: Vec<PreprocessingConfig>) -> Box<PreprocessingFn> {
     // return new function that runs all given preprocessing functions
     // in order
-    let fns: Vec<Box<PreprocessingFn>> = preprocessing
-        .into_iter()
-        .map(|p| preprocessing_fn(p))
-        .collect();
+    let fns: Vec<Box<PreprocessingFn>> = preprocessing.into_iter().map(preprocessing_fn).collect();
     Box::new(move |mut item, seed| {
         for f in fns.iter() {
             item = f(item, seed)?;

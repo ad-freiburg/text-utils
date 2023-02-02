@@ -41,7 +41,7 @@ impl Dictionary {
         let mut inner = HashMap::new();
         for (idx, line) in BufReader::new(file).lines().enumerate() {
             let line = line?;
-            let splits: Vec<&str> = line.trim().split("\t").collect();
+            let splits: Vec<&str> = line.trim().split('\t').collect();
             if splits.len() != 2 {
                 return Err(anyhow!("expected two tab separated values for every line in dictionary file, but got '{line}' on line {idx}"));
             }
@@ -98,7 +98,7 @@ impl Dictionary {
         let mut num_sequences = 0;
         'outer: for file in files {
             let (num_lines, _) = file_size(file)?;
-            let chunk_size = (num_lines / num_threads as usize).max(1).min(4096);
+            let chunk_size = (num_lines / num_threads as usize).clamp(1, 4096);
             let mut file_name = file.as_ref().to_string_lossy().to_string();
             if file_name.len() > 16 {
                 file_name = "...".to_string() + &file_name[file_name.len() - 13..];
@@ -249,7 +249,7 @@ impl Dictionary {
         self.inner
             .get(&ns)
             .copied()
-            .map(|freq| (freq as usize, freq as f64 / self.freq_sum as f64))
+            .map(|freq| (freq, freq as f64 / self.freq_sum as f64))
     }
 
     pub fn is_empty(&self) -> bool {

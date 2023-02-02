@@ -40,30 +40,6 @@ pub struct Window<'a> {
 }
 
 impl<'a> Window<'a> {
-    pub fn new(
-        ctx_start: usize,
-        window_start: usize,
-        window_end: usize,
-        ctx_end: usize,
-        byte_ctx_start: usize,
-        byte_window_start: usize,
-        byte_window_end: usize,
-        byte_ctx_end: usize,
-        str: &'a str,
-    ) -> Self {
-        Self {
-            ctx_start,
-            window_start,
-            ctx_end,
-            window_end,
-            byte_ctx_start,
-            byte_window_start,
-            byte_window_end,
-            byte_ctx_end,
-            str,
-        }
-    }
-
     pub fn boundaries(&self) -> (usize, usize, usize, usize) {
         (
             self.ctx_start,
@@ -141,7 +117,17 @@ impl<'a> FromPyObject<'a> for WindowConfig {
 
 pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> anyhow::Result<Vec<Window<'a>>> {
     if s.is_empty() {
-        return Ok(vec![Window::new(0, 0, 0, 0, 0, 0, 0, 0, s)]);
+        return Ok(vec![Window {
+            ctx_start: 0,
+            window_start: 0,
+            window_end: 0,
+            ctx_end: 0,
+            byte_ctx_start: 0,
+            byte_window_start: 0,
+            byte_window_end: 0,
+            byte_ctx_end: 0,
+            str: s,
+        }]);
     }
     match *config {
         WindowConfig::Character(max_chars, context_chars, use_graphemes) => {
@@ -180,12 +166,12 @@ impl<'a> From<Window<'a>> for PyWindow {
     }
 }
 
-pub fn char_windows<'a>(
-    s: &'a str,
+pub fn char_windows(
+    s: &str,
     max_length: usize,
     context_length: usize,
     use_graphemes: bool,
-) -> anyhow::Result<Vec<Window<'a>>> {
+) -> anyhow::Result<Vec<Window>> {
     if max_length <= 2 * context_length {
         return Err(anyhow!(
             "max length must be larger than 2 times the context \
@@ -202,17 +188,17 @@ pub fn char_windows<'a>(
         let window_end = cs.len().min(window_start + window_length);
         let byte_ctx = cs.char_range_to_byte_range(ctx_start, ctx_end);
         let byte_window = cs.char_range_to_byte_range(window_start, window_end);
-        windows.push(Window::new(
+        windows.push(Window {
             ctx_start,
             window_start,
             window_end,
             ctx_end,
-            byte_ctx.0,
-            byte_window.0,
-            byte_window.1,
-            byte_ctx.1,
-            cs.sub(ctx_start, ctx_end),
-        ));
+            byte_ctx_start: byte_ctx.0,
+            byte_window_start: byte_window.0,
+            byte_window_end: byte_window.1,
+            byte_ctx_end: byte_ctx.1,
+            str: cs.sub(ctx_start, ctx_end),
+        });
 
         window_start = window_end;
     }
@@ -246,12 +232,12 @@ fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS
     .0
 }
 
-pub fn byte_windows<'a>(
-    s: &'a str,
+pub fn byte_windows(
+    s: &str,
     max_bytes: usize,
     context_bytes: usize,
     use_graphemes: bool,
-) -> anyhow::Result<Vec<Window<'a>>> {
+) -> anyhow::Result<Vec<Window>> {
     if max_bytes <= 2 * context_bytes {
         return Err(anyhow!(
             "max bytes must be larger than 2 times the context \
@@ -280,17 +266,17 @@ pub fn byte_windows<'a>(
         let byte_ctx = cs.char_range_to_byte_range(ctx_start, ctx_end);
         let byte_window = cs.char_range_to_byte_range(window_start, window_end);
 
-        windows.push(Window::new(
+        windows.push(Window {
             ctx_start,
             window_start,
             window_end,
             ctx_end,
-            byte_ctx.0,
-            byte_window.0,
-            byte_window.1,
-            byte_ctx.1,
-            cs.sub(ctx_start, ctx_end),
-        ));
+            byte_ctx_start: byte_ctx.0,
+            byte_window_start: byte_window.0,
+            byte_window_end: byte_window.1,
+            byte_ctx_end: byte_ctx.1,
+            str: cs.sub(ctx_start, ctx_end),
+        });
 
         window_start = window_end;
     }

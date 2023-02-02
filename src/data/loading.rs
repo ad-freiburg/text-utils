@@ -23,7 +23,7 @@ pub trait DataGen: Iterator + Send {
 }
 
 fn open(p: &Path) -> anyhow::Result<File> {
-    Ok(File::open(p).with_context(|| format!("could not open file at {:}", p.display()))?)
+    File::open(p).with_context(|| format!("could not open file at {:}", p.display()))
 }
 
 fn count_lines(p: &Path) -> anyhow::Result<usize> {
@@ -79,7 +79,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = vec![];
         match self.reader.read_until(b'\n', &mut buf) {
-            Ok(0) => return None,
+            Ok(0) => None,
             Ok(_) => {
                 // remove \n or \r\n from line
                 buf.pop();
@@ -179,32 +179,32 @@ pub fn text_data_generator_from_sequences(
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
     let len = original.len();
     let org_iter = original.into_iter();
-    let mut proc_iter = if processed.is_some() {
-        if processed.as_ref().unwrap().len() != len {
+    let mut proc_iter = if let Some(processed) = processed {
+        if processed.len() != len {
             return Err(anyhow!(
                 "expect the same number of processed sequences as original sequences"
             ));
         }
-        Some(processed.unwrap().into_iter())
+        Some(processed.into_iter())
     } else {
         None
     };
-    let mut lang_iter = if language.is_some() {
-        if language.as_ref().unwrap().len() != len {
+    let mut lang_iter = if let Some(language) = language {
+        if language.len() != len {
             return Err(anyhow!("expect a language for every sequence"));
         }
-        Some(language.unwrap().into_iter())
+        Some(language.into_iter())
     } else {
         None
     };
     let iter = org_iter.map(move |org_s| {
-        let proc_s = if proc_iter.is_some() {
-            proc_iter.as_mut().unwrap().next()
+        let proc_s = if let Some(proc_iter_mut) = proc_iter.as_mut() {
+            proc_iter_mut.next()
         } else {
             None
         };
-        let lang_s = if lang_iter.is_some() {
-            lang_iter.as_mut().unwrap().next()
+        let lang_s = if let Some(lang_iter_mut) = lang_iter.as_mut() {
+            lang_iter_mut.next()
         } else {
             None
         };
@@ -319,8 +319,8 @@ impl<T> TextIterator<T> {
             lengths,
             strategy,
             idx: 0,
-            rng: if seed.is_some() {
-                ChaCha8Rng::seed_from_u64(seed.unwrap())
+            rng: if let Some(seed) = seed {
+                ChaCha8Rng::seed_from_u64(seed)
             } else {
                 ChaCha8Rng::from_entropy()
             },
@@ -430,9 +430,9 @@ where
         num_threads: u8,
         seed: Option<u64>,
     ) -> Self {
-        let num_threads = num_threads.min(num_cpus::get() as u8).max(1) as usize;
+        let num_threads = num_threads.clamp(1, num_cpus::get() as u8);
         let inner = Arc::new(Mutex::new(inner.enumerate()));
-        let (tx, rx) = sync_channel(num_threads);
+        let (tx, rx) = sync_channel(num_threads as usize);
         let sent_counter = Arc::new(AtomicUsize::new(0));
         panic::set_hook(Box::new(move |info| {
             println!("thread panicked: {info}");
@@ -451,15 +451,7 @@ where
                                 Some(value) => value,
                                 None => return,
                             };
-                        let item = pipe_clone.apply(
-                            data,
-                            idx,
-                            if seed.is_none() {
-                                None
-                            } else {
-                                Some(seed.unwrap() + idx as u64)
-                            },
-                        );
+                        let item = pipe_clone.apply(data, idx, seed.map(|seed| seed + idx as u64));
                         // wait until we are the next to send out item
                         while send_next.load(Ordering::SeqCst) != idx {
                             sleep(Duration::from_micros(100));
@@ -472,7 +464,7 @@ where
                         }
                     }
                 })
-                .expect(&format!("failed building worker thread {}", idx));
+                .unwrap_or_else(|_| panic!("failed building worker thread {idx}"));
         }
         Pipe { output: rx }
     }
@@ -580,10 +572,10 @@ where
         let batch_limit = batch_limit.max(1);
         let prefetch_factor = prefetch_factor.max(1);
         Self {
-            rng: if seed.is_none() {
-                ChaCha8Rng::from_entropy()
+            rng: if let Some(seed) = seed {
+                ChaCha8Rng::seed_from_u64(seed)
             } else {
-                ChaCha8Rng::seed_from_u64(seed.unwrap())
+                ChaCha8Rng::from_entropy()
             },
             batch_limit,
             batch_limit_type,
@@ -595,6 +587,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn build_batch(
         iter: &mut impl Iterator<Item = T>,
@@ -623,8 +616,8 @@ where
                 batch_limit_type,
             );
             // save remainder in buffer
-            if remainder.is_some() {
-                buf.push(remainder.unwrap());
+            if let Some(remainder) = remainder {
+                buf.push(remainder);
             }
             return batch;
         }
@@ -648,13 +641,13 @@ where
         }
         if sort {
             // sort the buffer by length
-            buf.sort_by(|a, b| a.size().cmp(&b.size()));
+            buf.sort_by_key(|a| a.size());
             // if shuffle is also true, return a random subsequence from the sorted buffer
             if shuffle {
                 // calculate possible subsequences for batch
                 let sub_sequences =
-                    find_subsequences_of_max_size_k(&buf, batch_limit, |sub_items| {
-                        BatchLimit::from_items(&sub_items, &batch_limit_type).limit()
+                    find_subsequences_of_max_size_k(buf, batch_limit, |sub_items| {
+                        BatchLimit::from_items(sub_items, &batch_limit_type).limit()
                     });
                 // randomly choose one subsequence
                 if sub_sequences.is_empty() {
@@ -677,8 +670,8 @@ where
         // now pop from the back until batch is full
         let (batch, remainder) = Self::batch_from(|| buf.pop(), batch_limit, batch_limit_type);
         // push remainder back to buffer
-        if remainder.is_some() {
-            buf.push(remainder.unwrap());
+        if let Some(remainder) = remainder {
+            buf.push(remainder);
         }
         batch
     }
@@ -856,19 +849,17 @@ impl<T> Buffered<T>
 where
     T: Send + 'static,
 {
-    pub fn new<I>(mut iter: I, buffer_size: usize) -> Self
+    pub fn new<I>(iter: I, buffer_size: usize) -> Self
     where
         I: Iterator<Item = T> + Send + 'static,
     {
         let (tx, rx) = sync_channel(buffer_size);
         let _ = Builder::new()
             .name("buffer thread".to_string())
-            .spawn(move || loop {
-                if let Some(item) = iter.next() {
+            .spawn(move || {
+                for item in iter {
                     tx.send(item).ok();
-                } else {
-                    break;
-                };
+                }
             })
             .expect("failed to build buffer thread");
         Self { inner: rx }

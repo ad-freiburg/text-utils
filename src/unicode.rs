@@ -42,6 +42,10 @@ impl<'a> CharString<'a> {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     #[inline]
     pub(crate) fn byte_start_end(&self, n: usize) -> (usize, usize) {
         let mut start = 0;
@@ -91,7 +95,7 @@ impl<'a> CharString<'a> {
             "start: {start}, end: {end}, len: {}",
             self.len()
         );
-        if self.len() == 0 || start == end {
+        if self.is_empty() || start == end {
             return "";
         }
         let (start, end) = self.char_range_to_byte_range(start, end);

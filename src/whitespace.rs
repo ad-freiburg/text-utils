@@ -31,8 +31,8 @@ pub enum WhitespaceOperation {
 impl<'a> FromPyObject<'a> for WhitespaceOperation {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let s: PyResult<String> = ob.extract();
-        let ws_op = if s.is_ok() {
-            match s.unwrap().as_str() {
+        let ws_op = if let Ok(s) = s {
+            match s.as_str() {
                 "k" | "keep" => WhitespaceOperation::Keep,
                 "i" | "insert" => WhitespaceOperation::Insert,
                 "d" | "delete" => WhitespaceOperation::Delete,
@@ -161,7 +161,7 @@ pub fn find_substring_ignoring_whitespace<'a>(
             .join(r"\s*")
         + r"\s*";
     let re = Regex::new(substring.as_str()).expect("invalid pattern, should never happen");
-    re.find(s).map_or(None, |m| Some(&s[m.start()..m.end()]))
+    re.find(s).map(|m| &s[m.start()..m.end()])
 }
 
 #[pyfunction(name = "find_substring_ignoring_whitespace", signature = (s, substring, use_graphemes = true))]

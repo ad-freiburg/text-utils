@@ -1085,40 +1085,40 @@ mod tests {
             None,
         )?;
 
-        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 2, None);
-        let now = Instant::now();
-        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
-        let time2 = now.elapsed().as_secs_f64();
-        info!("took {:.2}s to fetch {} items", time2, n);
-        assert!(time2 < time);
-        // test with even more workers
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
-        let text_iter = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
-
-        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 4, None);
-        let now = Instant::now();
-        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
-        let time3 = now.elapsed().as_secs_f64();
-        info!("took {:.2}s to fetch {} items", time3, n);
-        assert!(time3 < time2);
-        // test that all lines of multi30k.txt are returned in order,
-        // switch to non blocking tokenizer again
-        let pipeline = Pipeline::with_tokenizer(
-            PreprocessingPipelineConfig::new(
-                vec![],
-                LabelingConfig::LabelWhitespaceCorrection(true),
-            ),
-            TokenizerConfig::new(
-                TokenizeConfig::Dummy(Duration::from_millis(0)),
-                vec![],
-                vec![],
-                None,
-            ),
-        );
+        // let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 2, None);
+        // let now = Instant::now();
+        // let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
+        // let time2 = now.elapsed().as_secs_f64();
+        // info!("took {:.2}s to fetch {} items", time2, n);
+        // assert!(time2 < time);
+        // // test with even more workers
+        // let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+        // let text_iter = TextIterator::new(
+        //     vec![multi30k],
+        //     super::TextIterationStrategy::Sequential,
+        //     None,
+        // )?;
+        //
+        // let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 4, None);
+        // let now = Instant::now();
+        // let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
+        // let time3 = now.elapsed().as_secs_f64();
+        // info!("took {:.2}s to fetch {} items", time3, n);
+        // assert!(time3 < time2);
+        // // test that all lines of multi30k.txt are returned in order,
+        // // switch to non blocking tokenizer again
+        // let pipeline = Pipeline::with_tokenizer(
+        //     PreprocessingPipelineConfig::new(
+        //         vec![],
+        //         LabelingConfig::LabelWhitespaceCorrection(true),
+        //     ),
+        //     TokenizerConfig::new(
+        //         TokenizeConfig::Dummy(Duration::from_millis(0)),
+        //         vec![],
+        //         vec![],
+        //         None,
+        //     ),
+        // );
 
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(

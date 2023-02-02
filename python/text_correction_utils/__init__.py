@@ -2,7 +2,7 @@
 from text_correction_utils.version import __version__
 
 # import rust modules
-from text_correction_utils._internal import (
+from ._internal import (
     edit,
     text,
     whitespace,

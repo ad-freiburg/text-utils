@@ -436,7 +436,7 @@ where
         let sent_counter = Arc::new(AtomicUsize::new(0));
         panic::set_hook(Box::new(move |info| {
             println!("thread panicked: {info}");
-            process::exit(1);
+            // process::exit(1);
         }));
         for idx in 0..num_threads {
             let inner_clone = inner.clone();

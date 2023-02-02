@@ -25,7 +25,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           manylinux: auto
-          args: --release --out dist --sdist
+          args: --release --out dist
       - name: "Python: Install wheels and test"
         run: |
           pip install dist/*.whl --force-reinstall

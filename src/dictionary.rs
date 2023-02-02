@@ -104,7 +104,7 @@ impl Dictionary {
                 file_name = "...".to_string() + &file_name[file_name.len() - 13..];
             }
             let line_p_bar = progress_bar(
-                &format!("processing lines of {}", file_name),
+                &format!("processing lines of {file_name}"),
                 num_lines as u64,
                 !show_progress,
             );
@@ -158,7 +158,7 @@ impl Dictionary {
         let mut items: Vec<_> = self.inner.iter().collect();
         items.sort_by_key(|item| Reverse(item.1));
         for &(key, value) in items.iter() {
-            writeln!(file, "{}\t{}", key, value)?;
+            writeln!(file, "{key}\t{value}")?;
         }
         Ok(())
     }

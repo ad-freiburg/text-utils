@@ -217,7 +217,7 @@ impl InferenceData {
         str.split(char::is_whitespace)
             .map(|s| Ok(str::parse::<u8>(s.trim())? != 0))
             .collect::<anyhow::Result<Vec<bool>>>()
-            .with_context(|| format!("failed to parse '{}' to detections", str))
+            .with_context(|| format!("failed to parse '{str}' to detections"))
     }
 
     #[inline]

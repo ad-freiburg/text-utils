@@ -443,7 +443,7 @@ where
             let pipe_clone = pipeline.clone();
             let send_next = sent_counter.clone();
             let _: JoinHandle<()> = Builder::new()
-                .name(format!("pipeline worker thread {}", idx))
+                .name(format!("pipeline worker thread {idx}"))
                 .spawn(move || {
                     loop {
                         let (idx, data) =

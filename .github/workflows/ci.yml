@@ -34,18 +34,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: conda-incubator/setup-miniconda@v2
+      - uses: actions/setup-python@v3
         with:
-          auto-update-conda: true
-          activate-environment: test
           python-version: "3.10"
       - uses: dtolnay/rust-toolchain@stable
-      - uses: PyO3/maturin-action@v1
-        env:
-          CONDA_PREFIX: /usr/share/miniconda3/envs/test
-        with:
-          manylinux: auto
-          command: develop
-          args: -E test
+      - run: pip install -r requirements.txt
+      - run: maturin build -o test 
+      - run: pip install test/$(ls test)
       - run: pytest -W ignore 
       

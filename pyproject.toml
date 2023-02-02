@@ -39,7 +39,7 @@ test = [
 ]
 
 [project.urls]
-Github = "https://github.com/bastiscode/text-correction-utils"
+Github = "https://github.com/ad-freiburg/text-correction-utils"
 
 [build-system]
 requires = ["maturin>=0.13,<0.14"]

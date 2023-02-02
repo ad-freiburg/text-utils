@@ -29,17 +29,17 @@ jobs:
       - run: cargo check
       - run: cargo test
 
-  # test_python:
-  #   name: Run Python tests
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v3
-  #     - uses: actions/setup-python@v3
-  #       with:
-  #         python-version: "3.10"
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: pip install -r requirements.txt
-  #     - run: maturin build -o test 
-  #     - run: pip install test/$(ls test)
-  #     - run: pytest -W ignore 
+  test_python:
+    name: Run Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v3
+        with:
+          python-version: "3.10"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install -r requirements.txt
+      - run: maturin build -o test 
+      - run: pip install text-correction-utils --no-index --find-links test
+      - run: pytest -W ignore 
       

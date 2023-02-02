@@ -1,15 +1,3 @@
-.PHONY: all
-all: checkstyle test
-
-.PHONY: checkstyle
-checkstyle:
-	flake8 python
-
-.PHONY: test
-test:
-	cargo test
-	pytest -W ignore
-
 # preferred build command for local installation
 
 .PHONY: build_native

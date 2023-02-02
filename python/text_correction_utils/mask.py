@@ -15,10 +15,10 @@ def square_subsequent_mask(
     :return: mask tensor
 
     >>> square_subsequent_mask(4).tolist() # doctest: +NORMALIZE_WHITESPACE
-    [[0, -inf, -inf, -inf],
-    [[0,    0, -inf, -inf],
-    [[0,    0,    0, -inf],
-    [[0,    0,    0,    0]],
+    [[0.0, -inf, -inf, -inf],
+     [0.0,  0.0, -inf, -inf],
+     [0.0,  0.0,  0.0, -inf],
+     [0.0,  0.0,  0.0,  0.0]]
 
     """
     return torch.triu(

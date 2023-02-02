@@ -18,12 +18,14 @@ jobs:
       - name: "Rust: Check and test"
         run: |
           cargo check
+          cargo fmt --all -- --check
+          cargo clippy -- -D warnings
           cargo test
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           manylinux: auto
-          args: --release --out dist
+          args: --release --out dist --sdist
       - name: "Python: Install wheels and test"
         run: |
           pip install dist/*.whl --force-reinstall

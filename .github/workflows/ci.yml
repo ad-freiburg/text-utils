@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check
-      - run: CARGO_MANIFEST_DIR=`pwd` cargo test
+      - run: cargo test
 
   test_python:
     name: Run Python tests

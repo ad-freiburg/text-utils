@@ -10,13 +10,13 @@ use rand_chacha::ChaCha8Rng;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::marker::PhantomData;
+use std::panic;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
-use std::{panic, process};
 
 pub trait DataGen: Iterator + Send {
     fn min_len(&self) -> usize;
@@ -436,7 +436,6 @@ where
         let sent_counter = Arc::new(AtomicUsize::new(0));
         panic::set_hook(Box::new(move |info| {
             println!("thread panicked: {info}");
-            // process::exit(1);
         }));
         for idx in 0..num_threads {
             let inner_clone = inner.clone();
@@ -1072,39 +1071,47 @@ mod tests {
         )?;
 
         let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 0, None);
-        let now = Instant::now();
         let n: usize = 20;
+        let now = Instant::now();
         let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
-        let time = now.elapsed().as_secs_f64();
+        let mut time = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time, n);
-        // test with more workers, check that its faster
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
-        let text_iter = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
 
-        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 2, None);
-        let now = Instant::now();
-        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
-        let time2 = now.elapsed().as_secs_f64();
-        info!("took {:.2}s to fetch {} items", time2, n);
-        assert!(time2 < time);
-        // test with even more workers
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
-        let text_iter = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
+        let n_cpus = num_cpus::get();
 
-        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 4, None);
-        let now = Instant::now();
-        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
-        let time3 = now.elapsed().as_secs_f64();
-        info!("took {:.2}s to fetch {} items", time3, n);
-        assert!(time3 < time2);
+        // if more cpus are available, test with more workers, check that its faster
+        if n_cpus >= 2 {
+            let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+            let text_iter = TextIterator::new(
+                vec![multi30k],
+                super::TextIterationStrategy::Sequential,
+                None,
+            )?;
+            let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 2, None);
+            let now = Instant::now();
+            let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
+            let time2 = now.elapsed().as_secs_f64();
+            info!("took {:.2}s to fetch {} items", time2, n);
+            assert!(time2 < time);
+            time = time2;
+        }
+
+        // test with even more workers, if available
+        if n_cpus >= 4 {
+            let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+            let text_iter = TextIterator::new(
+                vec![multi30k],
+                super::TextIterationStrategy::Sequential,
+                None,
+            )?;
+            let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 4, None);
+            let now = Instant::now();
+            let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
+            let time3 = now.elapsed().as_secs_f64();
+            info!("took {:.2}s to fetch {} items", time3, n);
+            assert!(time3 < time);
+        }
+
         // test that all lines of multi30k.txt are returned in order,
         // switch to non blocking tokenizer again
         let pipeline = Pipeline::with_tokenizer(
@@ -1119,7 +1126,6 @@ mod tests {
                 None,
             ),
         );
-
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
             vec![multi30k],

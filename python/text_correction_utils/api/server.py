@@ -1,18 +1,18 @@
 import os
 from contextlib import contextmanager
-import pprint
 import logging
-import json
 from threading import Lock
-from typing import Dict, Any, List, Optional, Tuple, Type, Union, Generator
+from typing import Dict, Any, Optional, Tuple, Type, Union, Generator
 
+import yaml
 import torch
 from torch.cuda import Stream
 from flask import Flask, Response, cli, jsonify
 
-from text_correction_utils.api.corrector import TextCorrector
+from text_correction_utils.api.corrector import TextCorrector, ModelInfo
 from text_correction_utils.api.utils import gpu_info, cpu_info
 from text_correction_utils.logging import get_logger
+from text_correction_utils import configuration
 
 
 class Error:
@@ -25,16 +25,17 @@ class Error:
 
 
 class TextCorrectionServer:
-    text_corrector_classes: List[Type[TextCorrector]]
+    text_corrector_cls: Type[TextCorrector]
 
-    @staticmethod
-    def from_config(path: str) -> "TextCorrectionServer":
-        with open(path, "r", encoding="utf8") as inf:
-            config = json.loads(inf.read())
-        return TextCorrectionServer(config)
+    @classmethod
+    def from_config(cls, path: str) -> "TextCorrectionServer":
+        config = configuration.load_config(path)
+        return cls(config)
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
+        self.logger = get_logger("TEXT_CORRECTION_SERVER")
+        self.logger.info(f"loaded server config:\n{yaml.dump(config)}")
         self.port = int(self.config.get("port", 40000))
         # disable flask startup message and set flask mode to development
         cli.show_server_banner = lambda *_: None
@@ -48,9 +49,10 @@ class TextCorrectionServer:
         self.timeout = float(config.get("timeout", 10.0))
         self.precision = config.get("precision", "fp32")
         logging.getLogger("werkzeug").disabled = True
-        self.logger = get_logger("TEXT_CORRECTION_SERVER")
-        self.logger.info(f"loaded server config:\n{pprint.pformat(config)}")
         self.num_gpus = torch.cuda.device_count()
+
+        assert "models" in config and len(config["models"]) > 0, \
+            "expected at least one model to be specified in the server config"
 
         @self.server.after_request
         def _after_request(response: Response) -> Response:
@@ -58,65 +60,82 @@ class TextCorrectionServer:
             response.headers.add("Access-Control-Allow-Private-Network", "true")
             return response
 
-        @self.server.route(f"{self.base_url}/models")
-        def _models() -> Response:
-            response = jsonify([
-                {
-                    "task": text_corrector_cls.task,
-                    "models": [
-                        {"name": model.name, "description": model.description}
-                        for model in text_corrector_cls.available_models()
-                    ],
-                }
-                for text_corrector_cls in self.text_corrector_classes
-            ])
-            return response
-
         @self.server.route(f"{self.base_url}/info")
         def _info() -> Response:
-            response = jsonify(
-                {
-                    "gpu": [gpu_info(i) for i in range(self.num_gpus)],
-                    "cpu": cpu_info(),
-                    "timeout": self.timeout,
-                    "precision": self.precision,
-                }
-            )
+            response = jsonify({
+                "gpu": [gpu_info(i) for i in range(self.num_gpus)],
+                "cpu": cpu_info(),
+                "timeout": self.timeout,
+            })
             return response
 
-        assert "models" in config and sum(len(names) for names in config["models"].values()) > 0, \
-            "expected at least one model to be specified in the server config"
-
-        self.text_correctors: Dict[Tuple[str, str], Tuple[TextCorrector, Optional[Stream]]] = {}
+        self.text_correctors: Dict[str, Tuple[TextCorrector, Optional[Stream]]] = {}
         self.lock = Lock()
-        for task, model_names in config["models"].items():
-            text_corrector_cls: Optional[Type[TextCorrector]] = next(
-                filter(lambda c: c.task == task, self.text_corrector_classes),
-                None
-            )
-            assert text_corrector_cls is not None, \
-                f"this server supports the tasks {[c.task for c in self.text_corrector_classes]}, \
-but got unsupported task {task}"
-            for model_name in model_names:
-                if self.num_gpus > 0:
-                    device = f"cuda:{len(self.text_correctors) % self.num_gpus}"
-                    stream: Optional[Stream] = Stream(device)
-                else:
-                    device = "cpu"
-                    stream = None
-                text_corrector: TextCorrector = text_corrector_cls.from_pretrained(model_name, device)
-                self.text_correctors[(task, model_name)] = (text_corrector, stream)
+
+        model_duplicates = {}
+        model_infos = []
+        for model_name in config["models"]:
+            if self.num_gpus > 0:
+                device = f"cuda:{len(self.text_correctors) % self.num_gpus}"
+                stream: Optional[Stream] = Stream(device)
+            else:
+                device = "cpu"
+                stream = None
+
+            model_info = next(filter(lambda m: m.name == model_name, self.text_corrector_cls.available_models()), None)
+            if model_info is not None:
+                self.logger.info(
+                    f"loading pretrained model {model_name} for task "
+                    f"{self.text_corrector_cls.task} onto device {device}"
+                )
+                text_corrector = self.text_corrector_cls.from_pretrained(model_name, device)
+                model_description = model_info.description
+                model_name = model_info.name
+                model_tags = model_info.tags
+
+            else:
+                self.logger.info(
+                    f"loading model for task {self.text_corrector_cls.task} "
+                    f"from experiment {model_name} onto device {device}"
+                )
+                text_corrector = self.text_corrector_cls.from_experiment(model_name, device)
+                model_name = text_corrector.name
+                model_description = "loaded from custom experiment"
+                model_tags = ["custom"]
+
+            # handle the case when two models have the same name
+            if model_name in self.text_correctors:
+                dup_num = model_duplicates.get(model_name, 0) + 1
+                self.logger.warning(f"found another model with name {model_name}, "
+                                    f"renaming current one to {model_name}_{dup_num}")
+                model_duplicates[model_name] = dup_num
+                model_name = f"{model_name}_{dup_num}"
+
+            model_infos.append((model_name, model_description, model_tags))
+
+            self.text_correctors[model_name] = (text_corrector, stream)
+
+        @self.server.route(f"{self.base_url}/models")
+        def _models() -> Response:
+            response = jsonify({
+                "task": self.text_corrector_cls.task,
+                "models": [
+                    {"name": name, "description": description, "tags": tags}
+                    for name, description, tags in model_infos
+                ]
+            })
+            return response
 
     @contextmanager
-    def text_corrector(self, task: str, model_name: str) -> Generator[Union[TextCorrector, Error], None, None]:
-        if (task, model_name) not in self.text_correctors:
-            yield Error(f"no model {model_name} for task {task} exists", 404)
+    def text_corrector(self, model_name: str) -> Generator[Union[TextCorrector, Error], None, None]:
+        if model_name not in self.text_correctors:
+            yield Error(f"model {model_name} does not exist", 404)
             return
         acquired = self.lock.acquire(timeout=self.timeout)
         if not acquired:
             yield Error(f"failed to reserve model within {self.timeout}s", 503)
             return
-        cor, stream = self.text_correctors[(task, model_name)]
+        cor, stream = self.text_correctors[model_name]
         try:
             if stream is not None:
                 with torch.cuda.stream(stream):

@@ -193,7 +193,7 @@ class TextCorrectionCli:
             "--server",
             type=str,
             default=None,
-            help=f"Path to a JSON config file to run a {cls.text_corrector_cls.task} server"
+            help=f"Path to a yaml config file to run a {cls.text_corrector_cls.task} server"
         )
         parser.add_argument(
             "--report",

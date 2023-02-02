@@ -157,6 +157,7 @@ class StandardEmbedding(Embedding):
         embedding_dim: int,
         pad_token_id: int,
         dropout: float,
+        token_dropout: float = 0.0,
         max_length: Optional[int] = None,
         positional_embeddings: Optional[str] = None,
     ):
@@ -175,16 +176,17 @@ class StandardEmbedding(Embedding):
         else:
             self.pos_embedding = None
 
-        self.token_drop = nn.Dropout1d(dropout)
+        self.drop = nn.Dropout(dropout)
+        self.token_drop = nn.Dropout1d(token_dropout)
 
     def forward(
         self,
         x: torch.Tensor,
         **_: Dict[str, Any]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        emb = self.token_drop(self.embedding(x))
+        emb = self.token_drop(self.drop(self.embedding(x)))
         if self.pos_embedding is not None:
-            pos_emb = self.pos_embedding(x)
+            pos_emb = self.token_drop(self.drop(self.pos_embedding(x)))
         else:
             pos_emb = None
         return emb, pos_emb

@@ -375,17 +375,18 @@ training will resume from latest checkpoint."
         cfg["shuffle"] = False
         cfg["sort"] = True
         if val_limit is not None:
+            cfg["limit"] = val_limit
             val_loader = data.DataLoader.from_files(
                 train_sources,
                 pipeline_cfg,
                 tokenizer_config,
                 train_languages,
                 seed=seed,
-                limit=val_limit,
                 distributed=None,
                 **cfg
             )
         else:
+            cfg.pop("limit", None)
             val_loader = data.DataLoader.from_files(
                 val_sources,
                 pipeline_cfg,

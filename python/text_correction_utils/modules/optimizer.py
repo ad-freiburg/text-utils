@@ -22,28 +22,27 @@ def optimizer_from_config(
 ) -> optim.Optimizer:
     cfg = copy.deepcopy(cfg)
     opt_type = cfg.pop("type")
-    lr = cfg["lr"]
     param_groups = cfg.pop("param_groups", None)
     params = []
     exclude_prefixes = []
     if param_groups is not None:
         params = []
         for group in param_groups:
-            prefix = group["prefix"]
+            prefix = group.pop("prefix")
             exclude_prefixes.append(prefix)
             group_params = _select_params(model.named_parameters(), [prefix], True)
-            if group.get("fix", False):
+            if group.pop("fix", False):
                 for param in group_params:
                     param.requires_grad = False
                 continue
             params.append({
                 "params": group_params,
-                "lr": group.get("lr", lr)
+                **group
             })
 
     params.append({
         "params": _select_params(model.named_parameters(), exclude_prefixes, False),
-        "lr": lr
+        **cfg
     })
 
     if opt_type == "adamw":

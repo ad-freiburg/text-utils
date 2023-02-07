@@ -656,9 +656,9 @@ training will resume from latest checkpoint."
 
             if self.epoch_step % self.log_interval == 0 and self.info.is_main_process:
                 if self.lr_scheduler is not None:
-                    lr = self.lr_scheduler.get_last_lr()[0]
-                    self.summary_writer.add_scalar("train_lr", lr, self.step)
-                    self.logger.info(f"[step {self.step}] train_lr: {lr:.8f}")
+                    for i, lr in enumerate(self.lr_scheduler.get_last_lr()):
+                        self.summary_writer.add_scalar(f"train_lr_{i}", lr, self.step)
+                        self.logger.info(f"[step {self.step}] train_lr_{i}: {lr:.8f}")
 
                 mean_loss.log_tensorboard(self.summary_writer, self.step)
                 mean_loss.log_info(self.logger, self.step)

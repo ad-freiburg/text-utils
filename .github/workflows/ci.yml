@@ -17,8 +17,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: "Rust: Check and test"
         run: |
-          cargo check
           cargo fmt --all -- --check
+          cargo check
           cargo clippy -- -D warnings
           cargo test
       - name: Build wheels

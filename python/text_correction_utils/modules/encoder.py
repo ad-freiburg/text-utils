@@ -1,5 +1,5 @@
 import copy
-from typing import Optional, Tuple, Any, Dict
+from typing import Optional, Tuple, Any, Dict, Callable
 
 import einops
 import torch
@@ -20,25 +20,33 @@ class Encoder(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        pos: Optional[torch.Tensor],
+        pos: Optional[torch.Tensor] = None,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         raise NotImplementedError
 
 
-def encoder_from_config(cfg: Dict[str, Any]) -> Encoder:
-    cfg = copy.deepcopy(cfg)
-    enc_type = cfg.pop("type")
+def encoder_from_config(
+    cfg: Dict[str, Any],
+    additional_encoder_fn: Optional[Callable[[Dict[str, Any]], Encoder]] = None
+) -> Encoder:
+    enc_cfg = copy.deepcopy(cfg)
+    enc_type = enc_cfg.pop("type")
     if enc_type == "transformer":
-        return TransformerEncoder(**cfg)
+        return TransformerEncoder(**enc_cfg)
     elif enc_type == "rnn":
-        return RNNEncoder(**cfg)
+        return RNNEncoder(**enc_cfg)
     elif enc_type == "cnn":
-        return CNNEncoder(**cfg)
+        return CNNEncoder(**enc_cfg)
     elif enc_type == "grouping":
-        encoder = encoder_from_config(cfg.pop("encoder", {}))
-        return GroupingEncoder(encoder, **cfg)
+        encoder = encoder_from_config(
+            enc_cfg.pop("encoder", {}),
+            additional_encoder_fn
+        )
+        return GroupingEncoder(encoder, **enc_cfg)
     else:
+        if additional_encoder_fn is not None:
+            return additional_encoder_fn(cfg)
         raise ValueError(f"unknown encoder type {enc_type}")
 
 
@@ -178,7 +186,7 @@ class TransformerEncoder(Encoder):
     def forward(
         self,
         x: torch.Tensor,
-        pos: Optional[torch.Tensor],
+        pos: Optional[torch.Tensor] = None,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         padding_mask = kwargs.get(self.padding_mask)
@@ -239,7 +247,7 @@ class RNNEncoder(Encoder):
     def forward(
         self,
         x: torch.Tensor,
-        _: Optional[torch.Tensor],
+        _: Optional[torch.Tensor] = None,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         lengths = kwargs.get("lengths")
@@ -303,7 +311,7 @@ class CNNEncoder(Encoder):
     def forward(
         self,
         x: torch.Tensor,
-        _: Optional[torch.Tensor],
+        _: Optional[torch.Tensor] = None,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         x = einops.rearrange(x, "b s c -> b c s")
@@ -334,14 +342,14 @@ class GroupingEncoder(Encoder):
     def forward(
         self,
         x: torch.Tensor,
-        pos: Optional[torch.Tensor],
+        pos: Optional[torch.Tensor] = None,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         if self.group_first:
             if pos is not None:
                 pos, _ = self.grouping(pos, **kwargs)
             x, kwargs = self.grouping(x, **kwargs)
-        x, kwargs = self.encoder(x, pos, **kwargs)
+        x, kwargs = self.encoder(x, pos=pos, **kwargs)
         if not self.group_first:
             x, kwargs = self.grouping(x, **kwargs)
         return x, kwargs

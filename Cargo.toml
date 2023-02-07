@@ -9,7 +9,7 @@ name = "text_correction_utils._internal"
 
 [lib]
 name = "text_correction_utils"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]

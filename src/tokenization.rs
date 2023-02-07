@@ -166,6 +166,7 @@ impl<'a> FromPyObject<'a> for LanguageConfig {
 pub enum TokenizeConfig {
     Character(bool),
     Byte(bool, ByteGroups, GroupAggregation),
+    ByT5(bool, ByteGroups, GroupAggregation),
     Dummy(Duration),
 }
 
@@ -182,6 +183,12 @@ impl IntoPy<PyObject> for TokenizeConfig {
                 d.set_item("groups", groups.into_py(py)).unwrap();
                 d.set_item("aggregation", agg.into_py(py)).unwrap();
                 "byte"
+            }
+            TokenizeConfig::ByT5(use_g, groups, agg) => {
+                d.set_item("use_graphemes", use_g).unwrap();
+                d.set_item("groups", groups.into_py(py)).unwrap();
+                d.set_item("aggregation", agg.into_py(py)).unwrap();
+                "byt5"
             }
             TokenizeConfig::Dummy(delay) => {
                 d.set_item("delay", delay.as_millis()).unwrap();
@@ -209,21 +216,25 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 };
                 TokenizeConfig::Character(use_graphemes)
             }
-            "byte" => {
+            name @ ("byte" | "byt5") => {
                 let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
                     value.extract()?
                 } else {
                     true
                 };
                 let Some(groups) = d.get_item("groups") else {
-                    return Err(py_required_key_error("groups", "byte tokenizer config"));
+                    return Err(py_required_key_error("groups", format!("{name} tokenizer config")));
                 };
                 let agg: GroupAggregation = if let Some(value) = d.get_item("aggregation") {
                     value.extract()?
                 } else {
                     GroupAggregation::Mean
                 };
-                TokenizeConfig::Byte(use_graphemes, groups.extract()?, agg)
+                if name == "byt5" {
+                    TokenizeConfig::ByT5(use_graphemes, groups.extract()?, agg)
+                } else {
+                    TokenizeConfig::Byte(use_graphemes, groups.extract()?, agg)
+                }
             }
             "dummy" => {
                 let millis: u64 = if let Some(value) = d.get_item("delay") {
@@ -920,16 +931,57 @@ impl ByteTokenizer {
         suffix_tokens: &[&str],
         language_config: Option<LanguageConfig>,
     ) -> Self {
-        let special_vocab: HashMap<String, u32> = SPECIAL_TOKENS
+        Self::new_inner(
+            use_graphemes,
+            groups,
+            aggregation,
+            &SPECIAL_TOKENS,
+            UNK,
+            prefix_tokens,
+            suffix_tokens,
+            language_config,
+        )
+    }
+
+    pub(self) fn new_byt5(
+        use_graphemes: bool,
+        groups: ByteGroups,
+        aggregation: GroupAggregation,
+    ) -> Self {
+        // byt5 has 3 special tokens: <pad>, </s>, <unk>
+        Self::new_inner(
+            use_graphemes,
+            groups,
+            aggregation,
+            &["<pad>", "</s>", "<unk>"],
+            "<unk>",
+            &[],
+            &["</s>"],
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        use_graphemes: bool,
+        groups: ByteGroups,
+        aggregation: GroupAggregation,
+        special_tokens: &[&str],
+        unk_token: &str,
+        prefix_tokens: &[&str],
+        suffix_tokens: &[&str],
+        language_config: Option<LanguageConfig>,
+    ) -> Self {
+        let special_vocab: HashMap<String, u32> = special_tokens
             .iter()
-            .zip(u8::MAX as u32..u8::MAX as u32 + SPECIAL_TOKENS.len() as u32)
+            .zip(u8::MAX as u32..u8::MAX as u32 + special_tokens.len() as u32)
             .map(|(&st, tok_id)| (st.into(), tok_id))
             .collect();
         let reverse_special_vocab = special_vocab
             .iter()
             .map(|(token, token_id)| (*token_id, token.clone()))
             .collect();
-        let unk_token = UNK.to_string();
+        let unk_token = unk_token.to_string();
         let mut tokenizer = ByteTokenizer {
             _prefix_token_ids: vec![],
             _suffix_token_ids: vec![],
@@ -1079,6 +1131,89 @@ impl Tokenize for ByteTokenizer {
     }
 }
 
+pub struct ByT5Tokenizer {
+    inner: ByteTokenizer,
+}
+
+impl ByT5Tokenizer {
+    pub fn new(
+        use_graphemes: bool,
+        groups: ByteGroups,
+        group_aggregation: GroupAggregation,
+    ) -> Self {
+        let inner = ByteTokenizer::new_byt5(use_graphemes, groups, group_aggregation);
+        Self { inner }
+    }
+}
+
+impl Tokenize for ByT5Tokenizer {
+    fn vocab_size(&self) -> usize {
+        self.inner.vocab_size()
+    }
+
+    fn unk_token_id(&self) -> u32 {
+        2
+    }
+
+    fn bos_token_id(&self) -> u32 {
+        panic!("ByT5 does not have a bos token")
+    }
+
+    fn eos_token_id(&self) -> u32 {
+        1
+    }
+
+    fn pad_token_id(&self) -> u32 {
+        0
+    }
+
+    fn prefix_token_ids(&self) -> &[u32] {
+        &[]
+    }
+
+    fn suffix_token_ids(&self) -> &[u32] {
+        &[1]
+    }
+
+    fn language_config(&self) -> Option<&LanguageConfig> {
+        None
+    }
+
+    fn add_special_token(&mut self, _: &str) {
+        panic!("ByT5 does not support adding special tokens")
+    }
+
+    fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization> {
+        let Tokenization { token_ids, info } = self.inner.tokenize(s, lang)?;
+        // adapt token ids to byt5 format
+        // --> shift byte token_ids from 0..255 to 3..258
+        // --> shift eos token
+        let num_token_ids = token_ids.len();
+        let mut token_ids: Vec<_> = token_ids
+            .into_iter()
+            .take(num_token_ids - 1)
+            .map(|t| {
+                assert!(t < 256);
+                t + 3
+            })
+            .collect();
+        token_ids.push(1);
+        Ok(Tokenization::new(token_ids, info))
+    }
+
+    fn de_tokenize(&self, token_ids: &[u32]) -> String {
+        self.inner.de_tokenize(token_ids)
+    }
+
+    fn special_token_to_id(&self, token: &str) -> u32 {
+        self.inner.special_token_to_id(token)
+    }
+
+    fn id_to_special_token(&self, token_id: &u32) -> &str {
+        self.inner.id_to_special_token(token_id)
+    }
+}
+
 pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
     let prefix: Vec<&str> = cfg.prefix.iter().map(String::as_str).collect();
     let suffix: Vec<&str> = cfg.suffix.iter().map(String::as_str).collect();
@@ -1094,6 +1229,9 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
             &suffix,
             cfg.language,
         )),
+        TokenizeConfig::ByT5(use_g, groups, agg) => {
+            Box::new(ByT5Tokenizer::new(use_g, groups, agg))
+        }
         TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
     }
 }
@@ -1114,6 +1252,7 @@ impl PyTokenizer {
             name: match config.tokenize {
                 TokenizeConfig::Character(_) => "character",
                 TokenizeConfig::Byte(_, _, _) => "byte",
+                TokenizeConfig::ByT5(_, _, _) => "byt5",
                 TokenizeConfig::Dummy(_) => "dummy",
             }
             .to_string(),
@@ -1197,7 +1336,7 @@ mod tests {
         Tokenize, BOS, EOS,
     };
 
-    use super::{token_groups_to_sparse_coo_matrix, GroupAggregation};
+    use super::{token_groups_to_sparse_coo_matrix, ByT5Tokenizer, GroupAggregation};
 
     #[test]
     fn test_char_tokenizer() {
@@ -1278,6 +1417,13 @@ mod tests {
                 )
             }
         };
+    }
+
+    #[test]
+    fn test_byt5_tokenizer() {
+        let tok = ByT5Tokenizer::new(true, ByteGroups::Bytes, GroupAggregation::Mean).unwrap();
+        let Tokenization { token_ids, info: _ } = tok.tokenize("a täst", None).unwrap();
+        assert_eq!(token_ids, vec![100, 35, 119, 198, 167, 118, 119, 1]);
     }
 
     #[test]

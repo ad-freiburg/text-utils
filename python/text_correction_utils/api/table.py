@@ -14,6 +14,7 @@ def generate_table(
     alignments: Optional[List[str]] = None,
     horizontal_lines: Optional[List[int]] = None,
     mark_bold: Optional[Set[Tuple[int, int]]] = None,
+    bold_type: str = "markdown",
     max_column_width: int = 48
 ) -> str:
     assert len(headers), "got no headers"
@@ -60,13 +61,13 @@ def generate_table(
     tables_lines = []
 
     tables_lines.extend([
-        _table_row(header, [False] * header_length, alignments, column_widths, max_column_width)
+        _table_row(header, [False] * header_length, bold_type, alignments, column_widths, max_column_width)
         + (_table_horizontal_line(column_widths) if i == len(headers) - 1 else "")
         for i, header in enumerate(headers)
     ])
 
     for item, horizontal_line, bold in zip(data, horizontal_lines, bold_cells):
-        line = _table_row(item, bold, alignments, column_widths, max_column_width)
+        line = _table_row(item, bold, bold_type, alignments, column_widths, max_column_width)
         if horizontal_line > 0:
             line += _table_horizontal_line(column_widths)
         tables_lines.append(line)
@@ -85,7 +86,16 @@ def _table_cell(s: str, prefix: str, suffix: str, alignment: str, width: int) ->
     return s
 
 
-def _table_row(data: List[str], bold: List[bool], alignments: List[str], widths: List[int], max_width: int) -> str:
+def _bold(bold_type: str, start: bool) -> str:
+    if bold_type == "markdown":
+        return "**"
+    elif bold_type == "terminal":
+        return "\033[1m" if start else "\033[0m"
+    else:
+        return ""
+
+
+def _table_row(data: List[str], bold: List[bool], bold_type: str, alignments: List[str], widths: List[int], max_width: int) -> str:
     assert len(data) == len(bold)
     num_lines = [math.ceil(len(d) / max_width) for d in data]
     max_num_lines = max(num_lines)
@@ -94,10 +104,10 @@ def _table_row(data: List[str], bold: List[bool], alignments: List[str], widths:
         line_data = [d[i*max_width: (i + 1) * max_width] for d in data]
         line = "| " + " | ".join(_table_cell(
             d,
-            "**" if b and i == 0 else "",
-            "**" if b and i == max_num_lines - 1 else "",
+            _bold(bold_type, start=True) if b else "",
+            _bold(bold_type, start=False) if b else "",
             a,
-            w
+            w + (8 if bold_type == "terminal" and b else 0)
         ) for d, b, a, w in zip(line_data, bold, alignments, widths)) + " |"
         lines.append(line)
     return "\n".join(lines)

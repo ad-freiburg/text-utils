@@ -1,7 +1,19 @@
 import copy
-from typing import Dict, Any
+from typing import Dict, Any, Iterator, Tuple, List
 
 from torch import nn, optim
+
+
+def _select_params(
+    params: Iterator[Tuple[str, nn.Parameter]],
+    prefixes: List[str],
+    include: bool
+) -> Iterator[nn.Parameter]:
+    for name, param in params:
+        if include and any(name.startswith(prefix) for prefix in prefixes):
+            yield param
+        elif not include and all(not name.startswith(prefix) for prefix in prefixes):
+            yield param
 
 
 def optimizer_from_config(
@@ -10,20 +22,44 @@ def optimizer_from_config(
 ) -> optim.Optimizer:
     cfg = copy.deepcopy(cfg)
     opt_type = cfg.pop("type")
+    lr = cfg["lr"]
+    param_groups = cfg.pop("param_groups", None)
+    params = []
+    exclude_prefixes = []
+    if param_groups is not None:
+        params = []
+        for group in param_groups:
+            prefix = group["prefix"]
+            exclude_prefixes.append(prefix)
+            group_params = _select_params(model.named_parameters(), [prefix], True)
+            if group.get("fix", False):
+                for param in group_params:
+                    param.requires_grad = False
+                continue
+            params.append({
+                "params": group_params,
+                "lr": group.get("lr", lr)
+            })
+
+    params.append({
+        "params": _select_params(model.named_parameters(), exclude_prefixes, False),
+        "lr": lr
+    })
+
     if opt_type == "adamw":
         return optim.AdamW(
-            model.parameters(),
+            params,
             **cfg
         )
     elif opt_type == "adam":
         return optim.Adam(
-            model.parameters(),
+            params,
             **cfg
         )
     elif opt_type == "sgd":
         return optim.SGD(
-            model.parameters(),
+            params,
             **cfg
         )
     else:
-        raise ValueError(f"Unknown optimizer type {opt_type}")
+        raise ValueError(f"unknown optimizer type {opt_type}")

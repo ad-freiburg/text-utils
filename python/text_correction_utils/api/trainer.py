@@ -5,7 +5,6 @@ import random
 import os
 import hashlib
 import shutil
-import tempfile
 import time
 from typing import Dict, Optional, Tuple, Any, List
 import zipfile
@@ -162,6 +161,25 @@ training will resume from latest checkpoint."
             self.model,
             self.cfg["train"]["optimizer"]
         )
+        if self.info.is_main_process:
+            num_params = 0
+            param_group_infos = []
+            for i, param_group in enumerate(self.optimizer.param_groups):
+                group_num_params = sum(p.numel() for p in param_group["params"])
+                other = {k: v for k, v in param_group.items() if k != "params"}
+                param_group_infos.append(
+                    f"{i+1}. group: {group_num_params:,} params, other: {other}"
+                )
+                num_params += group_num_params
+            param_group_info = "\n".join(param_group_infos)
+            self.logger.info(
+                f"Optimizer parameter groups:\n{param_group_info}"
+            )
+            model_params = api.num_parameters(self.model)
+            assert model_params["trainable"] == num_params, \
+                f"number of trainable parameters in model {model_params['trainable']:,}, " \
+                f"and optimized parameters {num_params:,} do not match"
+
         self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm")
 
         if "lr_scheduler" in self.cfg["train"]:

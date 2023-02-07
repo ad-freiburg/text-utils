@@ -1421,7 +1421,7 @@ mod tests {
 
     #[test]
     fn test_byt5_tokenizer() {
-        let tok = ByT5Tokenizer::new(true, ByteGroups::Bytes, GroupAggregation::Mean).unwrap();
+        let tok = ByT5Tokenizer::new(true, ByteGroups::Bytes, GroupAggregation::Mean);
         let Tokenization { token_ids, info: _ } = tok.tokenize("a täst", None).unwrap();
         assert_eq!(token_ids, vec![100, 35, 119, 198, 167, 118, 119, 1]);
     }

@@ -9,7 +9,7 @@ import torch
 from torch.cuda import Stream
 from flask import Flask, Response, cli, jsonify
 
-from text_correction_utils.api.corrector import TextCorrector, ModelInfo
+from text_correction_utils.api.corrector import TextCorrector
 from text_correction_utils.api.utils import gpu_info, cpu_info
 from text_correction_utils.logging import get_logger
 from text_correction_utils import configuration

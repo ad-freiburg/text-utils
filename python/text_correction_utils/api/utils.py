@@ -6,13 +6,16 @@ import shutil
 import zipfile
 import subprocess
 from pathlib import Path
-from typing import Union, Dict, List, Any, Optional, Iterable
+from typing import Union, Dict, List, Any, Optional, Iterator, Callable
 
 import requests
 import numpy as np
 import torch
 from torch import nn
 from tqdm import tqdm
+
+
+from text_correction_utils import data
 
 
 def _unpack_zip(
@@ -36,6 +39,29 @@ def to(v: Any, device: torch.device) -> Any:
         return tuple(to(v_, device) for v_ in v)
     else:
         return v
+
+
+class ProgressIterator:
+    # a utility class capturing the number and total size
+    # of items passed through an iterator
+    def __init__(
+        self,
+        it: Iterator[Any],
+        size_fn: Callable[[Any], int]
+    ):
+        self.it = it
+        self.num_items = 0
+        self.total_size = 0
+        self.size_fn = size_fn
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        item = next(self.it)
+        self.num_items += 1
+        self.total_size += self.size_fn(item)
+        return item
 
 
 def download_zip(

@@ -1,5 +1,4 @@
 import argparse
-from collections import deque
 from io import TextIOWrapper
 import sys
 import time
@@ -11,31 +10,9 @@ import torch
 from text_correction_utils.api.corrector import TextCorrector
 from text_correction_utils.api.server import TextCorrectionServer
 from text_correction_utils.api.table import generate_report, generate_table
-from text_correction_utils.api.utils import byte_progress_bar, sequence_progress_bar
+from text_correction_utils.api.utils import ProgressIterator
 
 from text_correction_utils import data, text
-
-
-class _ProgressIterator:
-    # a utility class capturing the number and size of items passed
-    # through an iterator of inference data, optionally
-    # displaying a progress bar
-    def __init__(
-        self,
-        it: Iterator[data.InferenceData],
-    ):
-        self.it = it
-        self.num_items = 0
-        self.num_bytes = 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        item = next(self.it)
-        self.num_items += 1
-        self.num_bytes += len(item.text.encode("utf8"))
-        return item
 
 
 class TextCorrectionCli:
@@ -259,6 +236,10 @@ class TextCorrectionCli:
         import cProfile
         cProfile.runctx("self.run()", globals(), locals(), file)
 
+    @staticmethod
+    def inference_data_size(item: data.InferenceData) -> int:
+        return len(item.text.encode("utf8"))
+
     def run(self) -> None:
         if self.args.profile is not None:
             file = self.args.profile
@@ -374,14 +355,14 @@ but {self.args.lang} was specified"
                 if self.args.unsorted:
                     # correct lines from stdin as they come
                     input_it = (self.parse_input(line.strip(), self.args.lang) for line in sys.stdin)
-                    sized_it = _ProgressIterator(input_it)
+                    sized_it = ProgressIterator(input_it, self.inference_data_size)
                     outputs = self.correct_iter(cor, sized_it)
                     for opt in outputs:
                         print(opt.to_str(self.args.output_format))
                 else:
                     # read stdin completely, then potentially sort and correct
                     inputs = [self.parse_input(line.strip(), self.args.lang) for line in sys.stdin]
-                    sized_it = _ProgressIterator(iter(inputs))
+                    sized_it = ProgressIterator(iter(inputs), self.inference_data_size)
                     outputs = self.correct_iter(cor, sized_it)
                     for opt in outputs:
                         print(opt.to_str(self.args.output_format))
@@ -395,7 +376,7 @@ but {self.args.lang} was specified"
                         cor.name,
                         cor.model,
                         sized_it.num_items,
-                        sized_it.num_bytes,
+                        sized_it.total_size,
                         time.perf_counter() - start,
                         cor._mixed_precision_dtype,
                         self.args.batch_size,

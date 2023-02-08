@@ -57,6 +57,7 @@ class TextCorrectionServer:
         @self.server.after_request
         def _after_request(response: Response) -> Response:
             response.headers.add("Access-Control-Allow-Origin", self.allow_origin)
+            response.headers.add("Access-Control-Allow-Headers", "*")
             response.headers.add("Access-Control-Allow-Private-Network", "true")
             return response
 
@@ -92,6 +93,7 @@ class TextCorrectionServer:
                 model_description = model_info.description
                 model_name = model_info.name
                 model_tags = model_info.tags
+                model_tags.append("src::pretrained")
 
             else:
                 self.logger.info(
@@ -101,13 +103,15 @@ class TextCorrectionServer:
                 text_corrector = self.text_corrector_cls.from_experiment(model_name, device)
                 model_name = text_corrector.name
                 model_description = "loaded from custom experiment"
-                model_tags = ["custom"]
+                model_tags = ["src::custom"]
 
             # handle the case when two models have the same name
             if model_name in self.text_correctors:
                 dup_num = model_duplicates.get(model_name, 0) + 1
-                self.logger.warning(f"found another model with name {model_name}, "
-                                    f"renaming current one to {model_name}_{dup_num}")
+                self.logger.warning(
+                    f"found another model with name {model_name}, "
+                    f"renaming current one to {model_name}_{dup_num}"
+                )
                 model_duplicates[model_name] = dup_num
                 model_name = f"{model_name}_{dup_num}"
 

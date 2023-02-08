@@ -28,6 +28,7 @@ jobs:
           args: --release --out dist
       - name: "Python: Install wheels and test"
         run: |
+          pip install patchelf
           pip install dist/*.whl --force-reinstall
           pip install pytest
           pytest -W ignore -v

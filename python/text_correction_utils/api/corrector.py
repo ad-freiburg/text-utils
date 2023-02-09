@@ -29,6 +29,14 @@ class TextCorrector:
         raise NotImplementedError
 
     @classmethod
+    def default_model(cls) -> ModelInfo:
+        available_models = cls.available_models()
+        for info in available_models:
+            if "default" in info.tags:
+                return info
+        return available_models[0]
+
+    @classmethod
     def _model_url(cls, model: str) -> str:
         raise NotImplementedError
 
@@ -49,12 +57,15 @@ class TextCorrector:
     @classmethod
     def from_pretrained(
             cls,
-            model: str,
+            model: Optional[str] = None,
             device: Union[str, int] = "cuda",
             download_dir: Optional[str] = None,
             cache_dir: Optional[str] = None,
             force_download: bool = False
     ):
+        if model is None:
+            model = cls.default_model().name
+        assert model is not None
         assert any(model == m.name for m in cls.available_models()), \
             f"model {model} does not match any of the available models:\n{pprint.pformat(cls.available_models())}"
 

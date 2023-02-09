@@ -20,14 +20,6 @@ class TextCorrectionCli:
     text_correction_server_cls: Type[TextCorrectionServer]
 
     @classmethod
-    def _default_model(cls) -> str:
-        available_models = cls.text_corrector_cls.available_models()
-        for info in available_models:
-            if "default" in info.tags:
-                return info.name
-        return available_models[0].name
-
-    @classmethod
     def parser(
         cls,
         name: str,
@@ -39,7 +31,7 @@ class TextCorrectionCli:
             "-m",
             "--model",
             choices=[model.name for model in cls.text_corrector_cls.available_models()],
-            default=cls._default_model(),
+            default=cls.text_corrector_cls.default_model().name,
             help=f"Name of the model to use for {cls.text_corrector_cls.task}"
         )
         model_group.add_argument(

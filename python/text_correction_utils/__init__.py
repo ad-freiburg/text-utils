@@ -1,5 +1,5 @@
 from text_correction_utils.version import __version__
-from ._internal import (
+from text_correction_utils._internal import (
     edit,
     text,
     whitespace,

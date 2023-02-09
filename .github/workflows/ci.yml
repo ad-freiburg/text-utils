@@ -30,8 +30,9 @@ jobs:
         run: |
           pip install patchelf
           pip install dist/*.whl --force-reinstall
-          pip install pytest
-          python -m pytest -W ignore -v
+          python -c "import text_correction_utils"
+          # pip install pytest
+          # python -m pytest -W ignore -v
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:

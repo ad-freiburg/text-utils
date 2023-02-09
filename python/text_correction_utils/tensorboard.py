@@ -1,6 +1,5 @@
 import logging
 from typing import Optional, Union, Dict, Any, List
-from typing_extensions import override
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -28,7 +27,6 @@ class AverageTracker(TensorboardLogger):
     def value(self) -> float:
         return sum(self.values) / max(len(self.values), 1)
 
-    @override
     def log_tensorboard(self, writer: SummaryWriter, step: int):
         writer.add_scalar(
             self.name,
@@ -36,7 +34,6 @@ class AverageTracker(TensorboardLogger):
             step
         )
 
-    @override
     def log_info(self, logger: logging.Logger, step: int):
         logger.info(f"[step {step}] {self.name} = {self.value:{self.fmt}}")
 
@@ -57,7 +54,6 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
         self.name = name
         self.input_tokenizer = input_tokenizer
 
-    @override
     def set_values(self, items: List[data.Item], outputs: torch.Tensor):
         self.items = items
         self.outputs = torch.argmax(outputs, dim=-1).tolist()
@@ -103,12 +99,10 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
 
         return ("\n" + "-" * 80 + "\n").join(strings) + "\n"
 
-    @override
     def log_tensorboard(self, writer: SummaryWriter, step: int):
         s = self._get_string()
         writer.add_text(self.name, s, step)
 
-    @override
     def log_info(self, logger: logging.Logger, step: int):
         s = self._get_string()
         logger.info(f"[step {step}] {self.name}\n{s}")

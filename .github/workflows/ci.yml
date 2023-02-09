@@ -31,7 +31,7 @@ jobs:
           pip install patchelf
           pip install dist/*.whl --force-reinstall
           pip install pytest
-          pytest -W ignore -v
+          python -m pytest -W ignore -v
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:

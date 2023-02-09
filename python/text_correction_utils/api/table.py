@@ -4,6 +4,7 @@ from typing import List, Optional, Set, Tuple
 
 import torch
 from torch import nn
+from termcolor import colored
 
 from text_correction_utils.api import utils
 
@@ -13,8 +14,9 @@ def generate_table(
     data: List[List[str]],
     alignments: Optional[List[str]] = None,
     horizontal_lines: Optional[List[int]] = None,
-    mark_bold: Optional[Set[Tuple[int, int]]] = None,
-    bold_type: str = "markdown",
+    highlight: Optional[Set[Tuple[int, int]]] = None,
+    highlight_type: str = "markdown",
+    highlight_color: str = "green",
     max_column_width: int = 48
 ) -> str:
     assert len(headers), "got no headers"
@@ -27,17 +29,25 @@ def generate_table(
     if alignments is None:
         alignments = ["left"] + ["right"] * (header_length - 1)
 
-    if mark_bold is None:
-        mark_bold = set()
+    if highlight is None:
+        highlight = set()
 
-    max_column_width = max(3, max_column_width)
+    max_column_width = max(10, max_column_width)
+    if len(highlight) > 0 and highlight_type == "markdown":
+        max_column_width += 4
 
     # get max width for each column in headers and data
     column_widths = []
     for i in range(header_length):
         # add 4 to width if cell is bold because of the two **s left and right
-        header_width = max(len(h[i]) + (4 * ((i, j) in mark_bold)) for j, h in enumerate(headers))
-        data_width = max(min(max_column_width, len(d[i]) + (4 * ((i, j) in mark_bold))) for j, d in enumerate(data))
+        header_width = max(len(h[i]) for h in headers)
+        data_width = max(
+            min(
+                max_column_width,
+                len(d[i]) + (4 * ((j, i) in highlight and highlight_type == "markdown"))
+            )
+            for j, d in enumerate(data)
+        )
         column_widths.append(
             min(
                 max_column_width,
@@ -53,21 +63,23 @@ def generate_table(
     if horizontal_lines is None:
         horizontal_lines = [0] * len(data)
 
-    bold_cells = [
-        [(i, j) in mark_bold for j in range(len(data[i]))]
+    highlight_cells = [
+        [(i, j) in highlight for j in range(len(data[i]))]
         for i in range(len(data))
     ]
 
     tables_lines = []
 
     tables_lines.extend([
-        _table_row(header, [False] * header_length, bold_type, alignments, column_widths, max_column_width)
+        _table_row(header, [False] * header_length, highlight_type,
+                   highlight_color, alignments, column_widths, max_column_width)
         + (_table_horizontal_line(column_widths) if i == len(headers) - 1 else "")
         for i, header in enumerate(headers)
     ])
 
-    for item, horizontal_line, bold in zip(data, horizontal_lines, bold_cells):
-        line = _table_row(item, bold, bold_type, alignments, column_widths, max_column_width)
+    for item, horizontal_line, bold in zip(data, horizontal_lines, highlight_cells):
+        line = _table_row(item, bold, highlight_type, highlight_color,
+                          alignments, column_widths, max_column_width)
         if horizontal_line > 0:
             line += _table_horizontal_line(column_widths)
         tables_lines.append(line)
@@ -75,8 +87,7 @@ def generate_table(
     return "\n".join(tables_lines)
 
 
-def _table_cell(s: str, prefix: str, suffix: str, alignment: str, width: int) -> str:
-    s = prefix + s + suffix
+def _table_cell(s: str, alignment: str, width: int) -> str:
     if alignment == "left":
         s = s.ljust(width)
     elif alignment == "right":
@@ -86,30 +97,35 @@ def _table_cell(s: str, prefix: str, suffix: str, alignment: str, width: int) ->
     return s
 
 
-def _bold(bold_type: str, start: bool) -> str:
-    if bold_type == "markdown":
-        return "**"
-    elif bold_type == "terminal":
-        return "\033[1m" if start else "\033[0m"
-    else:
-        return ""
+def _highlight(s: str, hcolor: str) -> str:
+    return colored(s, hcolor, attrs=["bold"])
 
 
-def _table_row(data: List[str], bold: List[bool], bold_type: str, alignments: List[str], widths: List[int], max_width: int) -> str:
-    assert len(data) == len(bold)
+def _table_row(
+    data: List[str],
+    highlight: List[bool],
+    highlight_type: str,
+    highlight_color: str,
+    alignments: List[str],
+    widths: List[int],
+    max_width: int
+) -> str:
+    assert len(data) == len(highlight)
     num_lines = [math.ceil(len(d) / max_width) for d in data]
     max_num_lines = max(num_lines)
     lines = []
     for i in range(max_num_lines):
         line_data = [d[i*max_width: (i + 1) * max_width] for d in data]
-        line = "| " + " | ".join(_table_cell(
-            d,
-            _bold(bold_type, start=True) if b else "",
-            _bold(bold_type, start=False) if b else "",
-            a,
-            w + (8 if bold_type == "terminal" and b else 0)
-        ) for d, b, a, w in zip(line_data, bold, alignments, widths)) + " |"
-        lines.append(line)
+        cells = []
+        for d, h, a, w in zip(line_data, highlight, alignments, widths):
+            if h and highlight_type == "markdown":
+                cell = _table_cell(f"**{d}**", a, w)
+            elif h and highlight_type == "terminal":
+                cell = _highlight(_table_cell(d, a, w), highlight_color)
+            else:
+                cell = _table_cell(d, a, w)
+            cells.append(cell)
+        lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
 

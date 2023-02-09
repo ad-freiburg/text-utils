@@ -1,5 +1,14 @@
 from text_correction_utils.version import __version__
-from text_correction_utils._internal import (
+from text_correction_utils import (
+    api,
+    inference,
+    modules,
+    logging,
+    distributed,
+    mask,
+    io
+)
+from _internal import (
     edit,
     text,
     whitespace,
@@ -9,13 +18,4 @@ from text_correction_utils._internal import (
     windows,
     metrics,
     unicode
-)
-from text_correction_utils import (
-    api,
-    inference,
-    modules,
-    logging,
-    distributed,
-    mask,
-    io
 )

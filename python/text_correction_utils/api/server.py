@@ -39,7 +39,7 @@ class TextCorrectionServer:
         self.port = int(self.config.get("port", 40000))
         # disable flask startup message and set flask mode to development
         cli.show_server_banner = lambda *_: None
-        os.environ["FLASK_ENV"] = "development"
+        os.environ["FLASK_DEBUG"] = "development"
         self.server = Flask(__name__)
         max_content_length = int(float(config.get("max_content_length", 1000.0)) * 1000.0)
         self.server.config["MAX_CONTENT_LENGTH"] = max_content_length

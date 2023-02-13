@@ -170,7 +170,7 @@ class StandardEmbedding(Embedding):
 
         if positional_embeddings is not None:
             assert max_length is not None, "max length must be specified together with positional embeddings"
-            self.pos_embedding = PositionalEmbedding(positional_embeddings, embedding_dim, max_length, dropout)
+            self.pos_embedding = PositionalEmbedding(positional_embeddings, embedding_dim, max_length)
         else:
             self.pos_embedding = None
 

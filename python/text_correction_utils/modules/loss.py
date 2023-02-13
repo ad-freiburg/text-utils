@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional, Callable
 import einops
 import torch
 from torch import nn
+from torch.cuda.amp import autocast
 
 
 def _loss_schedule(training_steps: int, schedule_type: str) -> Callable[[int], float]:
@@ -42,8 +43,12 @@ class FocalLoss(nn.Module):
         self.gamma_schedule = gamma_schedule
         self.register_buffer("_step", torch.tensor(0, dtype=torch.long))
 
+    @autocast(enabled=False)
     def forward(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         assert outputs.ndim == 2 and labels.ndim == 1
+        # make sure outputs and labels have correct types
+        outputs = outputs.float()
+        labels = labels.long()
         unignored_mask = labels != self.ignore_index
         labels = labels[unignored_mask]
         if len(labels) == 0:

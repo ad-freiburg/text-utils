@@ -156,7 +156,7 @@ class TransformerEncoder(Encoder):
         heads: int,
         ffw_dim: int,
         dropout: float,
-        with_pos: str,
+        with_pos: Optional[str] = None,
         activation: str = "gelu",
         share_parameters: bool = False,
         padding_mask: str = "padding_mask"
@@ -178,9 +178,7 @@ class TransformerEncoder(Encoder):
         )
 
         self.with_pos = with_pos
-        if self.with_pos == "add_norm":
-            self.input_norm = nn.LayerNorm(dim)
-        elif self.with_pos == "alibi":
+        if self.with_pos == "alibi":
             self.alibi = Alibi(heads)
 
     def forward(
@@ -192,18 +190,14 @@ class TransformerEncoder(Encoder):
         padding_mask = kwargs.get(self.padding_mask)
         assert padding_mask is not None, f"expected '{self.padding_mask}' in kwargs"
         attn_mask = None
-        if self.with_pos == "add_norm":
-            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
-            x = self.input_norm(x + pos)
-            pos = None
-        elif self.with_pos == "add":
-            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
-            x = x + pos
-            pos = None
-        elif self.with_pos == "alibi":
+        if self.with_pos == "alibi":
             attn_mask = self.alibi(x)
+        elif self.with_pos == "attention":
+            assert pos is not None, "expected positional features for with_pos='attention'"
+        elif self.with_pos is None:
+            pass
         else:
-            raise ValueError(f"unknown with_pos={self.with_pos}")
+            raise ValueError(f"unknown with_pos={self.with_pos}, must be either None or one of alibi, attention")
 
         enc = x
         for i in range(self.num_layers):

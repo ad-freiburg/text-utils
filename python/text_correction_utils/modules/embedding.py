@@ -121,8 +121,7 @@ class PositionalEmbedding(nn.Module):
         self,
         positional_embeddings: str,
         embedding_dim: int,
-        max_length: int,
-        dropout: float
+        max_length: int
     ):
         super().__init__()
         if positional_embeddings == "learned":
@@ -139,15 +138,13 @@ class PositionalEmbedding(nn.Module):
             assert positional_embeddings, "positional embeddings must be learned or sinusoidal, " \
                 f"but got {positional_embeddings}"
 
-        self.pos_drop = nn.Dropout1d(dropout)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         positions = einops.repeat(
             torch.arange(x.shape[1], device=x.device),
             "s -> b s",
             b=x.shape[0]
         )
-        return self.pos_drop(self.pos_embedding(positions))
+        return self.pos_embedding(positions)
 
 
 class StandardEmbedding(Embedding):
@@ -160,6 +157,7 @@ class StandardEmbedding(Embedding):
         token_dropout: float = 0.0,
         max_length: Optional[int] = None,
         positional_embeddings: Optional[str] = None,
+        mode: Optional[str] = None
     ):
         super().__init__()
         self.positional_embeddings = positional_embeddings
@@ -176,6 +174,17 @@ class StandardEmbedding(Embedding):
         else:
             self.pos_embedding = None
 
+        if mode == "add_norm":
+            assert positional_embeddings is not None, "add_norm mode requires positional embeddings"
+            self.norm = nn.LayerNorm(embedding_dim)
+        elif mode == "add":
+            assert positional_embeddings is None, "add mode does not require positional embeddings"
+        elif mode is None:
+            pass
+        else:
+            raise ValueError(f"mode must be either None or one of add_norm, add, but got {mode}")
+
+        self.mode = mode
         self.drop = nn.Dropout(dropout)
         self.token_drop = nn.Dropout1d(token_dropout)
 
@@ -184,9 +193,19 @@ class StandardEmbedding(Embedding):
         x: torch.Tensor,
         **_: Dict[str, Any]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        emb = self.token_drop(self.drop(self.embedding(x)))
+        emb = self.embedding(x)
         if self.pos_embedding is not None:
-            pos_emb = self.token_drop(self.drop(self.pos_embedding(x)))
+            pos_emb = self.pos_embedding(x)
         else:
             pos_emb = None
+
+        if self.mode == "add_norm":
+            emb = self.token_drop(self.drop(self.norm(emb + pos_emb)))
+        elif self.mode == "add":
+            emb = self.token_drop(self.drop(emb + pos_emb))
+        elif self.mode is None:
+            emb = self.token_drop(self.drop(emb))
+        else:
+            raise RuntimeError("should not happen")
+
         return emb, pos_emb

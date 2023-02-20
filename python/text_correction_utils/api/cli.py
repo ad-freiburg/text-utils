@@ -192,7 +192,7 @@ class TextCorrectionCli:
             "--profile",
             type=str,
             default=None,
-            help="Profile the cli run and save the results to this file"
+            help="Run CLI with cProfile profiler on and output stats to this file"
         )
         return parser
 

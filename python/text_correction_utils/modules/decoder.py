@@ -156,7 +156,8 @@ class _TransformerDecoderLayer(nn.Module):
             x,
             key_padding_mask=padding_mask,
             attn_mask=attn_mask,
-            need_weights=True
+            need_weights=True,
+            average_attn_weights=False
         )[0]
         return self.dropout1(x)
 
@@ -181,7 +182,8 @@ class _TransformerDecoderLayer(nn.Module):
             memories[memory],
             key_padding_mask=None if memory_padding_masks is None else memory_padding_masks.get(memory),
             attn_mask=None if memory_attn_masks is None else memory_attn_masks.get(memory),
-            need_weights=True
+            need_weights=True,
+            average_attn_weights=False
         )[0]
         return self.memory_dropouts[memory](x)
 
@@ -194,7 +196,7 @@ class TransformerDecoder(Decoder):
         heads: int,
         ffw_dim: int,
         dropout: float,
-        with_pos: str,
+        with_pos: Optional[str] = None,
         memories: Optional[List[str]] = None,
         activation: str = "gelu",
         share_parameters: bool = False,
@@ -218,9 +220,7 @@ class TransformerDecoder(Decoder):
         )
 
         self.with_pos = with_pos
-        if self.with_pos == "add_norm":
-            self.input_norm = nn.LayerNorm(dim)
-        elif self.with_pos == "alibi":
+        if self.with_pos == "alibi":
             self.alibi = Alibi(heads)
 
     def forward(
@@ -234,22 +234,18 @@ class TransformerDecoder(Decoder):
         else:
             attn_mask = None
 
-        if self.with_pos == "add_norm":
-            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
-            x = self.input_norm(x + pos)
-            pos = None
-        elif self.with_pos == "add":
-            assert pos is not None, f"pos must be given if with_pos={self.with_pos}"
-            x = x + pos
-            pos = None
-        elif self.with_pos == "alibi":
+        if self.with_pos == "alibi":
             alibi_mask = self.alibi(x)
             if attn_mask is None:
                 attn_mask = alibi_mask
             else:
                 attn_mask += alibi_mask
+        elif self.with_pos == "attention":
+            assert pos is not None, "expected positional features for with_pos='attention'"
+        elif self.with_pos is None:
+            pass
         else:
-            raise ValueError(f"unknown with_pos={self.with_pos}")
+            raise ValueError(f"unknown with_pos={self.with_pos}, must be either None or one of alibi, attention")
 
         dec = x
         for i in range(self.num_layers):

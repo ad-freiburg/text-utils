@@ -66,7 +66,7 @@ training will resume from latest checkpoint."
             "--profile",
             type=str,
             default=None,
-            help="Run cProfile python profile on main process and output stats to this file "
+            help="Run cProfile profile on main process and output stats to this file "
             "(only respected if platform=local)"
         )
         return parser

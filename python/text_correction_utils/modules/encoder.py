@@ -138,7 +138,8 @@ class _TransformerEncoderLayer(nn.Module):
             x,
             key_padding_mask=padding_mask,
             attn_mask=attn_mask,
-            need_weights=True
+            need_weights=True,
+            average_attn_weights=False
         )[0]
         return self.dropout1(x)
 

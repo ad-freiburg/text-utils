@@ -2,13 +2,12 @@ use crate::edit;
 use crate::edit::{distance, edited_words, EditOperation};
 use crate::text::{clean, match_words, word_boundaries};
 use crate::unicode::{normalize, Normalization, CS};
-use crate::utils::{as_ref_slice_to_vec, constrain, py_invalid_type_error};
+use crate::utils::{as_ref_slice_to_vec, py_invalid_type_error};
 use crate::whitespace::{operations, WhitespaceOperation};
 use anyhow::anyhow;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::ops::Add;
 
 #[inline]
 fn _mean_edit_distance(
@@ -115,70 +114,82 @@ fn accuracy_py(predictions: Vec<&str>, targets: Vec<&str>) -> anyhow::Result<f64
     accuracy(&predictions, &targets)
 }
 
-struct TpFpFn {
-    tp: usize,
-    fp: usize,
-    fn_: usize,
+type F1Sets = (bool, HashSet<usize>, HashSet<usize>, HashSet<usize>);
+pub struct TpFpFn {
+    sets: Vec<F1Sets>,
+}
+
+impl IntoPy<PyObject> for TpFpFn {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        self.sets.into_py(py)
+    }
 }
 
 impl TpFpFn {
-    fn new(tp: usize, fp: usize, fn_: usize) -> Self {
-        TpFpFn { tp, fp, fn_ }
+    fn new(sets: Vec<F1Sets>) -> Self {
+        TpFpFn { sets }
     }
-    fn default() -> Self {
-        TpFpFn {
-            tp: 0,
-            fp: 0,
-            fn_: 0,
+
+    fn micro_f1(&self, beta: f64) -> F1PrecRec {
+        let mut tps = 0;
+        let mut fps = 0;
+        let mut fns_ = 0;
+        for (_, tp_, fp_, fn_) in self.sets.iter() {
+            tps += tp_.len();
+            fps += fp_.len();
+            fns_ += fn_.len();
         }
+        _f1(tps, fps, fns_, beta)
     }
 
-    fn f1(&self, mut beta: f64) -> F1PrecRec {
-        let precision = self.tp as f64 / (self.tp + self.fp).max(1) as f64;
-        let recall = self.tp as f64 / (self.tp + self.fn_).max(1) as f64;
-        let f1 = if precision + recall > 0.0 {
-            beta = constrain(beta, 0.0, 1.0);
-            let beta_sq = beta.powi(2);
-            ((1.0 + beta_sq) * precision * recall) / (beta_sq * precision + recall)
-        } else {
-            0.0
-        };
-        (f1, precision, recall)
-    }
-}
-
-impl Add for TpFpFn {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        TpFpFn {
-            tp: self.tp + rhs.tp,
-            fp: self.fp + rhs.fp,
-            fn_: self.fn_ + rhs.fn_,
-        }
+    fn sequence_averaged_f1(&self, beta: f64) -> F1PrecRec {
+        let (f1, precision, recall) = self
+            .sets
+            .iter()
+            .map(|(empty, tp, fp, fn_)| {
+                if *empty {
+                    (1.0, 1.0, 1.0)
+                } else {
+                    _f1(tp.len(), fp.len(), fn_.len(), beta)
+                }
+            })
+            .fold(
+                (0.0, 0.0, 0.0),
+                |(f1, precision, recall), (f1_, precision_, recall_)| {
+                    (f1 + f1_, precision + precision_, recall + recall_)
+                },
+            );
+        (
+            f1 / self.sets.len().max(1) as f64,
+            precision / self.sets.len().max(1) as f64,
+            recall / self.sets.len().max(1) as f64,
+        )
     }
 }
 
 pub type F1PrecRec = (f64, f64, f64);
+#[inline]
+fn _f1(tp: usize, fp: usize, fn_: usize, beta: f64) -> F1PrecRec {
+    let precision = tp as f64 / (tp + fp).max(1) as f64;
+    let recall = tp as f64 / (tp + fn_).max(1) as f64;
+    let f1 = if precision + recall > 0.0 {
+        let beta_sq = beta.powi(2);
+        ((1.0 + beta_sq) * precision * recall) / (beta_sq * precision + recall)
+    } else {
+        0.0
+    };
+    (f1, precision, recall)
+}
 
 #[inline]
-fn _count_tp_fp_fn(a: &[bool], b: &[bool]) -> TpFpFn {
+fn _count_tp_fp_fn(a: &[bool], b: &[bool]) -> (usize, usize, usize) {
     a.iter()
         .zip(b.iter())
-        .fold(TpFpFn::default(), |tp_fp_fn, (p, t)| match (p, t) {
-            (true, true) => TpFpFn {
-                tp: tp_fp_fn.tp + 1,
-                ..tp_fp_fn
-            },
-            (true, false) => TpFpFn {
-                fp: tp_fp_fn.fp + 1,
-                ..tp_fp_fn
-            },
-            (false, true) => TpFpFn {
-                fn_: tp_fp_fn.fn_ + 1,
-                ..tp_fp_fn
-            },
-            _ => tp_fp_fn,
+        .fold((0, 0, 0), |(tp, fp, fn_), (p, t)| match (p, t) {
+            (true, true) => (tp + 1, fp, fn_),
+            (true, false) => (tp, fp + 1, fn_),
+            (false, true) => (tp, fp, fn_ + 1),
+            _ => (tp, fp, fn_),
         })
 }
 
@@ -186,8 +197,8 @@ pub fn binary_f1(predictions: &[bool], targets: &[bool], beta: f64) -> anyhow::R
     if predictions.len() != targets.len() {
         return Err(anyhow!("different number of predictions and targets"));
     }
-    let tp_fp_fn = _count_tp_fp_fn(predictions, targets);
-    Ok(tp_fp_fn.f1(beta))
+    let (tp, fp, fn_) = _count_tp_fp_fn(predictions, targets);
+    Ok(_f1(tp, fp, fn_, beta))
 }
 
 #[pyfunction(name = "binary_f1", signature = (predictions, targets, beta = 1.0))]
@@ -205,8 +216,8 @@ fn _correction_f1(
     target_sequences: &[impl AsRef<str>],
     beta: f64,
     sequence_averaged: bool,
-    f: impl Fn(&str, &str, &str) -> anyhow::Result<(TpFpFn, bool)> + Sync,
-) -> anyhow::Result<F1PrecRec> {
+    f: impl Fn(&str, &str, &str) -> anyhow::Result<F1Sets> + Sync,
+) -> anyhow::Result<(F1PrecRec, TpFpFn)> {
     let input_sequences = as_ref_slice_to_vec(input_sequences);
     let predicted_sequences = as_ref_slice_to_vec(predicted_sequences);
     let target_sequences = as_ref_slice_to_vec(target_sequences);
@@ -217,7 +228,7 @@ fn _correction_f1(
             "expected the same number of input, target, and predicted sequences"
         ));
     };
-    let values = (0..input_sequences.len())
+    let sets = (0..input_sequences.len())
         .into_par_iter()
         .map(|idx| {
             let input = &input_sequences[idx];
@@ -229,34 +240,12 @@ fn _correction_f1(
                 &normalize(&clean(target, true), Normalization::NFKC, true),
             )
         })
-        .collect::<anyhow::Result<Vec<(TpFpFn, bool)>>>()?;
+        .collect::<anyhow::Result<Vec<F1Sets>>>()?;
+    let tp_fp_fn = TpFpFn::new(sets);
     if sequence_averaged {
-        let (f1_sum, prec_sum, rec_sum) = values
-            .into_iter()
-            .map(|(tp_fp_fn, empty)| {
-                if empty {
-                    (1.0, 1.0, 1.0)
-                } else {
-                    tp_fp_fn.f1(beta)
-                }
-            })
-            .fold(
-                (0.0, 0.0, 0.0),
-                |(f1_sum, prec_sum, rec_sum), (f1, prec, rec)| {
-                    (f1_sum + f1, prec_sum + prec, rec_sum + rec)
-                },
-            );
-        let num_values = input_sequences.len().max(1) as f64;
-        Ok((
-            f1_sum / num_values,
-            prec_sum / num_values,
-            rec_sum / num_values,
-        ))
+        Ok((tp_fp_fn.sequence_averaged_f1(beta), tp_fp_fn))
     } else {
-        let tp_fp_fn = values
-            .into_iter()
-            .fold(TpFpFn::default(), |total, (tp_fp_fn, _)| total + tp_fp_fn);
-        Ok(tp_fp_fn.f1(beta))
+        Ok((tp_fp_fn.micro_f1(beta), tp_fp_fn))
     }
 }
 
@@ -339,7 +328,7 @@ fn _spelling_correction_tp_fp_fn(
     predicted: &str,
     target: &str,
     use_graphemes: bool,
-) -> (TpFpFn, bool) {
+) -> F1Sets {
     let (_, misspelled) = edited_words(input, target);
     let (changed, _) = edited_words(input, predicted);
     let (matching_indices, _, _) = match_words(predicted, target, false);
@@ -352,12 +341,15 @@ fn _spelling_correction_tp_fp_fn(
         .map(|(_, tgt_idx)| *tgt_idx)
         .collect();
     let correct = _group_words(input, predicted, &matching_in_pred, use_graphemes);
-    let tp_fp_fn = TpFpFn::new(
-        misspelled.intersection(&restored).count(),
-        changed.difference(&correct).count(),
-        misspelled.difference(&restored).count(),
-    );
-    (tp_fp_fn, misspelled.is_empty() && changed.is_empty())
+    let tps = misspelled.intersection(&restored);
+    let fps = changed.difference(&correct);
+    let fns = misspelled.difference(&restored);
+    (
+        misspelled.is_empty() && changed.is_empty(),
+        tps.copied().collect(),
+        fps.copied().collect(),
+        fns.copied().collect(),
+    )
 }
 
 pub fn spelling_correction_f1(
@@ -367,7 +359,7 @@ pub fn spelling_correction_f1(
     beta: f64,
     sequence_averaged: bool,
     use_graphemes: bool,
-) -> anyhow::Result<F1PrecRec> {
+) -> anyhow::Result<(F1PrecRec, TpFpFn)> {
     let input_sequences = as_ref_slice_to_vec(input_sequences);
     let predicted_sequences = as_ref_slice_to_vec(predicted_sequences);
     let target_sequences = as_ref_slice_to_vec(target_sequences);
@@ -399,7 +391,7 @@ fn spelling_correction_f1_py(
     beta: f64,
     sequence_averaged: bool,
     use_graphemes: bool,
-) -> anyhow::Result<F1PrecRec> {
+) -> anyhow::Result<(F1PrecRec, TpFpFn)> {
     spelling_correction_f1(
         &input_sequences,
         &predicted_sequences,
@@ -433,7 +425,7 @@ impl<'a> FromPyObject<'a> for WhitespaceCorrectionMode {
 fn _whitespace_ops_to_set(
     ops: &[WhitespaceOperation],
     mode: &WhitespaceCorrectionMode,
-) -> HashSet<(usize, WhitespaceOperation)> {
+) -> HashSet<usize> {
     ops.iter()
         .enumerate()
         .filter_map(|(idx, op)| match (*op, mode) {
@@ -442,9 +434,7 @@ fn _whitespace_ops_to_set(
                 WhitespaceCorrectionMode::InsertionsAndDeletions,
             )
             | (WhitespaceOperation::Insert, WhitespaceCorrectionMode::Insertions)
-            | (WhitespaceOperation::Delete, WhitespaceCorrectionMode::Deletions) => {
-                Some((idx, *op))
-            }
+            | (WhitespaceOperation::Delete, WhitespaceCorrectionMode::Deletions) => Some(idx),
             _ => None,
         })
         .collect()
@@ -457,7 +447,7 @@ fn _whitespace_correction_tp_fp_fn(
     target: &str,
     mode: &WhitespaceCorrectionMode,
     use_graphemes: bool,
-) -> anyhow::Result<(TpFpFn, bool)> {
+) -> anyhow::Result<F1Sets> {
     let gt_ops = operations(input, target, use_graphemes)?;
     let pred_ops = operations(input, predicted, use_graphemes)?;
     if gt_ops.len() != pred_ops.len() {
@@ -467,13 +457,12 @@ fn _whitespace_correction_tp_fp_fn(
     }
     let gt_ops = _whitespace_ops_to_set(&gt_ops, mode);
     let pred_ops = _whitespace_ops_to_set(&pred_ops, mode);
-
-    let tp_fp_fn = TpFpFn::new(
-        gt_ops.intersection(&pred_ops).count(),
-        pred_ops.difference(&gt_ops).count(),
-        gt_ops.difference(&pred_ops).count(),
-    );
-    Ok((tp_fp_fn, gt_ops.is_empty() && pred_ops.is_empty()))
+    Ok((
+        gt_ops.is_empty() && pred_ops.is_empty(),
+        gt_ops.intersection(&pred_ops).copied().collect(),
+        pred_ops.difference(&gt_ops).copied().collect(),
+        gt_ops.difference(&pred_ops).copied().collect(),
+    ))
 }
 
 pub fn whitespace_correction_f1(
@@ -484,7 +473,7 @@ pub fn whitespace_correction_f1(
     sequence_averaged: bool,
     mode: WhitespaceCorrectionMode,
     use_graphemes: bool,
-) -> anyhow::Result<F1PrecRec> {
+) -> anyhow::Result<(F1PrecRec, TpFpFn)> {
     _correction_f1(
         input_sequences,
         predicted_sequences,
@@ -509,7 +498,7 @@ fn whitespace_correction_f1_py(
     sequence_averaged: bool,
     mode: WhitespaceCorrectionMode,
     use_graphemes: bool,
-) -> anyhow::Result<F1PrecRec> {
+) -> anyhow::Result<(F1PrecRec, TpFpFn)> {
     whitespace_correction_f1(
         &input_sequences,
         &predicted_sequences,
@@ -578,7 +567,7 @@ mod tests {
         let tgt = "The cute cat eats delicious fish.";
         let pred = "The cute act eats delicate fi sh.";
 
-        let (f1, prec, rec) =
+        let ((f1, prec, rec), _) =
             spelling_correction_f1(&[ipt], &[pred], &[tgt], 1.0, false, true).unwrap();
         assert!((f1 - 0.5).abs() < EPS);
         assert!((prec - 0.5).abs() < EPS);
@@ -626,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_whitespace_correction_f1() {
-        let (f1, prec, rec) = whitespace_correction_f1(
+        let ((f1, prec, rec), _) = whitespace_correction_f1(
             &WC_INPUT_SEQUENCES,
             &WC_PRED_SEQUENCES,
             &WC_TARGET_SEQUENCES,
@@ -639,7 +628,7 @@ mod tests {
         assert!((f1 - 0.9444).abs() < 1e-4);
         assert!((prec - (3.0 + 1.0 + 2.0 + 11.0) / (3.0 + 1.0 + 3.0 + 12.0)).abs() < EPS);
         assert!((rec - 1.0).abs() < EPS);
-        let (f1, prec, rec) = whitespace_correction_f1(
+        let ((f1, prec, rec), _) = whitespace_correction_f1(
             &WC_INPUT_SEQUENCES,
             &WC_PRED_SEQUENCES,
             &WC_TARGET_SEQUENCES,

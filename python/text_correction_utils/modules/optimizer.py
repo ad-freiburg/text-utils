@@ -1,5 +1,5 @@
 import copy
-from typing import Dict, Any, Iterator, Tuple, List
+from typing import Dict, Any, Iterator, Tuple, List, Optional, Callable
 
 from torch import nn, optim
 
@@ -18,7 +18,11 @@ def _select_params(
 
 def optimizer_from_config(
     model: nn.Module,
-    cfg: Dict[str, Any]
+    cfg: Dict[str, Any],
+    additional_optimizer_fn: Optional[Callable[
+        [nn.Module, Dict[str, Any]],
+        optim.Optimizer
+    ]] = None
 ) -> optim.Optimizer:
     cfg = copy.deepcopy(cfg)
     opt_type = cfg.pop("type")
@@ -61,4 +65,6 @@ def optimizer_from_config(
             **cfg
         )
     else:
+        if additional_optimizer_fn is not None:
+            return additional_optimizer_fn(model, cfg)
         raise ValueError(f"unknown optimizer type {opt_type}")

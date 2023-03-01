@@ -1,5 +1,5 @@
 import copy
-from typing import Optional, List, Tuple, Any, Dict
+from typing import Optional, List, Tuple, Any, Dict, Callable
 from text_correction_utils.mask import square_subsequent_mask
 import torch
 from torch import nn
@@ -23,12 +23,17 @@ class Decoder(nn.Module):
         raise NotImplementedError
 
 
-def decoder_from_config(cfg: Dict[str, Any]) -> Decoder:
+def decoder_from_config(
+    cfg: Dict[str, Any],
+    additional_decoder_fn: Optional[Callable[[Dict[str, Any]], Decoder]] = None
+) -> Decoder:
     cfg = copy.deepcopy(cfg)
     enc_type = cfg.pop("type")
     if enc_type == "transformer":
         return TransformerDecoder(**cfg)
     else:
+        if additional_decoder_fn is not None:
+            return additional_decoder_fn(cfg)
         raise ValueError(f"unknown encoder type {enc_type}")
 
 

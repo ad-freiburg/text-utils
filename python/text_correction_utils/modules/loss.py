@@ -100,6 +100,10 @@ class SeqLoss(nn.Module):
 def loss_from_config(
     training_steps: int,
     cfg: Dict[str, Any],
+    additional_loss_fn: Optional[Callable[
+        [int, Dict[str, Any]],
+        nn.Module
+    ]] = None
 ) -> nn.Module:
     cfg = copy.deepcopy(cfg)
     loss_type = cfg.pop("type")
@@ -140,4 +144,6 @@ def loss_from_config(
         return SeqLoss(loss=loss)
 
     else:
+        if additional_loss_fn is not None:
+            return additional_loss_fn(training_steps, cfg)
         raise ValueError(f"unknown loss type {loss_type}")

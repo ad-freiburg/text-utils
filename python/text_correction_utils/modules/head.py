@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Callable
 import copy
 
 import torch
@@ -12,7 +12,10 @@ class Head(nn.Module):
         raise NotImplementedError
 
 
-def head_from_config(cfg: Dict[str, Any]) -> Head:
+def head_from_config(
+    cfg: Dict[str, Any],
+    additional_head_fn: Optional[Callable[[Dict[str, Any]], Head]] = None
+) -> Head:
     cfg = copy.deepcopy(cfg)
     head_type = cfg.pop("type")
     if head_type == "classification":
@@ -20,6 +23,8 @@ def head_from_config(cfg: Dict[str, Any]) -> Head:
     elif head_type == "sequence_classification":
         return SequenceClassificationHead(**cfg)
     else:
+        if additional_head_fn is not None:
+            return additional_head_fn(cfg)
         raise ValueError(f"unknown head type {head_type}")
 
 

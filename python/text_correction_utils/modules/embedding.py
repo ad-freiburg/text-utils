@@ -1,6 +1,6 @@
 import math
 import copy
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable
 
 import einops
 import torch
@@ -18,7 +18,14 @@ class Embedding(nn.Module):
         raise NotImplementedError
 
 
-def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tokenizer) -> Embedding:
+def embedding_from_config(
+    cfg: Dict[str, Any],
+    input_tokenizer: tokenization.Tokenizer,
+    additional_embedding_fn: Optional[Callable[
+        [Dict[str, Any], tokenization.Tokenizer],
+        Embedding
+    ]] = None
+) -> Embedding:
     cfg = copy.deepcopy(cfg)
     emb_type = cfg.pop("type")
     if emb_type == "standard":
@@ -28,6 +35,8 @@ def embedding_from_config(cfg: Dict[str, Any], input_tokenizer: tokenization.Tok
             **cfg
         )
     else:
+        if additional_embedding_fn is not None:
+            return additional_embedding_fn(input_tokenizer, cfg)
         raise ValueError(f"unknown embedding type {emb_type}")
 
 

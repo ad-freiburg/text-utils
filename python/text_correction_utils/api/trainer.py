@@ -12,7 +12,7 @@ import zipfile
 import torch
 from torch import distributed as dist
 from torch import multiprocessing as mp
-from torch import nn
+from torch import nn, optim
 from torch.backends import cudnn  # noqa
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -183,15 +183,19 @@ training will resume from latest checkpoint."
         self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm")
 
         if "lr_scheduler" in self.cfg["train"]:
-            self.lr_scheduler = lr_scheduler_from_config(
-                self.optimizer,
+            self.lr_scheduler = self._lr_scheduler_from_config(
                 self.training_steps,
+                self.optimizer,
                 cfg["train"]["lr_scheduler"]
             )
         else:
             self.lr_scheduler = None
 
-        self.loss_fn = loss_from_config(self.training_steps, self.cfg["train"]["loss"]).to(self.info.device).train()
+        self.loss_fn = self._loss_from_config(
+            self.training_steps,
+            self.cfg["train"]["loss"]
+        ).to(self.info.device).train()
+
         self.grad_scaler = amp.GradScaler(enabled=self.cfg["train"].get("mixed_precision", False))
         mixed_precision_dtype = self.cfg["train"].get("mixed_precision_dtype", "fp16")
         if mixed_precision_dtype == "fp16":
@@ -265,6 +269,23 @@ training will resume from latest checkpoint."
     @classmethod
     def _model_from_config(cls, cfg: Dict[str, Any]) -> nn.Module:
         raise NotImplementedError
+
+    @classmethod
+    def _loss_from_config(cls, training_steps: int, cfg: Dict[str, Any]) -> nn.Module:
+        return loss_from_config(training_steps, cfg)
+
+    @classmethod
+    def _lr_scheduler_from_config(
+        cls,
+        training_steps: int,
+        optimizer: optim.Optimizer,
+        cfg: Dict[str, Any]
+    ) -> optim.lr_scheduler.SequentialLR:
+        return lr_scheduler_from_config(
+            optimizer,
+            training_steps,
+            cfg
+        )
 
     @classmethod
     def _copy_file_to_tmp_dir(cls, path: str, dir: str, info: distributed.DistributedInfo) -> str:

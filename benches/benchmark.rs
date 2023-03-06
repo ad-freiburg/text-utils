@@ -93,7 +93,7 @@ fn bench_tokenizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("tokenizer");
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     let fx: Vec<&str> = vec!["test"];
-    let char_tok = CharTokenizer::new(true, &fx, &fx, None);
+    let char_tok = CharTokenizer::new_vocab_tokenizer(true, &fx, &fx, None);
     let byte_tok_byte_groups = ByteTokenizer::new(
         true,
         ByteGroups::Bytes,

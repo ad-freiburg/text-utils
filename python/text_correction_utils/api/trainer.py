@@ -6,7 +6,7 @@ import os
 import hashlib
 import shutil
 import time
-from typing import Dict, Optional, Tuple, Any, List
+from typing import Dict, Optional, Tuple, Any, List, Callable
 import zipfile
 
 import torch
@@ -159,7 +159,8 @@ training will resume from latest checkpoint."
 
         self.optimizer = optimizer_from_config(
             self.model,
-            self.cfg["train"]["optimizer"]
+            self.cfg["train"]["optimizer"],
+            additional_optimizer_fn=self._additional_optimizer_fn
         )
         if self.info.is_main_process:
             num_params = 0
@@ -183,20 +184,24 @@ training will resume from latest checkpoint."
         self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm")
 
         if "lr_scheduler" in self.cfg["train"]:
-            self.lr_scheduler = self._lr_scheduler_from_config(
-                self.training_steps,
+            self.lr_scheduler = lr_scheduler_from_config(
                 self.optimizer,
-                cfg["train"]["lr_scheduler"]
+                self.training_steps,
+                cfg["train"]["lr_scheduler"],
+                additional_lr_scheduler_fn=self._additional_lr_scheduler_fn
             )
         else:
             self.lr_scheduler = None
 
-        self.loss_fn = self._loss_from_config(
+        self.loss_fn = loss_from_config(
             self.training_steps,
-            self.cfg["train"]["loss"]
+            self.cfg["train"]["loss"],
+            additional_loss_fn=self._additional_loss_fn
         ).to(self.info.device).train()
 
-        self.grad_scaler = amp.GradScaler(enabled=self.cfg["train"].get("mixed_precision", False))
+        self.grad_scaler = amp.GradScaler(
+            enabled=self.cfg["train"].get("mixed_precision", False)
+        )
         mixed_precision_dtype = self.cfg["train"].get("mixed_precision_dtype", "fp16")
         if mixed_precision_dtype == "fp16":
             self.mixed_prec_dtype = torch.float16
@@ -271,21 +276,16 @@ training will resume from latest checkpoint."
         raise NotImplementedError
 
     @classmethod
-    def _loss_from_config(cls, training_steps: int, cfg: Dict[str, Any]) -> nn.Module:
-        return loss_from_config(training_steps, cfg)
+    def _additional_loss_fn(cls) -> Optional[Callable]:
+        return None
 
     @classmethod
-    def _lr_scheduler_from_config(
-        cls,
-        training_steps: int,
-        optimizer: optim.Optimizer,
-        cfg: Dict[str, Any]
-    ) -> optim.lr_scheduler.SequentialLR:
-        return lr_scheduler_from_config(
-            optimizer,
-            training_steps,
-            cfg
-        )
+    def _additional_optimizer_fn(cls) -> Optional[Callable]:
+        return None
+
+    @classmethod
+    def _additional_lr_scheduler_fn(cls) -> Optional[Callable]:
+        return None
 
     @classmethod
     def _copy_file_to_tmp_dir(cls, path: str, dir: str, info: distributed.DistributedInfo) -> str:

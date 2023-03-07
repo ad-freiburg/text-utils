@@ -5,8 +5,8 @@ use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{
-    token_groups_to_sparse_coo_matrix, ByteGroups, ByteTokenizer, CharTokenizer, GroupAggregation,
-    Grouping, Tokenize,
+    token_groups_to_sparse_coo_matrix, ByteGroups, ByteTokenizer, ByteTokenizerConfig,
+    CharTokenizer, CharTokenizerConfig, GroupAggregation, Grouping, SpecialConfig, Tokenize,
 };
 use text_correction_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
@@ -92,24 +92,22 @@ fn bench_text(c: &mut Criterion) {
 fn bench_tokenizer(c: &mut Criterion) {
     let mut group = c.benchmark_group("tokenizer");
     let mut rng = ChaCha8Rng::seed_from_u64(22);
-    let fx: Vec<&str> = vec!["test"];
-    let char_tok = CharTokenizer::new_vocab_tokenizer(true, &fx, &fx, None);
-    let byte_tok_byte_groups = ByteTokenizer::new(
-        true,
-        ByteGroups::Bytes,
-        GroupAggregation::Mean,
-        &fx,
-        &fx,
+    let char_tok = CharTokenizer::new(
+        CharTokenizerConfig {
+            use_graphemes: true,
+        },
+        SpecialConfig::default(),
         None,
     );
-    let byte_tok_code_point_groups = ByteTokenizer::new(
-        true,
-        ByteGroups::CodePoints,
-        GroupAggregation::Mean,
-        &fx,
-        &fx,
-        None,
-    );
+    let tokenize_cfg = ByteTokenizerConfig {
+        use_graphemes: true,
+        groups: ByteGroups::Bytes,
+        aggregation: GroupAggregation::Mean,
+    };
+    let byte_tok_byte_groups =
+        ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default(), None);
+    let byte_tok_code_point_groups =
+        ByteTokenizer::new(tokenize_cfg, SpecialConfig::default(), None);
     for size in INPUT_SIZES.iter() {
         let str: String = (&mut rng)
             .sample_iter::<char, _>(rand::distributions::Standard)

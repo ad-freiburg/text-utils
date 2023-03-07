@@ -667,15 +667,6 @@ pub struct PreprocessingPipelineConfig {
     labeling: LabelingConfig,
 }
 
-impl PreprocessingPipelineConfig {
-    pub fn new(preprocessing: Vec<PreprocessingConfig>, labeling: LabelingConfig) -> Self {
-        PreprocessingPipelineConfig {
-            preprocessing,
-            labeling,
-        }
-    }
-}
-
 impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = obj.extract()?;

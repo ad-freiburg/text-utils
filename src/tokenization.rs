@@ -9,6 +9,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -107,7 +108,7 @@ impl<'a> FromPyObject<'a> for SpecialConfig {
     }
 }
 
-/// This is a tokenizer config, containing language options
+/// This is a tokenizer config, containing configs for special tokens, language,
 /// and the actual tokenize config inside it.
 #[derive(Clone, Debug)]
 pub struct TokenizerConfig {
@@ -288,7 +289,13 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 } else {
                     true
                 };
-                TokenizeConfig::BPE(BPETokenizerConfig { use_graphemes })
+                let Some(vocab_path) = d.get_item("vocab_path") else {
+                    return Err(py_required_key_error("vocab_path", "bpe tokenizer config"));
+                };
+                TokenizeConfig::BPE(BPETokenizerConfig {
+                    use_graphemes,
+                    vocab_path: vocab_path.extract()?,
+                })
             }
             "dummy" => {
                 let millis: u64 = if let Some(value) = d.get_item("delay") {
@@ -895,7 +902,7 @@ impl Tokenize for DummyTokenizer {
 /// English texts.
 #[derive(Debug, Clone)]
 pub struct CharTokenizerConfig {
-    use_graphemes: bool,
+    pub use_graphemes: bool,
 }
 pub type CharTokenizer = VocabTokenizer<char, CharTokenizerConfig>;
 
@@ -944,7 +951,8 @@ impl CharTokenizer {
 
 #[derive(Debug, Clone)]
 pub struct BPETokenizerConfig {
-    use_graphemes: bool,
+    pub vocab_path: PathBuf,
+    pub use_graphemes: bool,
 }
 
 pub type BPETokenizer = VocabTokenizer<Vec<u8>, BPETokenizerConfig>;
@@ -955,16 +963,23 @@ impl BPETokenizer {
         special_config: SpecialConfig,
         language_config: Option<LanguageConfig>,
     ) -> Self {
-        todo!()
+        println!("Loading BPE vocab from {:?}", config.vocab_path);
+        Self::new_vocab_tokenizer(
+            vec![],
+            UNK.to_string(),
+            special_config,
+            language_config,
+            config,
+        )
     }
 }
 
 impl VocabTokenize<Vec<u8>> for BPETokenizer {
-    fn split(&self, s: &str) -> (Vec<Option<Vec<u8>>>, TokenizationInfo) {
+    fn split(&self, _: &str) -> (Vec<Option<Vec<u8>>>, TokenizationInfo) {
         todo!()
     }
 
-    fn join(&self, tokens: &[&Vec<u8>]) -> String {
+    fn join(&self, _: &[&Vec<u8>]) -> String {
         todo!()
     }
 }
@@ -999,9 +1014,9 @@ impl<'a> FromPyObject<'a> for ByteGroups {
 
 #[derive(Clone, Debug)]
 pub struct ByteTokenizerConfig {
-    use_graphemes: bool,
-    groups: ByteGroups,
-    aggregation: GroupAggregation,
+    pub use_graphemes: bool,
+    pub groups: ByteGroups,
+    pub aggregation: GroupAggregation,
 }
 
 pub type ByteTokenizer = VocabFreeTokenizer<ByteTokenizerConfig>;
@@ -1235,17 +1250,21 @@ mod tests {
     use numpy::ndarray::{Array1, Array2};
 
     use crate::tokenization::{
-        ByteGroups, ByteTokenizer, CharTokenizer, SparseCoo, Tokenization, TokenizationInfo,
-        Tokenize, BOS, EOS,
+        ByteGroups, ByteTokenizer, ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig,
+        SparseCoo, SpecialConfig, Tokenization, TokenizationInfo, Tokenize,
     };
 
     use super::{token_groups_to_sparse_coo_matrix, ByT5Tokenizer, GroupAggregation};
 
     #[test]
     fn test_char_tokenizer() {
-        let pfx = vec![BOS];
-        let sfx = vec![EOS];
-        let tok = CharTokenizer::new_vocab_tokenizer(true, &pfx, &sfx, None);
+        let tok = CharTokenizer::new(
+            CharTokenizerConfig {
+                use_graphemes: true,
+            },
+            SpecialConfig::default(),
+            None,
+        );
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None).unwrap();
         assert_eq!(token_ids.len(), 6 + 2);
@@ -1255,16 +1274,12 @@ mod tests {
 
     #[test]
     fn test_byte_tokenizer() {
-        let pfx = vec![BOS];
-        let sfx = vec![EOS];
-        let tok = ByteTokenizer::new(
-            true,
-            ByteGroups::Bytes,
-            GroupAggregation::Mean,
-            &pfx,
-            &sfx,
-            None,
-        );
+        let tokenize_cfg = ByteTokenizerConfig {
+            use_graphemes: true,
+            groups: ByteGroups::Bytes,
+            aggregation: GroupAggregation::Mean,
+        };
+        let tok = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default(), None);
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, None).unwrap();
         assert_eq!(
@@ -1288,14 +1303,11 @@ mod tests {
         };
         assert_eq!(token_ids.len(), 7 + 2);
         assert_eq!(tok.de_tokenize(&token_ids), text.to_string());
-        let tok = ByteTokenizer::new(
-            true,
-            ByteGroups::CodePoints,
-            GroupAggregation::Mean,
-            &pfx,
-            &sfx,
-            None,
-        );
+        let tokenize_cfg = ByteTokenizerConfig {
+            groups: ByteGroups::CodePoints,
+            ..tokenize_cfg
+        };
+        let tok = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default(), None);
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, None).unwrap();
         assert_eq!(
@@ -1324,7 +1336,12 @@ mod tests {
 
     #[test]
     fn test_byt5_tokenizer() {
-        let tok = ByT5Tokenizer::new(true, ByteGroups::Bytes, GroupAggregation::Mean);
+        let tokenize_cfg = ByteTokenizerConfig {
+            use_graphemes: true,
+            groups: ByteGroups::Bytes,
+            aggregation: GroupAggregation::Mean,
+        };
+        let tok = ByT5Tokenizer::new(tokenize_cfg);
         let Tokenization { token_ids, info: _ } = tok.tokenize("a täst", None).unwrap();
         assert_eq!(token_ids, vec![100, 35, 119, 198, 167, 118, 119, 1]);
     }

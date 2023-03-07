@@ -136,3 +136,7 @@ dmypy.json
 
 /target
 /Cargo.lock
+
+# Custom
+
+/python/text_correction_utils/_internal*.so

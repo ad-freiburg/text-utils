@@ -807,6 +807,7 @@ impl<Token> Vocab<Token>
 where
     Token: PartialEq + Eq + Hash + Clone + Ord + Serialize + DeserializeOwned,
 {
+    #[allow(dead_code)]
     fn to_file(&self, file: impl AsRef<Path>) -> anyhow::Result<()> {
         let tokens = self
             .vocab
@@ -1096,11 +1097,10 @@ impl Tokenize for BPETokenizer {
                 .filter_map(|((first_idx, first), (second_idx, second))| {
                     let mut merged = first.clone().unwrap();
                     merged.extend(second.clone().unwrap());
-                    if let Some(merge_id) = self.state.0.get(&merged) {
-                        Some((first_idx, second_idx, merged, *merge_id))
-                    } else {
-                        None
-                    }
+                    self.state
+                        .0
+                        .get(&merged)
+                        .map(|merge_id| (first_idx, second_idx, merged, *merge_id))
                 })
                 .collect();
             if pairs.is_empty() {
@@ -1116,7 +1116,7 @@ impl Tokenize for BPETokenizer {
             token_ids[second_idx] = None;
         }
 
-        let token_ids = token_ids.into_iter().filter_map(|t| t).collect();
+        let token_ids = token_ids.into_iter().flatten().collect();
         let token_ids = self.add_prefix_and_suffix(token_ids, lang)?;
         Ok(Tokenization::new(token_ids, TokenizationInfo::Empty))
     }
@@ -1206,17 +1206,14 @@ pub fn train_bpe(
         .iter()
         .map(|path| path.as_ref().to_path_buf())
         .collect::<Vec<_>>();
-    let line_iter = path_bufs
-        .into_iter()
-        .map(move |path| {
-            let file = File::open(path).expect("failed to open file");
-            let reader = BufReader::new(file);
-            reader
-                .lines()
-                .take(max_lines_per_file)
-                .filter_map(|line| line.ok())
-        })
-        .flatten();
+    let line_iter = path_bufs.into_iter().flat_map(move |path| {
+        let file = File::open(path).expect("failed to open file");
+        let reader = BufReader::new(file);
+        reader
+            .lines()
+            .take(max_lines_per_file)
+            .filter_map(|line| line.ok())
+    });
     let line_iter = Arc::new(Mutex::new(line_iter));
     let (count_tx, count_rx) = mpsc::sync_channel(num_threads as usize);
     panic::set_hook(Box::new(move |info| {
@@ -1638,13 +1635,14 @@ mod tests {
     fn test_bpe_tokenizer() {
         let _ = env_logger::try_init();
 
+        let special_config = SpecialConfig::default();
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let file = base.clone().join("resources/test/multi30k.txt");
         let out_file = base.clone().join("resources/test/multi30k.bpe.merges");
         train_bpe(
             &[file],
-            2048,
-            0,
+            1024,
+            special_config.tokens.len(),
             &out_file,
             None,
             num_cpus::get().min(4) as u8,
@@ -1656,13 +1654,19 @@ mod tests {
             merge_file: out_file,
             use_graphemes: true,
         };
-        let bpe = BPETokenizer::new(bpe_config, SpecialConfig::default(), None).unwrap();
+        let bpe = BPETokenizer::new(bpe_config, special_config, None).unwrap();
         info!("loaded bpe tokenizer");
         let token_ids = bpe
             .tokenize("this is a täst for the bpe tokenizer", None)
             .unwrap()
             .token_ids;
         info!("token ids: {token_ids:?}");
+        let tokens: Vec<_> = token_ids
+            .iter()
+            .filter_map(|t| bpe.state.1.get(*t as usize))
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .collect();
+        info!("tokens: {tokens:?}");
         let str = bpe.de_tokenize(&token_ids);
         info!("de-tokenized: \"{str}\"");
     }

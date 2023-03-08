@@ -446,10 +446,9 @@ where
                 .name(format!("pipeline worker thread {idx}"))
                 .spawn(move || {
                     loop {
-                        let (idx, data) =
-                            match inner_clone.lock().expect("failed to lock receiver").next() {
-                                Some(value) => value,
-                                None => return,
+                        let Some((idx, data)) =
+                            inner_clone.lock().expect("failed to lock receiver").next() else {
+                                return;
                             };
                         let item = pipe_clone.apply(data, idx, seed.map(|seed| seed + idx as u64));
                         // wait until we are the next to send out item
@@ -772,7 +771,7 @@ where
     Self: Iterator<Item = T> + Send + 'static,
     T: Tensorize + Send + 'static,
 {
-    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> Tensorized<T>;
+    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> anyhow::Result<Tensorized<T>>;
 }
 
 impl<I, T> TensorizedIterator<T> for I
@@ -780,8 +779,8 @@ where
     I: Iterator<Item = T> + Send + 'static,
     T: Tensorize + Send + 'static,
 {
-    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> Tensorized<T> {
-        Tensorized::new(self, tokenizer(tokenizer_cfg))
+    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> anyhow::Result<Tensorized<T>> {
+        Ok(Tensorized::new(self, tokenizer(tokenizer_cfg)?))
     }
 }
 
@@ -1051,7 +1050,7 @@ mod tests {
                 special: SpecialConfig::default(),
                 language: None,
             },
-        );
+        )?;
         // test if it works with one worker and record the time it took
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
@@ -1114,7 +1113,7 @@ mod tests {
                 special: SpecialConfig::default(),
                 language: None,
             },
-        );
+        )?;
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
             vec![multi30k],
@@ -1156,7 +1155,7 @@ mod tests {
                 special: SpecialConfig::default(),
                 language: None,
             },
-        );
+        )?;
         let pipe_it = text_iter
             .filter_map(|d| d.ok())
             .pipe(&pipeline, 4, None)

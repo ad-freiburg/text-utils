@@ -1,16 +1,25 @@
+use crate::text::{count_words, file_size};
 use crate::unicode::CS;
-use crate::utils::{py_invalid_type_error, py_required_key_error, run_length_decode};
+use crate::utils::{progress_bar, py_invalid_type_error, py_required_key_error, run_length_decode};
 use anyhow::anyhow;
 use itertools::Itertools;
+use log::info;
 use numpy::ndarray::{Array1, Array2};
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fs::File;
 use std::hash::Hash;
-use std::path::PathBuf;
-use std::thread::sleep;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::panic;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 
 pub const UNK: &str = "<unk>";
@@ -289,12 +298,12 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 } else {
                     true
                 };
-                let Some(vocab_path) = d.get_item("vocab_path") else {
-                    return Err(py_required_key_error("vocab_path", "bpe tokenizer config"));
+                let Some(merge_file) = d.get_item("merge_file") else {
+                    return Err(py_required_key_error("merge_file", "bpe tokenizer config"));
                 };
                 TokenizeConfig::BPE(BPETokenizerConfig {
                     use_graphemes,
-                    vocab_path: vocab_path.extract()?,
+                    merge_file: merge_file.extract()?,
                 })
             }
             "dummy" => {
@@ -706,16 +715,29 @@ impl<Config, State> BaseTokenizer<Config, State> {
         } else {
             vec![]
         };
-        let special_vocab = Vocab::build(
-            special_config
-                .tokens
-                .into_iter()
-                .chain(vec![special_config.pad.clone()].into_iter())
-                .chain(special_config.prefix.clone().into_iter())
-                .chain(special_config.suffix.clone().into_iter())
-                .chain(languages.into_iter()),
-            special_offset,
+        assert!(
+            special_config.tokens.contains(&special_config.pad),
+            "pad token not in special tokens"
         );
+        assert!(
+            special_config
+                .prefix
+                .iter()
+                .all(|tok| special_config.tokens.contains(tok)),
+            "one or more prefix tokens are not in special tokens"
+        );
+        assert!(
+            special_config
+                .suffix
+                .iter()
+                .all(|tok| special_config.tokens.contains(tok)),
+            "one or more suffix tokens are not in special tokens"
+        );
+        assert!(
+            languages.iter().all(|l| special_config.tokens.contains(l)),
+            "one or more language tokens not in special tokens"
+        );
+        let special_vocab = Vocab::build(special_config.tokens, special_offset);
         let prefix_token_ids = special_config
             .prefix
             .iter()
@@ -781,6 +803,44 @@ where
     }
 }
 
+impl<Token> Vocab<Token>
+where
+    Token: PartialEq + Eq + Hash + Clone + Ord + Serialize + DeserializeOwned,
+{
+    fn to_file(&self, file: impl AsRef<Path>) -> anyhow::Result<()> {
+        let tokens = self
+            .vocab
+            .clone()
+            .into_iter()
+            .sorted_by_key(|&(_, id)| id)
+            .collect::<Vec<_>>();
+        let buf = rmp_serde::to_vec(&tokens)?;
+        let mut file = File::create(file)?;
+        file.write_all(&buf)?;
+        Ok(())
+    }
+
+    fn from_file(file: impl AsRef<Path>, start_id: u32) -> anyhow::Result<Self> {
+        let mut file = File::open(file)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        let tokens: Vec<Token> = rmp_serde::from_slice(&buf)?;
+        let vocab: HashMap<_, _> = tokens
+            .into_iter()
+            .enumerate()
+            .map(|(token_id, token)| (token, start_id + token_id as u32))
+            .collect();
+        let reverse_vocab = vocab
+            .iter()
+            .map(|(token, token_id)| (*token_id, token.clone()))
+            .collect();
+        Ok(Self {
+            vocab,
+            reverse_vocab,
+        })
+    }
+}
+
 pub type VocabFreeTokenizer<Config> = BaseTokenizer<Config>;
 
 impl<Config> VocabFreeTokenizer<Config>
@@ -831,6 +891,32 @@ where
 
     pub fn unk_token_id(&self) -> u32 {
         self.special_vocab.token_to_id(&self.state.0).unwrap()
+    }
+}
+
+impl<Token, Config> VocabTokenizer<Token, Config>
+where
+    Token:
+        PartialEq + Eq + Hash + Send + Sync + Clone + 'static + Serialize + DeserializeOwned + Ord,
+    Config: Send + Sync + 'static,
+{
+    pub fn new_vocab_tokenizer_from_file(
+        vocab_file: impl AsRef<Path>,
+        unk_token: String,
+        mut special_config: SpecialConfig,
+        language_config: Option<LanguageConfig>,
+        config: Config,
+    ) -> anyhow::Result<Self> {
+        let vocab = Vocab::from_file(vocab_file, 0)?;
+        // add unk token to special config
+        special_config.tokens.push(unk_token.clone());
+        Ok(Self::new_base_tokenizer(
+            vocab.size() as u32,
+            special_config,
+            language_config,
+            config,
+            (unk_token, vocab),
+        ))
     }
 }
 
@@ -951,27 +1037,194 @@ impl CharTokenizer {
 
 #[derive(Debug, Clone)]
 pub struct BPETokenizerConfig {
-    pub vocab_path: PathBuf,
+    pub merge_file: PathBuf,
     pub use_graphemes: bool,
 }
 
-pub type BPETokenizer = VocabTokenizer<Vec<u8>, BPETokenizerConfig>;
+pub type MergeOps = HashMap<(Vec<u8>, Vec<u8>), usize>;
+
+pub type BPETokenizer = BaseTokenizer<BPETokenizerConfig, MergeOps>;
 
 impl BPETokenizer {
     pub fn new(
         config: BPETokenizerConfig,
         special_config: SpecialConfig,
         language_config: Option<LanguageConfig>,
-    ) -> Self {
-        println!("Loading BPE vocab from {:?}", config.vocab_path);
-        Self::new_vocab_tokenizer(
-            vec![],
-            UNK.to_string(),
+    ) -> anyhow::Result<Self> {
+        let mut file = File::open(&config.merge_file)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        let merge_ops: MergeOps = rmp_serde::from_slice(&buf)?;
+        Ok(Self::new_base_tokenizer(
+            256 + merge_ops.len() as u32,
             special_config,
             language_config,
             config,
-        )
+            merge_ops,
+        ))
     }
+}
+
+impl Tokenize for BPETokenizer {
+    fn vocab_size(&self) -> usize {
+        todo!()
+    }
+
+    fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization> {
+        todo!()
+    }
+
+    fn de_tokenize(&self, token_ids: &[u32]) -> String {
+        todo!()
+    }
+}
+
+#[inline]
+fn max_bpe_pair(counts: &HashMap<Vec<Vec<u8>>, usize>) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut pair_counts = HashMap::new();
+    for (word, count) in counts.iter() {
+        for i in 1..word.len() {
+            let first = &word[i - 1][..];
+            let second = &word[i][..];
+            let pair = (first, second);
+            if let Some(pair_count) = pair_counts.get_mut(&pair) {
+                *pair_count += count;
+            } else {
+                pair_counts.insert(pair, *count);
+            }
+        }
+    }
+    if let Some(((first, second), _)) = pair_counts.into_iter().max_by_key(|(_, count)| *count) {
+        Some((first.to_vec(), second.to_vec()))
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn replace_bpe_pair(
+    counts: HashMap<Vec<Vec<u8>>, usize>,
+    pair: (&[u8], &[u8]),
+) -> HashMap<Vec<Vec<u8>>, usize> {
+    counts
+        .into_iter()
+        .map(|(subwords, count)| {
+            let mut word = Vec::with_capacity(subwords.len());
+            let mut merged = true; // set to true in the beginning so we always add the first subword
+            for subword in subwords {
+                if merged || word.last().unwrap() != pair.0 || subword != pair.1 {
+                    word.push(subword);
+                    merged = false;
+                } else {
+                    word.last_mut().unwrap().extend(subword);
+                    merged = true;
+                }
+            }
+            (word, count)
+        })
+        .collect()
+}
+
+pub fn train_bpe(
+    files: &[impl AsRef<Path>],
+    vocab_size: usize,
+    num_special_tokens: usize,
+    out_file: &impl AsRef<Path>,
+    max_lines_per_file: Option<usize>,
+    num_threads: u8,
+    progress: bool,
+) -> anyhow::Result<()> {
+    assert!(
+        (vocab_size / 64) * 64 == vocab_size,
+        "vocab size must be a multiple of 64 for better performance"
+    );
+    let max_lines_per_file = max_lines_per_file.unwrap_or(usize::MAX);
+    let num_threads = num_threads.max(1);
+    let num_total_lines: usize = files
+        .iter()
+        .map(|path| {
+            let (num_lines, _) = file_size(path).expect("failed to get file size");
+            num_lines.min(max_lines_per_file)
+        })
+        .sum();
+    let path_bufs = files
+        .iter()
+        .map(|path| path.as_ref().to_path_buf())
+        .collect::<Vec<_>>();
+    let line_iter = path_bufs
+        .into_iter()
+        .map(move |path| {
+            let file = File::open(path).expect("failed to open file");
+            let reader = BufReader::new(file);
+            reader
+                .lines()
+                .take(max_lines_per_file)
+                .filter_map(|line| line.ok())
+        })
+        .flatten();
+    let line_iter = Arc::new(Mutex::new(line_iter));
+    let (count_tx, count_rx) = mpsc::sync_channel(num_threads as usize);
+    panic::set_hook(Box::new(move |info| {
+        println!("thread panicked: {info}");
+    }));
+    for idx in 0..num_threads {
+        let count_tx_clone = count_tx.clone();
+        let line_iter_clone = line_iter.clone();
+        let _: JoinHandle<()> = Builder::new()
+            .name(format!("bpe worker thread {idx}"))
+            .spawn(move || {
+                loop {
+                    let Some(line) =
+                        line_iter_clone.lock().expect("failed to lock line iter").next() else  {
+                        return;
+                    };
+                    let counts = count_words(&line, true);
+                    if count_tx_clone.send(counts).is_err() {
+                        // receiver is closed, so we can return this thread
+                        return;
+                    };
+                }
+            })
+            .unwrap_or_else(|_| panic!("failed building bpe worker thread {idx}"));
+    }
+    let pbar = progress_bar("counting words in files", num_total_lines as u64, !progress);
+    drop(count_tx); // close the channel so the threads can exit
+    let mut byte_counts: HashMap<Vec<Vec<u8>>, usize> = count_rx
+        .into_iter()
+        .fold(HashMap::new(), |mut acc, counts| {
+            for (word, count) in counts {
+                *acc.entry(word).or_insert(1) += count;
+            }
+            pbar.inc(1);
+            acc
+        })
+        .into_iter()
+        .map(|(word, count)| (word.as_bytes().iter().map(|b| vec![*b]).collect(), count))
+        .collect();
+    pbar.finish_and_clear();
+    let num_merges = vocab_size
+        .saturating_sub(256)
+        .saturating_sub(num_special_tokens);
+    let pbar = progress_bar("performing byte merges", num_merges as u64, !progress);
+    let mut merge_ops = MergeOps::new();
+    if progress {
+        info!(
+            "found {} unique words in files, going to perform {num_merges} byte merges",
+            byte_counts.len()
+        );
+    }
+    for merge_idx in 0..num_merges {
+        let Some((first, second)) = max_bpe_pair(&byte_counts) else {
+            break;
+        };
+        byte_counts = replace_bpe_pair(byte_counts, (&first, &second));
+        merge_ops.insert((first, second), merge_idx);
+        pbar.inc(1);
+    }
+    pbar.finish_and_clear();
+    let file = File::create(out_file)?;
+    merge_ops.serialize(&mut rmp_serde::Serializer::new(file))?;
+    Ok(())
 }
 
 impl VocabTokenize<Vec<u8>> for BPETokenizer {
@@ -1171,8 +1424,8 @@ impl Tokenize for ByT5Tokenizer {
     }
 }
 
-pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
-    match cfg.tokenize {
+pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
+    Ok(match cfg.tokenize {
         TokenizeConfig::Character(char_cfg) => {
             Box::new(CharTokenizer::new(char_cfg, cfg.special, cfg.language))
         }
@@ -1181,10 +1434,10 @@ pub fn tokenizer(cfg: TokenizerConfig) -> Tokenizer {
         }
         TokenizeConfig::ByT5(byte_cfg) => Box::new(ByT5Tokenizer::new(byte_cfg)),
         TokenizeConfig::BPE(bpe_cfg) => {
-            Box::new(BPETokenizer::new(bpe_cfg, cfg.special, cfg.language))
+            Box::new(BPETokenizer::new(bpe_cfg, cfg.special, cfg.language)?)
         }
         TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
-    }
+    })
 }
 
 #[pyclass]
@@ -1196,10 +1449,10 @@ struct PyTokenizer {
 #[pymethods]
 impl PyTokenizer {
     #[staticmethod]
-    fn from_config(config: TokenizerConfig) -> Self {
-        PyTokenizer {
-            tokenizer: tokenizer(config),
-        }
+    fn from_config(config: TokenizerConfig) -> anyhow::Result<Self> {
+        Ok(PyTokenizer {
+            tokenizer: tokenizer(config)?,
+        })
     }
 
     #[pyo3(signature = (s, lang = None))]
@@ -1245,13 +1498,13 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, path::PathBuf};
 
     use numpy::ndarray::{Array1, Array2};
 
     use crate::tokenization::{
-        ByteGroups, ByteTokenizer, ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig,
-        SparseCoo, SpecialConfig, Tokenization, TokenizationInfo, Tokenize,
+        train_bpe, ByteGroups, ByteTokenizer, ByteTokenizerConfig, CharTokenizer,
+        CharTokenizerConfig, SparseCoo, SpecialConfig, Tokenization, TokenizationInfo, Tokenize,
     };
 
     use super::{token_groups_to_sparse_coo_matrix, ByT5Tokenizer, GroupAggregation};
@@ -1332,6 +1585,26 @@ mod tests {
                 )
             }
         };
+    }
+
+    #[test]
+    fn test_bpe_training() {
+        let _ = env_logger::try_init();
+
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let file_1 = base.clone().join("resources/test/multi30k.txt");
+        let file_2 = base.clone().join("resources/test/multi30k_rev.txt");
+        let out_file = base.clone().join("resources/test/multi30k.bpe.merges");
+        train_bpe(
+            &[file_1, file_2],
+            512,
+            0,
+            &out_file,
+            None,
+            num_cpus::get().min(4) as u8,
+            true,
+        )
+        .unwrap();
     }
 
     #[test]

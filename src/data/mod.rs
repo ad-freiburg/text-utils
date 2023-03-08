@@ -712,18 +712,20 @@ impl TextDataPipeline {
     pub fn with_tokenizer(
         pipeline_cfg: PreprocessingPipelineConfig,
         tokenizer_cfg: TokenizerConfig,
-    ) -> Self {
-        let tok = tokenizer(tokenizer_cfg);
+    ) -> anyhow::Result<Self> {
+        let tok = tokenizer(tokenizer_cfg)?;
         let preprocess_fn = preprocessing(pipeline_cfg.preprocessing);
         let label_fn = labeling(pipeline_cfg.labeling);
-        Pipeline::new(Arc::new(move |data, _, seed| -> anyhow::Result<Item> {
-            let data = preprocess_fn(data, seed)?;
-            Ok(Item {
-                tokenization: tok.tokenize(&data.processed, data.language.as_deref())?,
-                label: label_fn(&data)?,
-                data,
-            })
-        }))
+        Ok(Pipeline::new(Arc::new(
+            move |data, _, seed| -> anyhow::Result<Item> {
+                let data = preprocess_fn(data, seed)?;
+                Ok(Item {
+                    tokenization: tok.tokenize(&data.processed, data.language.as_deref())?,
+                    label: label_fn(&data)?,
+                    data,
+                })
+            },
+        )))
     }
 }
 
@@ -734,9 +736,9 @@ impl InferencePipeline {
         window_cfg: WindowConfig,
         normalization: Option<Normalization>,
         use_graphemes: bool,
-    ) -> Self {
-        let tok = tokenizer(tokenizer_cfg);
-        Pipeline::new(Arc::new(move |data, idx, _| {
+    ) -> anyhow::Result<Self> {
+        let tok = tokenizer(tokenizer_cfg)?;
+        Ok(Pipeline::new(Arc::new(move |data, idx, _| {
             let mut data = InferenceData {
                 text: clean(&data.text, use_graphemes),
                 ..data
@@ -759,7 +761,7 @@ impl InferencePipeline {
                     ))
                 })
                 .collect()
-        }))
+        })))
     }
 }
 
@@ -799,7 +801,7 @@ impl InferenceLoader {
             window_config,
             normalization,
             use_graphemes,
-        );
+        )?;
         let splits: Vec<usize> = generators.iter().map(|g| g.min_len()).collect();
         let min_items = splits.iter().sum();
         let prefetch_factor = prefetch_factor.max(1);
@@ -834,7 +836,7 @@ impl InferenceLoader {
                 batch_limit_type,
                 None,
             )
-            .tensorized(tokenizer_config)
+            .tensorized(tokenizer_config)?
             .buffered(buffer_size);
         Ok(InferenceLoader {
             iter: Box::new(iter),
@@ -1047,7 +1049,7 @@ impl DataLoader {
             ));
         }
         let prefetch_factor = prefetch_factor.max(1);
-        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config.clone());
+        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config.clone())?;
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
@@ -1120,7 +1122,7 @@ impl DataLoader {
                 self.batch_limit_type,
                 seed,
             )
-            .tensorized(self.tokenizer_config.clone())
+            .tensorized(self.tokenizer_config.clone())?
             .buffered(self.buffer_size);
         self.iter = Some(Box::new(batch_iter));
         Ok(())

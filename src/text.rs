@@ -1,7 +1,8 @@
 use anyhow::anyhow;
 use pyo3::prelude::*;
 use rand::Rng;
-use std::collections::HashSet;
+use regex::Regex;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -378,6 +379,25 @@ pub fn edit_word(
     }
 }
 
+#[pyfunction(signature = (s, with_leading_whitespace = false))]
+pub fn count_words(s: &str, with_leading_whitespace: bool) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    let pattern = Regex::new(r"\s+\S+|^\S+").unwrap();
+    for word in pattern.find_iter(s) {
+        let word = if with_leading_whitespace {
+            word.as_str()
+        } else {
+            word.as_str().trim_start()
+        };
+        if let Some(count) = counts.get_mut(word) {
+            *count += 1;
+        } else {
+            counts.insert(word.to_string(), 1);
+        }
+    }
+    counts
+}
+
 pub fn file_size(path: impl AsRef<Path>) -> anyhow::Result<(usize, usize)> {
     let metadata = fs::metadata(path.as_ref())?;
     if !metadata.is_file() {
@@ -402,6 +422,7 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
     m.add_function(wrap_pyfunction!(clean, m)?)?;
     m.add_function(wrap_pyfunction!(match_words, m)?)?;
     m.add_function(wrap_pyfunction!(file_size_py, m)?)?;
+    m.add_function(wrap_pyfunction!(count_words, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())
@@ -411,18 +432,54 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
 mod tests {
     use crate::text::CharEdit::{Delete, Insert, Replace, Swap};
     use crate::text::{
-        clean, edit_word, match_words, possible_byte_substrings, possible_character_substrings,
-        word_boundaries,
+        clean, count_words, edit_word, match_words, possible_byte_substrings,
+        possible_character_substrings, word_boundaries,
     };
     use crate::unicode::CS;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn test_clean() {
         let text = "  this\t is \n a test sentence  ";
         assert_eq!(clean(text, true), "this is a test sentence");
+    }
+
+    #[test]
+    fn test_count_words() {
+        let text = "this\t is \n a test sentence, it is  ";
+        let counts = count_words(text, false);
+        let expected: HashMap<_, usize> = HashMap::from_iter(vec![
+            ("this".to_string(), 1),
+            ("is".to_string(), 2),
+            ("a".to_string(), 1),
+            ("test".to_string(), 1),
+            ("sentence,".to_string(), 1),
+            ("it".to_string(), 1),
+        ]);
+        assert!(
+            counts.len() == expected.len()
+                && counts
+                    .iter()
+                    .all(|(k, v)| expected.contains_key(k) && expected[k] == *v)
+        );
+        let counts = count_words(text, true);
+        let expected: HashMap<_, usize> = HashMap::from_iter(vec![
+            ("this".to_string(), 1),
+            ("\t is".to_string(), 1),
+            (" is".to_string(), 1),
+            (" \n a".to_string(), 1),
+            (" test".to_string(), 1),
+            (" sentence,".to_string(), 1),
+            (" it".to_string(), 1),
+        ]);
+        assert!(
+            counts.len() == expected.len()
+                && counts
+                    .iter()
+                    .all(|(k, v)| expected.contains_key(k) && expected[k] == *v)
+        );
     }
 
     #[test]

@@ -1041,9 +1041,9 @@ pub struct BPETokenizerConfig {
     pub use_graphemes: bool,
 }
 
-pub type MergeOps = HashMap<(Vec<u8>, Vec<u8>), usize>;
+pub type MergeOps = HashMap<Vec<u8>, u32>;
 
-pub type BPETokenizer = BaseTokenizer<BPETokenizerConfig, MergeOps>;
+pub type BPETokenizer = BaseTokenizer<BPETokenizerConfig, (MergeOps, Vec<Vec<u8>>)>;
 
 impl BPETokenizer {
     pub fn new(
@@ -1055,27 +1055,81 @@ impl BPETokenizer {
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
         let merge_ops: MergeOps = rmp_serde::from_slice(&buf)?;
+        let mut reverse_merge_ops: Vec<Vec<u8>> = Vec::new();
+        for b in 0..256 {
+            reverse_merge_ops.push(vec![b as u8]);
+        }
+        for (bytes, _) in merge_ops.iter().sorted_by_key(|&(_, merge_id)| merge_id) {
+            reverse_merge_ops.push(bytes.to_vec());
+        }
         Ok(Self::new_base_tokenizer(
-            256 + merge_ops.len() as u32,
+            reverse_merge_ops.len() as u32,
             special_config,
             language_config,
             config,
-            merge_ops,
+            (merge_ops, reverse_merge_ops),
         ))
     }
 }
 
 impl Tokenize for BPETokenizer {
     fn vocab_size(&self) -> usize {
-        todo!()
+        self.state.1.len() + self.special_vocab.size()
     }
 
     fn tokenize(&self, s: &str, lang: Option<&str>) -> anyhow::Result<Tokenization> {
-        todo!()
+        let mut token_ids: Vec<_> = s.as_bytes().iter().map(|b| Some(*b as u32)).collect();
+        let mut bytes: Vec<_> = s.as_bytes().iter().map(|b| Some(vec![*b])).collect();
+
+        loop {
+            let pairs: Vec<_> = bytes
+                .iter()
+                .enumerate()
+                .filter(|&(_, b)| b.is_some())
+                .zip(
+                    bytes
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, b)| b.is_some())
+                        .skip(1),
+                )
+                .filter_map(|((first_idx, first), (second_idx, second))| {
+                    let mut merged = first.clone().unwrap();
+                    merged.extend(second.clone().unwrap());
+                    if let Some(merge_id) = self.state.0.get(&merged) {
+                        Some((first_idx, second_idx, merged, *merge_id))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if pairs.is_empty() {
+                break;
+            }
+            let (first_idx, second_idx, merged, merge_id) = pairs
+                .into_iter()
+                .min_by_key(|(.., merge_id)| *merge_id)
+                .unwrap();
+            bytes[first_idx] = Some(merged);
+            bytes[second_idx] = None;
+            token_ids[first_idx] = Some(256 + merge_id);
+            token_ids[second_idx] = None;
+        }
+
+        let token_ids = token_ids.into_iter().filter_map(|t| t).collect();
+        let token_ids = self.add_prefix_and_suffix(token_ids, lang)?;
+        Ok(Tokenization::new(token_ids, TokenizationInfo::Empty))
     }
 
     fn de_tokenize(&self, token_ids: &[u32]) -> String {
-        todo!()
+        let mut bytes = Vec::new();
+        let num_merge_ops = self.state.1.len() as u32;
+        for token_id in token_ids {
+            if *token_id < num_merge_ops {
+                bytes.extend(&self.state.1[*token_id as usize]);
+            }
+        }
+        String::from_utf8_lossy(&bytes).to_string()
     }
 }
 
@@ -1138,6 +1192,7 @@ pub fn train_bpe(
         (vocab_size / 64) * 64 == vocab_size,
         "vocab size must be a multiple of 64 for better performance"
     );
+    assert!(vocab_size <= u32::MAX as usize, "vocab size is too large");
     let max_lines_per_file = max_lines_per_file.unwrap_or(usize::MAX);
     let num_threads = num_threads.max(1);
     let num_total_lines: usize = files
@@ -1218,23 +1273,13 @@ pub fn train_bpe(
             break;
         };
         byte_counts = replace_bpe_pair(byte_counts, (&first, &second));
-        merge_ops.insert((first, second), merge_idx);
+        merge_ops.insert([first, second].concat(), merge_idx as u32);
         pbar.inc(1);
     }
     pbar.finish_and_clear();
     let file = File::create(out_file)?;
     merge_ops.serialize(&mut rmp_serde::Serializer::new(file))?;
     Ok(())
-}
-
-impl VocabTokenize<Vec<u8>> for BPETokenizer {
-    fn split(&self, _: &str) -> (Vec<Option<Vec<u8>>>, TokenizationInfo) {
-        todo!()
-    }
-
-    fn join(&self, _: &[&Vec<u8>]) -> String {
-        todo!()
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -1500,14 +1545,16 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 mod tests {
     use std::{collections::HashMap, path::PathBuf};
 
+    use log::info;
     use numpy::ndarray::{Array1, Array2};
 
     use crate::tokenization::{
-        train_bpe, ByteGroups, ByteTokenizer, ByteTokenizerConfig, CharTokenizer,
-        CharTokenizerConfig, SparseCoo, SpecialConfig, Tokenization, TokenizationInfo, Tokenize,
+        token_groups_to_sparse_coo_matrix, train_bpe, BPETokenizer, ByT5Tokenizer, ByteGroups,
+        ByteTokenizer, ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig, GroupAggregation,
+        SparseCoo, SpecialConfig, Tokenization, TokenizationInfo, Tokenize,
     };
 
-    use super::{token_groups_to_sparse_coo_matrix, ByT5Tokenizer, GroupAggregation};
+    use super::BPETokenizerConfig;
 
     #[test]
     fn test_char_tokenizer() {
@@ -1588,16 +1635,15 @@ mod tests {
     }
 
     #[test]
-    fn test_bpe_training() {
+    fn test_bpe_tokenizer() {
         let _ = env_logger::try_init();
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let file_1 = base.clone().join("resources/test/multi30k.txt");
-        let file_2 = base.clone().join("resources/test/multi30k_rev.txt");
+        let file = base.clone().join("resources/test/multi30k.txt");
         let out_file = base.clone().join("resources/test/multi30k.bpe.merges");
         train_bpe(
-            &[file_1, file_2],
-            512,
+            &[file],
+            2048,
             0,
             &out_file,
             None,
@@ -1605,6 +1651,20 @@ mod tests {
             true,
         )
         .unwrap();
+
+        let bpe_config = BPETokenizerConfig {
+            merge_file: out_file,
+            use_graphemes: true,
+        };
+        let bpe = BPETokenizer::new(bpe_config, SpecialConfig::default(), None).unwrap();
+        info!("loaded bpe tokenizer");
+        let token_ids = bpe
+            .tokenize("this is a täst for the bpe tokenizer", None)
+            .unwrap()
+            .token_ids;
+        info!("token ids: {token_ids:?}");
+        let str = bpe.de_tokenize(&token_ids);
+        info!("de-tokenized: \"{str}\"");
     }
 
     #[test]

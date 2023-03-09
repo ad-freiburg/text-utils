@@ -2,7 +2,7 @@ use crate::data::{Label, TextData};
 use crate::text;
 use crate::text::{possible_byte_substrings, possible_character_substrings};
 use crate::unicode::{normalize, Normalization, CS};
-use crate::utils::{accumulate, constrain, py_invalid_type_error, py_required_key_error};
+use crate::utils::{accumulate, py_invalid_type_error, py_required_key_error};
 use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
 use anyhow::anyhow;
 use itertools::Itertools;
@@ -15,6 +15,64 @@ use std::ops::Sub;
 pub type PreprocessingFn =
     dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> anyhow::Result<TextData>;
 pub type LabelingFn = dyn Send + Sync + 'static + Fn(&TextData) -> anyhow::Result<Label>;
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum TextCorruptionMode {
+    Artificial(f64),
+    Realistic(String),
+    Mixed(f64, f64, String),
+}
+
+impl IntoPy<PyObject> for TextCorruptionMode {
+    fn into_py(self, _py: Python<'_>) -> PyObject {
+        todo!()
+    }
+}
+
+impl<'a> FromPyObject<'a> for TextCorruptionMode {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let Some(corruption_type) = d.get_item("type") else {
+            return Err(py_required_key_error("type", "text corruption mode"));
+        };
+        let corruption_type: String = corruption_type.extract()?;
+        let corruption_mode = match corruption_type.as_str() {
+            "artificial" => {
+                let Some(prob) = d.get_item("num_edits_prob") else {
+                    return Err(py_required_key_error("num_edits_prob", "artificial text corruption mode"));
+                };
+                let prob: f64 = prob.extract()?;
+                TextCorruptionMode::Artificial(prob)
+            }
+            "realistic" => {
+                let Some(path) = d.get_item("misspellings_file") else {
+                    return Err(py_required_key_error("misspellings_file", "realistic text corruption mode"));
+                };
+                let path: String = path.extract()?;
+                TextCorruptionMode::Realistic(path)
+            }
+            "mixed" => {
+                let Some(prob) = d.get_item("num_edits_prob") else {
+                    return Err(py_required_key_error("num_edits_prob", "mixed text corruption mode"));
+                };
+                let prob: f64 = prob.extract()?;
+                let Some(art_prob) = d.get_item("artificial_prob") else {
+                    return Err(py_required_key_error("artificial_prob", "mixed text corruption mode"));
+                };
+                let art_prob: f64 = art_prob.extract()?;
+                let Some(path) = d.get_item("misspellings_file") else {
+                    return Err(py_required_key_error("misspellings_file", "mixed text corruption mode"));
+                };
+                let path: String = path.extract()?;
+                TextCorruptionMode::Mixed(art_prob, prob, path)
+            }
+            k => {
+                return Err(py_invalid_type_error(k, "text corruption mode"));
+            }
+        };
+        Ok(corruption_mode)
+    }
+}
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingConfig {
@@ -36,6 +94,8 @@ pub enum PreprocessingConfig {
     // extract substrings from text
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
+    // randomly edit and replace words in text
+    TextCorruption(f64, bool, TextCorruptionMode),
     // randomly replace the language token with the given default
     LanguageDropout(f64),
 }
@@ -90,6 +150,12 @@ impl IntoPy<PyObject> for PreprocessingConfig {
             PreprocessingConfig::LanguageDropout(p) => {
                 d.set_item("prob", p).unwrap();
                 "language_dropout"
+            }
+            PreprocessingConfig::TextCorruption(p, use_g, mode) => {
+                d.set_item("prob", p).unwrap();
+                d.set_item("use_graphemes", use_g).unwrap();
+                d.set_item("mode", mode.into_py(py)).unwrap();
+                "text_corruption"
             }
         };
         d.set_item("type", preprocessing_type).unwrap();
@@ -210,6 +276,20 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 };
                 PreprocessingConfig::LanguageDropout(p.extract()?)
             }
+            "text_corruption" => {
+                let Some(p) = d.get_item("prob") else {
+                    return Err(py_required_key_error("prob", "text corruption config"));
+                };
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                let Some(mode) = d.get_item("mode") else {
+                    return Err(py_required_key_error("mode", "text corruption config"));
+                };
+                PreprocessingConfig::TextCorruption(p.extract()?, use_graphemes, mode.extract()?)
+            }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
             }
@@ -317,8 +397,8 @@ fn overwrite_original_from_processed() -> Box<PreprocessingFn> {
 }
 
 fn noise_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<PreprocessingFn> {
-    let iw_p = constrain(iw_p, 0., 1.);
-    let dw_p = constrain(dw_p, 0., 1.);
+    let iw_p = iw_p.clamp(0., 1.);
+    let dw_p = dw_p.clamp(0., 1.);
     assert!(
         iw_p > 0. || dw_p > 0.,
         "at least one of insert whitespace or delete whitespace probability must be greater 0"
@@ -403,7 +483,7 @@ fn byte_substring(max_bytes: usize, use_graphemes: bool) -> Box<PreprocessingFn>
 }
 
 fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
-    let prob = constrain(prob, 0.0, 1.0);
+    let prob = prob.clamp(0.0, 1.0);
     Box::new(move |item, seed| {
         let mut rng = if let Some(seed) = seed {
             ChaCha8Rng::seed_from_u64(seed)
@@ -416,6 +496,28 @@ fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
                 language: None,
                 ..item
             })
+        } else {
+            Ok(item)
+        }
+    })
+}
+
+fn text_corruption(
+    prob: f64,
+    reweight_prob: bool,
+    mode: TextCorruptionMode,
+) -> Box<PreprocessingFn> {
+    let prob = prob.clamp(0.0, 1.0);
+    assert!(prob > 0.0, "corruption probability must be greater than 0");
+    Box::new(move |item, seed| {
+        let mut rng = if let Some(seed) = seed {
+            ChaCha8Rng::seed_from_u64(seed)
+        } else {
+            ChaCha8Rng::from_entropy()
+        };
+        let r: f64 = rng.gen();
+        if r < prob {
+            Ok(item)
         } else {
             Ok(item)
         }
@@ -442,6 +544,9 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> 
             apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
         }
         PreprocessingConfig::LanguageDropout(p) => language_dropout(p),
+        PreprocessingConfig::TextCorruption(p, reweight_p, mode) => {
+            text_corruption(p, reweight_p, mode)
+        }
     }
 }
 

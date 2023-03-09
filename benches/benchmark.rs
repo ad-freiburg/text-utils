@@ -224,6 +224,13 @@ fn bench_utils(c: &mut Criterion) {
     }
 }
 
+fn bench_corruption(c: &mut Criterion) {
+    let delete = ascii
+    for num_corruptions in [1, 2, 4] {
+        group.bench_with_input(BenchmarkId::new("corrupt", format!("{num_corruptions}")))
+    }
+}
+
 criterion_group!(
     benches,
     bench_edit_distance,

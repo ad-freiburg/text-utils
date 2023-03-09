@@ -2,7 +2,6 @@ use anyhow::anyhow;
 use indicatif::MultiProgress;
 use itertools::Itertools;
 use pyo3::prelude::*;
-use regex::Regex;
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
@@ -15,7 +14,7 @@ use std::{
 
 use crate::{
     edit::distances,
-    text::{clean, file_size},
+    text::{clean, file_size, split_words},
     unicode::{normalize, Normalization, CS},
     utils::{progress_bar, py_invalid_type_error},
 };
@@ -73,7 +72,7 @@ impl Dictionary {
                 let mut counts = HashMap::new();
                 for line in lines {
                     let line = normalize(&clean(&line, true), Normalization::NFKC, true);
-                    Self::split_words(&line)
+                    split_words(&line)
                         .into_iter()
                         .filter_map(|(_, parts)| parts)
                         .flatten()
@@ -228,17 +227,6 @@ impl Dictionary {
         }
     }
 
-    #[staticmethod]
-    pub fn split_words(s: &str) -> Vec<(&str, Option<Vec<&str>>)> {
-        let re = Regex::new(r"\b[\p{Alphabetic}\p{M}\p{Pc}\p{Join_Control}]+\b").unwrap();
-        s.split_whitespace()
-            .map(|word| {
-                let parts: Vec<_> = re.find_iter(word).map(|m| m.as_str()).collect();
-                (word, if !parts.is_empty() { Some(parts) } else { None })
-            })
-            .collect()
-    }
-
     pub fn contains(&self, s: &str) -> bool {
         let ns = normalize(s, Normalization::NFKC, true);
         self.inner.contains_key(&ns)
@@ -335,23 +323,6 @@ mod tests {
         assert_eq!(d.get("this").unwrap(), (7, 7.0 / 19.0));
         assert_eq!(d.get("is").unwrap(), (4, 4.0 / 19.0));
         assert_eq!(d.get("good").unwrap(), (8, 8.0 / 19.0));
-    }
-
-    #[test]
-    fn test_dictionary_split() {
-        let text = "This is 123 a 'socalled' unit-test!";
-        let words = Dictionary::split_words(text);
-        assert_eq!(
-            words,
-            vec![
-                ("This", Some(vec!["This"])),
-                ("is", Some(vec!["is"])),
-                ("123", None),
-                ("a", Some(vec!["a"])),
-                ("'socalled'", Some(vec!["socalled"])),
-                ("unit-test!", Some(vec!["unit", "test"]))
-            ]
-        );
     }
 
     #[test]

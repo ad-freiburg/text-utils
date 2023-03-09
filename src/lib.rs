@@ -2,6 +2,7 @@ extern crate core;
 
 use pyo3::prelude::*;
 
+pub mod corrupt;
 pub mod data;
 pub mod dictionary;
 pub mod edit;
@@ -25,6 +26,7 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     windows::add_submodule(py, m)?;
     metrics::add_submodule(py, m)?;
     unicode::add_submodule(py, m)?;
+    corrupt::add_submodule(py, m)?;
 
     Ok(())
 }

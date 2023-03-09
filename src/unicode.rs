@@ -1,5 +1,6 @@
 use crate::utils::{py_invalid_type_error, run_length_encode};
 use pyo3::prelude::*;
+use regex::Regex;
 use std::fmt::{Display, Formatter};
 use std::str::Chars;
 use unicode_normalization::UnicodeNormalization;
@@ -153,6 +154,26 @@ impl<'a> Character<'a> {
 
     pub fn is_whitespace(&self) -> bool {
         self.str.chars().all(char::is_whitespace)
+    }
+
+    pub fn is_alphabetic(&self) -> bool {
+        self.str.chars().all(char::is_alphabetic)
+    }
+
+    pub fn is_punctuation(&self) -> bool {
+        Regex::new(r"^\p{P}+$").unwrap().is_match(self.str)
+    }
+
+    pub fn is_number(&self) -> bool {
+        self.str.chars().all(char::is_numeric)
+    }
+
+    pub fn is_left_punctuation(&self) -> bool {
+        Regex::new(r"^[\p{Pi}\p{Ps}]+$").unwrap().is_match(self.str)
+    }
+
+    pub fn is_right_punctuation(&self) -> bool {
+        Regex::new(r"^[\p{Pf}\p{Pe}]+$").unwrap().is_match(self.str)
     }
 
     pub fn code_point_len(&self) -> usize {

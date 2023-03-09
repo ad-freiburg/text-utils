@@ -67,20 +67,6 @@ where
 }
 
 #[inline]
-pub(crate) fn constrain<T>(value: T, min: T, max: T) -> T
-where
-    T: PartialOrd,
-{
-    if value < min {
-        min
-    } else if value > max {
-        max
-    } else {
-        value
-    }
-}
-
-#[inline]
 pub(crate) fn run_length_encode<T>(values: &[T]) -> Vec<(T, usize)>
 where
     T: PartialEq + Clone,

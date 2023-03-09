@@ -1,5 +1,8 @@
+use crate::corrupt::{
+    alpha_punct_delete_fn, alpha_swap_fn, ascii_insert_fn, ascii_replace_fn, edit_word,
+};
 use crate::data::{Label, TextData};
-use crate::text;
+use crate::text::{self, split_words};
 use crate::text::{possible_byte_substrings, possible_character_substrings};
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{accumulate, py_invalid_type_error, py_required_key_error};
@@ -10,6 +13,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use rand_distr::{Distribution, Geometric};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::BufReader;
 use std::ops::Sub;
 
 pub type PreprocessingFn =
@@ -95,7 +102,7 @@ pub enum PreprocessingConfig {
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
     // randomly edit and replace words in text
-    TextCorruption(f64, bool, TextCorruptionMode),
+    TextCorruption(f64, bool, bool, TextCorruptionMode),
     // randomly replace the language token with the given default
     LanguageDropout(f64),
 }
@@ -151,9 +158,10 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("prob", p).unwrap();
                 "language_dropout"
             }
-            PreprocessingConfig::TextCorruption(p, use_g, mode) => {
+            PreprocessingConfig::TextCorruption(p, use_g, full_del, mode) => {
                 d.set_item("prob", p).unwrap();
-                d.set_item("use_graphemes", use_g).unwrap();
+                d.set_item("reweight_prob", use_g).unwrap();
+                d.set_item("allow_full_delete", full_del).unwrap();
                 d.set_item("mode", mode.into_py(py)).unwrap();
                 "text_corruption"
             }
@@ -280,7 +288,12 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 let Some(p) = d.get_item("prob") else {
                     return Err(py_required_key_error("prob", "text corruption config"));
                 };
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let reweight_prob = if let Some(value) = d.get_item("reweight_prob") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                let full_delete = if let Some(value) = d.get_item("allow_full_delete") {
                     value.extract()?
                 } else {
                     true
@@ -288,7 +301,12 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 let Some(mode) = d.get_item("mode") else {
                     return Err(py_required_key_error("mode", "text corruption config"));
                 };
-                PreprocessingConfig::TextCorruption(p.extract()?, use_graphemes, mode.extract()?)
+                PreprocessingConfig::TextCorruption(
+                    p.extract()?,
+                    reweight_prob,
+                    full_delete,
+                    mode.extract()?,
+                )
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
@@ -505,10 +523,38 @@ fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
 fn text_corruption(
     prob: f64,
     reweight_prob: bool,
+    allow_full_delete: bool,
     mode: TextCorruptionMode,
 ) -> Box<PreprocessingFn> {
     let prob = prob.clamp(0.0, 1.0);
     assert!(prob > 0.0, "corruption probability must be greater than 0");
+    let delete = alpha_punct_delete_fn(allow_full_delete);
+    let insert = ascii_insert_fn();
+    let replace = ascii_replace_fn();
+    let swap = alpha_swap_fn();
+    let misspellings = match &mode {
+        TextCorruptionMode::Realistic(file) | TextCorruptionMode::Mixed(.., file) => {
+            let file = File::open(file).expect("could not read misspellings file");
+            let reader = BufReader::new(file);
+            let misspellings: HashMap<String, Vec<String>> =
+                serde_json::from_reader(reader).unwrap();
+            misspellings
+        }
+        _ => HashMap::new(),
+    };
+    let art_num_edits_p = match &mode {
+        TextCorruptionMode::Artificial(p) | TextCorruptionMode::Mixed(_, p, _) => p.clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let geo = Geometric::new(art_num_edits_p).expect("failed to initialize geometric distribution");
+    let (art_p, real_p) = match mode {
+        TextCorruptionMode::Artificial(_) => (prob, 0.0),
+        TextCorruptionMode::Realistic(_) => (0.0, prob),
+        TextCorruptionMode::Mixed(art_p, ..) => {
+            let art_p = art_p.clamp(0.0, 1.0);
+            (art_p * prob, (1.0 - art_p) * prob)
+        }
+    };
     Box::new(move |item, seed| {
         let mut rng = if let Some(seed) = seed {
             ChaCha8Rng::seed_from_u64(seed)
@@ -516,11 +562,45 @@ fn text_corruption(
             ChaCha8Rng::from_entropy()
         };
         let r: f64 = rng.gen();
-        if r < prob {
-            Ok(item)
-        } else {
-            Ok(item)
-        }
+        let words = split_words(&item.processed);
+        let words: Vec<_> = words
+            .into_iter()
+            .map(|(word, parts)| {
+                let mut word = word.to_string();
+                if r < art_p {
+                    let num_edits = geo.sample(&mut rng) as usize + 1;
+                    let mut exclude: HashSet<usize> = HashSet::new();
+                    for _ in 0..num_edits {
+                        let (new_word, new_exclude) = edit_word(
+                            &word,
+                            true,
+                            &mut rng,
+                            Some(&insert),
+                            Some(&delete),
+                            Some(&replace),
+                            Some(&swap),
+                            Some(exclude),
+                        );
+                        if new_word == word {
+                            break;
+                        }
+                        word = new_word;
+                        exclude = new_exclude;
+                    }
+                } else if r < art_p + real_p {
+                    // TODO: try out word parts if word as a whole is not in replacements
+                    if let Some(replacements) = misspellings.get(&word) {
+                        let idx = rng.gen_range(0..replacements.len());
+                        word = replacements[idx].to_string();
+                    }
+                }
+                word
+            })
+            .collect();
+        Ok(TextData {
+            processed: words.join(" "),
+            ..item
+        })
     })
 }
 
@@ -544,8 +624,8 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> 
             apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
         }
         PreprocessingConfig::LanguageDropout(p) => language_dropout(p),
-        PreprocessingConfig::TextCorruption(p, reweight_p, mode) => {
-            text_corruption(p, reweight_p, mode)
+        PreprocessingConfig::TextCorruption(p, reweight_p, full_del, mode) => {
+            text_corruption(p, reweight_p, full_del, mode)
         }
     }
 }

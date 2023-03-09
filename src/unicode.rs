@@ -168,6 +168,10 @@ impl<'a> Character<'a> {
         self.str.chars().all(char::is_numeric)
     }
 
+    pub fn is_dash_punctuation(&self) -> bool {
+        Regex::new(r"^[\p{Pd}{Pc}]+$").unwrap().is_match(self.str)
+    }
+
     pub fn is_left_punctuation(&self) -> bool {
         Regex::new(r"^[\p{Pi}\p{Ps}]+$").unwrap().is_match(self.str)
     }

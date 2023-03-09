@@ -16,8 +16,8 @@ pub fn replace_word(
     }
 }
 
-pub type CanEditFn = dyn Fn(&CS, &usize) -> bool;
-pub type EditOptionsFn = dyn Fn(&CS, &usize) -> Vec<String>;
+pub type CanEditFn = dyn Fn(&CS, &usize) -> bool + Send + Sync;
+pub type EditOptionsFn = dyn Fn(&CS, &usize) -> Vec<String> + Send + Sync;
 
 const ASCII_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const ASCII_LEFT_PUNCT: &str = "\"'<([{";
@@ -116,10 +116,10 @@ pub fn edit_word(
     word: &str,
     use_graphemes: bool,
     rng: &mut impl Rng,
-    insert: Option<Box<EditOptionsFn>>,
-    delete: Option<Box<CanEditFn>>,
-    replace: Option<Box<EditOptionsFn>>,
-    swap: Option<Box<CanEditFn>>,
+    insert: Option<&Box<EditOptionsFn>>,
+    delete: Option<&Box<CanEditFn>>,
+    replace: Option<&Box<EditOptionsFn>>,
+    swap: Option<&Box<CanEditFn>>,
     exclude_indices: Option<HashSet<usize>>,
 ) -> (String, HashSet<usize>) {
     let mut exclude_indices = exclude_indices.unwrap_or_default();

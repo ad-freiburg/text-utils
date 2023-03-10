@@ -62,6 +62,9 @@ def train_bpe(args: argparse.Namespace):
     if args.num_threads is None:
         args.num_threads = min(len(os.sched_getaffinity(0)), 4)
 
+    if not args.no_progress:
+        os.environ["RUST_LOG"] = "info"
+
     tokenization.train_bpe(
         args.files,
         args.vocab_size,

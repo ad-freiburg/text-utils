@@ -1282,10 +1282,7 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
                     .entry(prev_pair)
                     .and_modify(|info| {
                         info.freq += *freq;
-                        info.words
-                            .entry(*idx)
-                            .and_modify(|count| *count += 1)
-                            .or_insert(1);
+                        *info.words.entry(*idx).or_insert(0) += 1;
                     })
                     .or_insert(BytePairInfo {
                         freq: *freq,
@@ -1301,10 +1298,7 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
                     .entry(next_pair)
                     .and_modify(|info| {
                         info.freq += *freq;
-                        info.words
-                            .entry(*idx)
-                            .and_modify(|count| *count += 1)
-                            .or_insert(1);
+                        *info.words.entry(*idx).or_insert(0) += 1;
                     })
                     .or_insert(BytePairInfo {
                         freq: *freq,

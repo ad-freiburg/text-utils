@@ -1223,7 +1223,9 @@ fn replace_pair(
 
 #[inline]
 fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairChanges) {
-    stats.remove(pair);
+    let stat = stats.get_mut(pair).unwrap();
+    stat.freq = 0;
+    stat.words.iter_mut().for_each(|(_, occ)| *occ = 0);
     let merged = pair.merge();
     for (idx, old_word, new_word, freq) in changes {
         let mut i = 0;

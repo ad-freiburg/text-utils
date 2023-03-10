@@ -76,7 +76,7 @@ impl Dictionary {
                         .into_iter()
                         .filter_map(|(_, parts)| parts)
                         .flatten()
-                        .for_each(|w| {
+                        .for_each(|(w, _)| {
                             if counts.contains_key(w) {
                                 *counts.get_mut(w).unwrap() += 1;
                             } else {

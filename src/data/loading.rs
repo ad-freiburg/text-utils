@@ -118,23 +118,23 @@ where
     }
 }
 
-pub fn text_data_generator_from_files(
-    org: &Path,
-    proc: Option<&Path>,
+pub fn text_data_generator_from_files<P: AsRef<Path>>(
+    org: P,
+    proc: Option<P>,
     lang: Option<String>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
-    let org_len = count_lines(org)?;
-    let org_iter = LossyUtf8Reader::new(BufReader::new(open(org)?)).lines();
-    let mut proc_iter = if proc.is_some() {
-        let proc_len = count_lines(proc.unwrap())?;
+    let org_len = count_lines(org.as_ref())?;
+    let org_iter = LossyUtf8Reader::new(BufReader::new(open(org.as_ref())?)).lines();
+    let mut proc_iter = if let Some(proc) = proc {
+        let proc_len = count_lines(proc.as_ref())?;
         assert_eq!(
             org_len,
             proc_len,
             "expected same number of lines for {:?} and {:?}",
-            org,
-            proc.unwrap()
+            org.as_ref(),
+            proc.as_ref()
         );
-        Some(LossyUtf8Reader::new(BufReader::new(open(proc.unwrap())?)).lines())
+        Some(LossyUtf8Reader::new(BufReader::new(open(proc.as_ref())?)).lines())
     } else {
         None
     };
@@ -156,11 +156,11 @@ pub fn text_data_generator_from_files(
 }
 
 pub fn inference_data_generator_from_file(
-    path: &Path,
+    path: impl AsRef<Path>,
     format: InferenceDataFormat,
     lang: Option<String>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>> {
-    let iter = LossyUtf8Reader::new(BufReader::new(open(path)?))
+    let iter = LossyUtf8Reader::new(BufReader::new(open(path.as_ref())?))
         .lines()
         .map(move |s| {
             let mut data = InferenceData::from_str(&(s?), &format)?;

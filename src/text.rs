@@ -209,11 +209,15 @@ pub fn possible_byte_substrings(
         .collect()
 }
 
-pub fn split_words(s: &str) -> Vec<(&str, Option<Vec<&str>>)> {
+pub type WordParts<'a> = Vec<(&'a str, usize)>;
+pub fn split_words(s: &str) -> Vec<(&str, Option<WordParts>)> {
     let re = Regex::new(r"\b[\p{Alphabetic}\p{M}\p{Pc}\p{Join_Control}]+\b").unwrap();
     s.split_whitespace()
         .map(|word| {
-            let parts: Vec<_> = re.find_iter(word).map(|m| m.as_str()).collect();
+            let parts: Vec<_> = re
+                .find_iter(word)
+                .map(|m| (m.as_str(), m.start()))
+                .collect();
             (word, if !parts.is_empty() { Some(parts) } else { None })
         })
         .collect()
@@ -289,12 +293,12 @@ mod tests {
         assert_eq!(
             words,
             vec![
-                ("This", Some(vec!["This"])),
-                ("is", Some(vec!["is"])),
+                ("This", Some(vec![("This", 0)])),
+                ("is", Some(vec![("is", 0)])),
                 ("123", None),
-                ("a", Some(vec!["a"])),
-                ("'socalled'", Some(vec!["socalled"])),
-                ("unit-test!", Some(vec!["unit", "test"]))
+                ("a", Some(vec![("a", 0)])),
+                ("'socalled'", Some(vec![("socalled", 1)])),
+                ("unit-test!", Some(vec![("unit", 0), ("test", 5)]))
             ]
         );
     }

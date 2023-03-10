@@ -102,7 +102,9 @@ pub enum PreprocessingConfig {
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
     // randomly edit and replace words in text
-    TextCorruption(f64, bool, bool, TextCorruptionMode),
+    TextCorruption(f64, bool, TextCorruptionMode),
+    // randomly mask full words in text
+    // FullWordMasking(f64, String),
     // randomly replace the language token with the given default
     LanguageDropout(f64),
 }
@@ -158,9 +160,8 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("prob", p).unwrap();
                 "language_dropout"
             }
-            PreprocessingConfig::TextCorruption(p, use_g, full_del, mode) => {
+            PreprocessingConfig::TextCorruption(p, full_del, mode) => {
                 d.set_item("prob", p).unwrap();
-                d.set_item("reweight_prob", use_g).unwrap();
                 d.set_item("allow_full_delete", full_del).unwrap();
                 d.set_item("mode", mode.into_py(py)).unwrap();
                 "text_corruption"
@@ -288,11 +289,6 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 let Some(p) = d.get_item("prob") else {
                     return Err(py_required_key_error("prob", "text corruption config"));
                 };
-                let reweight_prob = if let Some(value) = d.get_item("reweight_prob") {
-                    value.extract()?
-                } else {
-                    true
-                };
                 let full_delete = if let Some(value) = d.get_item("allow_full_delete") {
                     value.extract()?
                 } else {
@@ -301,12 +297,7 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 let Some(mode) = d.get_item("mode") else {
                     return Err(py_required_key_error("mode", "text corruption config"));
                 };
-                PreprocessingConfig::TextCorruption(
-                    p.extract()?,
-                    reweight_prob,
-                    full_delete,
-                    mode.extract()?,
-                )
+                PreprocessingConfig::TextCorruption(p.extract()?, full_delete, mode.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
@@ -522,7 +513,6 @@ fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
 
 fn text_corruption(
     prob: f64,
-    reweight_prob: bool,
     allow_full_delete: bool,
     mode: TextCorruptionMode,
 ) -> Box<PreprocessingFn> {
@@ -561,13 +551,40 @@ fn text_corruption(
         } else {
             ChaCha8Rng::from_entropy()
         };
-        let r: f64 = rng.gen();
         let words = split_words(&item.processed);
         let words: Vec<_> = words
             .into_iter()
             .map(|(word, parts)| {
                 let mut word = word.to_string();
-                if r < art_p {
+                let r: f64 = rng.gen();
+                if r < real_p {
+                    if let Some(replacements) = misspellings.get(&word) {
+                        let idx = rng.gen_range(0..replacements.len());
+                        return replacements[idx].to_string();
+                    } else if let Some(parts) = parts {
+                        let replacable_parts: Vec<_> = parts
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, &(part, _))| {
+                                misspellings
+                                    .get(part)
+                                    .map(|replacements| (idx, replacements))
+                            })
+                            .collect();
+                        if !replacable_parts.is_empty() {
+                            let (idx, replacements) =
+                                replacable_parts[rng.gen_range(0..replacable_parts.len())];
+                            let (part, start) = parts[idx];
+                            let replacement = &replacements[rng.gen_range(0..replacements.len())];
+                            return word[..start].to_string()
+                                + replacement
+                                + &word[start + part.len()..];
+                        }
+                    }
+                    // fallback to artificial corruption
+                    // if there are no replacements for the word itself or one of its parts
+                }
+                if r < real_p + art_p {
                     let num_edits = geo.sample(&mut rng) as usize + 1;
                     let mut exclude: HashSet<usize> = HashSet::new();
                     for _ in 0..num_edits {
@@ -586,12 +603,6 @@ fn text_corruption(
                         }
                         word = new_word;
                         exclude = new_exclude;
-                    }
-                } else if r < art_p + real_p {
-                    // TODO: try out word parts if word as a whole is not in replacements
-                    if let Some(replacements) = misspellings.get(&word) {
-                        let idx = rng.gen_range(0..replacements.len());
-                        word = replacements[idx].to_string();
                     }
                 }
                 word
@@ -624,8 +635,8 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> 
             apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
         }
         PreprocessingConfig::LanguageDropout(p) => language_dropout(p),
-        PreprocessingConfig::TextCorruption(p, reweight_p, full_del, mode) => {
-            text_corruption(p, reweight_p, full_del, mode)
+        PreprocessingConfig::TextCorruption(p, full_del, mode) => {
+            text_corruption(p, full_del, mode)
         }
     }
 }

@@ -999,7 +999,7 @@ type DataIter = dyn Iterator<Item = (Batch<Item>, <Batch<Item> as Tensorize>::Ou
 #[pyclass]
 struct DataLoader {
     pipeline: TextDataPipeline,
-    files: Vec<String>,
+    files: Vec<(String, Option<String>)>,
     languages: Option<Vec<String>>,
     strategy: TextIterationStrategy,
     tokenizer_config: TokenizerConfig,
@@ -1026,7 +1026,7 @@ struct DataLoader {
 impl DataLoader {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        files: Vec<String>,
+        files: Vec<(String, Option<String>)>,
         languages: Option<Vec<String>>,
         pipeline_config: PreprocessingPipelineConfig,
         tokenizer_config: TokenizerConfig,
@@ -1089,13 +1089,14 @@ impl DataLoader {
             None
         };
         let mut generators = vec![];
-        for (idx, file) in self.files.iter().enumerate() {
+        for (idx, (original_file, processed_file)) in self.files.iter().enumerate() {
             let lang = if self.languages.is_some() {
                 Some(self.languages.as_ref().unwrap()[idx].clone())
             } else {
                 None
             };
-            let generator = text_data_generator_from_files(Path::new(file), None, lang)?;
+            let generator =
+                text_data_generator_from_files(original_file, processed_file.as_ref(), lang)?;
             generators.push(generator);
         }
 
@@ -1152,7 +1153,7 @@ impl DataLoader {
         distributed = None
     ))]
     pub fn from_files(
-        files: Vec<String>,
+        files: Vec<(String, Option<String>)>,
         pipeline_config: PreprocessingPipelineConfig,
         tokenizer_config: TokenizerConfig,
         languages: Option<Vec<String>>,

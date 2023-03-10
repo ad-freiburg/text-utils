@@ -1134,49 +1134,186 @@ impl Tokenize for BPETokenizer {
 }
 
 #[inline]
-fn max_bpe_pair(counts: &HashMap<Vec<Vec<u8>>, usize>) -> Option<(Vec<u8>, Vec<u8>)> {
-    let mut pair_counts = HashMap::new();
-    for (word, count) in counts.iter() {
-        for i in 1..word.len() {
-            let first = &word[i - 1][..];
-            let second = &word[i][..];
-            let pair = (first, second);
-            if let Some(pair_count) = pair_counts.get_mut(&pair) {
-                *pair_count += count;
-            } else {
-                pair_counts.insert(pair, *count);
-            }
-        }
-    }
-    if let Some(((first, second), _)) = pair_counts.into_iter().max_by_key(|(_, count)| *count) {
-        Some((first.to_vec(), second.to_vec()))
-    } else {
-        None
+fn max_byte_pair(stats: &BytePairStats) -> Option<BytePair> {
+    stats
+        .iter()
+        .max_by_key(|&(_, info)| info.freq)
+        .map(|(pair, _)| pair.clone())
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+struct BytePair {
+    first: Vec<u8>,
+    second: Vec<u8>,
+}
+
+impl BytePair {
+    fn merge(&self) -> Vec<u8> {
+        [&self.first[..], &self.second[..]].concat()
     }
 }
 
+#[derive(Clone, Debug)]
+struct BytePairInfo {
+    freq: usize,
+    words: HashMap<usize, usize>,
+}
+type BytePairVocab = Vec<(Vec<Vec<u8>>, usize)>;
+type BytePairStats = HashMap<BytePair, BytePairInfo>;
 #[inline]
-fn replace_bpe_pair(
-    counts: HashMap<Vec<Vec<u8>>, usize>,
-    pair: (&[u8], &[u8]),
-) -> HashMap<Vec<Vec<u8>>, usize> {
-    counts
-        .into_iter()
-        .map(|(subwords, count)| {
-            let mut word = Vec::with_capacity(subwords.len());
-            let mut merged = true; // set to true in the beginning so we always add the first subword
-            for subword in subwords {
-                if merged || word.last().unwrap() != pair.0 || subword != pair.1 {
-                    word.push(subword);
-                    merged = false;
-                } else {
-                    word.last_mut().unwrap().extend(subword);
-                    merged = true;
-                }
+fn byte_pair_stats(vocab: &BytePairVocab) -> BytePairStats {
+    let mut stats = BytePairStats::new();
+    for (idx, (word, freq)) in vocab.iter().enumerate() {
+        for i in 1..word.len() {
+            let pair = BytePair {
+                first: word[i - 1].to_vec(),
+                second: word[i].to_vec(),
+            };
+            stats
+                .entry(pair)
+                .and_modify(|info| {
+                    info.freq += freq;
+                    info.words
+                        .entry(idx)
+                        .and_modify(|count| *count += 1)
+                        .or_insert(1);
+                })
+                .or_insert(BytePairInfo {
+                    freq: *freq,
+                    words: [(idx, 1)].into(),
+                });
+        }
+    }
+    stats
+}
+
+#[inline]
+fn replace_pair_in_word(word: &Vec<Vec<u8>>, pair: &BytePair) -> Vec<Vec<u8>> {
+    assert!(!word.is_empty());
+    let mut new_word = vec![word[0].to_vec()];
+    for subword in &word[1..] {
+        if new_word.last().unwrap() == &pair.first && subword == &pair.second {
+            new_word.last_mut().unwrap().extend(subword);
+        } else {
+            new_word.push(subword.to_vec());
+        }
+    }
+    new_word
+}
+
+type BytePairChanges = Vec<(usize, Vec<Vec<u8>>, Vec<Vec<u8>>, usize)>;
+#[inline]
+fn replace_pair(
+    vocab: &mut BytePairVocab,
+    pair: &BytePair,
+    stats: &BytePairStats,
+) -> BytePairChanges {
+    let mut changes = Vec::new();
+    for (idx, occ) in &stats[pair].words {
+        if *occ < 1 {
+            continue;
+        }
+        let (word, freq) = &vocab[*idx];
+        let new_word = replace_pair_in_word(word, pair);
+        changes.push((*idx, word.to_vec(), new_word.clone(), *freq));
+        vocab[*idx] = (new_word, *freq);
+    }
+    changes
+}
+
+#[inline]
+fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairChanges) {
+    stats.remove(pair);
+    let merged = pair.merge();
+    for (idx, old_word, new_word, freq) in changes {
+        let mut i = 0;
+        while i < old_word.len() {
+            let Some((start, _)) = old_word[i..]
+            .iter()
+            .find_position(|&subword| subword == &pair.first) else {
+                break;
+            };
+            i += start;
+            if i == old_word.len() - 1 || old_word[i + 1] != pair.second {
+                i += 1;
+                continue;
             }
-            (word, count)
-        })
-        .collect()
+            if i > 0 {
+                let prev_pair = BytePair {
+                    first: old_word[i - 1].to_vec(),
+                    second: old_word[i].to_vec(),
+                };
+                let mut stat = stats.get_mut(&prev_pair).unwrap();
+                stat.freq = stat.freq.saturating_sub(*freq);
+                let occ = stat.words.get_mut(idx).unwrap();
+                *occ = occ.saturating_sub(1);
+            }
+            if i < old_word.len() - 2
+                && (old_word[i + 2] != pair.first
+                    || i >= old_word.len() - 3
+                    || old_word[i + 3] != pair.second)
+            {
+                let next_pair = BytePair {
+                    first: old_word[i + 1].to_vec(),
+                    second: old_word[i + 2].to_vec(),
+                };
+                let mut stat = stats.get_mut(&next_pair).unwrap();
+                stat.freq = stat.freq.saturating_sub(*freq);
+                let occ = stat.words.get_mut(idx).unwrap();
+                *occ = occ.saturating_sub(1);
+            }
+            i += 2;
+        }
+
+        i = 0;
+        while i < new_word.len() {
+            let Some((start, _)) = new_word[i..]
+            .iter()
+            .find_position(|&subword| subword == &merged) else {
+                break;
+            };
+            i += start;
+            if i > 0 {
+                let prev_pair = BytePair {
+                    first: new_word[i - 1].to_vec(),
+                    second: new_word[i].to_vec(),
+                };
+                stats
+                    .entry(prev_pair)
+                    .and_modify(|info| {
+                        info.freq += *freq;
+                        info.words
+                            .entry(*idx)
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1);
+                    })
+                    .or_insert(BytePairInfo {
+                        freq: *freq,
+                        words: [(*idx, 1)].into(),
+                    });
+            }
+            if i < new_word.len() - 1 && new_word[i + 1] != merged {
+                let next_pair = BytePair {
+                    first: new_word[i].to_vec(),
+                    second: new_word[i + 1].to_vec(),
+                };
+                stats
+                    .entry(next_pair)
+                    .and_modify(|info| {
+                        info.freq += *freq;
+                        info.words
+                            .entry(*idx)
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1);
+                    })
+                    .or_insert(BytePairInfo {
+                        freq: *freq,
+                        words: [(*idx, 1)].into(),
+                    });
+            }
+            i += 1;
+        }
+    }
 }
 
 #[pyfunction(
@@ -1283,7 +1420,7 @@ pub fn train_bpe(
     }
     let pbar = progress_bar("counting words in files", num_total_lines as u64, !progress);
     drop(count_tx); // close the channel so the threads can exit
-    let mut byte_counts: HashMap<Vec<Vec<u8>>, usize> = count_rx
+    let mut vocab: Vec<(Vec<Vec<u8>>, usize)> = count_rx
         .into_iter()
         .fold(HashMap::new(), |mut acc, counts| {
             for (word, count) in counts {
@@ -1304,15 +1441,17 @@ pub fn train_bpe(
     if progress {
         info!(
             "found {} unique words in files, going to perform {num_merges} byte merges",
-            byte_counts.len()
+            vocab.len()
         );
     }
+    let mut stats = byte_pair_stats(&vocab);
     for merge_idx in 0..num_merges {
-        let Some((first, second)) = max_bpe_pair(&byte_counts) else {
+        let Some(pair) = max_byte_pair(&stats) else {
             break;
         };
-        byte_counts = replace_bpe_pair(byte_counts, (&first, &second));
-        merge_ops.insert([first, second].concat(), merge_idx as u32);
+        let changes = replace_pair(&mut vocab, &pair, &stats);
+        update_stats(&mut stats, &pair, &changes);
+        merge_ops.insert(pair.merge(), merge_idx as u32);
         pbar.inc(1);
     }
     pbar.finish_and_clear();
@@ -1704,7 +1843,7 @@ mod tests {
         let bpe = BPETokenizer::new(bpe_config, special_config, None).unwrap();
         info!("loaded bpe tokenizer");
         let token_ids = bpe
-            .tokenize("this is a täst for the bpe tokenizer", None)
+            .tokenize("this is a long reading couple restaurant", None)
             .unwrap()
             .token_ids;
         info!("token ids: {token_ids:?}");

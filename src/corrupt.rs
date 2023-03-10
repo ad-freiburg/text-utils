@@ -112,14 +112,15 @@ pub fn alpha_swap_fn() -> Box<CanEditFn> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn edit_word(
     word: &str,
     use_graphemes: bool,
     rng: &mut impl Rng,
-    insert: Option<&Box<EditOptionsFn>>,
-    delete: Option<&Box<CanEditFn>>,
-    replace: Option<&Box<EditOptionsFn>>,
-    swap: Option<&Box<CanEditFn>>,
+    insert: Option<&EditOptionsFn>,
+    delete: Option<&CanEditFn>,
+    replace: Option<&EditOptionsFn>,
+    swap: Option<&CanEditFn>,
     exclude_indices: Option<HashSet<usize>>,
 ) -> (String, HashSet<usize>) {
     let mut exclude_indices = exclude_indices.unwrap_or_default();
@@ -306,7 +307,7 @@ mod tests {
             true,
             &mut rng,
             None,
-            Some(alpha_punct_delete_fn(false)),
+            Some(&alpha_punct_delete_fn(false)),
             None,
             None,
             None,
@@ -319,7 +320,7 @@ mod tests {
             true,
             &mut rng,
             None,
-            Some(alpha_punct_delete_fn(false)),
+            Some(&alpha_punct_delete_fn(false)),
             None,
             None,
             Some(HashSet::from([0, 2, 3])),
@@ -331,7 +332,7 @@ mod tests {
             true,
             &mut rng,
             None,
-            Some(alpha_punct_delete_fn(false)),
+            Some(&alpha_punct_delete_fn(false)),
             None,
             None,
             None,
@@ -343,7 +344,7 @@ mod tests {
             w,
             true,
             &mut rng,
-            Some(insert_fn(vec!["w".to_string()])),
+            Some(&insert_fn(vec!["w".to_string()])),
             None,
             None,
             None,
@@ -362,7 +363,7 @@ mod tests {
             w,
             true,
             &mut rng,
-            Some(insert_fn(vec!["w".to_string()])),
+            Some(&insert_fn(vec!["w".to_string()])),
             None,
             None,
             None,
@@ -378,7 +379,7 @@ mod tests {
             None,
             None,
             None,
-            Some(alpha_swap_fn()),
+            Some(&alpha_swap_fn()),
             None,
         );
         assert_eq!(ew.len(), w.len());
@@ -391,7 +392,7 @@ mod tests {
             None,
             None,
             None,
-            Some(alpha_swap_fn()),
+            Some(&alpha_swap_fn()),
             Some(HashSet::from([0, 3])),
         );
         assert_eq!(&ew, "tsät");
@@ -403,7 +404,7 @@ mod tests {
             &mut rng,
             None,
             None,
-            Some(replace_fn(vec!["bla".to_string()])),
+            Some(&replace_fn(vec!["bla".to_string()])),
             None,
             None,
         );
@@ -416,7 +417,7 @@ mod tests {
             &mut rng,
             None,
             None,
-            Some(replace_fn(vec!["bla".to_string()])),
+            Some(&replace_fn(vec!["bla".to_string()])),
             None,
             Some(HashSet::from([0, 1, 3])),
         );

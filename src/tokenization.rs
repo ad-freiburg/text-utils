@@ -1,5 +1,5 @@
-use crate::text::{count_words, file_size};
-use crate::unicode::CS;
+use crate::text::{clean, count_words, file_size};
+use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{progress_bar, py_invalid_type_error, py_required_key_error, run_length_decode};
 use anyhow::anyhow;
 use itertools::Itertools;
@@ -1179,12 +1179,50 @@ fn replace_bpe_pair(
         .collect()
 }
 
+#[pyfunction(
+    name = "train_bpe", 
+    signature = (
+        files, 
+        vocab_size, 
+        num_special_tokens, 
+        out_file, 
+        max_lines_per_file = None,
+        normalization = Normalization::NFKC,
+        num_threads = num_cpus::get().min(4) as u8,
+        progress = true,
+    )
+)]
+#[allow(clippy::too_many_arguments)]
+pub fn train_bpe_py(
+    files: Vec<&str>,
+    vocab_size: usize,
+    num_special_tokens: usize,
+    out_file: &str,
+    max_lines_per_file: Option<usize>,
+    normalization: Option<Normalization>,
+    num_threads: u8,
+    progress: bool,
+) -> anyhow::Result<()> {
+    train_bpe(
+        &files,
+        vocab_size,
+        num_special_tokens,
+        out_file,
+        max_lines_per_file,
+        normalization,
+        num_threads,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn train_bpe(
     files: &[impl AsRef<Path>],
     vocab_size: usize,
     num_special_tokens: usize,
-    out_file: &impl AsRef<Path>,
+    out_file: impl AsRef<Path>,
     max_lines_per_file: Option<usize>,
+    normalization: Option<Normalization>,
     num_threads: u8,
     progress: bool,
 ) -> anyhow::Result<()> {
@@ -1226,10 +1264,14 @@ pub fn train_bpe(
             .name(format!("bpe worker thread {idx}"))
             .spawn(move || {
                 loop {
-                    let Some(line) =
+                    let Some(mut line) =
                         line_iter_clone.lock().expect("failed to lock line iter").next() else  {
                         return;
                     };
+                    line = clean(&line, true);
+                    if let Some(normalization) = normalization {
+                        line = normalize(&line, normalization, true);
+                    }
                     let counts = count_words(&line, true);
                     if count_tx_clone.send(counts).is_err() {
                         // receiver is closed, so we can return this thread
@@ -1533,6 +1575,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
     m.add_class::<Tokenization>()?;
     m.add_class::<SpecialTokens>()?;
     m.add_class::<LanguageTokens>()?;
+    m.add_function(wrap_pyfunction!(train_bpe_py, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())
@@ -1545,10 +1588,13 @@ mod tests {
     use log::info;
     use numpy::ndarray::{Array1, Array2};
 
-    use crate::tokenization::{
-        token_groups_to_sparse_coo_matrix, train_bpe, BPETokenizer, ByT5Tokenizer, ByteGroups,
-        ByteTokenizer, ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig, GroupAggregation,
-        SparseCoo, SpecialConfig, Tokenization, TokenizationInfo, Tokenize,
+    use crate::{
+        tokenization::{
+            token_groups_to_sparse_coo_matrix, train_bpe, BPETokenizer, ByT5Tokenizer, ByteGroups,
+            ByteTokenizer, ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig,
+            GroupAggregation, SparseCoo, SpecialConfig, Tokenization, TokenizationInfo, Tokenize,
+        },
+        unicode::Normalization,
     };
 
     use super::BPETokenizerConfig;
@@ -1645,6 +1691,7 @@ mod tests {
             special_config.tokens.len(),
             &out_file,
             None,
+            Some(Normalization::NFKC),
             num_cpus::get().min(4) as u8,
             true,
         )

@@ -2002,6 +2002,24 @@ mod tests {
             tok.de_tokenize(&token_ids, false),
             "<bos>a t<unk>st<eos>".to_string()
         );
+        let text = "a <pad>täst";
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, false).unwrap();
+        assert_eq!(token_ids.len(), 7 + 2);
+        assert_eq!(token_ids[3], tok.pad_token_id);
+        assert_eq!(token_ids[5], tok.unk_token_id());
+        assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
+        assert_eq!(
+            tok.de_tokenize(&token_ids, false),
+            "<bos>a <pad>t<unk>st<eos>".to_string()
+        );
+        let text = "a <pad>täst";
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
+        assert_eq!(token_ids.len(), 11 + 2);
+        assert_eq!(tok.de_tokenize(&token_ids, true), "a <pad>tst".to_string());
+        assert_eq!(
+            tok.de_tokenize(&token_ids, false),
+            "<bos>a <pad>t<unk>st<eos>".to_string()
+        );
     }
 
     #[test]

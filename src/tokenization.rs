@@ -1490,10 +1490,10 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
 #[pyfunction(
     name = "train_bpe", 
     signature = (
-        files, 
-        vocab_size, 
-        num_special_tokens, 
-        out_file, 
+        files,
+        vocab_size,
+        num_special_tokens,
+        out_file,
         max_lines_per_file = None,
         normalization = Normalization::NFKC,
         num_threads = num_cpus::get().min(4) as u8,

@@ -521,6 +521,9 @@ fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> Tensorize
             }
             TensorizedTokenizationInfo::TokenGroups(info)
         }
+        TokenizationInfo::Info(_) => {
+            todo!()
+        }
     }
 }
 
@@ -720,7 +723,13 @@ impl TextDataPipeline {
             move |data, _, seed| -> anyhow::Result<Item> {
                 let data = preprocess_fn(data, seed)?;
                 Ok(Item {
-                    tokenization: tok.tokenize(&data.processed, data.language.as_deref())?,
+                    tokenization: tok.tokenize(
+                        &data.processed,
+                        data.language.as_deref(),
+                        None,
+                        None,
+                        true,
+                    )?,
                     label: label_fn(&data)?,
                     data,
                 })
@@ -750,7 +759,8 @@ impl InferencePipeline {
                 .iter()
                 .enumerate()
                 .map(|(w_idx, w)| {
-                    let tokenization = tok.tokenize(w.str, data.language.as_deref())?;
+                    let tokenization =
+                        tok.tokenize(w.str, data.language.as_deref(), None, None, false)?;
                     Ok(InferenceItem::new(
                         data.clone(),
                         tokenization,

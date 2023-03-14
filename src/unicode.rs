@@ -20,8 +20,9 @@ pub(crate) type CS<'a> = CharString<'a>;
 // -----------------------
 // Example string "नमस्ते" from the Rust documentation
 // "नमस्ते".len() -> 18; num bytes (equal to len("नमस्ते".encode()) in Python)
-// "नमस्ते".chars().count() -> 6; num unicode code units (equal to len("नमस्ते") in Python)
-// CharString::from("नमस्ते").len() -> 4; num grapheme clusters, closest to what
+// "नमस्ते".chars().count() -> 6; num unicode code points (equal to len("नमस्ते") in Python, and
+// CharString::new("नमस्ते", false).len())
+// CharString::new("नमस्ते", true).len() -> 4; num grapheme clusters, closest to what
 // humans consider to be characters (in Python available via third party libraries)
 
 impl<'a> CharString<'a> {
@@ -80,13 +81,13 @@ impl<'a> CharString<'a> {
         (start_byte, end_byte)
     }
 
-    pub fn get(&self, n: usize) -> &str {
+    pub fn get(&self, n: usize) -> &'a str {
         assert!(n < self.len());
         let (start, end) = self.byte_start_end(n);
         &self.str[start..end]
     }
 
-    pub fn get_char(&self, n: usize) -> Character {
+    pub fn get_char(&self, n: usize) -> Character<'a> {
         Character { str: self.get(n) }
     }
 
@@ -103,38 +104,27 @@ impl<'a> CharString<'a> {
         &self.str[start..end]
     }
 
-    pub fn chars(&self) -> Characters {
-        Characters {
-            char_str: self,
-            idx: 0,
-        }
+    pub fn chars(&self) -> impl Iterator<Item = Character> {
+        (0..self.len()).map(|i| self.get_char(i))
+    }
+
+    pub fn split(s: &str, use_graphemes: bool) -> impl Iterator<Item = &str> {
+        let cluster_lengths: Vec<_> = if use_graphemes {
+            s.graphemes(true).map(|s| s.len()).collect()
+        } else {
+            s.chars().map(|c| c.len_utf8()).collect()
+        };
+        cluster_lengths.into_iter().scan(0usize, |acc, l| {
+            let s = &s[*acc..*acc + l];
+            *acc += l;
+            Some(s)
+        })
     }
 }
 
 impl Display for CharString<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.str,)
-    }
-}
-
-pub struct Characters<'a> {
-    char_str: &'a CharString<'a>,
-    idx: usize,
-}
-
-impl<'a> Iterator for Characters<'a> {
-    type Item = Character<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.char_str.len {
-            return None;
-        }
-        let (start, end) = self.char_str.byte_start_end(self.idx);
-        let char = Character {
-            str: &self.char_str.str[start..end],
-        };
-        self.idx += 1;
-        Some(char)
     }
 }
 

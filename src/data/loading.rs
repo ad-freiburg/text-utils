@@ -1040,16 +1040,17 @@ mod tests {
 
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
+        let tokenizer_cfg = TokenizerConfig {
+            tokenize: TokenizeConfig::Dummy(Duration::from_millis(200)),
+            special: SpecialConfig::default(),
+            language: None,
+        };
         let pipeline = Pipeline::with_tokenizer(
             PreprocessingPipelineConfig {
                 preprocessing: vec![],
-                labeling: LabelingConfig::LabelWhitespaceCorrection(true),
+                labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
-            TokenizerConfig {
-                tokenize: TokenizeConfig::Dummy(Duration::from_millis(200)),
-                special: SpecialConfig::default(),
-                language: None,
-            },
+            tokenizer_cfg,
         )?;
         // test if it works with one worker and record the time it took
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
@@ -1103,16 +1104,17 @@ mod tests {
 
         // test that all lines of multi30k.txt are returned in order,
         // switch to non blocking tokenizer again
+        let tokenizer_cfg = TokenizerConfig {
+            tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
+            special: SpecialConfig::default(),
+            language: None,
+        };
         let pipeline = Pipeline::with_tokenizer(
             PreprocessingPipelineConfig {
                 preprocessing: vec![],
-                labeling: LabelingConfig::LabelWhitespaceCorrection(true),
+                labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
-            TokenizerConfig {
-                tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
-                special: SpecialConfig::default(),
-                language: None,
-            },
+            tokenizer_cfg,
         )?;
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
@@ -1145,16 +1147,17 @@ mod tests {
             .lines()
             .collect::<Result<Vec<String>, io::Error>>()
             .unwrap();
+        let tokenizer_cfg = TokenizerConfig {
+            tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
+            special: SpecialConfig::default(),
+            language: None,
+        };
         let pipeline = Pipeline::with_tokenizer(
             PreprocessingPipelineConfig {
                 preprocessing: vec![],
-                labeling: LabelingConfig::LabelWhitespaceCorrection(true),
+                labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
-            TokenizerConfig {
-                tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
-                special: SpecialConfig::default(),
-                language: None,
-            },
+            tokenizer_cfg,
         )?;
         let pipe_it = text_iter
             .filter_map(|d| d.ok())

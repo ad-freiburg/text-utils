@@ -29,6 +29,8 @@ class Grouping(nn.Module):
             f"expected group {self.group_name} in kwargs, but got {list(kwargs)}"
 
         (indices, values, size, lengths), padding_mask = kwargs[self.group_name]
+        print(feats.shape, padding_mask.shape, indices.shape,
+              values.shape, size, kwargs["lengths"], lengths)
         weights = torch.sparse_coo_tensor(indices, values, size, device=feats.device)
         kwargs[self.group_lengths] = lengths
         kwargs[self.group_padding_mask] = padding_mask

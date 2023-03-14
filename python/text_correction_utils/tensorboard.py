@@ -51,14 +51,16 @@ class TextGenerationMetric(TensorboardMetric):
         self,
         name: str,
         output_tokenizer: tokenization.Tokenizer,
-        max_items: Optional[int] = None
+        max_items: Optional[int] = None,
+        eos_token: Optional[str] = None
     ):
         self.items = None
         self.outputs = None
         self.max_items = max_items
         self.name = name
         self.output_tokenizer = output_tokenizer
-        self.pad_token_id = self.output_tokenizer.pad_token_id()
+        self.eos_token_id = self.output_tokenizer.special_token_to_id(eos_token) \
+            if eos_token is not None else None
 
     def set_values(self, items: List[data.Item], outputs: torch.Tensor):
         self.items = items
@@ -71,8 +73,16 @@ class TextGenerationMetric(TensorboardMetric):
             if self.max_items is not None and len(strings) >= self.max_items:
                 break
 
+            assert isinstance(output, list)
+            if self.eos_token_id is not None:
+                max_eos_idx = max((
+                    idx
+                    for idx, token_id in enumerate(output)
+                    if token_id == self.eos_token_id
+                ), default=len(output) - 1)
+                output = output[:max_eos_idx + 1]
             prediction = self.output_tokenizer.de_tokenize(
-                [o for o in output if o != self.pad_token_id],
+                output,
                 ignore_special_tokens=False
             )
             strings.append(

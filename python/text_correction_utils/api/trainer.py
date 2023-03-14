@@ -309,7 +309,7 @@ training will resume from latest checkpoint."
         cls,
         sources: List[Dict[str, Any]],
         info: distributed.DistributedInfo
-    ) -> Tuple[List[str], Optional[List[str]], List[str]]:
+    ) -> Tuple[List[Tuple[str, Optional[str]]], Optional[List[str]], List[str]]:
         src_paths = []
         src_langs = []
         cleanup_paths = []
@@ -324,7 +324,7 @@ training will resume from latest checkpoint."
                 if temp_dir is not None:
                     path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                     cleanup_paths.append(path)
-                src_paths.append(path)
+                src_paths.append((path, None))
                 src_langs.append(lang)
             elif src_type == "file_glob":
                 lang = src.get("language")
@@ -334,8 +334,21 @@ training will resume from latest checkpoint."
                     if temp_dir is not None:
                         path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                         cleanup_paths.append(path)
-                    src_paths.append(path)
+                    src_paths.append((path, None))
                     src_langs.append(lang)
+            elif src_type == "file_pair":
+                lang = src.get("language")
+                org_path = src["original_path"]
+                proc_path = src["processed_path"]
+                assert os.path.isfile(org_path) and os.path.isfile(proc_path), \
+                    f"one of {org_path} or {proc_path} is not a file"
+                temp_dir = src.get("temp_dir")
+                if temp_dir is not None:
+                    org_path = cls._copy_file_to_tmp_dir(org_path, temp_dir, info)
+                    proc_path = cls._copy_file_to_tmp_dir(proc_path, temp_dir, info)
+                    cleanup_paths.extend([org_path, proc_path])
+                src_paths.append((org_path, proc_path))
+                src_langs.append(lang)
             else:
                 raise ValueError(f"unknown source type {src_type}")
         assert len(src_paths) > 0, "got no data sources"
@@ -348,7 +361,7 @@ training will resume from latest checkpoint."
                 for lang in src_langs
             ], cleanup_paths
 
-    @classmethod
+    @ classmethod
     def _data_from_config(
         cls,
         cfg: Dict[str, Any],
@@ -419,7 +432,7 @@ training will resume from latest checkpoint."
             )
         return train_loader, val_loader, list(set(train_cleanup + val_cleanup))
 
-    @classmethod
+    @ classmethod
     def _setup_experiment(cls, work_dir: str, exp_dir: str, config_path: str, cfg: Dict[str, Any]):
         config_name = os.path.split(config_path)[-1]
         os.makedirs(exp_dir, exist_ok=True)
@@ -448,7 +461,7 @@ training will resume from latest checkpoint."
         os.makedirs(os.path.join(exp_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(exp_dir, "tensorboard"), exist_ok=True)
 
-    @classmethod
+    @ classmethod
     def _train_local_distributed(
         cls,
         rank: int,
@@ -484,7 +497,7 @@ training will resume from latest checkpoint."
             cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
-    @classmethod
+    @ classmethod
     def train_slurm(cls, work_dir: str, experiment_dir: str, config_path: str):
         assert torch.cuda.device_count() > 0, "need at least one GPU for training, but found none"
         assert dist.is_available(), "distributed package must be available for training"
@@ -552,7 +565,7 @@ training will resume from latest checkpoint."
         cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
-    @classmethod
+    @ classmethod
     def train_local(cls, work_dir: str, experiment_dir: str, config_path: str, profile: Optional[str] = None):
         logger = logging.get_logger("LOCAL_INITIALIZATION")
         num_gpus = torch.cuda.device_count()

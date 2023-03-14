@@ -77,25 +77,29 @@ impl TextData {
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Label {
     Classification(i32),
-    SeqClassification(Vec<i32>),
-    Seq2Seq(Vec<i32>),
+    SequenceClassification(Vec<i32>, usize, usize),
+    SequenceGeneration(Vec<i32>, usize, usize),
 }
 
 impl IntoPy<PyObject> for Label {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
-        let label_type = match self {
+        let label_type = match &self {
             Label::Classification(label) => {
                 d.set_item("label", label).unwrap();
                 "classification"
             }
-            Label::SeqClassification(labels) => {
+            Label::SequenceClassification(labels, pfx, sfx)
+            | Label::SequenceGeneration(labels, pfx, sfx) => {
+                let name = match &self {
+                    Label::SequenceClassification(..) => "sequence_classification",
+                    Label::SequenceGeneration(..) => "sequence_generation",
+                    _ => unreachable!(),
+                };
                 d.set_item("labels", labels).unwrap();
-                "sequence_classification"
-            }
-            Label::Seq2Seq(labels) => {
-                d.set_item("labels", labels).unwrap();
-                "seq2seq"
+                d.set_item("prefix", pfx).unwrap();
+                d.set_item("suffix", sfx).unwrap();
+                name
             }
         };
         d.set_item("type", label_type).unwrap();
@@ -119,22 +123,35 @@ impl<'a> FromPyObject<'a> for Label {
                 };
                 Label::Classification(label.extract()?)
             }
-            "sequence_classification" => {
+            name @ ("sequence_classification" | "sequence_generation") => {
                 let Some(labels) = d.get_item("labels") else {
                     return Err(py_required_key_error(
                         "labels",
-                        "sequence classification label"));
+                        format!("{name} label")));
                 };
-                Label::SeqClassification(labels.extract()?)
-            }
-            "seq2seq" => {
-                let Some(labels) = d.get_item("labels") else {
+                let Some(prefix) = d.get_item("prefix") else {
                     return Err(py_required_key_error(
-                        "labels",
-                        "seq2seq label",
-                    ));
+                        "prefix",
+                        format!("{name} label")));
                 };
-                Label::Seq2Seq(labels.extract()?)
+                let Some(suffix) = d.get_item("suffix") else {
+                    return Err(py_required_key_error(
+                        "suffix",
+                        format!("{name} label")));
+                };
+                if name == "sequence_classification" {
+                    Label::SequenceClassification(
+                        labels.extract()?,
+                        prefix.extract()?,
+                        suffix.extract()?,
+                    )
+                } else {
+                    Label::SequenceGeneration(
+                        labels.extract()?,
+                        prefix.extract()?,
+                        suffix.extract()?,
+                    )
+                }
             }
             k => {
                 return Err(py_invalid_type_error(k, "label"));
@@ -468,27 +485,6 @@ impl DataBatch {
 }
 
 #[inline]
-fn max_groups<'a>(tokenizations: impl Iterator<Item = &'a Tokenization>) -> usize {
-    #[inline]
-    fn size(tokenization: &Tokenization) -> usize {
-        match &tokenization.info {
-            TokenizationInfo::TokenGroups(token_groups)
-                if token_groups.contains_key("code_point_groups") =>
-            {
-                token_groups["code_point_groups"].0.last().unwrap().len()
-            }
-            TokenizationInfo::TokenGroups(token_groups)
-                if token_groups.contains_key("byte_groups") =>
-            {
-                token_groups["byte_groups"].0.last().unwrap().len()
-            }
-            _ => tokenization.token_ids.len(),
-        }
-    }
-    tokenizations.map(size).max().unwrap_or(0)
-}
-
-#[inline]
 fn join<T>(vectors: Vec<Vec<T>>) -> Vec<T> {
     let mut joined = vec![];
     for mut v in vectors {
@@ -564,6 +560,18 @@ fn prepare(
     (token_id_arr, pad_mask, lengths, info)
 }
 
+#[inline]
+fn max_labels<'a>(labels: impl Iterator<Item = &'a Label>) -> usize {
+    labels
+        .map(|label| match label {
+            Label::Classification(_) => 1,
+            Label::SequenceClassification(label, pfx, sfx)
+            | Label::SequenceGeneration(label, pfx, sfx) => label.len() + pfx + sfx,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 impl Tensorize for Batch<Item> {
     type Output = (
         Array2<i32>,                // token ids
@@ -581,21 +589,18 @@ impl Tensorize for Batch<Item> {
         );
 
         let batch_size = self.len();
-        let max_groups = max_groups(self.iter().map(|i| &i.tokenization));
-        let mut labels = Vec::with_capacity(batch_size * max_groups);
+        let max_labels = max_labels(self.iter().map(|item| &item.label));
+        let mut labels = Vec::with_capacity(batch_size * max_labels);
 
         for item in self.iter() {
             labels.append(&mut match &item.label {
                 Label::Classification(label) => vec![*label],
-                Label::SeqClassification(labels) => join(vec![
-                    vec![-1; tokenizer.num_prefix_tokens()],
+                Label::SequenceClassification(labels, pfx, _)
+                | Label::SequenceGeneration(labels, pfx, _) => join(vec![
+                    vec![-1; *pfx],
                     labels.clone(),
-                    vec![
-                        -1;
-                        max_groups.saturating_sub(tokenizer.num_prefix_tokens() + labels.len())
-                    ],
+                    vec![-1; max_labels - (pfx + labels.len())],
                 ]),
-                Label::Seq2Seq(_) => todo!(),
             });
         }
         let label_arr = match labels.len() {

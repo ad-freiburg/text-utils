@@ -1948,6 +1948,10 @@ impl PyTokenizer {
     fn num_suffix_tokens(&self) -> usize {
         self.tokenizer.num_suffix_tokens()
     }
+
+    fn pad_token_id(&self) -> u32 {
+        self.tokenizer.pad_token_id()
+    }
 }
 
 /// A submodule containing functionality to tokenize text into tokens.

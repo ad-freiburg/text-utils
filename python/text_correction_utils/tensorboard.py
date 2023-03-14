@@ -46,6 +46,54 @@ class TensorboardMetric(TensorboardLogger):
         raise NotImplementedError
 
 
+class TextGenerationMetric(TensorboardMetric):
+    def __init__(
+        self,
+        name: str,
+        output_tokenizer: tokenization.Tokenizer,
+        max_items: Optional[int] = None
+    ):
+        self.items = None
+        self.outputs = None
+        self.max_items = max_items
+        self.name = name
+        self.output_tokenizer = output_tokenizer
+        self.pad_token_id = self.output_tokenizer.pad_token_id()
+
+    def set_values(self, items: List[data.Item], outputs: torch.Tensor):
+        self.items = items
+        self.outputs = torch.argmax(outputs, dim=-1).tolist()
+
+    def _get_string(self) -> str:
+        assert self.items is not None and self.outputs is not None, "call set_values before logging"
+        strings = []
+        for item, output in zip(self.items, self.outputs):
+            if self.max_items is not None and len(strings) >= self.max_items:
+                break
+
+            prediction = self.output_tokenizer.de_tokenize(
+                [o for o in output if o != self.pad_token_id],
+                ignore_special_tokens=False
+            )
+            strings.append(
+                "\n".join([
+                    f"Input      : {item.data.processed}\n",
+                    f"Target     : {item.data.original}\n",
+                    f"Prediction : {prediction}\n",
+                ])
+            )
+
+        return ("\n" + "-" * 80 + "\n").join(strings) + "\n"
+
+    def log_tensorboard(self, writer: SummaryWriter, step: int):
+        s = self._get_string()
+        writer.add_text(self.name, s, step)
+
+    def log_info(self, logger: logging.Logger, step: int):
+        s = self._get_string()
+        logger.info(f"[step {step}] {self.name}\n{s}")
+
+
 class WhitespaceCorrectionMetric(TensorboardMetric):
     def __init__(self, name: str, input_tokenizer: tokenization.Tokenizer, max_items: Optional[int] = None):
         self.items = None
@@ -120,6 +168,8 @@ def metrics_from_config(
     for metric_type, metric_opts in cfg.items():
         if metric_type == "whitespace_correction":
             metric = WhitespaceCorrectionMetric(f"{prefix}whitespace_correction", input_tokenizer, **metric_opts)
+        elif metric_type == "text_generation":
+            metric = TextGenerationMetric(f"{prefix}text_generation", output_tokenizer, **metric_opts)
         else:
             raise ValueError(f"unknown metric type {metric_type}")
         metrics.append(metric)

@@ -4,6 +4,7 @@ use crate::corrupt::{
 use crate::data::{Label, TextData};
 use crate::text::{self, split_words};
 use crate::text::{possible_byte_substrings, possible_character_substrings};
+use crate::tokenization::{tokenizer, TokenizerConfig};
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{accumulate, py_invalid_type_error, py_required_key_error};
 use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
@@ -260,24 +261,12 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
     }
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub enum LabelingConfig {
     // generate whitespace correction labels given processed and original sequence
-    LabelWhitespaceCorrection(bool),
-}
-
-impl IntoPy<PyObject> for LabelingConfig {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d: &PyDict = PyDict::new(py);
-        let labeling_type = match self {
-            LabelingConfig::LabelWhitespaceCorrection(use_g) => {
-                d.set_item("use_graphemes", use_g).unwrap();
-                "whitespace_correction"
-            }
-        };
-        d.set_item("type", labeling_type).unwrap();
-        d.to_object(py)
-    }
+    WhitespaceCorrection(bool, TokenizerConfig),
+    // generate sequence generation labels (basically just the tokenization) of the processed sequence
+    SequenceGeneration(TokenizerConfig),
 }
 
 impl<'a> FromPyObject<'a> for LabelingConfig {
@@ -294,7 +283,16 @@ impl<'a> FromPyObject<'a> for LabelingConfig {
                 } else {
                     true
                 };
-                LabelingConfig::LabelWhitespaceCorrection(use_graphemes)
+                let Some(tokenizer_config) = d.get_item("tokenizer") else {
+                    return Err(py_required_key_error("tokenizer", "whitespace correction config"));
+                };
+                LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer_config.extract()?)
+            }
+            "sequence_generation" => {
+                let Some(tokenizer_config) = d.get_item("tokenizer") else {
+                    return Err(py_required_key_error("tokenizer", "sequence generation config"));
+                };
+                LabelingConfig::SequenceGeneration(tokenizer_config.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "labeling"));
@@ -789,22 +787,50 @@ pub fn preprocessing(preprocessing: Vec<PreprocessingConfig>) -> Box<Preprocessi
     })
 }
 
-fn whitespace_correction_label(use_graphemes: bool) -> Box<LabelingFn> {
+fn whitespace_correction_label(
+    use_graphemes: bool,
+    tokenizer_cfg: TokenizerConfig,
+) -> Box<LabelingFn> {
+    let tokenizer = tokenizer(tokenizer_cfg)
+        .expect("failed to create tokenizer for whitespace correction label function");
+    let num_prefix_tokens = tokenizer.num_prefix_tokens();
+    let num_suffix_tokens = tokenizer.num_suffix_tokens();
     Box::new(move |item| {
-        Ok(Label::SeqClassification(
+        Ok(Label::SequenceClassification(
             operations(&item.processed, &item.original, use_graphemes)?
                 .into_iter()
                 .map(|l| l as i32)
                 .collect(),
+            num_prefix_tokens,
+            num_suffix_tokens,
+        ))
+    })
+}
+
+fn sequence_generation_label(tokenizer_cfg: TokenizerConfig) -> Box<LabelingFn> {
+    let tokenizer = tokenizer(tokenizer_cfg)
+        .expect("failed to create tokenizer for sequence generation label function");
+    Box::new(move |item| {
+        let tokenization =
+            tokenizer.tokenize(&item.processed, item.language.as_deref(), None, None, false)?;
+        Ok(Label::SequenceGeneration(
+            tokenization
+                .token_ids
+                .into_iter()
+                .map(|t| t as i32)
+                .collect(),
+            tokenizer.num_prefix_tokens(),
+            tokenizer.num_suffix_tokens(),
         ))
     })
 }
 
 pub fn labeling(labeling: LabelingConfig) -> Box<LabelingFn> {
     match labeling {
-        LabelingConfig::LabelWhitespaceCorrection(use_graphemes) => {
-            whitespace_correction_label(use_graphemes)
+        LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer) => {
+            whitespace_correction_label(use_graphemes, tokenizer)
         }
+        LabelingConfig::SequenceGeneration(tokenizer) => sequence_generation_label(tokenizer),
     }
 }
 

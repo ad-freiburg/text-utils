@@ -151,10 +151,13 @@ def device_info(device: torch.device) -> str:
 
 
 def _run_cmd(path: str, cmd: List[str]) -> str:
-    return subprocess.check_output(
-        cmd,
-        cwd=Path(path).resolve()
-    ).strip().decode("utf8")
+    try:
+        return subprocess.check_output(
+            cmd,
+            cwd=Path(path).resolve()
+        ).strip().decode("utf8")
+    except subprocess.CalledProcessError:
+        return ""
 
 
 def git_branch(path: str) -> str:

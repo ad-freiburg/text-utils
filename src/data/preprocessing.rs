@@ -28,6 +28,8 @@ pub type LabelingFn = dyn Send + Sync + 'static + Fn(&TextData) -> anyhow::Resul
 pub enum PreprocessingConfig {
     // do nothing
     None,
+    // apply multiple processings after each other
+    Chain(Vec<PreprocessingConfig>),
     // clean the sequences (remove spurious whitespaces)
     Clean(bool),
     // normalize the sequence
@@ -59,6 +61,14 @@ impl IntoPy<PyObject> for PreprocessingConfig {
         let d = PyDict::new(py);
         let preprocessing_type = match self {
             PreprocessingConfig::None => "none",
+            PreprocessingConfig::Chain(configs) => {
+                let py_configs = PyList::empty(py);
+                for config in configs {
+                    py_configs.append(config.into_py(py)).unwrap();
+                }
+                d.set_item("configs", py_configs).unwrap();
+                "chain"
+            }
             PreprocessingConfig::Clean(use_g) => {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "clean"
@@ -134,6 +144,13 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
         let preprocessing_type: String = preprocessing_type.extract()?;
         let preprocessing_config = match preprocessing_type.as_str() {
             "none" => PreprocessingConfig::None,
+            "chain" => {
+                let Some(configs) = d.get_item("configs") else {
+                    return Err(py_required_key_error("configs", "chain config"));
+                };
+                let configs: Vec<PreprocessingConfig> = configs.extract()?;
+                PreprocessingConfig::Chain(configs)
+            }
             "clean" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
                     value.extract()?
@@ -750,6 +767,18 @@ pub fn corrupt_mask(
 fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> {
     match preprocessing {
         PreprocessingConfig::None => Box::new(|item, _| Ok(item)),
+        PreprocessingConfig::Chain(configs) => {
+            let pfns = configs
+                .into_iter()
+                .map(preprocessing_fn)
+                .collect::<Vec<_>>();
+            Box::new(move |mut item, seed| {
+                for pfn in &pfns {
+                    item = pfn(item, seed)?;
+                }
+                Ok(item)
+            })
+        }
         PreprocessingConfig::Clean(use_g) => apply_to_text(move |s| Ok(text::clean(s, use_g))),
         PreprocessingConfig::Overwrite => overwrite_original_from_processed(),
         PreprocessingConfig::Switch(fns, probs) => switch(fns, probs),

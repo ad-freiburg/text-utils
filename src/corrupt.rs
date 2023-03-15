@@ -42,9 +42,8 @@ pub fn insert_fn(insertions: Vec<String>) -> Box<EditOptionsFn> {
 pub fn ascii_insert_fn() -> Box<EditOptionsFn> {
     Box::new(|cs, &idx| {
         assert!(!cs.is_empty());
-        let char = cs.get_char(idx);
         let mut inserts: Vec<_> = Vec::new();
-        if idx == 0 && !char.is_punctuation() {
+        if idx == 0 && !cs.get_char(idx).is_punctuation() {
             inserts.extend(ASCII_LEFT_PUNCT.chars().map(|c| c.to_string()));
         } else if idx == cs.len() && !cs.get_char(idx - 1).is_punctuation() {
             inserts.extend(ASCII_RIGHT_PUNCT.chars().map(|c| c.to_string()));

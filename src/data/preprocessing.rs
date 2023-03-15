@@ -49,7 +49,7 @@ pub enum PreprocessingConfig {
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
     // randomly edit and replace words in text
-    TextCorruption(f64, bool, TextCorruptionMode),
+    SpellingCorruption(f64, bool, SpellingCorruptionMode),
     // randomly mask full words in text
     MaskCorruption(f64, bool, String, MaskMode),
     // randomly replace the language token with the given default
@@ -95,7 +95,7 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("insert_whitespace_prob", iw_p).unwrap();
                 d.set_item("delete_whitespace_prob", dw_p).unwrap();
                 d.set_item("use_graphemes", use_g).unwrap();
-                "noise_whitespaces"
+                "whitespace_corruption"
             }
             PreprocessingConfig::CharSubstring(max_chars, use_g) => {
                 d.set_item("max_chars", max_chars).unwrap();
@@ -116,11 +116,11 @@ impl IntoPy<PyObject> for PreprocessingConfig {
                 d.set_item("prob", p).unwrap();
                 "language_dropout"
             }
-            PreprocessingConfig::TextCorruption(p, full_del, mode) => {
+            PreprocessingConfig::SpellingCorruption(p, full_del, mode) => {
                 d.set_item("prob", p).unwrap();
                 d.set_item("allow_full_delete", full_del).unwrap();
                 d.set_item("mode", mode.into_py(py)).unwrap();
-                "text_corruption"
+                "spelling_corruption"
             }
             PreprocessingConfig::MaskCorruption(p, use_g, mask_token, mode) => {
                 d.set_item("prob", p).unwrap();
@@ -189,7 +189,7 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 };
                 PreprocessingConfig::FullWhitespaces(use_graphemes)
             }
-            "noise_whitespaces" => {
+            "whitespace_corruption" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
                     value.extract()?
                 } else {
@@ -256,9 +256,9 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                 };
                 PreprocessingConfig::LanguageDropout(p.extract()?)
             }
-            "text_corruption" => {
+            "spelling_corruption" => {
                 let Some(p) = d.get_item("prob") else {
-                    return Err(py_required_key_error("prob", "text corruption config"));
+                    return Err(py_required_key_error("prob", "spelling corruption config"));
                 };
                 let full_delete = if let Some(value) = d.get_item("allow_full_delete") {
                     value.extract()?
@@ -266,9 +266,31 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
                     true
                 };
                 let Some(mode) = d.get_item("mode") else {
-                    return Err(py_required_key_error("mode", "text corruption config"));
+                    return Err(py_required_key_error("mode", "spelling corruption config"));
                 };
-                PreprocessingConfig::TextCorruption(p.extract()?, full_delete, mode.extract()?)
+                PreprocessingConfig::SpellingCorruption(p.extract()?, full_delete, mode.extract()?)
+            }
+            "mask_corruption" => {
+                let Some(p) = d.get_item("prob") else {
+                    return Err(py_required_key_error("prob", "mask corruption config"));
+                };
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                let Some(mask_token) = d.get_item("mask_token") else {
+                    return Err(py_required_key_error("mask_token", "mask corruption config"));
+                };
+                let Some(mode) = d.get_item("mode") else {
+                    return Err(py_required_key_error("mode", "mask corruption config"));
+                };
+                PreprocessingConfig::MaskCorruption(
+                    p.extract()?,
+                    use_graphemes,
+                    mask_token.extract()?,
+                    mode.extract()?,
+                )
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
@@ -480,66 +502,66 @@ fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub enum TextCorruptionMode {
+pub enum SpellingCorruptionMode {
     Artificial(f64),
     Realistic(String),
     Mixed(f64, f64, String),
 }
 
-impl IntoPy<PyObject> for TextCorruptionMode {
+impl IntoPy<PyObject> for SpellingCorruptionMode {
     fn into_py(self, _py: Python<'_>) -> PyObject {
         todo!()
     }
 }
 
-impl<'a> FromPyObject<'a> for TextCorruptionMode {
+impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
         let Some(corruption_type) = d.get_item("type") else {
-            return Err(py_required_key_error("type", "text corruption mode"));
+            return Err(py_required_key_error("type", "spelling corruption mode"));
         };
         let corruption_type: String = corruption_type.extract()?;
         let corruption_mode = match corruption_type.as_str() {
             "artificial" => {
-                let Some(prob) = d.get_item("num_edits_prob") else {
-                    return Err(py_required_key_error("num_edits_prob", "artificial text corruption mode"));
+                let Some(prob) = d.get_item("char_edit_prob") else {
+                    return Err(py_required_key_error("char_edit_prob", "artificial spelling corruption mode"));
                 };
                 let prob: f64 = prob.extract()?;
-                TextCorruptionMode::Artificial(prob)
+                SpellingCorruptionMode::Artificial(prob)
             }
             "realistic" => {
                 let Some(path) = d.get_item("misspellings_file") else {
-                    return Err(py_required_key_error("misspellings_file", "realistic text corruption mode"));
+                    return Err(py_required_key_error("misspellings_file", "realistic spelling corruption mode"));
                 };
                 let path: String = path.extract()?;
-                TextCorruptionMode::Realistic(path)
+                SpellingCorruptionMode::Realistic(path)
             }
             "mixed" => {
-                let Some(prob) = d.get_item("num_edits_prob") else {
-                    return Err(py_required_key_error("num_edits_prob", "mixed text corruption mode"));
+                let Some(prob) = d.get_item("char_edit_prob") else {
+                    return Err(py_required_key_error("char_edit_prob", "mixed spelling corruption mode"));
                 };
                 let prob: f64 = prob.extract()?;
                 let Some(art_prob) = d.get_item("artificial_prob") else {
-                    return Err(py_required_key_error("artificial_prob", "mixed text corruption mode"));
+                    return Err(py_required_key_error("artificial_prob", "mixed spelling corruption mode"));
                 };
                 let art_prob: f64 = art_prob.extract()?;
                 let Some(path) = d.get_item("misspellings_file") else {
-                    return Err(py_required_key_error("misspellings_file", "mixed text corruption mode"));
+                    return Err(py_required_key_error("misspellings_file", "mixed spelling corruption mode"));
                 };
                 let path: String = path.extract()?;
-                TextCorruptionMode::Mixed(art_prob, prob, path)
+                SpellingCorruptionMode::Mixed(art_prob, prob, path)
             }
             k => {
-                return Err(py_invalid_type_error(k, "text corruption mode"));
+                return Err(py_invalid_type_error(k, "spelling corruption mode"));
             }
         };
         Ok(corruption_mode)
     }
 }
-fn corrupt_text(
+fn corrupt_spelling(
     prob: f64,
     allow_full_delete: bool,
-    mode: TextCorruptionMode,
+    mode: SpellingCorruptionMode,
 ) -> Box<PreprocessingFn> {
     let prob = prob.clamp(0.0, 1.0);
     assert!(prob > 0.0, "corruption probability must be greater than 0");
@@ -548,24 +570,25 @@ fn corrupt_text(
     let replace = ascii_replace_fn();
     let swap = alpha_swap_fn();
     let misspellings = match &mode {
-        TextCorruptionMode::Realistic(file) | TextCorruptionMode::Mixed(.., file) => {
+        SpellingCorruptionMode::Realistic(file) | SpellingCorruptionMode::Mixed(.., file) => {
             let file = File::open(file).expect("could not read misspellings file");
             let reader = BufReader::new(file);
             let misspellings: HashMap<String, Vec<String>> =
-                serde_json::from_reader(reader).unwrap();
+                serde_json::from_reader(reader).expect("failed to parse misspelllings file");
             misspellings
         }
         _ => HashMap::new(),
     };
-    let art_num_edits_p = match &mode {
-        TextCorruptionMode::Artificial(p) | TextCorruptionMode::Mixed(_, p, _) => p.clamp(0.0, 1.0),
+    let art_char_edit_p = match &mode {
+        SpellingCorruptionMode::Artificial(p) | SpellingCorruptionMode::Mixed(_, p, _) => {
+            p.clamp(0.0, 1.0)
+        }
         _ => 0.0,
     };
-    let geo = Geometric::new(art_num_edits_p).expect("failed to initialize geometric distribution");
     let (art_p, real_p) = match mode {
-        TextCorruptionMode::Artificial(_) => (prob, 0.0),
-        TextCorruptionMode::Realistic(_) => (0.0, prob),
-        TextCorruptionMode::Mixed(art_p, ..) => {
+        SpellingCorruptionMode::Artificial(_) => (prob, 0.0),
+        SpellingCorruptionMode::Realistic(_) => (0.0, prob),
+        SpellingCorruptionMode::Mixed(art_p, ..) => {
             let art_p = art_p.clamp(0.0, 1.0);
             (art_p * prob, (1.0 - art_p) * prob)
         }
@@ -579,13 +602,13 @@ fn corrupt_text(
         let words = split_words(&item.processed);
         let words: Vec<_> = words
             .into_iter()
-            .map(|(word, parts)| {
+            .filter_map(|(word, parts)| {
                 let mut word = word.to_string();
                 let r: f64 = rng.gen();
                 if r < real_p {
                     if let Some(replacements) = misspellings.get(&word) {
                         let idx = rng.gen_range(0..replacements.len());
-                        return replacements[idx].to_string();
+                        return Some(replacements[idx].to_string());
                     } else if let Some(parts) = parts {
                         let replacable_parts: Vec<_> = parts
                             .iter()
@@ -601,16 +624,21 @@ fn corrupt_text(
                                 replacable_parts[rng.gen_range(0..replacable_parts.len())];
                             let (part, start) = parts[idx];
                             let replacement = &replacements[rng.gen_range(0..replacements.len())];
-                            return word[..start].to_string()
-                                + replacement
-                                + &word[start + part.len()..];
+                            return Some(
+                                word[..start].to_string()
+                                    + replacement
+                                    + &word[start + part.len()..],
+                            );
                         }
                     }
                     // fallback to artificial corruption
                     // if there are no replacements for the word itself or one of its parts
                 }
                 if r < real_p + art_p {
-                    let num_edits = geo.sample(&mut rng) as usize + 1;
+                    let word_len = CS::split(&word, true).count();
+                    let num_edits = (0..word_len)
+                        .filter(|_| rng.gen::<f64>() < art_char_edit_p)
+                        .count();
                     let mut exclude: HashSet<usize> = HashSet::new();
                     for _ in 0..num_edits {
                         let (new_word, new_exclude) = edit_word(
@@ -630,7 +658,11 @@ fn corrupt_text(
                         exclude = new_exclude;
                     }
                 }
-                word
+                if word.is_empty() {
+                    None
+                } else {
+                    Some(word)
+                }
             })
             .collect();
         Ok(TextData {
@@ -652,7 +684,7 @@ impl IntoPy<PyObject> for MaskMode {
         let mask_type = match self {
             MaskMode::Word(min, p) | MaskMode::Char(min, p) => {
                 d.set_item("min", min).unwrap();
-                d.set_item("p", p).unwrap();
+                d.set_item("prob", p).unwrap();
                 match self {
                     MaskMode::Word(..) => "word",
                     MaskMode::Char(..) => "char",
@@ -676,8 +708,8 @@ impl<'a> FromPyObject<'a> for MaskMode {
                 let Some(min) = d.get_item("min") else {
                     return Err(py_required_key_error("min", format!("{name} mask mode config")));
                 };
-                let Some(p) = d.get_item("p") else {
-                    return Err(py_required_key_error("p", format!("{name} mask mode config")));
+                let Some(p) = d.get_item("prob") else {
+                    return Err(py_required_key_error("prob", format!("{name} mask mode config")));
                 };
                 let min = min.extract()?;
                 let p = p.extract()?;
@@ -742,17 +774,10 @@ pub fn corrupt_mask(
             // a single masking should never be more than half of the tokens
             // to allow for more context between the tokens, should only happen
             // for very short sequences or very high corruption values
-            if is_word {
-                // one mask token for each word
-                for j in i..(i + num_to_mask).min(tokens.len()) {
-                    tokens[j] = Some(&mask_token);
-                }
-            } else {
-                // one mask token for all masked characters
-                tokens[i] = Some(&mask_token);
-                for j in i + 1..(i + num_to_mask).min(tokens.len()) {
-                    tokens[j] = None;
-                }
+            // one mask token for all masked characters
+            tokens[i] = Some(&mask_token);
+            for j in i + 1..(i + num_to_mask).min(tokens.len()) {
+                tokens[j] = None;
             }
             i += num_to_mask + 1;
         }
@@ -797,7 +822,9 @@ fn preprocessing_fn(preprocessing: PreprocessingConfig) -> Box<PreprocessingFn> 
             apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
         }
         PreprocessingConfig::LanguageDropout(p) => language_dropout(p),
-        PreprocessingConfig::TextCorruption(p, full_del, mode) => corrupt_text(p, full_del, mode),
+        PreprocessingConfig::SpellingCorruption(p, full_del, mode) => {
+            corrupt_spelling(p, full_del, mode)
+        }
         PreprocessingConfig::MaskCorruption(mask_p, use_graphemes, mask_token, mode) => {
             corrupt_mask(mask_p, use_graphemes, mask_token, mode)
         }

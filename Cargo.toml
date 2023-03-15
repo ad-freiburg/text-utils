@@ -11,7 +11,6 @@ name = "text_correction_utils._internal"
 name = "text_correction_utils"
 crate-type = ["cdylib", "rlib"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 log = "0.4"
 env_logger = "0.10"
@@ -40,7 +39,6 @@ criterion = "0.4"
 [features]
 benchmark-utils = []
 
-# optimize for binary size in release mode
 [profile.release]
 lto = true
 codegen-units = 1

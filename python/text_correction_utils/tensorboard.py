@@ -87,9 +87,9 @@ class TextGenerationMetric(TensorboardMetric):
             )
             strings.append(
                 "\n".join([
-                    f"Input      : {item.data.processed}\n",
-                    f"Target     : {item.data.original}\n",
-                    f"Prediction : {prediction}\n",
+                    f"Input     : {item.data.processed}\n",
+                    f"Target    : {item.data.original}\n",
+                    f"Prediction: {prediction}\n",
                 ])
             )
 

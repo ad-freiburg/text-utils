@@ -9,6 +9,7 @@ import time
 from typing import Dict, Optional, Tuple, Any, List, Callable
 import zipfile
 
+import numpy as np
 import torch
 from torch import distributed as dist
 from torch import multiprocessing as mp
@@ -99,19 +100,23 @@ training will resume from latest checkpoint."
         torch.use_deterministic_algorithms(False)
         cudnn.benchmark = False
 
-        self.input_tokenizer = tokenization.Tokenizer.from_config(self.cfg["input_tokenizer"])
+        self.input_tokenizer = tokenization.Tokenizer.from_config(
+            self.cfg["input_tokenizer"])
         if "output_tokenizer" in self.cfg:
-            self.output_tokenizer = tokenization.Tokenizer.from_config(self.cfg["output_tokenizer"])
+            self.output_tokenizer = tokenization.Tokenizer.from_config(
+                self.cfg["output_tokenizer"])
         else:
             self.output_tokenizer = None
 
-        self.model = self._model_from_config(self.cfg).to(self.info.device).train()
-        if torch.__version__.startswith("2."):
-            self.logger.info(f"Compiling model (torch={torch.__version__})")
-            from torch import _dynamo
-            torch._dynamo.config.suppress_errors = True
-            # torch._dynamo.config.verbose = True
-            self.model = torch.compile(self.model)
+        self.model = self._model_from_config(
+            self.cfg
+        ).to(self.info.device).train()
+        # if torch.__version__.startswith("2."):
+        #     self.logger.info(f"Compiling model (torch={torch.__version__})")
+        #     from torch import _dynamo
+        #     torch._dynamo.config.suppress_errors = True
+        #     # torch._dynamo.config.verbose = True
+        #     self.model = torch.compile(self.model)
 
         self.train_loader, self.val_loader, self.cleanup = self._data_from_config(
             self.cfg["train"]["data"],
@@ -124,14 +129,16 @@ training will resume from latest checkpoint."
         # to all other processes
         # this is important, since the learning rate scheduler depends on the number of training steps
         # and should give the same learning rate for every steps on all processes
-        training_steps_tensor = torch.zeros(2, dtype=torch.long, device=self.info.device)
+        training_steps_tensor = torch.zeros(
+            2, dtype=torch.long, device=self.info.device
+        )
         if self.info.is_main_process:
             skip_batches = 2048
             num_batches = 4096
             avg_batch_size = tensorboard.AverageTracker("avg_batch_size")
             self.logger.info(
-                f"Estimating train loader length on main process from average batch size over {num_batches} batches "
-                f"and minimum train loader items."
+                f"Estimating train loader length on main process from average batch size "
+                f"over {num_batches - skip_batches} batches and minimum train loader items."
             )
             for idx, batch in enumerate(self.train_loader):
                 if idx >= skip_batches + num_batches:
@@ -139,8 +146,11 @@ training will resume from latest checkpoint."
                 avg_batch_size.add(len(batch))
             avg_batch_size.values = avg_batch_size.values[-num_batches:]
 
-            training_steps_per_epoch = int(self.train_loader.min_items // avg_batch_size.value)
-            training_steps = self.cfg["train"]["num_epochs"] * training_steps_per_epoch
+            training_steps_per_epoch = int(
+                self.train_loader.min_items // avg_batch_size.value
+            )
+            training_steps = self.cfg["train"]["num_epochs"] * \
+                training_steps_per_epoch
             self.logger.info(f"Got an average batch size of {avg_batch_size.value:.2f} after {num_batches:,} batches. "
                              f"The train loader contains at least {self.train_loader.min_items:,} items, so the estimated "
                              f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
@@ -166,7 +176,8 @@ training will resume from latest checkpoint."
             num_params = 0
             param_group_infos = []
             for i, param_group in enumerate(self.optimizer.param_groups):
-                group_num_params = sum(p.numel() for p in param_group["params"])
+                group_num_params = sum(p.numel()
+                                       for p in param_group["params"])
                 other = {k: v for k, v in param_group.items() if k != "params"}
                 param_group_infos.append(
                     f"{i+1}. group: {group_num_params:,} params, other: {other}"
@@ -202,13 +213,15 @@ training will resume from latest checkpoint."
         self.grad_scaler = amp.GradScaler(
             enabled=self.cfg["train"].get("mixed_precision", False)
         )
-        mixed_precision_dtype = self.cfg["train"].get("mixed_precision_dtype", "fp16")
+        mixed_precision_dtype = self.cfg["train"].get(
+            "mixed_precision_dtype", "fp16")
         if mixed_precision_dtype == "fp16":
             self.mixed_prec_dtype = torch.float16
         elif mixed_precision_dtype == "bfp16":
             self.mixed_prec_dtype = torch.bfloat16
         else:
-            raise ValueError(f"unknown mixed precision type {mixed_precision_dtype}, must fp16 or bfp16")
+            raise ValueError(
+                f"unknown mixed precision type {mixed_precision_dtype}, must fp16 or bfp16")
 
         eval_interval = self.cfg["train"].get("eval_interval", 0.1)
         log_interval = self.cfg["train"].get("log_interval", 0.01)
@@ -221,37 +234,46 @@ training will resume from latest checkpoint."
         if isinstance(log_interval, float):
             log_interval = int(log_interval * self.training_steps_per_epoch)
 
-        self.eval_interval = clamp(eval_interval, 1, self.training_steps_per_epoch)
-        self.log_interval = clamp(log_interval, 1, self.training_steps_per_epoch)
+        self.eval_interval = clamp(
+            eval_interval, 1, self.training_steps_per_epoch)
+        self.log_interval = clamp(
+            log_interval, 1, self.training_steps_per_epoch)
 
         if self.info.is_main_process:
-            self.summary_writer = SummaryWriter(log_dir=self.directories["tensorboard"])
+            self.summary_writer = SummaryWriter(
+                log_dir=self.directories["tensorboard"])
 
             self.logger.info(f"Using model:\n{self.model}")
-            self.logger.info(f"Model parameters: {api.num_parameters(self.model)}")
+            self.logger.info(
+                f"Model parameters: {api.num_parameters(self.model)}")
 
             test_sentence = "This is a test sentence."
-            self.logger.info(f"Testing input tokenizer:\n{self.input_tokenizer.tokenize(test_sentence).token_ids}")
+            self.logger.info(
+                f"Testing input tokenizer:\n{self.input_tokenizer.tokenize(test_sentence).token_ids}")
             if self.output_tokenizer is not None:
                 self.logger.info(
                     f"Testing output tokenizer:\n{self.output_tokenizer.tokenize(test_sentence).token_ids}")
 
             self.logger.info(f"Type 'tensorboard --logdir {self.directories['tensorboard']}' "
                              f"to view the training process in Tensorboard")
-            self.logger.info(f"Evaluating every {eval_interval:,} steps, logging every {log_interval:,} steps")
+            self.logger.info(
+                f"Evaluating every {eval_interval:,} steps, logging every {log_interval:,} steps")
         else:
             self.summary_writer = None
 
         # resume training from last checkpoint if it exists
-        last_checkpoint = os.path.join(self.directories["checkpoints"], "checkpoint_last.pt")
+        last_checkpoint = os.path.join(
+            self.directories["checkpoints"], "checkpoint_last.pt")
         if os.path.exists(last_checkpoint):
             checkpoint = io.load_checkpoint(last_checkpoint)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
-                self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
+                self.lr_scheduler.load_state_dict(
+                    checkpoint["lr_scheduler_state_dict"])
             if checkpoint.get("grad_scaler_state_dict") is not None:
-                self.grad_scaler.load_state_dict(checkpoint["grad_scaler_state_dict"])
+                self.grad_scaler.load_state_dict(
+                    checkpoint["grad_scaler_state_dict"])
             if checkpoint.get("loss_fn_state_dict") is not None:
                 self.loss_fn.load_state_dict(checkpoint["loss_fn_state_dict"])
 
@@ -344,8 +366,10 @@ training will resume from latest checkpoint."
                     f"one of {org_path} or {proc_path} is not a file"
                 temp_dir = src.get("temp_dir")
                 if temp_dir is not None:
-                    org_path = cls._copy_file_to_tmp_dir(org_path, temp_dir, info)
-                    proc_path = cls._copy_file_to_tmp_dir(proc_path, temp_dir, info)
+                    org_path = cls._copy_file_to_tmp_dir(
+                        org_path, temp_dir, info)
+                    proc_path = cls._copy_file_to_tmp_dir(
+                        proc_path, temp_dir, info)
                     cleanup_paths.extend([org_path, proc_path])
                 src_paths.append((org_path, proc_path))
                 src_langs.append(lang)
@@ -377,9 +401,11 @@ training will resume from latest checkpoint."
             val_cleanup = []
         elif isinstance(val_cfg, list):
             val_limit = None
-            val_sources, val_languages, val_cleanup = cls._prepare_data_sources(val_cfg, info)
+            val_sources, val_languages, val_cleanup = cls._prepare_data_sources(
+                val_cfg, info)
         else:
-            raise ValueError("val data must either be an integer or a list of data sources")
+            raise ValueError(
+                "val data must either be an integer or a list of data sources")
 
         train_sources, train_languages, train_cleanup = cls._prepare_data_sources(
             cfg.pop("sources"),
@@ -447,7 +473,8 @@ training will resume from latest checkpoint."
                     rel_sub_dir = os.path.relpath(config_dir, root)
                     if not file.endswith(".yaml"):
                         continue
-                    zf.write(os.path.join(config_dir, file), os.path.join(rel_sub_dir, file))
+                    zf.write(os.path.join(config_dir, file),
+                             os.path.join(rel_sub_dir, file))
         with open(os.path.join(exp_dir, "info.yaml"), "w", encoding="utf8") as f:
             f.write(
                 yaml.dump({
@@ -492,7 +519,8 @@ training will resume from latest checkpoint."
 
         if info.is_main_process and profile is not None:
             import cProfile
-            cProfile.runctx("cls(cfg, directories, info).run()", globals(), locals(), filename=profile)
+            cProfile.runctx("cls(cfg, directories, info).run()",
+                            globals(), locals(), filename=profile)
         else:
             cls(cfg, directories, info).run()
         dist.destroy_process_group()
@@ -549,12 +577,15 @@ training will resume from latest checkpoint."
             assert config_path is not None, "specify config if not resuming an existing experiment"
             cfg = configuration.load_config(config_path)
             if info.is_main_process:
-                cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
-                logger.info(f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
+                cls._setup_experiment(
+                    work_dir, experiment_dir, config_path, cfg)
+                logger.info(
+                    f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
         else:
             cfg = configuration.load_config_from_experiment(experiment_dir)
             if info.is_main_process:
-                logger.info(f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
+                logger.info(
+                    f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
 
         directories = {
             "experiment": experiment_dir,
@@ -579,10 +610,12 @@ training will resume from latest checkpoint."
             cfg = configuration.load_config(config_path)
             assert config_path is not None, "specify config if not resuming an existing experiment"
             cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
-            logger.info(f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
+            logger.info(
+                f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
         else:
             cfg = configuration.load_config_from_experiment(experiment_dir)
-            logger.info(f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
+            logger.info(
+                f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
         directories = {
             "experiment": experiment_dir,
             "checkpoints": os.path.join(experiment_dir, "checkpoints"),
@@ -595,16 +628,29 @@ training will resume from latest checkpoint."
             join=True
         )
 
-    def _prepare_batch(self, batch: data.DataBatch) -> Tuple[Dict[str, Any], torch.Tensor]:
+    def _prepare_batch(
+        self,
+        batch: data.DataBatch
+    ) -> Tuple[Dict[str, Any], torch.Tensor]:
         assert len(batch) > 0, "got empty batch"
-        token_ids_np, pad_mask_np, lengths, info, labels_np = batch.tensors
+        token_ids_np, pad_mask_np, lengths, info, labels_np, _ = batch.tensors()
         inputs = {
-            "token_ids": torch.from_numpy(token_ids_np).to(non_blocking=True, device=self.info.device),
+            "token_ids": torch.from_numpy(token_ids_np).to(
+                non_blocking=True,
+                device=self.info.device
+            ),
             "lengths": lengths,
-            "padding_mask": torch.from_numpy(pad_mask_np).to(non_blocking=True, device=self.info.device),
+            "padding_mask": torch.from_numpy(pad_mask_np).to(
+                non_blocking=True,
+                device=self.info.device
+            ),
             **api.to(info, self.info.device)
         }
-        labels = torch.from_numpy(labels_np).to(non_blocking=True, dtype=torch.long, device=self.info.device)
+        labels = torch.from_numpy(labels_np).to(
+            non_blocking=True,
+            dtype=torch.long,
+            device=self.info.device
+        )
         return inputs, labels
 
     def _train_one_epoch(self):
@@ -614,15 +660,22 @@ training will resume from latest checkpoint."
         mean_loss = tensorboard.AverageTracker("train_loss", fmt=".2e")
         mean_forward_pass = tensorboard.AverageTracker("train_forward_pass")
         mean_batch_load = tensorboard.AverageTracker("train_batch_load")
-        mean_batch_preparation = tensorboard.AverageTracker("train_batch_preparation")
+        mean_batch_preparation = tensorboard.AverageTracker(
+            "train_batch_preparation"
+        )
         mean_bsz = tensorboard.AverageTracker("train_batch_size")
         mean_seq_length = tensorboard.AverageTracker("train_sequence_length")
-        mean_seq_length_ratio = tensorboard.AverageTracker("train_sequence_length_ratio")
+        mean_seq_length_ratio = tensorboard.AverageTracker(
+            "train_sequence_length_ratio"
+        )
 
         metric_cfg = self.cfg["train"].get("metrics")
         if metric_cfg is not None:
             metrics = tensorboard.metrics_from_config(
-                metric_cfg, self.input_tokenizer, self.output_tokenizer, prefix="train"
+                metric_cfg,
+                self.input_tokenizer,
+                self.output_tokenizer,
+                prefix="train"
             )
         else:
             metrics = []
@@ -633,10 +686,14 @@ training will resume from latest checkpoint."
             batch = next(train_iter, None)
             end_batch = time.perf_counter()
             if batch is None:
-                self.logger.info(f"[rank {self.info.rank}] finished epoch {self.epoch + 1}")
+                self.logger.info(
+                    f"[rank {self.info.rank}] finished epoch {self.epoch + 1}"
+                )
                 break
             elif len(batch) == 0:
-                raise RuntimeError("got empty batch, this should not happen during training")
+                raise RuntimeError(
+                    "got empty batch, this should not happen during training"
+                )
 
             start_preparation = time.perf_counter()
             inputs, labels = self._prepare_batch(batch)
@@ -645,7 +702,10 @@ training will resume from latest checkpoint."
             self.optimizer.zero_grad()
 
             start_forward = time.perf_counter()
-            with amp.autocast(enabled=self.grad_scaler.is_enabled(), dtype=self.mixed_prec_dtype):
+            with amp.autocast(
+                enabled=self.grad_scaler.is_enabled(),
+                dtype=self.mixed_prec_dtype
+            ):
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
                 loss = loss + sum(loss_dict.values())
@@ -654,7 +714,9 @@ training will resume from latest checkpoint."
             self.grad_scaler.scale(loss).backward()
             if self.clip_grad_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.clip_grad_norm
+                )
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
 
@@ -674,7 +736,8 @@ training will resume from latest checkpoint."
                     if length > max_length:
                         max_length = length
                 mean_batch_load.add((end_batch - start_batch) * 1000)
-                mean_batch_preparation.add((end_preparation - start_preparation) * 1000)
+                mean_batch_preparation.add(
+                    (end_preparation - start_preparation) * 1000)
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
             if self.lr_scheduler is not None:
@@ -692,8 +755,12 @@ training will resume from latest checkpoint."
             if self.epoch_step % self.log_interval == 0 and self.info.is_main_process:
                 if self.lr_scheduler is not None:
                     for i, lr in enumerate(self.lr_scheduler.get_last_lr()):
-                        self.summary_writer.add_scalar(f"train_lr_{i}", lr, self.step)
-                        self.logger.info(f"[step {self.step}] train_lr_{i}: {lr:.8f}")
+                        self.summary_writer.add_scalar(
+                            f"train_lr_{i}", lr, self.step
+                        )
+                        self.logger.info(
+                            f"[step {self.step}] train_lr_{i}: {lr:.8f}"
+                        )
 
                 mean_loss.log_tensorboard(self.summary_writer, self.step)
                 mean_loss.log_info(self.logger, self.step)
@@ -701,19 +768,25 @@ training will resume from latest checkpoint."
                 mean_bsz.log_tensorboard(self.summary_writer, self.step)
                 mean_bsz.log_info(self.logger, self.step)
 
-                mean_forward_pass.log_tensorboard(self.summary_writer, self.step)
+                mean_forward_pass.log_tensorboard(
+                    self.summary_writer, self.step
+                )
                 mean_forward_pass.log_info(self.logger, self.step)
 
                 mean_batch_load.log_tensorboard(self.summary_writer, self.step)
                 mean_batch_load.log_info(self.logger, self.step)
 
-                mean_batch_preparation.log_tensorboard(self.summary_writer, self.step)
+                mean_batch_preparation.log_tensorboard(
+                    self.summary_writer, self.step
+                )
                 mean_batch_preparation.log_info(self.logger, self.step)
 
                 mean_seq_length.log_tensorboard(self.summary_writer, self.step)
                 mean_seq_length.log_info(self.logger, self.step)
 
-                mean_seq_length_ratio.log_tensorboard(self.summary_writer, self.step)
+                mean_seq_length_ratio.log_tensorboard(
+                    self.summary_writer, self.step
+                )
                 mean_seq_length_ratio.log_info(self.logger, self.step)
 
                 items = batch.items
@@ -798,9 +871,11 @@ training will resume from latest checkpoint."
         mean_loss.log_tensorboard(self.summary_writer, self.step)
         mean_loss.log_info(self.logger, self.step)
 
-        self.logger.info(f"[step {self.step}] validation took {(end - start) / 60:.2f} minutes")
+        self.logger.info(
+            f"[step {self.step}] validation took {(end - start) / 60:.2f} minutes")
         val_loss = mean_loss.value
-        ckpt_path = os.path.join(self.directories["checkpoints"], "checkpoint_last.pt")
+        ckpt_path = os.path.join(
+            self.directories["checkpoints"], "checkpoint_last.pt")
         io.save_checkpoint(
             checkpoint_path=ckpt_path,
             model=distributed.unwrap_ddp(self.model),
@@ -817,7 +892,8 @@ training will resume from latest checkpoint."
 
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
-            best_ckpt_path = os.path.join(self.directories["checkpoints"], "checkpoint_best.pt")
+            best_ckpt_path = os.path.join(
+                self.directories["checkpoints"], "checkpoint_best.pt")
             shutil.copy2(ckpt_path, best_ckpt_path)
 
         self.model = self.model.train()
@@ -837,15 +913,18 @@ training will resume from latest checkpoint."
 
         except KeyboardInterrupt:
             if self.info.is_main_process:
-                self.logger.info("got termination signal, evaluating and saving on main process before exiting")
+                self.logger.info(
+                    "got termination signal, evaluating and saving on main process before exiting")
 
         finally:
             if self.info.is_main_process:
                 start = time.perf_counter()
                 self._evaluate_and_checkpoint()
                 end = time.perf_counter()
-                self.logger.info(f"final evaluation and checkpointing took {end - start:.2f}s")
+                self.logger.info(
+                    f"final evaluation and checkpointing took {end - start:.2f}s")
             if len(self.cleanup) > 0 and self.info.is_local_main_process:
-                self.logger.info(f"deleting temporary data sources on local main process with rank {self.info.rank}")
+                self.logger.info(
+                    f"deleting temporary data sources on local main process with rank {self.info.rank}")
                 for path in self.cleanup:
                     os.remove(path)

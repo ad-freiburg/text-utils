@@ -345,9 +345,9 @@ pub enum TensorizedTokenizationInfo {
 }
 
 pub struct SparseCoo {
-    indices: Array2<i32>,
-    values: Array1<f32>,
-    size: Vec<usize>,
+    pub(crate) indices: Array2<i32>,
+    pub(crate) values: Array1<f32>,
+    pub(crate) size: Vec<usize>,
     pub(crate) group_lengths: Vec<usize>,
 }
 
@@ -375,18 +375,14 @@ impl IntoPy<PyObject> for PaddingMask {
 
 impl IntoPy<PyObject> for TensorizedTokenizationInfo {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        match self {
-            TensorizedTokenizationInfo::Empty => PyDict::new(py),
-            TensorizedTokenizationInfo::TokenGroups(matrices) => {
-                let d = PyDict::new(py);
-                for (name, (scoo, pad_mask)) in matrices {
-                    let t = PyTuple::new(py, &[scoo.into_py(py), pad_mask.into_py(py)]);
-                    d.set_item(name, t).unwrap();
-                }
-                d
+        let d = PyDict::new(py);
+        if let TensorizedTokenizationInfo::TokenGroups(matrices) = self {
+            for (name, (scoo, pad_mask)) in matrices {
+                let t = PyTuple::new(py, &[scoo.into_py(py), pad_mask.into_py(py)]);
+                d.set_item(name, t).unwrap();
             }
-        }
-        .into_py(py)
+        };
+        d.into_py(py)
     }
 }
 

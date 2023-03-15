@@ -74,11 +74,30 @@ impl TextData {
     }
 }
 
-#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub enum TensorizedLabelInfo {
+    Empty,
+    SequenceGeneration((Array2<i32>, PaddingMask, Vec<usize>)),
+}
+
+impl IntoPy<PyObject> for TensorizedLabelInfo {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let d = PyDict::new(py);
+        if let TensorizedLabelInfo::SequenceGeneration((token_ids, padding_mask, lengths)) = self {
+            let token_ids: Py<PyArray2<i32>> = token_ids.into_pyarray(py).into_py(py);
+            d.set_item("token_ids", token_ids).unwrap();
+            d.set_item("padding_mask", padding_mask.into_py(py))
+                .unwrap();
+            d.set_item("lengths", lengths).unwrap();
+        };
+        d.into_py(py)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum Label {
     Classification(i32),
     SequenceClassification(Vec<i32>, usize, usize),
-    SequenceGeneration(Vec<i32>, usize, usize),
+    SequenceGeneration(Vec<i32>, u32),
 }
 
 impl IntoPy<PyObject> for Label {
@@ -89,17 +108,16 @@ impl IntoPy<PyObject> for Label {
                 d.set_item("label", label).unwrap();
                 "classification"
             }
-            Label::SequenceClassification(labels, pfx, sfx)
-            | Label::SequenceGeneration(labels, pfx, sfx) => {
-                let name = match &self {
-                    Label::SequenceClassification(..) => "sequence_classification",
-                    Label::SequenceGeneration(..) => "sequence_generation",
-                    _ => unreachable!(),
-                };
+            Label::SequenceClassification(labels, pfx, sfx) => {
                 d.set_item("labels", labels).unwrap();
                 d.set_item("prefix", pfx).unwrap();
                 d.set_item("suffix", sfx).unwrap();
-                name
+                "sequence_classification"
+            }
+            Label::SequenceGeneration(labels, pad_token_id) => {
+                d.set_item("labels", labels).unwrap();
+                d.set_item("pad_token_id", pad_token_id).unwrap();
+                "sequence_generation"
             }
         };
         d.set_item("type", label_type).unwrap();
@@ -123,35 +141,41 @@ impl<'a> FromPyObject<'a> for Label {
                 };
                 Label::Classification(label.extract()?)
             }
-            name @ ("sequence_classification" | "sequence_generation") => {
+            "sequence_classification" => {
                 let Some(labels) = d.get_item("labels") else {
                     return Err(py_required_key_error(
                         "labels",
-                        format!("{name} label")));
+                        "sequence classification label"));
                 };
                 let Some(prefix) = d.get_item("prefix") else {
                     return Err(py_required_key_error(
                         "prefix",
-                        format!("{name} label")));
+                        "sequence classification label"));
                 };
                 let Some(suffix) = d.get_item("suffix") else {
                     return Err(py_required_key_error(
                         "suffix",
-                        format!("{name} label")));
+                        "sequence classification label"));
                 };
-                if name == "sequence_classification" {
-                    Label::SequenceClassification(
-                        labels.extract()?,
-                        prefix.extract()?,
-                        suffix.extract()?,
-                    )
-                } else {
-                    Label::SequenceGeneration(
-                        labels.extract()?,
-                        prefix.extract()?,
-                        suffix.extract()?,
-                    )
-                }
+
+                Label::SequenceClassification(
+                    labels.extract()?,
+                    prefix.extract()?,
+                    suffix.extract()?,
+                )
+            }
+            "sequence_generation" => {
+                let Some(labels) = d.get_item("labels") else {
+                    return Err(py_required_key_error(
+                        "labels",
+                        "sequence generation label"));
+                };
+                let Some(pad_token_id) = d.get_item("pad_token_id") else {
+                    return Err(py_required_key_error(
+                        "pad_token_id",
+                        "sequence generation label"));
+                };
+                Label::SequenceGeneration(labels.extract()?, pad_token_id.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "label"));
@@ -449,7 +473,9 @@ type PyDataTensors = (
     Vec<usize>,
     PyObject,
     Py<PyArrayDyn<i32>>,
+    PyObject,
 );
+
 #[pymethods]
 impl DataBatch {
     fn __len__(&self) -> usize {
@@ -466,7 +492,6 @@ impl DataBatch {
         Ok(self.batch.take().unwrap())
     }
 
-    #[getter]
     fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyDataTensors> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
@@ -480,6 +505,7 @@ impl DataBatch {
             tensorized.2,
             tensorized.3.into_py(py),
             tensorized.4.into_pyarray(py).into_py(py),
+            tensorized.5.into_py(py),
         ))
     }
 }
@@ -518,13 +544,13 @@ fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> Tensorize
             TensorizedTokenizationInfo::TokenGroups(info)
         }
         TokenizationInfo::Info(_) => {
-            todo!()
+            unimplemented!()
         }
     }
 }
 
 #[inline]
-fn prepare(
+fn prepare_tokenization(
     tokenizations: &[&Tokenization],
     pad_token_id: u32,
 ) -> (
@@ -561,15 +587,51 @@ fn prepare(
 }
 
 #[inline]
-fn max_labels<'a>(labels: impl Iterator<Item = &'a Label>) -> usize {
+fn label_lengths(labels: &[&Label]) -> Vec<usize> {
     labels
-        .map(|label| match label {
+        .iter()
+        .map(|&label| match label {
             Label::Classification(_) => 1,
-            Label::SequenceClassification(label, pfx, sfx)
-            | Label::SequenceGeneration(label, pfx, sfx) => label.len() + pfx + sfx,
+            Label::SequenceClassification(label, ..) => label.len(),
+            Label::SequenceGeneration(label, ..) => {
+                assert!(
+                    label.len() > 1,
+                    "sequence generation label must be at least two tokens long"
+                );
+                label.len() - 1
+            }
         })
-        .max()
-        .unwrap_or(0)
+        .collect()
+}
+
+#[inline]
+fn prepare_label_info(labels: &[&Label]) -> (TensorizedLabelInfo, Vec<usize>, usize) {
+    let label_lengths = label_lengths(labels);
+    let max_label_length = label_lengths.iter().max().copied().unwrap_or(0);
+    let label_info = match labels[0] {
+        Label::SequenceGeneration(..) => {
+            let mut label_vec = Vec::new();
+            for (idx, label) in labels.iter().enumerate() {
+                if let Label::SequenceGeneration(label, pad_token_id) = label {
+                    label_vec.extend(label.iter().cloned().take(label.len() - 1).chain(vec![
+                                *pad_token_id as i32;
+                                max_label_length - label_lengths[idx]
+                            ]));
+                } else {
+                    unreachable!()
+                }
+            }
+            let label_arr = Array2::from_shape_vec((labels.len(), max_label_length), label_vec)
+                .expect("should not fail");
+            TensorizedLabelInfo::SequenceGeneration((
+                label_arr,
+                padding_mask(label_lengths.as_slice()).expect("failed to create padding mask"),
+                label_lengths.clone(),
+            ))
+        }
+        _ => TensorizedLabelInfo::Empty,
+    };
+    (label_info, label_lengths, max_label_length)
 }
 
 impl Tensorize for Batch<Item> {
@@ -579,28 +641,34 @@ impl Tensorize for Batch<Item> {
         Vec<usize>,                 // lengths
         TensorizedTokenizationInfo, // additional info
         ArrayD<i32>,                // labels
+        TensorizedLabelInfo,        // additional label info
     );
 
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
         assert!(!self.is_empty());
-        let (token_id_arr, padding_mask, lengths, info) = prepare(
+        let (token_id_arr, padding_mask, lengths, info) = prepare_tokenization(
             &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),
             tokenizer.pad_token_id(),
         );
 
+        let (label_info, label_lengths, max_label_length) =
+            prepare_label_info(&self.iter().map(|i| &i.label).collect::<Vec<_>>());
         let batch_size = self.len();
-        let max_labels = max_labels(self.iter().map(|item| &item.label));
-        let mut labels = Vec::with_capacity(batch_size * max_labels);
-
-        for item in self.iter() {
+        let mut labels = Vec::with_capacity(batch_size * max_label_length);
+        for (idx, item) in self.iter().enumerate() {
             labels.append(&mut match &item.label {
                 Label::Classification(label) => vec![*label],
-                Label::SequenceClassification(labels, pfx, _)
-                | Label::SequenceGeneration(labels, pfx, _) => join(vec![
+                Label::SequenceClassification(labels, pfx, sfx) => join(vec![
                     vec![-1; *pfx],
-                    labels.clone(),
-                    vec![-1; max_labels - (pfx + labels.len())],
+                    labels[*pfx..labels.len() - *sfx].to_vec(),
+                    vec![-1; *sfx + max_label_length - label_lengths[idx]],
                 ]),
+                Label::SequenceGeneration(labels, ..) => labels
+                    .iter()
+                    .cloned()
+                    .skip(1)
+                    .chain(vec![-1; max_label_length - label_lengths[idx]])
+                    .collect(),
             });
         }
         let label_arr = match labels.len() {
@@ -609,7 +677,14 @@ impl Tensorize for Batch<Item> {
                 .unwrap()
                 .into_dyn(),
         };
-        (token_id_arr, padding_mask, lengths, info, label_arr)
+        (
+            token_id_arr,
+            padding_mask,
+            lengths,
+            info,
+            label_arr,
+            label_info,
+        )
     }
 }
 
@@ -637,7 +712,6 @@ impl InferenceBatch {
         Ok(self.batch.take().unwrap())
     }
 
-    #[getter]
     fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyInferenceTensors> {
         if self.tensorized.is_none() {
             return Err(anyhow!(
@@ -662,7 +736,7 @@ impl Tensorize for Batch<InferenceItem> {
         TensorizedTokenizationInfo,
     );
     fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
-        prepare(
+        prepare_tokenization(
             &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),
             tokenizer.pad_token_id(),
         )

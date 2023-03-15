@@ -812,15 +812,15 @@ fn sequence_generation_label(tokenizer_cfg: TokenizerConfig) -> Box<LabelingFn> 
         .expect("failed to create tokenizer for sequence generation label function");
     Box::new(move |item| {
         let tokenization =
-            tokenizer.tokenize(&item.processed, item.language.as_deref(), None, None, false)?;
+            tokenizer.tokenize(&item.original, item.language.as_deref(), None, None, false)?;
+        let token_ids = tokenization
+            .token_ids
+            .into_iter()
+            .map(|t| t as i32)
+            .collect();
         Ok(Label::SequenceGeneration(
-            tokenization
-                .token_ids
-                .into_iter()
-                .map(|t| t as i32)
-                .collect(),
-            tokenizer.num_prefix_tokens(),
-            tokenizer.num_suffix_tokens(),
+            token_ids,
+            tokenizer.pad_token_id(),
         ))
     })
 }

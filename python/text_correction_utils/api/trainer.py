@@ -6,10 +6,10 @@ import os
 import hashlib
 import shutil
 import time
+from logging import INFO
 from typing import Dict, Optional, Tuple, Any, List, Callable
 import zipfile
 
-import numpy as np
 import torch
 from torch import distributed as dist
 from torch import multiprocessing as mp
@@ -111,12 +111,6 @@ training will resume from latest checkpoint."
         self.model = self._model_from_config(
             self.cfg
         ).to(self.info.device).train()
-        # if torch.__version__.startswith("2."):
-        #     self.logger.info(f"Compiling model (torch={torch.__version__})")
-        #     from torch import _dynamo
-        #     torch._dynamo.config.suppress_errors = True
-        #     # torch._dynamo.config.verbose = True
-        #     self.model = torch.compile(self.model)
 
         self.train_loader, self.val_loader, self.cleanup = self._data_from_config(
             self.cfg["train"]["data"],
@@ -292,6 +286,16 @@ training will resume from latest checkpoint."
                 )
 
         self.model = DDP(self.model)
+        # from torch import _dynamo, _inductor
+        # _dynamo.config.log_level = INFO
+        # _dynamo.config.verbose = True
+        # _dynamo.config.print_graph_breaks = True
+        # self.model = torch.compile(
+        #     model=self.model,
+        #     dynamic=True,
+        #     backend="eager",
+        #     mode="reduce-overhead"
+        # )
 
     @classmethod
     def _model_from_config(cls, cfg: Dict[str, Any]) -> nn.Module:

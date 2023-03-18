@@ -27,14 +27,17 @@ def _replace_env(s: str, _: str) -> Any:
 
 def _replace_non_env(s: str, base_dir: str) -> Any:
     file_regex = re.compile(r"^file\((.+\.yaml)\)$")
-    path_regex = re.compile(r"^abspath\((.+)\)$")
+    abs_path_regex = re.compile(r"^abspath\((.+)\)$")
+    rel_path_regex = re.compile(r"^relpath\((.+)\)$")
     eval_regex = re.compile(r"^eval\((.+)\)$")
     file_regex_match = file_regex.fullmatch(s)
-    path_regex_match = path_regex.fullmatch(s)
+    abs_path_regex_match = abs_path_regex.fullmatch(s)
+    rel_path_regex_match = rel_path_regex.fullmatch(s)
     eval_regex_match = eval_regex.fullmatch(s)
     num_matches = (
         (file_regex_match is not None) +
-        (path_regex_match is not None) +
+        (abs_path_regex_match is not None) +
+        (rel_path_regex_match is not None) +
         (eval_regex_match is not None)
     )
     assert num_matches <= 1, f"more than one config command matches '{s}'"
@@ -42,10 +45,14 @@ def _replace_non_env(s: str, base_dir: str) -> Any:
         file_path = file_regex_match.group(1)
         file_path = str(_replace_non_env(file_path, base_dir))
         return load_config(os.path.join(base_dir, file_path))
-    elif path_regex_match is not None:
-        path = path_regex_match.group(1)
+    elif abs_path_regex_match is not None:
+        path = abs_path_regex_match.group(1)
         path = str(_replace_non_env(path, base_dir))
         return os.path.abspath(path)
+    elif rel_path_regex_match is not None:
+        path = rel_path_regex_match.group(1)
+        path = str(_replace_non_env(path, base_dir))
+        return os.path.relpath(path, base_dir)
     elif eval_regex_match is not None:
         expression = eval_regex_match.group(1)
         org_length = len(expression)

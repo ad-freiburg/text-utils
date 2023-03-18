@@ -274,7 +274,7 @@ impl InferenceData {
         }
     }
 
-    pub fn from_str(s: &str, format: &InferenceDataFormat) -> anyhow::Result<Self> {
+    pub fn from_str(s: &str, format: InferenceDataFormat) -> anyhow::Result<Self> {
         let splits: Vec<&str> = s.split('\t').collect();
         let (text, detections, language) = match format {
             InferenceDataFormat::Text => (s, None, None),
@@ -355,7 +355,7 @@ impl InferenceData {
     #[staticmethod]
     #[pyo3(name = "from_str", signature = (s, format = InferenceDataFormat::Text))]
     pub fn from_str_py(s: String, format: InferenceDataFormat) -> anyhow::Result<Self> {
-        Self::from_str(&s, &format)
+        Self::from_str(&s, format)
     }
 
     #[pyo3(signature = (format = InferenceDataFormat::Text))]

@@ -163,7 +163,7 @@ pub fn inference_data_generator_from_file(
     let iter = LossyUtf8Reader::new(BufReader::new(open(path.as_ref())?))
         .lines()
         .map(move |s| {
-            let mut data = InferenceData::from_str(&(s?), &format)?;
+            let mut data = InferenceData::from_str(s?.as_str(), format)?;
             if data.language.is_none() && lang.is_some() {
                 data.language = lang.clone();
             };

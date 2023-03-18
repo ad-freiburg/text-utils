@@ -30,7 +30,8 @@ class TextCorrectionCli:
         model_group.add_argument(
             "-m",
             "--model",
-            choices=[model.name for model in cls.text_corrector_cls.available_models()],
+            choices=[
+                model.name for model in cls.text_corrector_cls.available_models()],
             default=cls.text_corrector_cls.default_model().name,
             help=f"Name of the model to use for {cls.text_corrector_cls.task}"
         )
@@ -228,6 +229,36 @@ class TextCorrectionCli:
         import cProfile
         cProfile.runctx("self.run()", globals(), locals(), file)
 
+    def setup_corrector(self) -> TextCorrector:
+        device = "cpu" if self.args.cpu else "cuda"
+        if self.args.experiment:
+            cor = self.text_corrector_cls.from_experiment(
+                experiment_dir=self.args.experiment,
+                device=device
+            )
+        else:
+            cor = self.text_corrector_cls.from_pretrained(
+                model=self.args.model,
+                device=device,
+                download_dir=self.args.download_dir,
+                cache_dir=self.args.cache_dir,
+                force_download=self.args.force_download
+            )
+
+        if self.args.lang is not None:
+            supported_languages = cor.supported_languages()
+            assert supported_languages is not None, \
+                f"language {self.args.lang} specified but model does not \
+support multiple languages"
+            assert self.args.lang in supported_languages, \
+                f"the model supports the languages {supported_languages}, \
+but {self.args.lang} was specified"
+
+        if self.args.precision != "auto":
+            cor.set_precision(self.args.precision)
+
+        return cor
+
     @staticmethod
     def inference_data_size(item: data.InferenceData) -> int:
         return len(item.text.encode("utf8"))
@@ -244,7 +275,8 @@ class TextCorrectionCli:
             table = generate_table(
                 headers=[["Model", "Description", "Tags"]],
                 data=[
-                    [model.name, model.description, ", ".join(str(tag) for tag in model.tags)]
+                    [model.name, model.description, ", ".join(
+                        str(tag) for tag in model.tags)]
                     for model in self.text_corrector_cls.available_models()
                 ],
                 alignments=["left", "left", "left"],
@@ -263,31 +295,7 @@ class TextCorrectionCli:
         else:
             logging.disable(logging.CRITICAL)
 
-        device = "cpu" if self.args.cpu else "cuda"
-        if self.args.experiment:
-            cor = self.text_corrector_cls.from_experiment(
-                experiment_dir=self.args.experiment,
-                device=device
-            )
-        else:
-            cor = self.text_corrector_cls.from_pretrained(
-                model=self.args.model,
-                device=device,
-                download_dir=self.args.download_dir,
-                cache_dir=self.args.cache_dir,
-                force_download=self.args.force_download
-            )
-
-        if self.args.lang is not None:
-            supported_languages = cor.supported_languages()
-            assert supported_languages is not None, f"language {self.args.lang} specified but model does not \
-support multiple languages"
-            assert self.args.lang in supported_languages, f"the model supports the languages {supported_languages}, \
-but {self.args.lang} was specified"
-
-        if self.args.precision != "auto":
-            cor.set_precision(self.args.precision)
-
+        cor = self.setup_corrector()
         is_cuda = cor.device.type == "cuda"
 
         if is_cuda:
@@ -346,15 +354,19 @@ but {self.args.lang} was specified"
             try:
                 if self.args.unsorted:
                     # correct lines from stdin as they come
-                    input_it = (self.parse_input(line.strip(), self.args.lang) for line in sys.stdin)
-                    sized_it = ProgressIterator(input_it, self.inference_data_size)
+                    input_it = (self.parse_input(line.strip(), self.args.lang)
+                                for line in sys.stdin)
+                    sized_it = ProgressIterator(
+                        input_it, self.inference_data_size)
                     outputs = self.correct_iter(cor, sized_it)
                     for opt in outputs:
                         print(opt.to_str(self.args.output_format))
                 else:
                     # read stdin completely, then potentially sort and correct
-                    inputs = [self.parse_input(line.strip(), self.args.lang) for line in sys.stdin]
-                    sized_it = ProgressIterator(iter(inputs), self.inference_data_size)
+                    inputs = [self.parse_input(
+                        line.strip(), self.args.lang) for line in sys.stdin]
+                    sized_it = ProgressIterator(
+                        iter(inputs), self.inference_data_size)
                     outputs = self.correct_iter(cor, sized_it)
                     for opt in outputs:
                         print(opt.to_str(self.args.output_format))

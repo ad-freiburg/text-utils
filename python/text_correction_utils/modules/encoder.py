@@ -9,6 +9,7 @@ from torch.nn.modules.transformer import _get_activation_fn
 from torch.nn.utils import rnn
 
 from text_correction_utils.modules import utils
+from text_correction_utils.mask import square_subsequent_mask
 from text_correction_utils.modules.grouping import Grouping
 from text_correction_utils.modules.embedding import Alibi
 
@@ -52,8 +53,6 @@ def encoder_from_config(
 
 # modified version of pytorch transformer encoder layer
 class _TransformerEncoderLayer(nn.Module):
-    __constants__ = ['batch_first', 'norm_first']
-
     def __init__(
         self,
         d_model,
@@ -160,7 +159,8 @@ class TransformerEncoder(Encoder):
         with_pos: Optional[str] = None,
         activation: str = "gelu",
         share_parameters: bool = False,
-        padding_mask: str = "padding_mask"
+        padding_mask: str = "padding_mask",
+        causal: bool = False,
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -178,6 +178,7 @@ class TransformerEncoder(Encoder):
             ) for _ in range(1 if self.share_parameters else num_layers)
         )
 
+        self.causal = causal
         self.with_pos = with_pos
         if self.with_pos == "alibi":
             self.alibi = Alibi(heads)
@@ -190,7 +191,16 @@ class TransformerEncoder(Encoder):
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         padding_mask = kwargs.get(self.padding_mask)
         assert padding_mask is not None, f"expected '{self.padding_mask}' in kwargs"
-        attn_mask = None
+
+        if self.causal:
+            attn_mask = square_subsequent_mask(
+                x.shape[1],
+                float_mask=self.with_pos == "alibi",
+                device=x.device
+            )
+        else:
+            attn_mask = None
+
         if self.with_pos == "alibi":
             attn_mask = self.alibi(x)
         elif self.with_pos == "attention":

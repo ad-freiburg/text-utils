@@ -76,7 +76,15 @@ class TextCorrector:
         if cache_dir is None:
             cache_dir = cls.cache_dir()
         sub_cache_dir = model.lower().replace(" ", "_")
-        zip_dir = api.download_zip(model, model_url, download_dir, cache_dir, sub_cache_dir, force_download, logger)
+        zip_dir = api.download_zip(
+            model,
+            model_url,
+            download_dir,
+            cache_dir,
+            sub_cache_dir,
+            force_download,
+            logger
+        )
         sub_dirs = os.listdir(zip_dir)
         assert len(sub_dirs) == 1, f"expected extracted zip for model {model} to contain \
 one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"

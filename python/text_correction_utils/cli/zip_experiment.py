@@ -42,6 +42,17 @@ def zip_experiment(args: argparse.Namespace) -> None:
         # delete only model checkpoint again
         os.remove(only_model_checkpoint_path)
 
+        # add additional data
+        if args.data is not None:
+            for data_file in args.data:
+                data_path = os.path.relpath(data_file, experiment_dir)
+                assert ".." not in data_path, \
+                    "data files must be in the experiment directory or a subdirectory"
+                zip_file.write(
+                    data_file,
+                    data_path
+                )
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -52,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("-e", "--experiment", type=str, required=True)
     parser.add_argument("-o", "--out-file", type=str, required=True)
+    parser.add_argument("-d", "--data", type=str, nargs="+")
     return parser.parse_args()
 
 

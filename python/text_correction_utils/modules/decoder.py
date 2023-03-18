@@ -40,8 +40,6 @@ def decoder_from_config(
 # modified version of pytorch transformer decoder layer
 # supports multiple memories
 class _TransformerDecoderLayer(nn.Module):
-    __constants__ = ['batch_first', 'norm_first']
-
     def __init__(
         self,
         d_model,
@@ -181,12 +179,16 @@ class _TransformerDecoderLayer(nn.Module):
         memory_attn_masks: Optional[Dict[str, torch.Tensor]] = None
     ) -> torch.Tensor:
         assert memories is not None
+        memory_padding_mask = None if memory_padding_masks is None \
+            else memory_padding_masks.get(memory)
+        attn_mask = None if memory_attn_masks is None \
+            else memory_attn_masks.get(memory)
         x = self.memory_attns[memory](
             x,
             memories[memory],
             memories[memory],
-            key_padding_mask=None if memory_padding_masks is None else memory_padding_masks.get(memory),
-            attn_mask=None if memory_attn_masks is None else memory_attn_masks.get(memory),
+            key_padding_mask=memory_padding_mask,
+            attn_mask=attn_mask,
             need_weights=True,
             average_attn_weights=False
         )[0]
@@ -235,7 +237,11 @@ class TransformerDecoder(Decoder):
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         if self.causal:
-            attn_mask = square_subsequent_mask(x.shape[1], x.device)
+            attn_mask = square_subsequent_mask(
+                x.shape[1],
+                float_mask=self.with_pos == "alibi",
+                device=x.device
+            )
         else:
             attn_mask = None
 

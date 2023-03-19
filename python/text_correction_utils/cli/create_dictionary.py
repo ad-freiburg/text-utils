@@ -26,6 +26,7 @@ def create_dictionary(args: argparse.Namespace) -> None:
         args.max_size,
         args.max_sequences,
         args.num_threads,
+        args.key == "char",
         args.progress
     )
 

@@ -26,10 +26,10 @@ def _replace_env(s: str, _: str) -> Any:
 
 
 def _replace_non_env_var(s: str, base_dir: str) -> Any:
-    file_regex = re.compile(r"^file\((\S+?\.yaml)\)$")
-    abs_path_regex = re.compile(r"^abspath\((\S+)\)$")
-    rel_path_regex = re.compile(r"^relpath\((\S+)\)$")
-    eval_regex = re.compile(r"^eval\((\S+)\)$")
+    file_regex = re.compile(r"^file\((.+\.yaml)\)$")
+    abs_path_regex = re.compile(r"^abspath\((.+)\)$")
+    rel_path_regex = re.compile(r"^relpath\((.+)\)$")
+    eval_regex = re.compile(r"^eval\((.+)\)$")
     file_regex_match = file_regex.fullmatch(s)
     abs_path_regex_match = abs_path_regex.fullmatch(s)
     rel_path_regex_match = rel_path_regex.fullmatch(s)

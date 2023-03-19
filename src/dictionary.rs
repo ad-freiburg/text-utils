@@ -22,7 +22,7 @@ use crate::{
 #[pyclass]
 pub struct Dictionary {
     inner: HashMap<String, usize>,
-    freq_sum: usize,
+    pub freq_sum: usize,
 }
 
 impl Dictionary {
@@ -47,6 +47,10 @@ impl Dictionary {
             inner.insert(splits[0].to_string(), splits[1].parse()?);
         }
         Ok(Self::new(inner))
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = (&String, &usize)> {
+        self.inner.iter()
     }
 
     pub fn create(

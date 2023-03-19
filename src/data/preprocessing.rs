@@ -2,6 +2,7 @@ use crate::corrupt::{
     alpha_punct_delete_fn, alpha_swap_fn, ascii_insert_fn, ascii_replace_fn, edit_word,
 };
 use crate::data::{Label, TextData};
+use crate::dictionary::Dictionary;
 use crate::text::{self, split_words};
 use crate::text::{possible_byte_substrings, possible_character_substrings};
 use crate::tokenization::{tokenizer, TokenizerConfig};
@@ -15,10 +16,12 @@ use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Geometric};
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::ops::Sub;
+use std::path::PathBuf;
 
 pub type PreprocessingFn =
     dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> anyhow::Result<TextData>;
@@ -503,9 +506,9 @@ fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum SpellingCorruptionMode {
-    Artificial(f64),
-    Realistic(String),
-    Mixed(f64, f64, String),
+    Artificial(f64, Option<PathBuf>),
+    Realistic(PathBuf),
+    Mixed(f64, f64, Option<PathBuf>, PathBuf),
 }
 
 impl IntoPy<PyObject> for SpellingCorruptionMode {
@@ -527,14 +530,16 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                     return Err(py_required_key_error("char_edit_prob", "artificial spelling corruption mode"));
                 };
                 let prob: f64 = prob.extract()?;
-                SpellingCorruptionMode::Artificial(prob)
+                let path = d
+                    .get_item("characters_file")
+                    .map(|path| path.extract().expect("characters_file must be a string"));
+                SpellingCorruptionMode::Artificial(prob, path)
             }
             "realistic" => {
                 let Some(path) = d.get_item("misspellings_file") else {
                     return Err(py_required_key_error("misspellings_file", "realistic spelling corruption mode"));
                 };
-                let path: String = path.extract()?;
-                SpellingCorruptionMode::Realistic(path)
+                SpellingCorruptionMode::Realistic(path.extract()?)
             }
             "mixed" => {
                 let Some(prob) = d.get_item("char_edit_prob") else {
@@ -545,11 +550,13 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                     return Err(py_required_key_error("artificial_prob", "mixed spelling corruption mode"));
                 };
                 let art_prob: f64 = art_prob.extract()?;
-                let Some(path) = d.get_item("misspellings_file") else {
+                let char_path = d
+                    .get_item("characters_file")
+                    .map(|path| path.extract().expect("characters_file must be a string"));
+                let Some(missp_path) = d.get_item("misspellings_file") else {
                     return Err(py_required_key_error("misspellings_file", "mixed spelling corruption mode"));
                 };
-                let path: String = path.extract()?;
-                SpellingCorruptionMode::Mixed(art_prob, prob, path)
+                SpellingCorruptionMode::Mixed(art_prob, prob, char_path, missp_path.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "spelling corruption mode"));
@@ -566,9 +573,34 @@ fn corrupt_spelling(
     let prob = prob.clamp(0.0, 1.0);
     assert!(prob > 0.0, "corruption probability must be greater than 0");
     let delete = alpha_punct_delete_fn(allow_full_delete);
-    let insert = ascii_insert_fn();
-    let replace = ascii_replace_fn();
     let swap = alpha_swap_fn();
+    // characters we use for insertions and replacements
+    // must have a minimum relative frequency of 0.01%
+    let min_rel_freq = 1.0 / 10000.0;
+    let (insert, replace) = match &mode {
+        SpellingCorruptionMode::Artificial(.., Some(char_file))
+        | SpellingCorruptionMode::Mixed(.., Some(char_file), _) => {
+            let dict = Dictionary::load(char_file).expect("could not load character dictionary");
+            let total_freq = dict.freq_sum as f64;
+            let insert_and_replace_chars: Vec<_> = dict
+                .items()
+                .sorted_by_key(|&(_, freq)| Reverse(freq))
+                .filter_map(|(w, freq)| {
+                    let rel_freq = *freq as f64 / total_freq;
+                    if rel_freq < min_rel_freq {
+                        None
+                    } else {
+                        Some(w.to_string())
+                    }
+                })
+                .collect();
+            (
+                ascii_insert_fn(Some(insert_and_replace_chars.clone())),
+                ascii_replace_fn(Some(insert_and_replace_chars)),
+            )
+        }
+        _ => (ascii_insert_fn(None), ascii_replace_fn(None)),
+    };
     let misspellings = match &mode {
         SpellingCorruptionMode::Realistic(file) | SpellingCorruptionMode::Mixed(.., file) => {
             let file = File::open(file).expect("could not read misspellings file");
@@ -580,14 +612,14 @@ fn corrupt_spelling(
         _ => HashMap::new(),
     };
     let art_char_edit_p = match &mode {
-        SpellingCorruptionMode::Artificial(p) | SpellingCorruptionMode::Mixed(_, p, _) => {
+        SpellingCorruptionMode::Artificial(p, ..) | SpellingCorruptionMode::Mixed(_, p, ..) => {
             p.clamp(0.0, 1.0)
         }
         _ => 0.0,
     };
     let (art_p, real_p) = match mode {
-        SpellingCorruptionMode::Artificial(_) => (prob, 0.0),
-        SpellingCorruptionMode::Realistic(_) => (0.0, prob),
+        SpellingCorruptionMode::Artificial(..) => (prob, 0.0),
+        SpellingCorruptionMode::Realistic(..) => (0.0, prob),
         SpellingCorruptionMode::Mixed(art_p, ..) => {
             let art_p = art_p.clamp(0.0, 1.0);
             (art_p * prob, (1.0 - art_p) * prob)

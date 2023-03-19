@@ -807,7 +807,7 @@ impl TextDataPipeline {
                         data.language.as_deref(),
                         None,
                         None,
-                        true,
+                        false,
                     )?,
                     label: label_fn(&data)?,
                     data,
@@ -839,7 +839,7 @@ impl InferencePipeline {
                 .enumerate()
                 .map(|(w_idx, w)| {
                     let tokenization =
-                        tok.tokenize(w.str, data.language.as_deref(), None, None, false)?;
+                        tok.tokenize(w.str, data.language.as_deref(), None, None, true)?;
                     Ok(InferenceItem::new(
                         data.clone(),
                         tokenization,

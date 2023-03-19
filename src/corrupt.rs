@@ -39,8 +39,10 @@ pub fn insert_fn(insertions: Vec<String>) -> Box<EditOptionsFn> {
     Box::new(move |_, _| insertions.clone())
 }
 
-pub fn ascii_insert_fn() -> Box<EditOptionsFn> {
-    Box::new(|cs, &idx| {
+pub fn ascii_insert_fn(insertions: Option<Vec<String>>) -> Box<EditOptionsFn> {
+    let insertions =
+        insertions.unwrap_or_else(|| ASCII_CHARS.chars().map(|c| c.to_string()).collect());
+    Box::new(move |cs, &idx| {
         assert!(!cs.is_empty());
         let mut inserts: Vec<_> = Vec::new();
         if idx == 0 && !cs.get_char(idx).is_punctuation() {
@@ -49,7 +51,7 @@ pub fn ascii_insert_fn() -> Box<EditOptionsFn> {
             inserts.extend(ASCII_RIGHT_PUNCT.chars().map(|c| c.to_string()));
             inserts.extend(ASCII_END_PUNCT.chars().map(|c| c.to_string()));
         } else {
-            inserts.extend(ASCII_CHARS.chars().map(|c| c.to_string()));
+            inserts.extend(insertions.clone());
             inserts.extend(ASCII_OTHER_PUNCT.chars().map(|c| c.to_string()));
             inserts.push(ASCII_DASH.to_string());
         }
@@ -73,13 +75,14 @@ pub fn replace_fn(replacements: Vec<String>) -> Box<EditOptionsFn> {
     })
 }
 
-pub fn ascii_replace_fn() -> Box<EditOptionsFn> {
-    Box::new(|cs, &idx| {
+pub fn ascii_replace_fn(replacements: Option<Vec<String>>) -> Box<EditOptionsFn> {
+    let all_replacements =
+        replacements.unwrap_or_else(|| ASCII_CHARS.chars().map(|c| c.to_string()).collect());
+    Box::new(move |cs, &idx| {
         assert!(!cs.is_empty());
         let char = cs.get_char(idx);
         let is_punct = char.is_punctuation();
-        let filter = |c: char| {
-            let c_str = c.to_string();
+        let filter = |c_str: String| {
             if c_str != char.str {
                 Some(c_str)
             } else {
@@ -87,14 +90,38 @@ pub fn ascii_replace_fn() -> Box<EditOptionsFn> {
             }
         };
 
-        let mut replacements: Vec<_> = ASCII_CHARS.chars().filter_map(filter).collect();
+        let mut replacements: Vec<_> = all_replacements
+            .clone()
+            .into_iter()
+            .filter_map(filter)
+            .collect();
         if idx == 0 && is_punct {
-            replacements.extend(ASCII_LEFT_PUNCT.chars().filter_map(filter));
+            replacements.extend(
+                ASCII_LEFT_PUNCT
+                    .chars()
+                    .map(|c| c.to_string())
+                    .filter_map(filter),
+            );
         } else if idx == cs.len() - 1 && is_punct {
-            replacements.extend(ASCII_RIGHT_PUNCT.chars().filter_map(filter));
-            replacements.extend(ASCII_END_PUNCT.chars().filter_map(filter));
+            replacements.extend(
+                ASCII_RIGHT_PUNCT
+                    .chars()
+                    .map(|c| c.to_string())
+                    .filter_map(filter),
+            );
+            replacements.extend(
+                ASCII_END_PUNCT
+                    .chars()
+                    .map(|c| c.to_string())
+                    .filter_map(filter),
+            );
         } else {
-            replacements.extend(ASCII_OTHER_PUNCT.chars().filter_map(filter));
+            replacements.extend(
+                ASCII_OTHER_PUNCT
+                    .chars()
+                    .map(|c| c.to_string())
+                    .filter_map(filter),
+            );
             replacements.push(ASCII_DASH.to_string());
         }
         replacements

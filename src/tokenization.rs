@@ -12,7 +12,7 @@ use regex::{escape, Regex};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -229,6 +229,9 @@ impl IntoPy<PyObject> for TokenizeConfig {
                 d.set_item("groups", cfg.groups.into_py(py)).unwrap();
                 d.set_item("aggregation", cfg.aggregation.into_py(py))
                     .unwrap();
+                if let Some(pad) = cfg.pad_to_multiple_of {
+                    d.set_item("pad_to_multiple_of", pad).unwrap();
+                }
                 "byte"
             }
             TokenizeConfig::ByT5(cfg) => {
@@ -283,13 +286,22 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 } else {
                     GroupAggregation::Mean
                 };
+                let pad_to_multiple_of = if let Some(value) = d.get_item("pad_to_multiple_of") {
+                    Some(value.extract()?)
+                } else {
+                    None
+                };
                 let byte_cfg = ByteTokenizerConfig {
                     use_graphemes,
+                    pad_to_multiple_of,
                     groups: groups.extract()?,
                     aggregation: agg,
                 };
                 if name == "byt5" {
-                    TokenizeConfig::ByT5(byte_cfg)
+                    TokenizeConfig::ByT5(ByteTokenizerConfig {
+                        pad_to_multiple_of: None,
+                        ..byte_cfg
+                    })
                 } else {
                     TokenizeConfig::Byte(byte_cfg)
                 }
@@ -1658,6 +1670,7 @@ impl<'a> FromPyObject<'a> for ByteGroups {
 #[derive(Clone, Debug)]
 pub struct ByteTokenizerConfig {
     pub use_graphemes: bool,
+    pub pad_to_multiple_of: Option<usize>,
     pub groups: ByteGroups,
     pub aggregation: GroupAggregation,
 }
@@ -1675,9 +1688,30 @@ impl ByteTokenizer {
 
     fn new_with(
         config: ByteTokenizerConfig,
-        special_config: SpecialConfig,
+        mut special_config: SpecialConfig,
         language_config: Option<LanguageConfig>,
     ) -> Self {
+        if let Some(pad_to) = config.pad_to_multiple_of {
+            assert!(
+                pad_to.is_power_of_two(),
+                "pad_to_multiple_of must be a power of two"
+            );
+            let mut special_tokens: HashSet<&String> =
+                HashSet::from_iter(special_config.tokens.iter());
+            if let Some(lang_cfg) = &language_config {
+                special_tokens.insert(&lang_cfg.default_language);
+                for token in lang_cfg.languages.iter() {
+                    special_tokens.insert(token);
+                }
+            }
+            let num_special_tokens = special_tokens.len();
+            let num_tokens = 256 + num_special_tokens;
+            let num_pad_tokens =
+                (num_tokens as f64 / pad_to as f64).ceil() as usize * pad_to - num_tokens;
+            special_config
+                .tokens
+                .extend((0..num_pad_tokens).map(|idx| format!("<extra_token_{}>", idx)));
+        }
         Self::new_vocab_free_tokenizer(256, special_config, language_config, config)
     }
 

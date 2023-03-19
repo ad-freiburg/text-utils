@@ -6,14 +6,14 @@ import os
 import hashlib
 import shutil
 import time
-from logging import INFO
+# from logging import INFO
 from typing import Dict, Optional, Tuple, Any, List, Callable
 import zipfile
 
 import torch
 from torch import distributed as dist
 from torch import multiprocessing as mp
-from torch import nn, optim
+from torch import nn
 from torch.backends import cudnn  # noqa
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -389,7 +389,7 @@ training will resume from latest checkpoint."
                 for lang in src_langs
             ], cleanup_paths
 
-    @ classmethod
+    @classmethod
     def _data_from_config(
         cls,
         cfg: Dict[str, Any],
@@ -462,7 +462,7 @@ training will resume from latest checkpoint."
             )
         return train_loader, val_loader, list(set(train_cleanup + val_cleanup))
 
-    @ classmethod
+    @classmethod
     def _setup_experiment(cls, work_dir: str, exp_dir: str, config_path: str, cfg: Dict[str, Any]):
         config_name = os.path.split(config_path)[-1]
         os.makedirs(exp_dir, exist_ok=True)
@@ -492,7 +492,7 @@ training will resume from latest checkpoint."
         os.makedirs(os.path.join(exp_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(exp_dir, "tensorboard"), exist_ok=True)
 
-    @ classmethod
+    @classmethod
     def _train_local_distributed(
         cls,
         rank: int,
@@ -529,7 +529,7 @@ training will resume from latest checkpoint."
             cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
-    @ classmethod
+    @classmethod
     def train_slurm(cls, work_dir: str, experiment_dir: str, config_path: str):
         assert torch.cuda.device_count() > 0, "need at least one GPU for training, but found none"
         assert dist.is_available(), "distributed package must be available for training"
@@ -600,7 +600,7 @@ training will resume from latest checkpoint."
         cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
-    @ classmethod
+    @classmethod
     def train_local(cls, work_dir: str, experiment_dir: str, config_path: str, profile: Optional[str] = None):
         logger = logging.get_logger("LOCAL_INITIALIZATION")
         num_gpus = torch.cuda.device_count()

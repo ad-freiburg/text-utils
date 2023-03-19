@@ -12,6 +12,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-m", "--max-sequences", type=int, default=None,
                         help="Max number of sequences to consider while building the dictionary")
     parser.add_argument("-n", "--num-threads", type=int, default=None, help="Number of threads to use")
+    parser.add_argument("--key", choices=["word", "char"], default="word", help="Key type")
     parser.add_argument("--progress", action="store_true", help="Show progress bar")
     return parser.parse_args()
 

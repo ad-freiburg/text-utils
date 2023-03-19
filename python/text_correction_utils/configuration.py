@@ -25,11 +25,11 @@ def _replace_env(s: str, _: str) -> Any:
     return yaml.load(s, Loader=yaml.FullLoader)
 
 
-def _replace_non_env(s: str, base_dir: str) -> Any:
-    file_regex = re.compile(r"^file\((.+\.yaml)\)$")
-    abs_path_regex = re.compile(r"^abspath\((.+)\)$")
-    rel_path_regex = re.compile(r"^relpath\((.+)\)$")
-    eval_regex = re.compile(r"^eval\((.+)\)$")
+def _replace_non_env_var(s: str, base_dir: str) -> Any:
+    file_regex = re.compile(r"^file\((\S+?\.yaml)\)$")
+    abs_path_regex = re.compile(r"^abspath\((\S+)\)$")
+    rel_path_regex = re.compile(r"^relpath\((\S+)\)$")
+    eval_regex = re.compile(r"^eval\((\S+)\)$")
     file_regex_match = file_regex.fullmatch(s)
     abs_path_regex_match = abs_path_regex.fullmatch(s)
     rel_path_regex_match = rel_path_regex.fullmatch(s)
@@ -43,29 +43,30 @@ def _replace_non_env(s: str, base_dir: str) -> Any:
     assert num_matches <= 1, f"more than one config command matches '{s}'"
     if file_regex_match is not None:
         file_path = file_regex_match.group(1)
-        file_path = str(_replace_non_env(file_path, base_dir))
+        file_path = str(_replace_non_env_var(file_path, base_dir))
         return load_config(os.path.join(base_dir, file_path))
     elif abs_path_regex_match is not None:
         path = abs_path_regex_match.group(1)
-        path = str(_replace_non_env(path, base_dir))
+        path = str(_replace_non_env_var(path, base_dir))
         return os.path.abspath(path)
     elif rel_path_regex_match is not None:
         path = rel_path_regex_match.group(1)
-        path = str(_replace_non_env(path, base_dir))
-        return os.path.relpath(path, base_dir)
+        path = str(_replace_non_env_var(path, base_dir))
+        cwd = os.getcwd()
+        return os.path.relpath(os.path.join(base_dir, path), cwd)
     elif eval_regex_match is not None:
         expression = eval_regex_match.group(1)
         org_length = len(expression)
         length_change = 0
         for match in eval_regex.finditer(expression):
-            replacement = _replace_non_env(match.group(1), base_dir)
+            replacement = _replace_non_env_var(match.group(1), base_dir)
             expression = (
                 expression[:match.start(1) + length_change]
                 + str(replacement)
                 + expression[match.end(1) + length_change:]
             )
             length_change = len(expression) - org_length
-        expression = str(_replace_non_env(expression, base_dir))
+        expression = str(_replace_non_env_var(expression, base_dir))
         return eval(expression)
     else:
         return s
@@ -116,7 +117,7 @@ def load_config(yaml_path: str) -> Any:
     base_dir = os.path.abspath(os.path.dirname(yaml_path))
     parsed_yaml = yaml.load(raw_yaml, Loader=yaml.FullLoader)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_env)
-    parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env)
+    parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env_var)
     return yaml.load(yaml.dump(parsed_yaml), Loader=yaml.FullLoader)
 
 

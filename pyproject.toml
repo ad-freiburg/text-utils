@@ -34,7 +34,7 @@ dependencies = [
 
 [project.scripts]
 "tcu.zip_experiment" = "text_correction_utils.cli.zip_experiment:main"
-"tcu.dictionary" = "text_correction_utils.cli.dictionary:main"
+"tcu.create_dictionary" = "text_correction_utils.cli.create_dictionary:main"
 "tcu.train_bpe" = "text_correction_utils.cli.train_bpe:main"
 
 [project.optional-dependencies]

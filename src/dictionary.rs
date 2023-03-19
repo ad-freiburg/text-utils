@@ -54,6 +54,7 @@ impl Dictionary {
         max_size: Option<usize>,
         max_sequences: Option<usize>,
         num_threads: u8,
+        use_characters: bool,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
         let max_size = max_size.unwrap_or(usize::MAX);
@@ -72,17 +73,24 @@ impl Dictionary {
                 let mut counts = HashMap::new();
                 for line in lines {
                     let line = normalize(&clean(&line, true), Normalization::NFKC, true);
-                    split_words(&line)
-                        .into_iter()
-                        .filter_map(|(_, parts)| parts)
-                        .flatten()
-                        .for_each(|(w, _)| {
-                            if counts.contains_key(w) {
-                                *counts.get_mut(w).unwrap() += 1;
-                            } else {
-                                counts.insert(w.to_string(), 1);
-                            }
-                        });
+                    let tokens: Vec<_> = if use_characters {
+                        CS::split(&line, true)
+                            .filter(|s| s.chars().all(char::is_alphabetic))
+                            .collect()
+                    } else {
+                        split_words(&line)
+                            .into_iter()
+                            .filter_map(|(_, parts)| parts)
+                            .flat_map(|parts| parts.into_iter().map(|(s, _)| s))
+                            .collect()
+                    };
+                    for token in tokens {
+                        if counts.contains_key(token) {
+                            *counts.get_mut(token).unwrap() += 1;
+                        } else {
+                            counts.insert(token.to_string(), 1);
+                        }
+                    }
                 }
                 let mut inner = inner_clone.lock().unwrap();
                 for (word, freq) in counts {
@@ -197,16 +205,24 @@ impl Dictionary {
     #[staticmethod]
     #[pyo3(
         name = "create",
-        signature = (files, max_size = None, max_sequences = None, num_threads=(num_cpus::get() as u8).min(4), show_progress=false),
+        signature = (files, max_size = None, max_sequences = None, num_threads=(num_cpus::get() as u8).min(4), use_characters = false, show_progress=false),
     )]
     fn create_py(
         files: Vec<&str>,
         max_size: Option<usize>,
         max_sequences: Option<usize>,
         num_threads: u8,
+        use_characters: bool,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
-        Self::create(&files, max_size, max_sequences, num_threads, show_progress)
+        Self::create(
+            &files,
+            max_size,
+            max_sequences,
+            num_threads,
+            use_characters,
+            show_progress,
+        )
     }
 
     fn __len__(&self) -> usize {
@@ -334,6 +350,7 @@ mod tests {
             Some(100),
             Some(1000),
             (num_cpus::get() as u8).min(4),
+            false,
             true,
         )
         .unwrap();

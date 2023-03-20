@@ -416,8 +416,10 @@ training will resume from latest checkpoint."
             info
         )
 
-        num_languages_specified = sum(lang is not None for lang in train_languages)
-        default_language = cfg.pop("default_language")
+        num_languages_specified = sum(
+            lang is not None for lang in train_languages
+        )
+        default_language = cfg.pop("default_language", None)
         if num_languages_specified > 0 and num_languages_specified < len(train_languages):
             assert default_language is not None, \
                 "expected default_language to be specified if some, but not all " \

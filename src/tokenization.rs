@@ -1835,8 +1835,12 @@ pub struct ByT5Tokenizer {
 
 impl ByT5Tokenizer {
     pub fn new(config: ByteTokenizerConfig) -> Self {
+        // disable vocab padding for byt5 tokenizer
         let inner = ByteTokenizer::new_with(
-            config,
+            ByteTokenizerConfig {
+                pad_to_multiple_of: None,
+                ..config
+            },
             SpecialConfig {
                 pad: "<pad>".into(),
                 tokens: vec!["<pad>".into(), "</s>".into(), "<unk>".into()],
@@ -2060,10 +2064,12 @@ mod tests {
     fn test_byte_tokenizer() {
         let tokenize_cfg = ByteTokenizerConfig {
             use_graphemes: true,
+            pad_to_multiple_of: Some(128),
             groups: ByteGroups::Bytes,
             aggregation: GroupAggregation::Mean,
         };
         let tok = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default(), None);
+        assert_eq!(tok.vocab_size(), 384);
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(
@@ -2169,10 +2175,12 @@ mod tests {
     fn test_byt5_tokenizer() {
         let tokenize_cfg = ByteTokenizerConfig {
             use_graphemes: true,
+            pad_to_multiple_of: Some(128),
             groups: ByteGroups::Bytes,
             aggregation: GroupAggregation::Mean,
         };
         let tok = ByT5Tokenizer::new(tokenize_cfg);
+        assert_eq!(tok.vocab_size(), 259);
         let Tokenization { token_ids, info: _ } =
             tok.tokenize("a täst", None, None, None, true).unwrap();
         assert_eq!(token_ids, vec![100, 35, 119, 198, 167, 118, 119, 1]);

@@ -372,7 +372,7 @@ impl<T> TextIterator<T> {
 }
 
 impl<T> Iterator for TextIterator<T> {
-    type Item = T;
+    type Item = (T, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         let data = loop {
@@ -388,8 +388,9 @@ impl<T> Iterator for TextIterator<T> {
                 }
             };
         };
+        let value = (data, self.idx);
         self.next_idx();
-        Some(data)
+        Some(value)
     }
 }
 
@@ -399,7 +400,7 @@ where
     I: Send + 'static,
     O: Send + 'static,
 {
-    fn pipe(self, pipeline: &Pipeline<I, O>, num_threads: u8, seed: Option<u64>) -> Pipe<O>;
+    fn pipe(self, pipeline: Pipeline<I, O>, num_threads: u8) -> Pipe<O>;
 }
 
 impl<It, I, O> PipelineIterator<I, O> for It
@@ -408,8 +409,8 @@ where
     I: Send + 'static,
     O: Send + 'static,
 {
-    fn pipe(self, pipeline: &Pipeline<I, O>, num_threads: u8, seed: Option<u64>) -> Pipe<O> {
-        Pipe::new(self, pipeline.clone(), num_threads, seed)
+    fn pipe(self, pipeline: Pipeline<I, O>, num_threads: u8) -> Pipe<O> {
+        Pipe::new(self, pipeline, num_threads)
     }
 }
 
@@ -428,7 +429,6 @@ where
         inner: impl Iterator<Item = I> + Send + 'static,
         pipeline: Pipeline<I, O>,
         num_threads: u8,
-        seed: Option<u64>,
     ) -> Self {
         let num_threads = num_threads.clamp(1, num_cpus::get() as u8);
         let inner = Arc::new(Mutex::new(inner.enumerate()));
@@ -441,7 +441,7 @@ where
         for idx in 0..num_threads {
             let inner_clone = inner.clone();
             let tx_clone = tx.clone();
-            let pipe_clone = pipeline.clone();
+            let pipeline_clone = pipeline.clone();
             let send_next = sent_counter.clone();
             let _: JoinHandle<()> = Builder::new()
                 .name(format!("pipeline worker thread {idx}"))
@@ -451,7 +451,7 @@ where
                             inner_clone.lock().expect("failed to lock receiver").next() else {
                                 return;
                             };
-                        let item = pipe_clone.apply(data, idx, seed.map(|seed| seed + idx as u64));
+                        let item = pipeline_clone(data);
                         // wait until we are the next to send out item
                         while send_next.load(Ordering::SeqCst) != idx {
                             sleep(Duration::from_micros(100));
@@ -879,9 +879,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::data::loading::{open, BatchLimitType};
+    use crate::data::loading::{open, BatchLimitType, BatchedIterator};
     use crate::data::preprocessing::LabelingConfig;
-    use crate::data::{Item, Pipeline, PreprocessingPipelineConfig, TextData};
+    use crate::data::{
+        text_data_pipeline_with_tokenizer, Item, Pipeline, PreprocessingConfig,
+        PreprocessingPipelineConfig, TextData, TextDataInfo,
+    };
     use crate::tokenization::{SpecialConfig, TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
@@ -891,10 +894,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use super::{
-        text_data_generator_from_files, BatchedIterator, BufferedIterator, PipelineIterator,
-        TextIterator,
-    };
+    use super::{text_data_generator_from_files, BufferedIterator, PipelineIterator, TextIterator};
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
     const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
@@ -916,22 +916,18 @@ mod tests {
 
         // first check sequential lines with one file
         assert_eq!(it.min_len(), 29000);
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_FIRST.to_string(),
-                processed: MULTI30K_FIRST.to_string(),
-                language: Some("1".to_string()),
-            }
-        );
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_SECOND.to_string(),
-                processed: MULTI30K_SECOND.to_string(),
-                language: Some("1".to_string()),
-            }
-        );
+        let data = TextData {
+            original: MULTI30K_FIRST.to_string(),
+            processed: MULTI30K_FIRST.to_string(),
+            language: Some("1".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
+        let data = TextData {
+            original: MULTI30K_SECOND.to_string(),
+            processed: MULTI30K_SECOND.to_string(),
+            language: Some("1".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
         // check sequential lines with original and processed
         let multi30k = text_data_generator_from_files(&d, Some(&d2), Some("1".to_string()))?;
         let mut it = TextIterator::new(
@@ -941,22 +937,18 @@ mod tests {
         )?;
 
         assert_eq!(it.min_len(), 29000);
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_FIRST.to_string(),
-                processed: MULTI30K_REV_FIRST.to_string(),
-                language: Some("1".to_string()),
-            }
-        );
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_SECOND.to_string(),
-                processed: MULTI30K_REV_SECOND.to_string(),
-                language: Some("1".to_string()),
-            }
-        );
+        let data = TextData {
+            original: MULTI30K_FIRST.to_string(),
+            processed: MULTI30K_REV_FIRST.to_string(),
+            language: Some("1".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
+        let data = TextData {
+            original: MULTI30K_SECOND.to_string(),
+            processed: MULTI30K_REV_SECOND.to_string(),
+            language: Some("1".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
         // check interleaved lines with two files
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let multi30k_rev = text_data_generator_from_files(&d2, None, Some("2".to_string()))?;
@@ -967,41 +959,33 @@ mod tests {
         )?;
 
         assert_eq!(it.min_len(), 2 * 29000);
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_FIRST.to_string(),
-                processed: MULTI30K_FIRST.to_string(),
-                language: Some("1".to_string()),
-            }
-        );
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_REV_FIRST.to_string(),
-                processed: MULTI30K_REV_FIRST.to_string(),
-                language: Some("2".to_string()),
-            }
-        );
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_SECOND.to_string(),
-                processed: MULTI30K_SECOND.to_string(),
-                language: Some("1".to_string()),
-            }
-        );
-        assert_eq!(
-            it.next().unwrap().unwrap(),
-            TextData {
-                original: MULTI30K_REV_SECOND.to_string(),
-                processed: MULTI30K_REV_SECOND.to_string(),
-                language: Some("2".to_string()),
-            }
-        );
+        let data = TextData {
+            original: MULTI30K_FIRST.to_string(),
+            processed: MULTI30K_FIRST.to_string(),
+            language: Some("1".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
+        let data = TextData {
+            original: MULTI30K_REV_FIRST.to_string(),
+            processed: MULTI30K_REV_FIRST.to_string(),
+            language: Some("2".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 1)));
+        let data = TextData {
+            original: MULTI30K_SECOND.to_string(),
+            processed: MULTI30K_SECOND.to_string(),
+            language: Some("1".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
+        let data = TextData {
+            original: MULTI30K_REV_SECOND.to_string(),
+            processed: MULTI30K_REV_SECOND.to_string(),
+            language: Some("2".to_string()),
+        };
+        assert!(matches!(it.next().unwrap(), (Ok(data), 1)));
         // check that they are indeed interleaved
         let mut idx: usize = 4;
-        while let Some(data) = it.next() {
+        while let Some((data, _)) = it.next() {
             assert_eq!(
                 &data.unwrap().language.unwrap(),
                 if idx % 2 == 0 { "1" } else { "2" }
@@ -1020,7 +1004,7 @@ mod tests {
         assert_eq!(it.min_len(), 2 * 29000);
         let mut first_count = 0;
         let mut second_count = 0;
-        while let Some(data) = it.next() {
+        while let Some((data, _)) = it.next() {
             if data.unwrap().language.unwrap().as_str() == "1" {
                 first_count += 1;
             } else {
@@ -1046,9 +1030,9 @@ mod tests {
             special: SpecialConfig::default(),
             language: None,
         };
-        let pipeline = Pipeline::with_tokenizer(
+        let pipeline = text_data_pipeline_with_tokenizer(
             PreprocessingPipelineConfig {
-                preprocessing: vec![],
+                preprocessing: PreprocessingConfig::Single(vec![]),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
             tokenizer_cfg,
@@ -1061,7 +1045,15 @@ mod tests {
             None,
         )?;
 
-        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 0, None);
+        let it = text_iter
+            .filter_map(|(d, file_idx)| {
+                if let Ok(d) = d {
+                    Some((d, TextDataInfo { file_idx, seed: 0 }))
+                } else {
+                    None
+                }
+            })
+            .pipe(pipeline.clone(), 0);
         let n: usize = 20;
         let now = Instant::now();
         let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
@@ -1078,7 +1070,15 @@ mod tests {
                 super::TextIterationStrategy::Sequential,
                 None,
             )?;
-            let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 2, None);
+            let it = text_iter
+                .filter_map(|(d, file_idx)| {
+                    if let Ok(d) = d {
+                        Some((d, TextDataInfo { file_idx, seed: 0 }))
+                    } else {
+                        None
+                    }
+                })
+                .pipe(pipeline.clone(), 2);
             let now = Instant::now();
             let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
             let time2 = now.elapsed().as_secs_f64();
@@ -1095,7 +1095,15 @@ mod tests {
                 super::TextIterationStrategy::Sequential,
                 None,
             )?;
-            let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 4, None);
+            let it = text_iter
+                .filter_map(|(d, file_idx)| {
+                    if let Ok(d) = d {
+                        Some((d, TextDataInfo { file_idx, seed: 0 }))
+                    } else {
+                        None
+                    }
+                })
+                .pipe(pipeline.clone(), 4);
             let now = Instant::now();
             let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
             let time3 = now.elapsed().as_secs_f64();
@@ -1110,9 +1118,9 @@ mod tests {
             special: SpecialConfig::default(),
             language: None,
         };
-        let pipeline = Pipeline::with_tokenizer(
+        let pipeline = text_data_pipeline_with_tokenizer(
             PreprocessingPipelineConfig {
-                preprocessing: vec![],
+                preprocessing: PreprocessingConfig::Single(vec![]),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
             tokenizer_cfg,
@@ -1124,7 +1132,15 @@ mod tests {
             None,
         )?;
 
-        let it = text_iter.filter_map(|d| d.ok()).pipe(&pipeline, 0, None);
+        let it = text_iter
+            .filter_map(|(d, file_idx)| {
+                if let Ok(d) = d {
+                    Some((d, TextDataInfo { file_idx, seed: 0 }))
+                } else {
+                    None
+                }
+            })
+            .pipe(pipeline.clone(), 0);
         let lines = BufReader::new(open(&d)?).lines();
         for (item, line) in it.zip(lines) {
             assert_eq!(item.unwrap().data.original, line.unwrap())
@@ -1153,16 +1169,22 @@ mod tests {
             special: SpecialConfig::default(),
             language: None,
         };
-        let pipeline = Pipeline::with_tokenizer(
+        let pipeline = text_data_pipeline_with_tokenizer(
             PreprocessingPipelineConfig {
-                preprocessing: vec![],
+                preprocessing: PreprocessingConfig::Single(vec![]),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
             tokenizer_cfg,
         )?;
         let pipe_it = text_iter
-            .filter_map(|d| d.ok())
-            .pipe(&pipeline, 4, None)
+            .filter_map(|(d, file_idx)| {
+                if let Ok(d) = d {
+                    Some((d, TextDataInfo { file_idx, seed: 0 }))
+                } else {
+                    None
+                }
+            })
+            .pipe(pipeline.clone(), 4)
             .filter_map(|d| d.ok())
             .batched(false, false, 0, 8, BatchLimitType::BatchSize, None);
         for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(8)) {
@@ -1186,8 +1208,14 @@ mod tests {
                 )?;
 
                 let pipe_it = text_iter
-                    .filter_map(|d| d.ok())
-                    .pipe(&pipeline, 4, None)
+                    .filter_map(|(d, file_idx)| {
+                        if let Ok(d) = d {
+                            Some((d, TextDataInfo { file_idx, seed: 0 }))
+                        } else {
+                            None
+                        }
+                    })
+                    .pipe(pipeline.clone(), 4)
                     .filter_map(|d| d.ok())
                     .batched(
                         sort,

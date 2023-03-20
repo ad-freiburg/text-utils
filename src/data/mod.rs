@@ -3,7 +3,7 @@ use crate::data::loading::{
     text_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator, DataGen,
     ItemSize, PipelineIterator, Tensorize, TensorizedIterator, TextIterationStrategy, TextIterator,
 };
-use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingConfig};
+use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingFnConfig};
 use crate::text::clean;
 use crate::tokenization::{
     padding_mask, token_groups_to_sparse_coo_matrix, tokenizer, PaddingMask,
@@ -744,114 +744,155 @@ impl Tensorize for Batch<InferenceItem> {
 }
 
 #[derive(Debug, Clone)]
+pub enum PreprocessingConfig {
+    Single(Vec<PreprocessingFnConfig>),
+    PerFile(Vec<Vec<PreprocessingFnConfig>>),
+}
+
+impl<'a> FromPyObject<'a> for PreprocessingConfig {
+    fn extract(obj: &'a PyAny) -> PyResult<Self> {
+        if let Ok(value) = obj.extract::<Vec<PreprocessingFnConfig>>() {
+            Ok(PreprocessingConfig::Single(value))
+        } else if let Ok(value) = obj.extract::<Vec<Vec<PreprocessingFnConfig>>>() {
+            Ok(PreprocessingConfig::PerFile(value))
+        } else {
+            Err(PyTypeError::new_err(
+                "preprocessing config must be a list of preprocessing functions or a list of lists of preprocessing functions",
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PreprocessingPipelineConfig {
-    preprocessing: Vec<PreprocessingConfig>,
+    preprocessing: PreprocessingConfig,
     labeling: LabelingConfig,
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = obj.extract()?;
-        let preprocessing = if let Some(value) = d.get_item("preprocessing") {
-            value.extract()?
-        } else {
-            vec![]
+        let Some(preprocessing) = d.get_item("preprocessing") else {
+            return Err(py_required_key_error("preprocessing", "preprocessing pipeline config"));
         };
         let Some(labeling) = d.get_item("labeling") else {
             return Err(py_required_key_error("labeling", "preprocessing pipeline config"));
         };
         Ok(PreprocessingPipelineConfig {
-            preprocessing,
+            preprocessing: preprocessing.extract()?,
             labeling: labeling.extract()?,
         })
     }
 }
 
-pub type ApplyFn<I, O> = dyn Send + Sync + 'static + Fn(I, usize, Option<u64>) -> O;
-pub struct Pipeline<I, O> {
-    apply_fn: Arc<ApplyFn<I, O>>,
-}
-impl<I, O> Clone for Pipeline<I, O> {
-    fn clone(&self) -> Self {
-        Self {
-            apply_fn: self.apply_fn.clone(),
-        }
-    }
-}
+// a pipeline is a function mapping an input to an output,
+// and it also sharable across threads
+pub type Pipeline<I, O> = Arc<dyn Send + Sync + 'static + Fn(I) -> O>;
+// pub struct Pipeline<I, O> {
+//     apply_fn: Arc<ApplyFn<I, O>>,
+// }
+// impl<I, O> Clone for Pipeline<I, O> {
+//     fn clone(&self) -> Self {
+//         Self {
+//             apply_fn: self.apply_fn.clone(),
+//         }
+//     }
+// }
 
-impl<I, O> Pipeline<I, O> {
-    pub fn apply(&self, input: I, idx: usize, seed: Option<u64>) -> O {
-        (self.apply_fn)(input, idx, seed)
-    }
+// impl<I, O> Pipeline<I, O> {
+//     pub fn apply(&self, input: I) -> O {
+//         (self.apply_fn)(input)
+//     }
+//
+//     pub fn new(apply_fn: Arc<ApplyFn<I, O>>) -> Self {
+//         Self { apply_fn }
+//     }
+// }
 
-    pub fn new(apply_fn: Arc<ApplyFn<I, O>>) -> Self {
-        Self { apply_fn }
-    }
+type TextDataFn = dyn Fn(TextData, usize, u64) -> anyhow::Result<TextData> + Send + Sync + 'static;
+pub struct TextDataInfo {
+    pub seed: u64,
+    pub file_idx: usize,
 }
-
-pub type TextDataPipeline = Pipeline<TextData, anyhow::Result<Item>>;
-impl TextDataPipeline {
-    pub fn with_tokenizer(
-        pipeline_cfg: PreprocessingPipelineConfig,
-        tokenizer_cfg: TokenizerConfig,
-    ) -> anyhow::Result<Self> {
-        let tok = tokenizer(tokenizer_cfg)?;
-        let preprocess_fn = preprocessing(pipeline_cfg.preprocessing);
-        let label_fn = labeling(pipeline_cfg.labeling);
-        Ok(Pipeline::new(Arc::new(
-            move |data, _, seed| -> anyhow::Result<Item> {
-                let data = preprocess_fn(data, seed)?;
-                Ok(Item {
-                    tokenization: tok.tokenize(
-                        &data.processed,
-                        data.language.as_deref(),
-                        None,
-                        None,
-                        false,
-                    )?,
-                    label: label_fn(&data)?,
-                    data,
-                })
-            },
-        )))
-    }
-}
-
-pub type InferencePipeline = Pipeline<InferenceData, anyhow::Result<Vec<InferenceItem>>>;
-impl InferencePipeline {
-    pub fn with_windows(
-        tokenizer_cfg: TokenizerConfig,
-        window_cfg: WindowConfig,
-        normalization: Option<Normalization>,
-        use_graphemes: bool,
-    ) -> anyhow::Result<Self> {
-        let tok = tokenizer(tokenizer_cfg)?;
-        Ok(Pipeline::new(Arc::new(move |data, idx, _| {
-            let mut data = InferenceData {
-                text: clean(&data.text, use_graphemes),
-                ..data
-            };
-            if let Some(normalization) = normalization {
-                data.text = normalize(&data.text, normalization, use_graphemes);
+pub type TextDataPipeline = Pipeline<(TextData, TextDataInfo), anyhow::Result<Item>>;
+pub fn text_data_pipeline_with_tokenizer(
+    pipeline_cfg: PreprocessingPipelineConfig,
+    tokenizer_cfg: TokenizerConfig,
+) -> anyhow::Result<TextDataPipeline> {
+    let tok = tokenizer(tokenizer_cfg)?;
+    let preprocess_fn: Box<TextDataFn> =
+        match pipeline_cfg.preprocessing {
+            PreprocessingConfig::Single(cfg) => {
+                let preprocessing = preprocessing(cfg);
+                Box::new(move |data: TextData, _: usize, seed: u64| preprocessing(data, Some(seed)))
             }
-            windows(&data.text, &window_cfg)?
-                .iter()
-                .enumerate()
-                .map(|(w_idx, w)| {
-                    let tokenization =
-                        tok.tokenize(w.str, data.language.as_deref(), None, None, true)?;
-                    Ok(InferenceItem::new(
-                        data.clone(),
-                        tokenization,
-                        idx,
-                        w_idx,
-                        w.boundaries(),
-                        w.byte_boundaries(),
-                    ))
+            PreprocessingConfig::PerFile(cfgs) => {
+                let preprocessings: HashMap<_, _> = HashMap::from_iter(
+                    cfgs.into_iter()
+                        .enumerate()
+                        .map(|(idx, cfg)| (idx, preprocessing(cfg))),
+                );
+                Box::new(move |data, file_idx, seed| {
+                    preprocessings.get(&file_idx).unwrap_or_else(|| {
+                        panic!("could not find preprocessing for file {file_idx}")
+                    })(data, Some(seed))
                 })
-                .collect()
-        })))
-    }
+            }
+        };
+    let label_fn = labeling(pipeline_cfg.labeling);
+    Ok(Arc::new(move |(data, info)| -> anyhow::Result<Item> {
+        let data = preprocess_fn(data, info.file_idx, info.seed)?;
+        Ok(Item {
+            tokenization: tok.tokenize(
+                &data.processed,
+                data.language.as_deref(),
+                None,
+                None,
+                false,
+            )?,
+            label: label_fn(&data)?,
+            data,
+        })
+    }))
+}
+
+pub struct InferenceDataInfo {
+    pub item_idx: usize,
+}
+pub type InferencePipeline =
+    Pipeline<(InferenceData, InferenceDataInfo), anyhow::Result<Vec<InferenceItem>>>;
+pub fn inference_pipeline_with_windows(
+    tokenizer_cfg: TokenizerConfig,
+    window_cfg: WindowConfig,
+    normalization: Option<Normalization>,
+    use_graphemes: bool,
+) -> anyhow::Result<InferencePipeline> {
+    let tok = tokenizer(tokenizer_cfg)?;
+    Ok(Arc::new(move |(data, info)| {
+        let mut data = InferenceData {
+            text: clean(&data.text, use_graphemes),
+            ..data
+        };
+        if let Some(normalization) = normalization {
+            data.text = normalize(&data.text, normalization, use_graphemes);
+        }
+        windows(&data.text, &window_cfg)?
+            .iter()
+            .enumerate()
+            .map(|(w_idx, w)| {
+                let tokenization =
+                    tok.tokenize(w.str, data.language.as_deref(), None, None, true)?;
+                Ok(InferenceItem::new(
+                    data.clone(),
+                    tokenization,
+                    info.item_idx,
+                    w_idx,
+                    w.boundaries(),
+                    w.byte_boundaries(),
+                ))
+            })
+            .collect()
+    }))
 }
 
 type InferenceDataIter = dyn Iterator<
@@ -885,7 +926,7 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
-        let pipeline = InferencePipeline::with_windows(
+        let pipeline = inference_pipeline_with_windows(
             tokenizer_config.clone(),
             window_config,
             normalization,
@@ -899,7 +940,7 @@ impl InferenceLoader {
         let text_iter_err = iter_err.clone();
         let pipe_iter_err = iter_err.clone();
         let iter = text_iter
-            .scan((), move |_, data| {
+            .scan((), move |_, (data, _)| {
                 if let Err(e) = data {
                     *text_iter_err.lock().unwrap() = Some(e);
                     None
@@ -907,7 +948,9 @@ impl InferenceLoader {
                     data.ok()
                 }
             })
-            .pipe(&pipeline, num_threads, None)
+            .enumerate()
+            .map(|(item_idx, data)| (data, InferenceDataInfo { item_idx }))
+            .pipe(pipeline, num_threads)
             .scan((), move |_, item| {
                 if let Err(e) = item {
                     *pipe_iter_err.lock().unwrap() = Some(e);
@@ -1131,14 +1174,13 @@ impl DataLoader {
         skip: usize,
         limit: Option<usize>,
         distributed: Option<(usize, usize)>,
-    ) -> PyResult<Self> {
+    ) -> anyhow::Result<Self> {
         if shuffle && seed.is_none() {
-            return Err(PyTypeError::new_err(
-                "seed cannot be None if shuffle is true",
-            ));
+            return Err(anyhow!("seed cannot be None if shuffle is true",));
         }
         let prefetch_factor = prefetch_factor.max(1);
-        let pipeline = Pipeline::with_tokenizer(pipeline_config, tokenizer_config.clone())?;
+        let pipeline =
+            text_data_pipeline_with_tokenizer(pipeline_config, tokenizer_config.clone())?;
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
@@ -1172,11 +1214,7 @@ impl DataLoader {
     }
 
     fn init_iter(&mut self) -> anyhow::Result<()> {
-        let seed = if self.seed.is_some() {
-            Some(self.seed.unwrap() + self.epoch as u64)
-        } else {
-            None
-        };
+        let seed = self.seed.unwrap_or(0) + self.epoch as u64;
         let mut generators = vec![];
         for (idx, (original_file, processed_file)) in self.files.iter().enumerate() {
             let lang = if self.languages.is_some() {
@@ -1189,7 +1227,7 @@ impl DataLoader {
             generators.push(generator);
         }
 
-        let text_iter = TextIterator::new(generators, self.strategy, seed)?;
+        let text_iter = TextIterator::new(generators, self.strategy, Some(seed))?;
         self.min_items = Some(
             text_iter
                 .min_len()
@@ -1198,11 +1236,24 @@ impl DataLoader {
                 / self.world_size,
         );
         let batch_iter = text_iter
+            .enumerate()
             .take(self.limit)
             .skip(self.skip + self.fast_forward + self.rank)
             .step_by(self.world_size)
-            .filter_map(|d| d.ok())
-            .pipe(&self.pipeline, self.num_threads, seed)
+            .filter_map(move |(item_idx, (d, file_idx))| {
+                if let Ok(d) = d {
+                    Some((
+                        d,
+                        TextDataInfo {
+                            file_idx,
+                            seed: seed + item_idx as u64,
+                        },
+                    ))
+                } else {
+                    None
+                }
+            })
+            .pipe(self.pipeline.clone(), self.num_threads)
             .filter_map(|i| i.ok())
             .batched(
                 self.sort,
@@ -1210,7 +1261,7 @@ impl DataLoader {
                 self.prefetch_factor,
                 self.batch_limit,
                 self.batch_limit_type,
-                seed,
+                Some(seed),
             )
             .tensorized(self.tokenizer_config.clone())?
             .buffered(self.buffer_size);
@@ -1258,17 +1309,17 @@ impl DataLoader {
         skip: usize,
         limit: Option<usize>,
         distributed: Option<(usize, usize)>,
-    ) -> PyResult<Self> {
+    ) -> anyhow::Result<Self> {
         if files.is_empty() {
-            return Err(PyTypeError::new_err("files is empty"));
+            return Err(anyhow!("no files specified"));
         }
         if languages.is_some() && files.len() != languages.as_ref().unwrap().len() {
-            return Err(PyTypeError::new_err(format!(
+            return Err(anyhow!(
                 "there must be one language for every file if specified, but \
                     got {} files and {} languages",
                 files.len(),
                 languages.as_ref().unwrap().len()
-            )));
+            ));
         }
         Self::new(
             files,

@@ -87,6 +87,7 @@ class TextGenerationMetric(TensorboardMetric):
             )
             strings.append(
                 "\n".join([
+                    f"Lang      : {item.data.language}\n",
                     f"Input     : {item.data.processed}\n",
                     f"Target    : {item.data.original}\n",
                     f"Prediction: {prediction}\n",

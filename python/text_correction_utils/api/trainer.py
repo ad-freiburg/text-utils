@@ -335,8 +335,9 @@ training will resume from latest checkpoint."
         cls,
         sources: List[Dict[str, Any]],
         info: distributed.DistributedInfo
-    ) -> Tuple[List[Tuple[str, Optional[str]]], Optional[List[str]], List[str]]:
+    ) -> Tuple[List[Tuple[str, Optional[str]]], List[Optional[str]], List[Optional[Any]], List[str]]:
         src_paths = []
+        src_preprocessings = []
         src_langs = []
         cleanup_paths = []
         for src in sources:
@@ -344,26 +345,31 @@ training will resume from latest checkpoint."
             src_type = src.pop("type")
             if src_type == "file":
                 lang = src.get("language")
+                preprocessing = src.get("preprocessing")
                 path = src["path"]
                 assert os.path.isfile(path), f"{path} is not a file"
                 temp_dir = src.get("temp_dir")
                 if temp_dir is not None:
                     path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                     cleanup_paths.append(path)
+                src_preprocessings.append(preprocessing)
                 src_paths.append((path, None))
                 src_langs.append(lang)
             elif src_type == "file_glob":
                 lang = src.get("language")
+                preprocessing = src.get("preprocessing")
                 temp_dir = src.get("temp_dir")
                 for path in io.glob_safe(src["glob"]):
                     assert os.path.isfile(path), f"{path} is not a file"
                     if temp_dir is not None:
                         path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                         cleanup_paths.append(path)
+                    src_preprocessings.append(preprocessing)
                     src_paths.append((path, None))
                     src_langs.append(lang)
             elif src_type == "file_pair":
                 lang = src.get("language")
+                preprocessing = src.get("preprocessing")
                 org_path = src["original_path"]
                 proc_path = src["processed_path"]
                 assert os.path.isfile(org_path) and os.path.isfile(proc_path), \
@@ -375,19 +381,13 @@ training will resume from latest checkpoint."
                     proc_path = cls._copy_file_to_tmp_dir(
                         proc_path, temp_dir, info)
                     cleanup_paths.extend([org_path, proc_path])
+                src_preprocessings.append(preprocessing)
                 src_paths.append((org_path, proc_path))
                 src_langs.append(lang)
             else:
                 raise ValueError(f"unknown source type {src_type}")
         assert len(src_paths) > 0, "got no data sources"
-        if all(lang is None for lang in src_langs):
-            return src_paths, None, cleanup_paths
-        else:
-            return src_paths, [
-                lang if lang is not None
-                else tokenization.LanguageTokens.UNK
-                for lang in src_langs
-            ], cleanup_paths
+        return src_paths, src_langs, src_preprocessings, cleanup_paths
 
     @classmethod
     def _data_from_config(
@@ -401,22 +401,38 @@ training will resume from latest checkpoint."
         val_cfg = cfg.pop("val")
         if isinstance(val_cfg, int):
             val_limit = val_cfg
-            val_sources = val_languages = None
-            val_cleanup = []
-        elif isinstance(val_cfg, list):
-            val_limit = None
-            val_sources, val_languages, val_cleanup = cls._prepare_data_sources(
-                val_cfg, info)
         else:
             raise ValueError(
-                "val data must either be an integer or a list of data sources")
+                "val data must either be an integer"
+            )
 
-        train_sources, train_languages, train_cleanup = cls._prepare_data_sources(
+        (
+            train_sources,
+            train_languages,
+            train_preprocessings,
+            train_cleanup
+        ) = cls._prepare_data_sources(
             cfg.pop("sources"),
             info
         )
 
+        num_languages_specified = sum(lang is not None for lang in train_languages)
+        default_language = cfg.pop("default_language")
+        if num_languages_specified > 0 and num_languages_specified < len(train_languages):
+            assert default_language is not None, \
+                "expected default_language to be specified if some, but not all " \
+                "individual data sources specify a language"
+            train_languages = [default_language if lang is None else lang
+                               for lang in train_languages]
+        elif num_languages_specified == 0:
+            train_languages = None
+
         pipeline_cfg = cfg.pop("pipeline")
+        if "preprocessing" not in pipeline_cfg:
+            assert all(preproc is not None for preproc in train_preprocessings), \
+                "expected preprocessing to be specified per data source if not specified " \
+                "for pipeline"
+            pipeline_cfg["preprocessing"] = train_preprocessings
 
         # adapt config to multi gpu usage
         assert "batch_limit" in cfg, "batch_limit must be in data config"
@@ -430,37 +446,26 @@ training will resume from latest checkpoint."
             tokenizer_config,
             train_languages,
             seed=seed,
-            skip=val_limit if val_limit is not None else 0,
+            skip=val_limit,
             distributed=(info.rank, info.world_size),
             **cfg
         )
 
-        # for validation always turn off shuffling and turn on sorting
+        # for validation always turn off shuffling, turn on sorting, and
+        # specify a val limit
         cfg["shuffle"] = False
         cfg["sort"] = True
-        if val_limit is not None:
-            cfg["limit"] = val_limit
-            val_loader = data.DataLoader.from_files(
-                train_sources,
-                pipeline_cfg,
-                tokenizer_config,
-                train_languages,
-                seed=seed,
-                distributed=None,
-                **cfg
-            )
-        else:
-            cfg.pop("limit", None)
-            val_loader = data.DataLoader.from_files(
-                val_sources,
-                pipeline_cfg,
-                tokenizer_config,
-                val_languages,
-                seed=seed,
-                distributed=None,
-                **cfg
-            )
-        return train_loader, val_loader, list(set(train_cleanup + val_cleanup))
+        cfg["limit"] = val_limit
+        val_loader = data.DataLoader.from_files(
+            train_sources,
+            pipeline_cfg,
+            tokenizer_config,
+            train_languages,
+            seed=seed,
+            distributed=None,
+            **cfg
+        )
+        return train_loader, val_loader, train_cleanup
 
     @classmethod
     def _setup_experiment(cls, work_dir: str, exp_dir: str, config_path: str, cfg: Dict[str, Any]):

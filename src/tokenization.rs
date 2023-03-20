@@ -177,6 +177,17 @@ impl LanguageConfig {
 impl<'a> FromPyObject<'a> for LanguageConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
+        let Some(languages) = d.get_item("languages") else {
+            return Err(py_required_key_error("languages", "language config"));
+        };
+        let languages = languages.extract()?;
+        let Some(default_language) = d.get_item("default_language") else {
+            return Err(py_required_key_error(
+                "default_language",
+                "language config",
+            ));
+        };
+        let default_language = default_language.extract()?;
         Ok(Self {
             add_language_token_to_prefix: if let Some(value) =
                 d.get_item("add_language_token_to_prefix")
@@ -192,16 +203,8 @@ impl<'a> FromPyObject<'a> for LanguageConfig {
             } else {
                 false
             },
-            languages: if let Some(value) = d.get_item("languages") {
-                value.extract()?
-            } else {
-                vec![]
-            },
-            default_language: if let Some(value) = d.get_item("default_language") {
-                value.extract()?
-            } else {
-                LANG_UNK.to_string()
-            },
+            languages,
+            default_language,
         })
     }
 }
@@ -750,7 +753,9 @@ where
         );
         assert!(
             languages.iter().all(|l| special_config.tokens.contains(l)),
-            "one or more language tokens not in special tokens"
+            "one or more language tokens not in special tokens:\nlanguages:{:?}\nspecial tokens:{:?}",
+            &languages,
+            &special_config.tokens
         );
         let special_vocab = Vocab::build(special_config.tokens, special_offset);
         let prefix_token_ids = special_config

@@ -9,6 +9,7 @@ import time
 # from logging import INFO
 from typing import Dict, Optional, Tuple, Any, List, Callable
 import zipfile
+from tqdm import tqdm
 
 import torch
 from torch import distributed as dist
@@ -135,7 +136,11 @@ training will resume from latest checkpoint."
                 f"Estimating train loader length on main process from average batch size "
                 f"over {num_batches - skip_batches} batches and minimum train loader items."
             )
-            for idx, batch in enumerate(self.train_loader):
+            for idx, batch in tqdm(
+                enumerate(self.train_loader),
+                desc=f"Looping over train loader, skipping first {skip_batches} batches",
+                total=num_batches
+            ):
                 if idx >= skip_batches + num_batches:
                     break
                 avg_batch_size.add(len(batch))
@@ -531,8 +536,12 @@ training will resume from latest checkpoint."
 
         if info.is_main_process and profile is not None:
             import cProfile
-            cProfile.runctx("cls(cfg, directories, info).run()",
-                            globals(), locals(), filename=profile)
+            cProfile.runctx(
+                "cls(cfg, directories, info).run()",
+                globals(),
+                locals(),
+                filename=profile
+            )
         else:
             cls(cfg, directories, info).run()
         dist.destroy_process_group()

@@ -139,7 +139,8 @@ training will resume from latest checkpoint."
             for idx, batch in tqdm(
                 enumerate(self.train_loader),
                 desc=f"Looping over train loader, skipping first {skip_batches} batches",
-                total=num_batches
+                total=num_batches,
+                leave=False
             ):
                 if idx >= skip_batches + num_batches:
                     break

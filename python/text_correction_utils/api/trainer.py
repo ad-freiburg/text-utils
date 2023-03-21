@@ -129,33 +129,40 @@ training will resume from latest checkpoint."
             2, dtype=torch.long, device=self.info.device
         )
         if self.info.is_main_process:
-            skip_batches = 2048
-            num_batches = 4096
-            avg_batch_size = tensorboard.AverageTracker("avg_batch_size")
-            self.logger.info(
-                f"Estimating train loader length on main process from average batch size "
-                f"over {num_batches - skip_batches} batches and minimum train loader items."
-            )
-            for idx, batch in tqdm(
-                enumerate(self.train_loader),
-                desc=f"Looping over train loader, skipping first {skip_batches} batches",
-                total=num_batches,
-                leave=False
-            ):
-                if idx >= skip_batches + num_batches:
-                    break
-                avg_batch_size.add(len(batch))
-            avg_batch_size.values = avg_batch_size.values[-num_batches:]
+            items_per_batch = self.cfg["train"]["data"]["batch_limit"]
+            if self.cfg["train"]["data"]["batch_limit_type"] == "padded_item_size":
+                skip_batches = int(os.environ.get("ESTIMATION_SKIP_BATCHES", 256))
+                num_batches = int(os.environ.get("ESTIMATION_NUM_BATCHES", 256))
+                avg_batch_size = tensorboard.AverageTracker("avg_batch_size")
+                self.logger.info(
+                    f"Estimating train loader length on main process from average batch size "
+                    f"over {num_batches - skip_batches} batches and minimum train loader items."
+                )
+                for idx, batch in tqdm(
+                    enumerate(self.train_loader),
+                    desc=f"Looping over train loader, skipping first {skip_batches} batches",
+                    total=num_batches,
+                    leave=False,
+                    disable=not self.info.is_main_process or "SLURM_PROCID" in os.environ
+                ):
+                    if idx >= skip_batches + num_batches:
+                        break
+                    avg_batch_size.add(len(batch))
+
+                avg_batch_size.values = avg_batch_size.values[-num_batches:]
+                items_per_batch = avg_batch_size.value
 
             training_steps_per_epoch = int(
-                self.train_loader.min_items // avg_batch_size.value
+                self.train_loader.min_items / items_per_batch
             )
             training_steps = self.cfg["train"]["num_epochs"] * \
                 training_steps_per_epoch
-            self.logger.info(f"Got an average batch size of {avg_batch_size.value:.2f} after {num_batches:,} batches. "
-                             f"The train loader contains at least {self.train_loader.min_items:,} items, so the estimated "
-                             f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
-                             f"is {training_steps:,} ({training_steps_per_epoch:,} per epoch).")
+            self.logger.info(
+                f"Got an average batch size of {items_per_batch:.2f}. "
+                f"The train loader contains at least {self.train_loader.min_items:,} items, so the estimated "
+                f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
+                f"is {training_steps:,} ({training_steps_per_epoch:,} per epoch)."
+            )
             training_steps_tensor[0] = training_steps
             training_steps_tensor[1] = training_steps_per_epoch
 

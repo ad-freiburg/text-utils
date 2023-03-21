@@ -73,17 +73,9 @@ class TextGenerationMetric(TensorboardMetric):
             if self.max_items is not None and len(strings) >= self.max_items:
                 break
 
-            assert isinstance(output, list)
-            if self.eos_token_id is not None:
-                max_eos_idx = max((
-                    idx
-                    for idx, token_id in enumerate(output)
-                    if token_id == self.eos_token_id
-                ), default=len(output) - 1)
-                output = output[:max_eos_idx + 1]
             prediction = self.output_tokenizer.de_tokenize(
                 output,
-                ignore_special_tokens=False
+                ignore_special_tokens=True
             )
             strings.append(
                 "\n".join([

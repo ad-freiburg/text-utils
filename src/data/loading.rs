@@ -882,8 +882,8 @@ mod tests {
     use crate::data::loading::{open, BatchLimitType, BatchedIterator};
     use crate::data::preprocessing::LabelingConfig;
     use crate::data::{
-        text_data_pipeline_with_tokenizer, Item, Pipeline, PreprocessingConfig,
-        PreprocessingPipelineConfig, TextData, TextDataInfo,
+        text_data_pipeline_with_tokenizer, Item, PreprocessingConfig, PreprocessingPipelineConfig,
+        TextData, TextDataInfo,
     };
     use crate::tokenization::{SpecialConfig, TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
@@ -916,18 +916,18 @@ mod tests {
 
         // first check sequential lines with one file
         assert_eq!(it.min_len(), 29000);
-        let data = TextData {
+        let _data = TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_FIRST.to_string(),
             language: Some("1".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
-        let data = TextData {
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
+        let _data = TextData {
             original: MULTI30K_SECOND.to_string(),
             processed: MULTI30K_SECOND.to_string(),
             language: Some("1".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check sequential lines with original and processed
         let multi30k = text_data_generator_from_files(&d, Some(&d2), Some("1".to_string()))?;
         let mut it = TextIterator::new(
@@ -937,18 +937,18 @@ mod tests {
         )?;
 
         assert_eq!(it.min_len(), 29000);
-        let data = TextData {
+        let _data = TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_REV_FIRST.to_string(),
             language: Some("1".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
-        let data = TextData {
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
+        let _data = TextData {
             original: MULTI30K_SECOND.to_string(),
             processed: MULTI30K_REV_SECOND.to_string(),
             language: Some("1".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check interleaved lines with two files
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let multi30k_rev = text_data_generator_from_files(&d2, None, Some("2".to_string()))?;
@@ -959,30 +959,30 @@ mod tests {
         )?;
 
         assert_eq!(it.min_len(), 2 * 29000);
-        let data = TextData {
+        let _data = TextData {
             original: MULTI30K_FIRST.to_string(),
             processed: MULTI30K_FIRST.to_string(),
             language: Some("1".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
-        let data = TextData {
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
+        let _data = TextData {
             original: MULTI30K_REV_FIRST.to_string(),
             processed: MULTI30K_REV_FIRST.to_string(),
             language: Some("2".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 1)));
-        let data = TextData {
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
+        let _data = TextData {
             original: MULTI30K_SECOND.to_string(),
             processed: MULTI30K_SECOND.to_string(),
             language: Some("1".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 0)));
-        let data = TextData {
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
+        let _data = TextData {
             original: MULTI30K_REV_SECOND.to_string(),
             processed: MULTI30K_REV_SECOND.to_string(),
             language: Some("2".to_string()),
         };
-        assert!(matches!(it.next().unwrap(), (Ok(data), 1)));
+        assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
         // check that they are indeed interleaved
         let mut idx: usize = 4;
         while let Some((data, _)) = it.next() {

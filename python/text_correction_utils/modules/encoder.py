@@ -12,6 +12,7 @@ from text_correction_utils.modules import utils
 from text_correction_utils.mask import square_subsequent_mask
 from text_correction_utils.modules.grouping import Grouping
 from text_correction_utils.modules.embedding import Alibi
+from text_correction_utils.modules.moe import MoeLayer
 
 
 class Encoder(nn.Module):
@@ -52,47 +53,51 @@ def encoder_from_config(
 
 
 # modified version of pytorch transformer encoder layer
-class _TransformerEncoderLayer(nn.Module):
+class TransformerEncoderLayer(nn.Module):
     def __init__(
         self,
-        d_model,
-        nhead,
+        d_model: int,
+        nhead: int,
         add_pos: bool,
-        dim_feedforward=2048,
-        dropout=0.1,
-        activation=F.relu,
-        layer_norm_eps=1e-5,
-        device=None,
-        dtype=None
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        activation: str = "gelu",
+        ffw_type: str = "standard",
+        ffw_kwargs: Optional[Dict[str, Any]] = None
     ) -> None:
-        factory_kwargs = {'device': device, 'dtype': dtype}
-        super(_TransformerEncoderLayer, self).__init__()
+        super().__init__()
         self.self_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=True,
-            **factory_kwargs
+            d_model,
+            nhead,
+            dropout=dropout,
+            batch_first=True,
         )
-        # Implementation of Feedforward model
-        self.linear1 = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, d_model, **factory_kwargs)
 
-        self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.norm2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
 
-        # Legacy string support for activation function.
-        if isinstance(activation, str):
-            self.activation = _get_activation_fn(activation)
+        self.ffw_type = ffw_type
+        if ffw_type == "moe":
+            assert ffw_kwargs is not None and "num_experts" in ffw_kwargs
+            self.ffw = MoeLayer(
+                d_model,
+                dim_feedforward,
+                d_model,
+                ffw_kwargs["num_experts"],
+                dropout=dropout,
+                activation=activation
+            )
+        elif ffw_type == "standard":
+            self.linear1 = nn.Linear(d_model, dim_feedforward)
+            self.dropout = nn.Dropout(dropout)
+            self.linear2 = nn.Linear(dim_feedforward, d_model)
+            self.dropout2 = nn.Dropout(dropout)
         else:
-            self.activation = activation
+            raise ValueError(f"unknown ffw type {ffw_type}")
 
+        self.activation = utils.activation(activation)
         self.add_pos = add_pos
-
-    def __setstate__(self, state):
-        if 'activation' not in state:
-            state['activation'] = F.relu
-        super(_TransformerEncoderLayer, self).__setstate__(state)
 
     def forward(
         self,
@@ -144,8 +149,12 @@ class _TransformerEncoderLayer(nn.Module):
 
     # feed forward block
     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        return self.dropout2(x)
+        if self.ffw_type == "moe":
+            x, _ = self.ffw(x)
+            return x
+        else:
+            x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+            return self.dropout2(x)
 
 
 class TransformerEncoder(Encoder):
@@ -161,6 +170,8 @@ class TransformerEncoder(Encoder):
         share_parameters: bool = False,
         padding_mask: str = "padding_mask",
         causal: bool = False,
+        ffw_type: str = "standard",
+        ffw_kwargs: Optional[Dict[str, Any]] = None
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -168,13 +179,15 @@ class TransformerEncoder(Encoder):
         self.padding_mask = padding_mask
 
         self.transformer = nn.ModuleList(
-            _TransformerEncoderLayer(
+            TransformerEncoderLayer(
                 d_model=dim,
                 nhead=heads,
                 add_pos=with_pos == "attention",
                 dim_feedforward=ffw_dim,
                 dropout=dropout,
-                activation=utils.activation(activation)
+                activation=activation,
+                ffw_type=ffw_type,
+                ffw_kwargs=ffw_kwargs
             ) for _ in range(1 if self.share_parameters else num_layers)
         )
 

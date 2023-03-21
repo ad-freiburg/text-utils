@@ -144,10 +144,7 @@ training will resume from latest checkpoint."
                          f"skipping first {skip_batches} batches",
                     total=num_batches,
                     leave=False,
-                    disable=(
-                        not self.info.is_main_process
-                        or ("FORCE_LOCAL" not in os.environ and "SLURM_PROCID" in os.environ)
-                    )
+                    disable=not self.info.is_main_process
                 ):
                     if idx >= skip_batches + num_batches:
                         break

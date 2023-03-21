@@ -59,6 +59,8 @@ def optimizer_from_config(
     use_8bit = optim_bits == 8
     if use_8bit:
         assert _8BIT_OPTIMIZERS, "8-bit optimizers not available"
+    else:
+        cfg.pop("optim_bits", None)
 
     if opt_type == "adamw":
         optim_cls = optim_8bit.AdamW if use_8bit else optim.AdamW

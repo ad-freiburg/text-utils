@@ -557,13 +557,12 @@ training will resume from latest checkpoint."
 
         assert "SLURM_PROCID" in os.environ, "distributed training across multiple nodes is only supported with SLURM"
         rank = int(os.environ["SLURM_PROCID"])
-        local_rank = int(rank % torch.cuda.device_count())
-        local_world_size = torch.cuda.device_count()
-        if rank == 0:
-            logger.info(
-                f"Running on Slurm Cluster: master_addr={master_addr}, master_port={master_port}, "
-                f"rank={rank}, local_rank={local_rank}, world_size={world_size}, local_world_size={local_world_size}"
-            )
+        local_world_size = int(os.environ.get("SLURM_NTASKS_PER_NODE", os.environ["SLURM_NTASKS"]))
+        local_rank = rank % local_world_size
+        logger.info(
+            f"Running on Slurm Cluster: master_addr={master_addr}, master_port={master_port}, "
+            f"rank={rank}, local_rank={local_rank}, world_size={world_size}, local_world_size={local_world_size}"
+        )
 
         dist.init_process_group(
             backend=dist.Backend.NCCL,
@@ -762,6 +761,12 @@ training will resume from latest checkpoint."
             self.epoch_items += len(batch)
             if self.epoch_step % self.eval_interval == 0 and self.info.is_main_process:
                 self._evaluate_and_checkpoint()
+
+            if self.epoch_step % self.log_interval == 0:
+                self.logger.info(
+                    f"[step {self.step}] [GPU:{self.info.rank}:{self.info.local_rank}] nvidia-smi:\n"
+                    f"{api.nvidia_smi()}"
+                )
 
             if self.epoch_step % self.log_interval == 0 and self.info.is_main_process:
                 if self.lr_scheduler is not None:

@@ -11,6 +11,7 @@ from text_correction_utils.api.utils import (
     device_info,
     git_branch,
     git_commit,
+    nvidia_smi,
     download_zip,
     num_parameters
 )

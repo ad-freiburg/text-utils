@@ -160,6 +160,10 @@ def _run_cmd(path: str, cmd: List[str]) -> str:
         return ""
 
 
+def nvidia_smi() -> str:
+    return _run_cmd(os.getcwd(), ["nvidia-smi"])
+
+
 def git_branch(path: str) -> str:
     return _run_cmd(path, ["git", "branch", "--show-current"])
 

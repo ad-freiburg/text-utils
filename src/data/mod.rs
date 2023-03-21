@@ -96,7 +96,7 @@ impl IntoPy<PyObject> for TensorizedLabelInfo {
 #[derive(Clone, Debug)]
 pub enum Label {
     Classification(i32),
-    SequenceClassification(Vec<i32>, usize, usize),
+    SequenceClassification(Vec<i32>),
     SequenceGeneration(Vec<i32>, u32),
 }
 
@@ -108,10 +108,8 @@ impl IntoPy<PyObject> for Label {
                 d.set_item("label", label).unwrap();
                 "classification"
             }
-            Label::SequenceClassification(labels, pfx, sfx) => {
+            Label::SequenceClassification(labels) => {
                 d.set_item("labels", labels).unwrap();
-                d.set_item("prefix", pfx).unwrap();
-                d.set_item("suffix", sfx).unwrap();
                 "sequence_classification"
             }
             Label::SequenceGeneration(labels, pad_token_id) => {
@@ -147,22 +145,7 @@ impl<'a> FromPyObject<'a> for Label {
                         "labels",
                         "sequence classification label"));
                 };
-                let Some(prefix) = d.get_item("prefix") else {
-                    return Err(py_required_key_error(
-                        "prefix",
-                        "sequence classification label"));
-                };
-                let Some(suffix) = d.get_item("suffix") else {
-                    return Err(py_required_key_error(
-                        "suffix",
-                        "sequence classification label"));
-                };
-
-                Label::SequenceClassification(
-                    labels.extract()?,
-                    prefix.extract()?,
-                    suffix.extract()?,
-                )
+                Label::SequenceClassification(labels.extract()?)
             }
             "sequence_generation" => {
                 let Some(labels) = d.get_item("labels") else {
@@ -658,11 +641,11 @@ impl Tensorize for Batch<Item> {
         for (idx, item) in self.iter().enumerate() {
             labels.append(&mut match &item.label {
                 Label::Classification(label) => vec![*label],
-                Label::SequenceClassification(labels, pfx, sfx) => join(vec![
-                    vec![-1; *pfx],
-                    labels[*pfx..labels.len() - *sfx].to_vec(),
-                    vec![-1; *sfx + max_label_length - label_lengths[idx]],
-                ]),
+                Label::SequenceClassification(labels) => labels
+                    .iter()
+                    .cloned()
+                    .chain(vec![-1; max_label_length - label_lengths[idx]])
+                    .collect(),
                 Label::SequenceGeneration(labels, ..) => labels
                     .iter()
                     .cloned()

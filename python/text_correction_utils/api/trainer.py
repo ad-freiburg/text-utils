@@ -132,17 +132,17 @@ training will resume from latest checkpoint."
             items_per_batch = self.cfg["train"]["data"]["batch_limit"]
             if self.cfg["train"]["data"]["batch_limit_type"] == "padded_item_size":
                 skip_batches = int(os.environ.get("ESTIMATION_SKIP_BATCHES", 256))
-                num_batches = skip_batches + int(os.environ.get("ESTIMATION_NUM_BATCHES", 256))
+                num_batches = int(os.environ.get("ESTIMATION_NUM_BATCHES", 1024))
                 avg_batch_size = tensorboard.AverageTracker("avg_batch_size")
                 self.logger.info(
                     f"Estimating train loader length on main process from average batch size "
-                    f"over {num_batches - skip_batches} batches and minimum train loader items."
+                    f"over {num_batches} batches and minimum train loader items."
                 )
                 for idx, batch in tqdm(
                     enumerate(self.train_loader),
-                    desc=f"Looping over train loader for {num_batches} batches, "
+                    desc=f"Looping over train loader for {skip_batches + num_batches} batches, "
                          f"skipping first {skip_batches} batches",
-                    total=num_batches,
+                    total=skip_batches + num_batches,
                     leave=False,
                     disable=not self.info.is_main_process
                 ):

@@ -889,12 +889,15 @@ fn whitespace_correction_label(
     let num_suffix_tokens = tokenizer.num_suffix_tokens();
     Box::new(move |item| {
         Ok(Label::SequenceClassification(
-            operations(&item.processed, &item.original, use_graphemes)?
+            vec![-1; num_prefix_tokens]
                 .into_iter()
-                .map(|l| l as i32)
+                .chain(
+                    operations(&item.processed, &item.original, use_graphemes)?
+                        .into_iter()
+                        .map(|l| l as i32),
+                )
+                .chain(vec![-1; num_suffix_tokens])
                 .collect(),
-            num_prefix_tokens,
-            num_suffix_tokens,
         ))
     })
 }

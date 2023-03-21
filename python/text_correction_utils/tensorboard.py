@@ -140,6 +140,7 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
             repaired = whitespace.repair(item.data.processed, repair_ops)
             strings.append(
                 "\n".join([
+                    f"Lang       : {item.data.language}\n",
                     f"Input      : {item.data.processed}\n",
                     f"Target     : {item.data.original}\n",
                     f"Target pred: {''.join(target_ops)}\n",

@@ -90,8 +90,13 @@ class SinusoidalPositionalEmbedding(nn.Module):
 
 
 class LearnedPositionalEmbedding(TokenEmbedding):
-    def __init__(self, embedding_dim: int, num_embeddings: int):
-        super().__init__(embedding_dim, num_embeddings)
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_embeddings: int,
+        use_8bit: bool = False
+    ):
+        super().__init__(embedding_dim, num_embeddings, use_8bit)
 
 
 class Alibi(nn.Module):
@@ -146,13 +151,15 @@ class PositionalEmbedding(nn.Module):
         self,
         positional_embeddings: str,
         embedding_dim: int,
-        max_length: int
+        max_length: int,
+        use_8bit: bool = False
     ):
         super().__init__()
         if positional_embeddings == "learned":
             self.pos_embedding = LearnedPositionalEmbedding(
                 embedding_dim,
-                max_length
+                max_length,
+                use_8bit
             )
         elif positional_embeddings == "sinusoidal":
             self.pos_embedding = SinusoidalPositionalEmbedding(
@@ -182,7 +189,8 @@ class StandardEmbedding(Embedding):
         token_dropout: float = 0.0,
         max_length: Optional[int] = None,
         positional_embeddings: Optional[str] = None,
-        mode: Optional[str] = None
+        mode: Optional[str] = None,
+        use_8bit: bool = False
     ):
         super().__init__()
         self.positional_embeddings = positional_embeddings
@@ -190,12 +198,18 @@ class StandardEmbedding(Embedding):
         self.embedding = TokenEmbedding(
             embedding_dim,
             num_embeddings,
-            pad_token_id
+            pad_token_id,
+            use_8bit
         )
 
         if positional_embeddings is not None:
             assert max_length is not None, "max length must be specified together with positional embeddings"
-            self.pos_embedding = PositionalEmbedding(positional_embeddings, embedding_dim, max_length)
+            self.pos_embedding = PositionalEmbedding(
+                positional_embeddings,
+                embedding_dim,
+                max_length,
+                use_8bit
+            )
         else:
             self.pos_embedding = None
 

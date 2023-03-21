@@ -14,7 +14,7 @@ import torch
 from torch import distributed as dist
 from torch import multiprocessing as mp
 from torch import nn
-from torch.backends import cudnn  # noqa
+from torch.backends import cudnn, cuda  # noqa
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
@@ -98,7 +98,8 @@ training will resume from latest checkpoint."
         torch.cuda.manual_seed(self.cfg["seed"])
 
         torch.use_deterministic_algorithms(False)
-        cudnn.benchmark = False
+        cuda.matmul.allow_tf32 = True
+        cudnn.benchmark = True
 
         self.input_tokenizer = tokenization.Tokenizer.from_config(
             self.cfg["input_tokenizer"])

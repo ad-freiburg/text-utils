@@ -41,6 +41,9 @@ dependencies = [
 test = [
     "pytest>=6.2.0"
 ]
+8bit = [
+    "bitsandbytes>=0.37",
+]
 
 [project.urls]
 Github = "https://github.com/ad-freiburg/text-correction-utils"

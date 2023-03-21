@@ -2,6 +2,11 @@ import copy
 from typing import Dict, Any, Iterator, Tuple, List, Optional, Callable
 
 from torch import nn, optim
+try:
+    from bitsandbytes import optim as optim_8bit
+    _8BIT_OPTIMIZERS = True
+except ImportError:
+    _8BIT_OPTIMIZERS = False
 
 
 def _select_params(
@@ -49,22 +54,21 @@ def optimizer_from_config(
         **cfg
     })
 
+    optim_bits = int(cfg.get("optim_bits", 32))
+    assert optim_bits in [32, 8], f"optim_bits must be 32 or 8, got {optim_bits}"
+    use_8bit = optim_bits == 8
+    if use_8bit:
+        assert _8BIT_OPTIMIZERS, "8-bit optimizers not available"
+
     if opt_type == "adamw":
-        return optim.AdamW(
-            params,
-            **cfg
-        )
+        optim_cls = optim_8bit.AdamW if use_8bit else optim.AdamW
     elif opt_type == "adam":
-        return optim.Adam(
-            params,
-            **cfg
-        )
+        optim_cls = optim_8bit.Adam if use_8bit else optim.Adam
     elif opt_type == "sgd":
-        return optim.SGD(
-            params,
-            **cfg
-        )
+        optim_cls = optim_8bit.SGD if use_8bit else optim.SGD
     else:
         if additional_optimizer_fn is not None:
             return additional_optimizer_fn(model, cfg)
         raise ValueError(f"unknown optimizer type {opt_type}")
+
+    return optim_cls(params, **cfg)

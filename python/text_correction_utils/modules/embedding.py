@@ -5,6 +5,11 @@ from typing import Dict, Any, Optional, Tuple, Callable
 import einops
 import torch
 from torch import nn
+try:
+    from bitsandbytes import nn as nn_8bit
+    _8BIT_EMBEDDINGS = True
+except ImportError:
+    _8BIT_EMBEDDINGS = False
 
 from text_correction_utils import tokenization
 
@@ -41,17 +46,28 @@ def embedding_from_config(
 
 
 class TokenEmbedding(nn.Module):
-    def __init__(self, embedding_dim: int, num_embeddings: int, padding_idx: Optional[int] = None):
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_embeddings: int,
+        padding_idx: Optional[int] = None,
+        use_8bit: bool = False
+    ):
         super().__init__()
         self.padding_idx = padding_idx
-        self.emb = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-        self.scale = embedding_dim ** 0.5
-        nn.init.normal_(self.emb.weight, mean=0, std=embedding_dim ** -0.5)
-        if padding_idx is not None:
-            nn.init.constant_(self.emb.weight[padding_idx], 0)
+        if use_8bit:
+            assert _8BIT_EMBEDDINGS, "8-bit embeddings not available"
+            embed_cls = nn_8bit.StableEmbedding
+        else:
+            embed_cls = nn.Embedding
+        self.emb = embed_cls(
+            num_embeddings,
+            embedding_dim,
+            padding_idx=padding_idx
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.emb(x) * self.scale
+        return self.emb(x)
 
 
 class SinusoidalPositionalEmbedding(nn.Module):

@@ -1509,7 +1509,7 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
         out_file,
         max_lines_per_file = None,
         normalization = Normalization::NFKC,
-        num_threads = num_cpus::get().min(4) as u8,
+        num_threads = num_cpus::get() as u8,
         progress = true,
     )
 )]
@@ -2144,7 +2144,7 @@ mod tests {
             &out_file,
             None,
             Some(Normalization::NFKC),
-            num_cpus::get().min(4) as u8,
+            num_cpus::get() as u8,
             true,
         )
         .unwrap();

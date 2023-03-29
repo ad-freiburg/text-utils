@@ -59,6 +59,7 @@ impl Dictionary {
         max_sequences: Option<usize>,
         num_threads: u8,
         use_characters: bool,
+        batch_size: usize,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
         let max_size = max_size.unwrap_or(usize::MAX);
@@ -77,29 +78,35 @@ impl Dictionary {
                 let mut counts = HashMap::new();
                 for line in lines {
                     let line = normalize(&clean(&line, true), Normalization::NFKC, true);
-                    let tokens: Vec<_> = if use_characters {
-                        CS::split(&line, true)
+                    if use_characters {
+                        CS::split(&line, false)
                             .filter(|s| is_alphabetic(s) || is_punctuation(s))
-                            .collect()
+                            .for_each(|token| {
+                                if let Some(count) = counts.get_mut(token) {
+                                    *count += 1;
+                                } else {
+                                    counts.insert(token.to_string(), 1);
+                                }
+                            })
                     } else {
                         split_words(&line)
                             .into_iter()
                             .filter_map(|(_, parts)| parts)
                             .flat_map(|parts| parts.into_iter().map(|(s, _)| s))
-                            .collect()
+                            .for_each(|token| {
+                                if let Some(count) = counts.get_mut(token) {
+                                    *count += 1;
+                                } else {
+                                    counts.insert(token.to_string(), 1);
+                                }
+                            })
                     };
-                    for token in tokens {
-                        if counts.contains_key(token) {
-                            *counts.get_mut(token).unwrap() += 1;
-                        } else {
-                            counts.insert(token.to_string(), 1);
-                        }
+                }
+                if let Ok(mut inner) = inner_clone.lock() {
+                    for (word, freq) in counts {
+                        *inner.entry(word).or_insert(0) += freq;
                     }
-                }
-                let mut inner = inner_clone.lock().unwrap();
-                for (word, freq) in counts {
-                    *inner.entry(word).or_insert(0) += freq;
-                }
+                };
             });
             threads.push(t_handle);
         }
@@ -109,7 +116,7 @@ impl Dictionary {
         let mut num_sequences = 0;
         'outer: for file in files {
             let (num_lines, _) = file_size(file)?;
-            let chunk_size = (num_lines / num_threads as usize).clamp(1, 4096);
+            let chunk_size = (num_lines / num_threads as usize).clamp(1, batch_size);
             let mut file_name = file.as_ref().to_string_lossy().to_string();
             if file_name.len() > 16 {
                 file_name = "...".to_string() + &file_name[file_name.len() - 13..];
@@ -209,7 +216,7 @@ impl Dictionary {
     #[staticmethod]
     #[pyo3(
         name = "create",
-        signature = (files, max_size = None, max_sequences = None, num_threads=(num_cpus::get() as u8).min(4), use_characters = false, show_progress=false),
+        signature = (files, max_size = None, max_sequences = None, num_threads=num_cpus::get() as u8, use_characters = false, batch_size=4096, show_progress=false),
     )]
     fn create_py(
         files: Vec<&str>,
@@ -217,6 +224,7 @@ impl Dictionary {
         max_sequences: Option<usize>,
         num_threads: u8,
         use_characters: bool,
+        batch_size: usize,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
         Self::create(
@@ -225,6 +233,7 @@ impl Dictionary {
             max_sequences,
             num_threads,
             use_characters,
+            batch_size,
             show_progress,
         )
     }
@@ -353,8 +362,9 @@ mod tests {
             &[path],
             Some(100),
             Some(1000),
-            (num_cpus::get() as u8).min(4),
+            num_cpus::get() as u8,
             false,
+            1024,
             true,
         )
         .unwrap();

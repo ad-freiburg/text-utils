@@ -12,7 +12,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-m", "--max-sequences", type=int, default=None,
                         help="Max number of sequences to consider while building the dictionary")
     parser.add_argument("-n", "--num-threads", type=int, default=None, help="Number of threads to use")
-    parser.add_argument("-b", "--batch-size", type=int, default=4096, help="Number of sequences each threads gets sent")
+    parser.add_argument(
+        "--char-grams",
+        type=int,
+        default=1,
+        choices=[1, 3],
+        help="For key type char, this is the number of consecutive chars we use to build the dictionary"
+    )
     parser.add_argument("--key", choices=["word", "char"], default="word", help="Key type")
     parser.add_argument("--progress", action="store_true", help="Show progress bar")
     return parser.parse_args()
@@ -28,7 +34,7 @@ def create_dictionary(args: argparse.Namespace) -> None:
         args.max_sequences,
         args.num_threads,
         args.key == "char",
-        args.batch_size,
+        args.char_grams,
         args.progress
     )
 

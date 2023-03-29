@@ -59,9 +59,12 @@ impl Dictionary {
         max_sequences: Option<usize>,
         num_threads: u8,
         use_characters: bool,
-        batch_size: usize,
+        char_grams: u8,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
+        if use_characters && char_grams != 1 && char_grams != 3 {
+            return Err(anyhow!("char_grams must be 1 or 3"));
+        }
         let max_size = max_size.unwrap_or(usize::MAX);
         let max_sequences = max_sequences.unwrap_or(usize::MAX);
         let num_total_lines: usize = files
@@ -94,13 +97,31 @@ impl Dictionary {
                 };
                 line = normalize(&clean(&line, true), Normalization::NFKC, true);
                 let counts = if use_characters {
-                    CS::split(&line, true)
-                        .filter(|s| is_alphabetic(s) || is_punctuation(s))
+                    split_words(&line)
+                        .into_iter()
+                        .flat_map(|(word, _)| {
+                            let mut chars = vec![];
+                            if char_grams > 1 {
+                                chars.push("<bow>");
+                            }
+                            chars.extend(CS::split(&word, true));
+                            if char_grams > 1 {
+                                chars.push("<eow>");
+                            }
+                            chars
+                                .windows(char_grams as usize)
+                                .filter(|&window| {
+                                    let s = window[window.len() / 2];
+                                    is_alphabetic(s) || is_punctuation(s)
+                                })
+                                .map(|window| window.join(" "))
+                                .collect::<Vec<_>>()
+                        })
                         .fold(HashMap::new(), |mut counts, token| {
-                            if let Some(count) = counts.get_mut(token) {
+                            if let Some(count) = counts.get_mut(&token) {
                                 *count += 1;
                             } else {
-                                counts.insert(token.to_string(), 1);
+                                counts.insert(token, 1);
                             }
                             counts
                         })
@@ -206,7 +227,7 @@ impl Dictionary {
     #[staticmethod]
     #[pyo3(
         name = "create",
-        signature = (files, max_size = None, max_sequences = None, num_threads=num_cpus::get() as u8, use_characters = false, batch_size=4096, show_progress=false),
+        signature = (files, max_size = None, max_sequences = None, num_threads=num_cpus::get() as u8, use_characters = false, char_grams=1, show_progress=false),
     )]
     fn create_py(
         files: Vec<&str>,
@@ -214,7 +235,7 @@ impl Dictionary {
         max_sequences: Option<usize>,
         num_threads: u8,
         use_characters: bool,
-        batch_size: usize,
+        char_grams: u8,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
         Self::create(
@@ -223,7 +244,7 @@ impl Dictionary {
             max_sequences,
             num_threads,
             use_characters,
-            batch_size,
+            char_grams,
             show_progress,
         )
     }

@@ -79,7 +79,7 @@ impl Dictionary {
                 for line in lines {
                     let line = normalize(&clean(&line, true), Normalization::NFKC, true);
                     if use_characters {
-                        CS::split(&line, false)
+                        CS::split(&line, true)
                             .filter(|s| is_alphabetic(s) || is_punctuation(s))
                             .for_each(|token| {
                                 if let Some(count) = counts.get_mut(token) {

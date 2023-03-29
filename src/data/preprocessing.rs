@@ -1,6 +1,4 @@
-use crate::corrupt::{
-    ascii_chars, edit_word, DeleteEdits, InsertEdits, PunctuationEdits, ReplaceEdits, SwapEdits,
-};
+use crate::corrupt::{edit_word, DeleteEdits, InsertEdits, ReplaceEdits, SwapEdits};
 use crate::data::{Label, TextData};
 use crate::dictionary::Dictionary;
 use crate::text::{self, split_words};
@@ -16,6 +14,7 @@ use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Geometric};
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -427,7 +426,7 @@ fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<Preproce
                     } else {
                         c.str.to_string()
                     }
-                } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).is_whitespace() {
+                } else if r < iw_p && idx > 0 && !cs.get_char(idx - 1).unwrap().is_whitespace() {
                     " ".to_string() + c.str
                 } else {
                     c.str.to_string()
@@ -598,35 +597,53 @@ fn corrupt_spelling(
         | SpellingCorruptionMode::Mixed(.., Some(char_file), _) => {
             let dict = Dictionary::load(char_file).expect("could not load character dictionary");
             let total_freq = dict.freq_sum as f64;
-            let insert_and_replace_chars: Vec<_> = dict
-                .items()
+            let mut insertions = HashMap::new();
+            let mut replacements = HashMap::new();
+            dict.items()
                 .sorted_by_key(|&(_, freq)| Reverse(freq))
                 .filter_map(|(w, freq)| {
                     let rel_freq = *freq as f64 / total_freq;
                     if rel_freq < min_rel_freq {
-                        None
-                    } else {
-                        Some(w.to_string())
+                        return None;
+                    }
+                    match w.split_whitespace().collect::<Vec<_>>().as_slice() {
+                        &[prev, cur, next] => Some((prev, cur, next)),
+                        _ => panic!(
+                            "character dictionary must contain 3-grams separated by whitespace"
+                        ),
                     }
                 })
+                .for_each(|(prev, cur, next)| {
+                    let insert_ctx = (Cow::Owned(prev.to_string()), Cow::Owned(next.to_string()));
+                    insertions
+                        .entry(insert_ctx)
+                        .or_insert_with(Vec::new)
+                        .push(cur.to_string());
+
+                    let replace_ctx = (
+                        Cow::Owned(prev.to_string()),
+                        Cow::Owned(cur.to_string()),
+                        Cow::Owned(next.to_string()),
+                    );
+                    replacements
+                        .entry(replace_ctx)
+                        .or_insert_with(Vec::new)
+                        .push(cur.to_string())
+                });
+            // filter out items in replacements that match the cur char
+            replacements = replacements
+                .into_iter()
+                .map(|(k, v)| {
+                    let v = v.into_iter().filter(|c| c != &k.1).collect();
+                    (k, v)
+                })
                 .collect();
-            (insert_and_replace_chars.clone(), insert_and_replace_chars)
+            (Some(insertions), Some(replacements))
         }
-        _ => (ascii_chars(), ascii_chars()),
+        _ => (None, None),
     };
-    // let insert = move |cs, idx| &insertions.iter().map(|s| s.as_ref()).collect();
-    // let replace = move |cs, idx| &replacements.iter().map(|s| s.as_ref()).collect();
-    let punct = PunctuationEdits {
-        ..Default::default()
-    };
-    let insert = InsertEdits {
-        punct: punct.clone(),
-        insertions,
-    };
-    let replace = ReplaceEdits {
-        punct,
-        replacements,
-    };
+    let insert = insertions.map(|insertions| InsertEdits { insertions });
+    let replace = replacements.map(|replacements| ReplaceEdits { replacements });
     let misspellings = match &mode {
         SpellingCorruptionMode::Realistic(file) | SpellingCorruptionMode::Mixed(.., file) => {
             let file = File::open(file).expect("could not read misspellings file");
@@ -703,9 +720,9 @@ fn corrupt_spelling(
                             &word,
                             true,
                             &mut rng,
-                            Some(&insert),
+                            insert.as_ref(),
                             Some(&delete),
-                            Some(&replace),
+                            replace.as_ref(),
                             Some(&swap),
                             Some(exclude),
                         );

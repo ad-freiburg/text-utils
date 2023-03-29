@@ -1,6 +1,6 @@
 use crate::text::{clean, count_words, file_size};
 use crate::unicode::{normalize, Normalization, CS};
-use crate::utils::{progress_bar, py_invalid_type_error, py_required_key_error, run_length_decode};
+use crate::utils::{progress_bar, py_invalid_type_error, py_required_key_error};
 use anyhow::anyhow;
 use itertools::Itertools;
 use log::info;
@@ -1763,7 +1763,7 @@ impl ByteTokenizer {
                     let cs = CS::new(s, self.config.use_graphemes);
                     match self.config.groups {
                         ByteGroups::Bytes => {
-                            groups[0].extend(run_length_decode(&cs.rle_cluster_lengths));
+                            groups[0].extend(cs.get_char_byte_lengths());
                         }
                         ByteGroups::CodePoints => {
                             for char in cs.chars() {

@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use crate::unicode::CS;
 use pyo3::prelude::*;
@@ -16,58 +19,42 @@ pub fn replace_word(
     }
 }
 
-pub const ASCII_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-pub const ASCII_LEFT_PUNCT: &str = "([{";
-pub const ASCII_DASH: &str = "-";
-pub const ASCII_QUOTE: &str = "\"'";
-pub const ASCII_RIGHT_PUNCT: &str = ")]}";
-pub const ASCII_END_PUNCT: &str = ",.:;?!";
-pub const ASCII_OTHER_PUNCT: &str = "~#%&*+\\/|@";
-
-pub fn ascii_chars() -> Vec<String> {
-    ASCII_CHARS.chars().map(|c| c.to_string()).collect()
-}
-
-pub trait GetEdits {
-    fn get_edits<'e>(&'e self, cs: &CS, idx: &usize) -> Vec<&'e str>;
+pub trait GetEdits<'s> {
+    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>>;
 }
 
 pub trait CanEdit {
     fn can_edit(&self, cs: &CS, idx: &usize) -> bool;
 }
 
-#[derive(Default, Clone, Debug)]
-pub struct PunctuationEdits {
-    pub start: Vec<String>,
-    pub end: Vec<String>,
-    pub conn: Vec<String>,
+pub type InsertContext<'a> = (Cow<'a, str>, Cow<'a, str>);
+pub struct InsertEdits<'a> {
+    pub insertions: HashMap<InsertContext<'a>, Vec<String>>,
 }
 
-#[derive(Default, Clone, Debug)]
-pub struct InsertEdits {
-    pub punct: PunctuationEdits,
-    pub insertions: Vec<String>,
+pub type ReplaceContext<'a> = (Cow<'a, str>, Cow<'a, str>, Cow<'a, str>);
+pub struct ReplaceEdits<'a> {
+    pub replacements: HashMap<ReplaceContext<'a>, Vec<String>>,
 }
 
-#[derive(Default, Clone, Debug)]
-pub struct ReplaceEdits {
-    pub punct: PunctuationEdits,
-    pub replacements: Vec<String>,
-}
-
-impl GetEdits for InsertEdits {
-    fn get_edits<'e>(&'e self, cs: &CS, idx: &usize) -> Vec<&'e str> {
-        // let s = cs.get(*idx);
-        let mut edits = self.insertions.iter().map(|s| s.as_str()).collect();
-        edits
+impl<'s> GetEdits<'s> for InsertEdits<'s> {
+    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+        let prev = cs.get(idx - 1).unwrap_or("<bow>");
+        let s = cs
+            .get(*idx)
+            .unwrap_or(cs.get(cs.len() - 1).unwrap_or("<eow>"));
+        let ctx = (Cow::Borrowed(prev), Cow::Borrowed(s));
+        self.insertions.get(&ctx)
     }
 }
 
-impl GetEdits for ReplaceEdits {
-    fn get_edits<'e>(&'e self, cs: &CS, idx: &usize) -> Vec<&'e str> {
-        // let s = cs.get(*idx);
-        let mut edits = self.replacements.iter().map(|s| s.as_str()).collect();
-        edits
+impl<'s> GetEdits<'s> for ReplaceEdits<'s> {
+    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+        let prev = cs.get(idx - 1).unwrap_or("<bow>");
+        let s = cs.get(*idx).expect("cannot replace empty string");
+        let next = cs.get(idx + 1).unwrap_or("<eow>");
+        let ctx = (Cow::Borrowed(prev), Cow::Borrowed(s), Cow::Borrowed(next));
+        self.replacements.get(&ctx)
     }
 }
 
@@ -82,10 +69,12 @@ where
 {
     fn can_edit(&self, cs: &CS, idx: &usize) -> bool {
         if !self.full_delete && cs.len() <= 1 {
-            return false;
+            false
+        } else if let Some(s) = cs.get(*idx) {
+            (self.can_delete)(s)
+        } else {
+            false
         }
-        let s = cs.get(*idx);
-        (self.can_delete)(s)
     }
 }
 
@@ -98,23 +87,21 @@ where
     F: Fn(&str, &str) -> bool,
 {
     fn can_edit(&self, cs: &CS, idx: &usize) -> bool {
-        if cs.len() <= 1 || *idx >= cs.len() - 1 {
-            return false;
+        match (cs.get(*idx), cs.get(idx + 1)) {
+            (Some(s), Some(s_next)) => (self.can_swap)(s, s_next),
+            _ => false,
         }
-        let s = cs.get(*idx);
-        let s_next = cs.get(idx + 1);
-        (self.can_swap)(s, s_next)
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn edit_word(
-    word: &str,
+pub fn edit_word<'s>(
+    word: &'s str,
     use_graphemes: bool,
     rng: &mut impl Rng,
-    insert: Option<&impl GetEdits>,
+    insert: Option<&'s impl GetEdits<'s>>,
     delete: Option<&impl CanEdit>,
-    replace: Option<&impl GetEdits>,
+    replace: Option<&'s impl GetEdits<'s>>,
     swap: Option<&impl CanEdit>,
     exclude_indices: Option<HashSet<usize>>,
 ) -> (String, HashSet<usize>) {
@@ -148,26 +135,25 @@ pub fn edit_word(
                     if excluded {
                         return None;
                     }
-                    let insertions = insert.as_ref().unwrap().get_edits(&cs, &idx);
-                    if insertions.len() > 0 {
-                        Some((idx, insertions))
-                    } else {
-                        None
-                    }
+                    insert
+                        .as_ref()
+                        .unwrap()
+                        .get_edits(&cs, &idx)
+                        .map(|insertions| (idx, insertions))
                 })
                 .collect();
             if insertions.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let (insert_idx, insertions) = &insertions[rng.gen_range(0..insertions.len())];
-            let insertion = insertions[rng.gen_range(0..insertions.len())];
+            let (insert_idx, insertions) = insertions[rng.gen_range(0..insertions.len())];
+            let insertion = &insertions[rng.gen_range(0..insertions.len())];
             let insert_len = CS::new(insertion, use_graphemes).len();
             // we inserted some string, so the length of the word changed
             // adjust excluded indices to the right of the insertion accordingly
             exclude_indices = exclude_indices
                 .into_iter()
                 .map(|idx| {
-                    if idx >= *insert_idx {
+                    if idx >= insert_idx {
                         idx + insert_len
                     } else {
                         idx
@@ -179,7 +165,7 @@ pub fn edit_word(
                 exclude_indices.insert(insert_idx + l);
             }
             (
-                cs.sub(0, *insert_idx).to_string() + insertion + cs.sub(*insert_idx, cs.len()),
+                cs.sub(0, insert_idx).to_string() + insertion + cs.sub(insert_idx, cs.len()),
                 exclude_indices,
             )
         }
@@ -212,26 +198,25 @@ pub fn edit_word(
                     if exclude_indices.contains(&idx) {
                         return None;
                     }
-                    let replacements = replace.as_ref().unwrap().get_edits(&cs, &idx);
-                    if replacements.len() > 0 {
-                        Some((idx, replacements))
-                    } else {
-                        None
-                    }
+                    replace
+                        .as_ref()
+                        .unwrap()
+                        .get_edits(&cs, &idx)
+                        .map(|replacements| (idx, replacements))
                 })
                 .collect();
             if replacements.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let (replace_idx, replacements) = &replacements[rng.gen_range(0..replacements.len())];
-            let replacement = replacements[rng.gen_range(0..replacements.len())];
+            let (replace_idx, replacements) = replacements[rng.gen_range(0..replacements.len())];
+            let replacement = &replacements[rng.gen_range(0..replacements.len())];
             let replacement_len = CS::new(replacement, use_graphemes).len();
             // shift all indices that come after the replacement by length of the replacement
             // string - 1
             exclude_indices = exclude_indices
                 .into_iter()
                 .map(|idx| {
-                    if idx > *replace_idx {
+                    if idx > replace_idx {
                         idx + replacement_len - 1
                     } else {
                         idx
@@ -243,7 +228,7 @@ pub fn edit_word(
                 exclude_indices.insert(replace_idx + l);
             }
             (
-                cs.sub(0, *replace_idx).to_string()
+                cs.sub(0, replace_idx).to_string()
                     + replacement
                     + cs.sub(replace_idx + 1, cs.len()),
                 exclude_indices,
@@ -268,8 +253,8 @@ pub fn edit_word(
             exclude_indices.insert(swap_idx + 1);
             (
                 cs.sub(0, swap_idx).to_string()
-                    + cs.get(swap_idx + 1)
-                    + cs.get(swap_idx)
+                    + cs.get(swap_idx + 1).unwrap()
+                    + cs.get(swap_idx).unwrap()
                     + cs.sub(swap_idx + 2, cs.len()),
                 exclude_indices,
             )
@@ -294,19 +279,39 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
 
     use crate::{
-        corrupt::{edit_word, DeleteEdits, InsertEdits, ReplaceEdits, SwapEdits},
+        corrupt::{edit_word, DeleteEdits, SwapEdits},
         unicode::CS,
     };
+
+    use super::GetEdits;
+
+    struct InsertEdits {
+        insertions: Vec<String>,
+    }
+
+    impl<'s> GetEdits<'s> for InsertEdits {
+        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+            return Some(&self.insertions);
+        }
+    }
+
+    struct ReplaceEdits {
+        replacements: Vec<String>,
+    }
+
+    impl<'s> GetEdits<'s> for ReplaceEdits {
+        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+            return Some(&self.replacements);
+        }
+    }
 
     #[test]
     fn test_edit_word() {
         let insert = InsertEdits {
             insertions: vec!["w".to_string()],
-            ..Default::default()
         };
         let replace = ReplaceEdits {
             replacements: vec!["bla".to_string()],
-            ..Default::default()
         };
         fn can_delete(_: &str) -> bool {
             true
@@ -377,7 +382,7 @@ mod tests {
             .collect::<Vec<usize>>()
             .first()
             .unwrap();
-        assert_eq!(CS::new(&ew, true).get(ex_idx), "w");
+        assert_eq!(CS::new(&ew, true).get(ex_idx).unwrap(), "w");
         // test with excluded indices --> w should be inserted at beginning
         let (ew, excluded) = edit_word(
             w,

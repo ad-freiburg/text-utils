@@ -288,11 +288,11 @@ fn _group_words(
             word_idx += 1;
         }
 
-        if op == EditOperation::Delete && input_cs.get_char(input_idx).is_whitespace() {
+        if op == EditOperation::Delete && input_cs.get_char(input_idx).unwrap().is_whitespace() {
             merged_with_next.insert(word_idx);
         }
 
-        if op == EditOperation::Insert && pred_cs.get_char(pred_idx).is_whitespace() {
+        if op == EditOperation::Insert && pred_cs.get_char(pred_idx).unwrap().is_whitespace() {
             num_whitespaces_inserted.insert(
                 word_idx,
                 num_whitespaces_inserted

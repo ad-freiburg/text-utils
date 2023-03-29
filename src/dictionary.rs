@@ -1,6 +1,4 @@
 use anyhow::anyhow;
-use indicatif::MultiProgress;
-use itertools::Itertools;
 use pyo3::prelude::*;
 use std::{
     cmp::Reverse,
@@ -14,7 +12,7 @@ use std::{
 
 use crate::{
     edit::distances,
-    text::{clean, count_words, file_size, split_words},
+    text::{clean, file_size, split_words},
     unicode::{is_alphabetic, is_punctuation, normalize, Normalization, CS},
     utils::{progress_bar, py_invalid_type_error},
 };
@@ -104,7 +102,7 @@ impl Dictionary {
                             if char_grams > 1 {
                                 chars.push("<bow>");
                             }
-                            chars.extend(CS::split(&word, true));
+                            chars.extend(CS::split(word, true));
                             if char_grams > 1 {
                                 chars.push("<eow>");
                             }
@@ -375,7 +373,7 @@ mod tests {
             Some(1000),
             num_cpus::get() as u8,
             false,
-            1024,
+            1,
             true,
         )
         .unwrap();

@@ -1,4 +1,4 @@
-use crate::utils::{py_invalid_type_error, run_length_encode};
+use crate::utils::{py_invalid_type_error, run_length_decode, run_length_encode};
 use pyo3::prelude::*;
 use regex::Regex;
 use std::fmt::{Display, Formatter};
@@ -9,7 +9,7 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Debug, Clone)]
 pub struct CharString<'a> {
     pub str: &'a str,
-    pub rle_cluster_lengths: Vec<(usize, usize)>,
+    rle_cluster_lengths: Vec<(usize, usize)>,
     len: usize,
 }
 
@@ -48,6 +48,10 @@ impl<'a> CharString<'a> {
         self.len == 0
     }
 
+    pub fn get_char_byte_lengths(&self) -> Vec<usize> {
+        run_length_decode(&self.rle_cluster_lengths)
+    }
+
     #[inline]
     pub(crate) fn byte_start_end(&self, n: usize) -> (usize, usize) {
         let mut start = 0;
@@ -81,22 +85,22 @@ impl<'a> CharString<'a> {
         (start_byte, end_byte)
     }
 
-    pub fn get(&self, n: usize) -> &'a str {
-        assert!(n < self.len());
+    pub fn get(&self, n: usize) -> Option<&'a str> {
+        if n >= self.len() {
+            return None;
+        }
         let (start, end) = self.byte_start_end(n);
-        &self.str[start..end]
+        Some(&self.str[start..end])
     }
 
-    pub fn get_char(&self, n: usize) -> Character<'a> {
-        Character { str: self.get(n) }
+    pub fn get_char(&self, n: usize) -> Option<Character<'a>> {
+        self.get(n).map(|s| Character { str: s })
     }
 
     pub fn sub(&self, start: usize, end: usize) -> &'a str {
-        assert!(
-            start <= end && end <= self.len(),
-            "start: {start}, end: {end}, len: {}",
-            self.len()
-        );
+        assert!(start <= end, "start cannot be larger than end");
+        let start = start.min(self.len());
+        let end = end.min(self.len());
         if self.is_empty() || start == end {
             return "";
         }
@@ -105,7 +109,7 @@ impl<'a> CharString<'a> {
     }
 
     pub fn chars(&self) -> impl Iterator<Item = Character> {
-        (0..self.len()).map(|i| self.get_char(i))
+        (0..self.len()).map(|i| self.get_char(i).unwrap())
     }
 
     pub fn split(s: &str, use_graphemes: bool) -> impl Iterator<Item = &str> {
@@ -327,7 +331,7 @@ mod tests {
         assert_eq!(s.len(), 14);
         assert_eq!(s.sub(10, 14), "täst");
         assert_eq!(s.rle_cluster_lengths, vec![(1, 11), (2, 1), (1, 2)]);
-        assert_eq!(s.get(11), "ä");
+        assert_eq!(s.get(11).unwrap(), "ä");
 
         // test with string that has more than one code point per character:
         // the string "नमस्ते" should have 18 utf8 bytes, 6 code points, and 4 grapheme
@@ -337,14 +341,14 @@ mod tests {
         let s = CS::new("नमस्ते", false);
         assert_eq!(s.str.len(), 18);
         assert_ne!(s.len(), 4);
-        assert_ne!(s.get(2), "स्");
+        assert_ne!(s.get(2).unwrap(), "स्");
         assert_ne!(s.sub(2, 4), "स्ते");
 
         // now test with grapheme based char string, which should behave as expected
         let s = CS::new("नमस्ते", true);
         assert_eq!(s.str.len(), 18);
         assert_eq!(s.len(), 4);
-        assert_eq!(s.get(2), "स्");
+        assert_eq!(s.get(2).unwrap(), "स्");
         assert_eq!(s.sub(2, 4), "स्ते");
     }
 

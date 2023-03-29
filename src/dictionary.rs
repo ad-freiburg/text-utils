@@ -15,7 +15,7 @@ use std::{
 use crate::{
     edit::distances,
     text::{clean, file_size, split_words},
-    unicode::{normalize, Normalization, CS},
+    unicode::{is_alphabetic, is_punctuation, normalize, Normalization, CS},
     utils::{progress_bar, py_invalid_type_error},
 };
 
@@ -79,7 +79,7 @@ impl Dictionary {
                     let line = normalize(&clean(&line, true), Normalization::NFKC, true);
                     let tokens: Vec<_> = if use_characters {
                         CS::split(&line, true)
-                            .filter(|s| s.chars().all(char::is_alphabetic))
+                            .filter(|s| is_alphabetic(s) || is_punctuation(s))
                             .collect()
                     } else {
                         split_words(&line)

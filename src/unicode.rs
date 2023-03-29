@@ -133,6 +133,46 @@ pub struct Character<'a> {
     pub str: &'a str,
 }
 
+#[inline]
+pub(crate) fn is_whitespace(s: &str) -> bool {
+    s.chars().all(char::is_whitespace)
+}
+
+#[inline]
+pub(crate) fn is_alphabetic(s: &str) -> bool {
+    s.chars().all(char::is_alphabetic)
+}
+
+#[inline]
+pub(crate) fn is_number(s: &str) -> bool {
+    s.chars().all(char::is_numeric)
+}
+
+#[inline]
+pub(crate) fn is_punctuation(s: &str) -> bool {
+    Regex::new(r"^\p{P}+$").unwrap().is_match(s)
+}
+
+#[inline]
+pub(crate) fn is_dash_punctuation(s: &str) -> bool {
+    Regex::new(r"^[\p{Pd}{Pc}]+$").unwrap().is_match(s)
+}
+
+#[inline]
+pub(crate) fn is_left_punctuation(s: &str) -> bool {
+    Regex::new(r"^[\p{Pi}\p{Ps}]+$").unwrap().is_match(s)
+}
+
+#[inline]
+pub(crate) fn is_other_punctuation(s: &str) -> bool {
+    Regex::new(r"^[\p{Po}]+$").unwrap().is_match(s)
+}
+
+#[inline]
+pub(crate) fn is_right_punctuation(s: &str) -> bool {
+    Regex::new(r"^[\p{Pf}\p{Pe}]+$").unwrap().is_match(s)
+}
+
 impl<'a> Character<'a> {
     pub fn byte_len(&self) -> usize {
         self.str.len()
@@ -143,31 +183,35 @@ impl<'a> Character<'a> {
     }
 
     pub fn is_whitespace(&self) -> bool {
-        self.str.chars().all(char::is_whitespace)
+        is_whitespace(self.str)
     }
 
     pub fn is_alphabetic(&self) -> bool {
-        self.str.chars().all(char::is_alphabetic)
-    }
-
-    pub fn is_punctuation(&self) -> bool {
-        Regex::new(r"^\p{P}+$").unwrap().is_match(self.str)
+        is_alphabetic(self.str)
     }
 
     pub fn is_number(&self) -> bool {
-        self.str.chars().all(char::is_numeric)
+        is_number(self.str)
+    }
+
+    pub fn is_punctuation(&self) -> bool {
+        is_punctuation(self.str)
     }
 
     pub fn is_dash_punctuation(&self) -> bool {
-        Regex::new(r"^[\p{Pd}{Pc}]+$").unwrap().is_match(self.str)
+        is_dash_punctuation(self.str)
     }
 
     pub fn is_left_punctuation(&self) -> bool {
-        Regex::new(r"^[\p{Pi}\p{Ps}]+$").unwrap().is_match(self.str)
+        is_left_punctuation(self.str)
     }
 
     pub fn is_right_punctuation(&self) -> bool {
-        Regex::new(r"^[\p{Pf}\p{Pe}]+$").unwrap().is_match(self.str)
+        is_right_punctuation(self.str)
+    }
+
+    pub fn is_other_punctuation(&self) -> bool {
+        is_other_punctuation(self.str)
     }
 
     pub fn code_point_len(&self) -> usize {
@@ -257,7 +301,10 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use crate::unicode::CS;
+    use crate::unicode::{
+        is_alphabetic, is_dash_punctuation, is_left_punctuation, is_number, is_other_punctuation,
+        is_punctuation, is_right_punctuation, is_whitespace, CS,
+    };
 
     #[test]
     fn test_char_string() {
@@ -299,5 +346,18 @@ mod tests {
         assert_eq!(s.len(), 4);
         assert_eq!(s.get(2), "स्");
         assert_eq!(s.sub(2, 4), "स्ते");
+    }
+
+    #[test]
+    fn test_helpers() {
+        assert!(is_number("1234"));
+        assert!(is_alphabetic("test"));
+        assert!(!["!", "1"].into_iter().any(is_alphabetic));
+        assert!(is_whitespace("\n"));
+        assert!(["-", "[", ",", "}"].into_iter().all(is_punctuation));
+        assert!(["-"].into_iter().all(is_dash_punctuation));
+        assert!(["[", "(", "{"].into_iter().all(is_left_punctuation));
+        assert!(["]", ")", "}"].into_iter().all(is_right_punctuation));
+        assert!(["!", "?", ",", "."].into_iter().all(is_other_punctuation));
     }
 }

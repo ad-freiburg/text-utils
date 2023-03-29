@@ -50,6 +50,7 @@ class TokenEmbedding(nn.Module):
         self,
         embedding_dim: int,
         num_embeddings: int,
+        scale_embeddings: bool = True,
         padding_idx: Optional[int] = None,
         use_8bit: bool = False
     ):
@@ -65,9 +66,16 @@ class TokenEmbedding(nn.Module):
             embedding_dim,
             padding_idx=padding_idx
         )
+        if scale_embeddings:
+            self.scale = math.sqrt(embedding_dim)
+            nn.init.normal_(self.emb.weight, mean=0, std=embedding_dim ** -0.5)
+            if padding_idx is not None:
+                nn.init.constant_(self.emb.weight[padding_idx], 0)
+        else:
+            self.scale = 1.0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.emb(x)
+        return self.emb(x) * self.scale
 
 
 class SinusoidalPositionalEmbedding(nn.Module):

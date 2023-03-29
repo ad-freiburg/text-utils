@@ -16,126 +16,95 @@ pub fn replace_word(
     }
 }
 
-pub type CanEditFn = dyn Fn(&CS, &usize) -> bool + Send + Sync;
-pub type EditOptionsFn = dyn Fn(&CS, &usize) -> Vec<String> + Send + Sync;
+pub const ASCII_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+pub const ASCII_LEFT_PUNCT: &str = "([{";
+pub const ASCII_DASH: &str = "-";
+pub const ASCII_QUOTE: &str = "\"'";
+pub const ASCII_RIGHT_PUNCT: &str = ")]}";
+pub const ASCII_END_PUNCT: &str = ",.:;?!";
+pub const ASCII_OTHER_PUNCT: &str = "~#%&*+\\/|@";
 
-const ASCII_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const ASCII_LEFT_PUNCT: &str = "\"'<([{";
-const ASCII_DASH: &str = "-";
-const ASCII_RIGHT_PUNCT: &str = "\"'>)]}";
-const ASCII_END_PUNCT: &str = ",.:;?!";
-const ASCII_OTHER_PUNCT: &str = "~#%&*+\\/|@";
-
-pub fn alpha_punct_delete_fn(allow_full_delete: bool) -> Box<CanEditFn> {
-    Box::new(move |cs, &idx| {
-        assert!(!cs.is_empty());
-        let char = cs.get_char(idx);
-        // only delete punctuation and alphabetic characters
-        (allow_full_delete || cs.len() > 1) && (char.is_alphabetic() || char.is_punctuation())
-    })
+pub fn ascii_chars() -> Vec<String> {
+    ASCII_CHARS.chars().map(|c| c.to_string()).collect()
 }
 
-pub fn insert_fn(insertions: Vec<String>) -> Box<EditOptionsFn> {
-    Box::new(move |_, _| insertions.clone())
+pub trait GetEdits {
+    fn get_edits<'e>(&'e self, cs: &CS, idx: &usize) -> Vec<&'e str>;
 }
 
-pub fn ascii_insert_fn(insertions: Option<Vec<String>>) -> Box<EditOptionsFn> {
-    let insertions =
-        insertions.unwrap_or_else(|| ASCII_CHARS.chars().map(|c| c.to_string()).collect());
-    Box::new(move |cs, &idx| {
-        assert!(!cs.is_empty());
-        let mut inserts: Vec<_> = Vec::new();
-        if idx == 0 && !cs.get_char(idx).is_punctuation() {
-            inserts.extend(ASCII_LEFT_PUNCT.chars().map(|c| c.to_string()));
-        } else if idx == cs.len() && !cs.get_char(idx - 1).is_punctuation() {
-            inserts.extend(ASCII_RIGHT_PUNCT.chars().map(|c| c.to_string()));
-            inserts.extend(ASCII_END_PUNCT.chars().map(|c| c.to_string()));
-        } else {
-            inserts.extend(insertions.clone());
-            inserts.extend(ASCII_OTHER_PUNCT.chars().map(|c| c.to_string()));
-            inserts.push(ASCII_DASH.to_string());
+pub trait CanEdit {
+    fn can_edit(&self, cs: &CS, idx: &usize) -> bool;
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct PunctuationEdits {
+    pub start: Vec<String>,
+    pub end: Vec<String>,
+    pub conn: Vec<String>,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct InsertEdits {
+    pub punct: PunctuationEdits,
+    pub insertions: Vec<String>,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct ReplaceEdits {
+    pub punct: PunctuationEdits,
+    pub replacements: Vec<String>,
+}
+
+impl GetEdits for InsertEdits {
+    fn get_edits<'e>(&'e self, cs: &CS, idx: &usize) -> Vec<&'e str> {
+        // let s = cs.get(*idx);
+        let mut edits = self.insertions.iter().map(|s| s.as_str()).collect();
+        edits
+    }
+}
+
+impl GetEdits for ReplaceEdits {
+    fn get_edits<'e>(&'e self, cs: &CS, idx: &usize) -> Vec<&'e str> {
+        // let s = cs.get(*idx);
+        let mut edits = self.replacements.iter().map(|s| s.as_str()).collect();
+        edits
+    }
+}
+
+pub struct DeleteEdits<F = fn(&str) -> bool> {
+    pub full_delete: bool,
+    pub can_delete: F,
+}
+
+impl<F> CanEdit for DeleteEdits<F>
+where
+    F: Fn(&str) -> bool,
+{
+    fn can_edit(&self, cs: &CS, idx: &usize) -> bool {
+        if !self.full_delete && cs.len() <= 1 {
+            return false;
         }
-        inserts
-    })
+        let s = cs.get(*idx);
+        (self.can_delete)(s)
+    }
 }
 
-pub fn replace_fn(replacements: Vec<String>) -> Box<EditOptionsFn> {
-    Box::new(move |cs, &idx| {
-        let char = cs.get_char(idx);
-        replacements
-            .iter()
-            .filter_map(|c| {
-                if c != char.str {
-                    Some(c.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    })
+pub struct SwapEdits<F = fn(&str, &str) -> bool> {
+    pub can_swap: F,
 }
 
-pub fn ascii_replace_fn(replacements: Option<Vec<String>>) -> Box<EditOptionsFn> {
-    let all_replacements =
-        replacements.unwrap_or_else(|| ASCII_CHARS.chars().map(|c| c.to_string()).collect());
-    Box::new(move |cs, &idx| {
-        assert!(!cs.is_empty());
-        let char = cs.get_char(idx);
-        let is_punct = char.is_punctuation();
-        let filter = |c_str: String| {
-            if c_str != char.str {
-                Some(c_str)
-            } else {
-                None
-            }
-        };
-
-        let mut replacements: Vec<_> = all_replacements
-            .clone()
-            .into_iter()
-            .filter_map(filter)
-            .collect();
-        if idx == 0 && is_punct {
-            replacements.extend(
-                ASCII_LEFT_PUNCT
-                    .chars()
-                    .map(|c| c.to_string())
-                    .filter_map(filter),
-            );
-        } else if idx == cs.len() - 1 && is_punct {
-            replacements.extend(
-                ASCII_RIGHT_PUNCT
-                    .chars()
-                    .map(|c| c.to_string())
-                    .filter_map(filter),
-            );
-            replacements.extend(
-                ASCII_END_PUNCT
-                    .chars()
-                    .map(|c| c.to_string())
-                    .filter_map(filter),
-            );
-        } else {
-            replacements.extend(
-                ASCII_OTHER_PUNCT
-                    .chars()
-                    .map(|c| c.to_string())
-                    .filter_map(filter),
-            );
-            replacements.push(ASCII_DASH.to_string());
+impl<F> CanEdit for SwapEdits<F>
+where
+    F: Fn(&str, &str) -> bool,
+{
+    fn can_edit(&self, cs: &CS, idx: &usize) -> bool {
+        if cs.len() <= 1 || *idx >= cs.len() - 1 {
+            return false;
         }
-        replacements
-    })
-}
-
-pub fn alpha_swap_fn() -> Box<CanEditFn> {
-    Box::new(|cs, &idx| {
-        assert!(cs.len() > 1);
-        let char1 = cs.get_char(idx);
-        let char2 = cs.get_char(idx + 1);
-        // only swap alphabetic characters
-        char1.is_alphabetic() && char2.is_alphabetic()
-    })
+        let s = cs.get(*idx);
+        let s_next = cs.get(idx + 1);
+        (self.can_swap)(s, s_next)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -143,58 +112,62 @@ pub fn edit_word(
     word: &str,
     use_graphemes: bool,
     rng: &mut impl Rng,
-    insert: Option<&EditOptionsFn>,
-    delete: Option<&CanEditFn>,
-    replace: Option<&EditOptionsFn>,
-    swap: Option<&CanEditFn>,
+    insert: Option<&impl GetEdits>,
+    delete: Option<&impl CanEdit>,
+    replace: Option<&impl GetEdits>,
+    swap: Option<&impl CanEdit>,
     exclude_indices: Option<HashSet<usize>>,
 ) -> (String, HashSet<usize>) {
+    let mut edit_indices = vec![];
+    if insert.is_some() {
+        edit_indices.push(0);
+    }
+    if delete.is_some() {
+        edit_indices.push(1);
+    }
+    if replace.is_some() {
+        edit_indices.push(2);
+    }
+    if swap.is_some() {
+        edit_indices.push(3);
+    }
+    if edit_indices.is_empty() {
+        return (word.to_string(), exclude_indices.unwrap_or_default());
+    }
+    let edit_idx = edit_indices[rng.gen_range(0..edit_indices.len())];
+
     let mut exclude_indices = exclude_indices.unwrap_or_default();
     let cs = CS::new(word, use_graphemes);
-    assert!(
-        cs.chars().all(|c| !c.is_whitespace()),
-        "edit word should only be called \
-    on strings that do not contain whitespace"
-    );
-    let edits = vec![
-        insert.is_some(),
-        delete.is_some(),
-        replace.is_some(),
-        swap.is_some(),
-    ];
-    if edits.iter().all(|e| !e) || cs.is_empty() {
-        return (word.to_string(), exclude_indices);
-    }
-    let edit_indices: Vec<_> = edits
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, e)| if e { Some(idx) } else { None })
-        .collect();
-    let edit_idx = &edit_indices[rng.gen_range(0..edit_indices.len())];
+
     match edit_idx {
         0 => {
-            let insert_indices: Vec<usize> = (0..=cs.len())
-                .filter(|idx| {
-                    let excluded = exclude_indices.contains(idx)
-                        || (*idx > 0 && exclude_indices.contains(&(idx - 1)));
-                    let can_insert = !insert.as_ref().unwrap()(&cs, idx).is_empty();
-                    !excluded && can_insert
+            let insertions: Vec<_> = (0..=cs.len())
+                .filter_map(|idx| {
+                    let excluded = exclude_indices.contains(&idx)
+                        || (idx > 0 && exclude_indices.contains(&(idx - 1)));
+                    if excluded {
+                        return None;
+                    }
+                    let insertions = insert.as_ref().unwrap().get_edits(&cs, &idx);
+                    if insertions.len() > 0 {
+                        Some((idx, insertions))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
-            if insert_indices.is_empty() {
+            if insertions.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let insert_idx = insert_indices[rng.gen_range(0..insert_indices.len())];
-            let possible_insertions = insert.as_ref().unwrap()(&cs, &insert_idx);
-            assert!(!possible_insertions.is_empty());
-            let insert_str = &possible_insertions[rng.gen_range(0..possible_insertions.len())];
-            let insert_len = CS::new(insert_str.as_ref(), use_graphemes).len();
+            let (insert_idx, insertions) = &insertions[rng.gen_range(0..insertions.len())];
+            let insertion = insertions[rng.gen_range(0..insertions.len())];
+            let insert_len = CS::new(insertion, use_graphemes).len();
             // we inserted some string, so the length of the word changed
             // adjust excluded indices to the right of the insertion accordingly
             exclude_indices = exclude_indices
                 .into_iter()
                 .map(|idx| {
-                    if idx >= insert_idx {
+                    if idx >= *insert_idx {
                         idx + insert_len
                     } else {
                         idx
@@ -206,9 +179,7 @@ pub fn edit_word(
                 exclude_indices.insert(insert_idx + l);
             }
             (
-                cs.sub(0, insert_idx).to_string()
-                    + insert_str.as_ref()
-                    + cs.sub(insert_idx, cs.len()),
+                cs.sub(0, *insert_idx).to_string() + insertion + cs.sub(*insert_idx, cs.len()),
                 exclude_indices,
             )
         }
@@ -216,7 +187,7 @@ pub fn edit_word(
             let delete_indices: Vec<usize> = (0..cs.len())
                 .filter(|idx| {
                     let excluded = exclude_indices.contains(idx);
-                    let can_delete = delete.as_ref().unwrap()(&cs, idx);
+                    let can_delete = delete.as_ref().unwrap().can_edit(&cs, idx);
                     !excluded && can_delete
                 })
                 .collect();
@@ -236,27 +207,31 @@ pub fn edit_word(
             )
         }
         2 => {
-            let replace_indices: Vec<usize> = (0..cs.len())
-                .filter(|idx| {
-                    let excluded = exclude_indices.contains(idx);
-                    let can_replace = !replace.as_ref().unwrap()(&cs, idx).is_empty();
-                    !excluded && can_replace
+            let replacements: Vec<_> = (0..cs.len())
+                .filter_map(|idx| {
+                    if exclude_indices.contains(&idx) {
+                        return None;
+                    }
+                    let replacements = replace.as_ref().unwrap().get_edits(&cs, &idx);
+                    if replacements.len() > 0 {
+                        Some((idx, replacements))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
-            if replace_indices.is_empty() {
+            if replacements.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let replace_idx = replace_indices[rng.gen_range(0..replace_indices.len())];
-            let possible_replacements = replace.as_ref().unwrap()(&cs, &replace_idx);
-            assert!(!possible_replacements.is_empty());
-            let replacement = &possible_replacements[rng.gen_range(0..possible_replacements.len())];
-            let replacement_len = CS::new(replacement.as_ref(), use_graphemes).len();
+            let (replace_idx, replacements) = &replacements[rng.gen_range(0..replacements.len())];
+            let replacement = replacements[rng.gen_range(0..replacements.len())];
+            let replacement_len = CS::new(replacement, use_graphemes).len();
             // shift all indices that come after the replacement by length of the replacement
             // string - 1
             exclude_indices = exclude_indices
                 .into_iter()
                 .map(|idx| {
-                    if idx > replace_idx {
+                    if idx > *replace_idx {
                         idx + replacement_len - 1
                     } else {
                         idx
@@ -268,8 +243,8 @@ pub fn edit_word(
                 exclude_indices.insert(replace_idx + l);
             }
             (
-                cs.sub(0, replace_idx).to_string()
-                    + replacement.as_ref()
+                cs.sub(0, *replace_idx).to_string()
+                    + replacement
                     + cs.sub(replace_idx + 1, cs.len()),
                 exclude_indices,
             )
@@ -279,7 +254,7 @@ pub fn edit_word(
                 .filter(|idx| {
                     let excluded =
                         exclude_indices.contains(idx) || exclude_indices.contains(&(idx + 1));
-                    let can_swap = swap.as_ref().unwrap()(&cs, idx);
+                    let can_swap = swap.as_ref().unwrap().can_edit(&cs, idx);
                     !excluded && can_swap
                 })
                 .collect();
@@ -319,12 +294,31 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
 
     use crate::{
-        corrupt::{alpha_punct_delete_fn, alpha_swap_fn, edit_word, insert_fn, replace_fn},
+        corrupt::{edit_word, DeleteEdits, InsertEdits, ReplaceEdits, SwapEdits},
         unicode::CS,
     };
 
     #[test]
     fn test_edit_word() {
+        let insert = InsertEdits {
+            insertions: vec!["w".to_string()],
+            ..Default::default()
+        };
+        let replace = ReplaceEdits {
+            replacements: vec!["bla".to_string()],
+            ..Default::default()
+        };
+        fn can_delete(_: &str) -> bool {
+            true
+        }
+        let delete = DeleteEdits {
+            full_delete: false,
+            can_delete,
+        };
+        fn can_swap(_: &str, _: &str) -> bool {
+            true
+        }
+        let swap = SwapEdits { can_swap };
         let w = "täst";
         let mut rng = ChaCha8Rng::from_entropy();
         // test deletion of characters
@@ -332,10 +326,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            None,
-            Some(&alpha_punct_delete_fn(false)),
-            None,
-            None,
+            None as Option<&InsertEdits>,
+            Some(&delete),
+            None as Option<&ReplaceEdits>,
+            None as Option<&SwapEdits>,
             None,
         );
         assert!(ew.len() < w.len());
@@ -345,10 +339,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            None,
-            Some(&alpha_punct_delete_fn(false)),
-            None,
-            None,
+            None as Option<&InsertEdits>,
+            Some(&delete),
+            None as Option<&ReplaceEdits>,
+            None as Option<&SwapEdits>,
             Some(HashSet::from([0, 2, 3])),
         );
         assert_eq!(&ew, "tst");
@@ -357,10 +351,10 @@ mod tests {
             "t",
             true,
             &mut rng,
-            None,
-            Some(&alpha_punct_delete_fn(false)),
-            None,
-            None,
+            None as Option<&InsertEdits>,
+            Some(&delete),
+            None as Option<&ReplaceEdits>,
+            None as Option<&SwapEdits>,
             None,
         );
         assert_eq!(ew.len(), 1);
@@ -370,10 +364,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            Some(&insert_fn(vec!["w".to_string()])),
-            None,
-            None,
-            None,
+            Some(&insert),
+            None as Option<&DeleteEdits>,
+            None as Option<&ReplaceEdits>,
+            None as Option<&SwapEdits>,
             None,
         );
         assert!(ew.len() > w.len());
@@ -389,10 +383,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            Some(&insert_fn(vec!["w".to_string()])),
-            None,
-            None,
-            None,
+            Some(&insert),
+            None as Option<&DeleteEdits>,
+            None as Option<&ReplaceEdits>,
+            None as Option<&SwapEdits>,
             Some(HashSet::from([1, 2, 3])),
         );
         assert_eq!(&ew, "wtäst");
@@ -402,10 +396,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            None,
-            None,
-            None,
-            Some(&alpha_swap_fn()),
+            None as Option<&InsertEdits>,
+            None as Option<&DeleteEdits>,
+            None as Option<&ReplaceEdits>,
+            Some(&swap),
             None,
         );
         assert_eq!(ew.len(), w.len());
@@ -415,10 +409,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            None,
-            None,
-            None,
-            Some(&alpha_swap_fn()),
+            None as Option<&InsertEdits>,
+            None as Option<&DeleteEdits>,
+            None as Option<&ReplaceEdits>,
+            Some(&swap),
             Some(HashSet::from([0, 3])),
         );
         assert_eq!(&ew, "tsät");
@@ -428,10 +422,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            None,
-            None,
-            Some(&replace_fn(vec!["bla".to_string()])),
-            None,
+            None as Option<&InsertEdits>,
+            None as Option<&DeleteEdits>,
+            Some(&replace),
+            None as Option<&SwapEdits>,
             None,
         );
         assert!(ew.len() > w.len());
@@ -441,10 +435,10 @@ mod tests {
             w,
             true,
             &mut rng,
-            None,
-            None,
-            Some(&replace_fn(vec!["bla".to_string()])),
-            None,
+            None as Option<&InsertEdits>,
+            None as Option<&DeleteEdits>,
+            Some(&replace),
+            None as Option<&SwapEdits>,
             Some(HashSet::from([0, 1, 3])),
         );
         assert_eq!(&ew, "täblat");

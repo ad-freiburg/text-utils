@@ -1,12 +1,12 @@
 use crate::corrupt::{
-    alpha_punct_delete_fn, alpha_swap_fn, ascii_insert_fn, ascii_replace_fn, edit_word,
+    ascii_chars, edit_word, DeleteEdits, InsertEdits, PunctuationEdits, ReplaceEdits, SwapEdits,
 };
 use crate::data::{Label, TextData};
 use crate::dictionary::Dictionary;
 use crate::text::{self, split_words};
 use crate::text::{possible_byte_substrings, possible_character_substrings};
 use crate::tokenization::{tokenizer, TokenizerConfig};
-use crate::unicode::{normalize, Normalization, CS};
+use crate::unicode::{is_alphabetic, is_punctuation, normalize, Normalization, CS};
 use crate::utils::{accumulate, py_invalid_type_error, py_required_key_error};
 use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
 use anyhow::anyhow;
@@ -569,6 +569,7 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
         Ok(corruption_mode)
     }
 }
+
 fn corrupt_spelling(
     prob: f64,
     allow_full_delete: bool,
@@ -576,12 +577,23 @@ fn corrupt_spelling(
 ) -> Box<PreprocessingFn> {
     let prob = prob.clamp(0.0, 1.0);
     assert!(prob > 0.0, "corruption probability must be greater than 0");
-    let delete = alpha_punct_delete_fn(allow_full_delete);
-    let swap = alpha_swap_fn();
+    // only delete alphabetic chars or punctuation
+    fn can_delete(s: &str) -> bool {
+        is_alphabetic(s) || is_punctuation(s)
+    }
+    let delete = DeleteEdits {
+        full_delete: allow_full_delete,
+        can_delete,
+    };
+    // only swap alphabetic chars
+    fn can_swap(a: &str, b: &str) -> bool {
+        is_alphabetic(a) && is_alphabetic(b)
+    }
+    let swap = SwapEdits { can_swap };
     // characters we use for insertions and replacements
     // must have a minimum relative frequency of 0.01%
     let min_rel_freq = 1.0 / 10000.0;
-    let (insert, replace) = match &mode {
+    let (insertions, replacements) = match &mode {
         SpellingCorruptionMode::Artificial(.., Some(char_file))
         | SpellingCorruptionMode::Mixed(.., Some(char_file), _) => {
             let dict = Dictionary::load(char_file).expect("could not load character dictionary");
@@ -598,12 +610,22 @@ fn corrupt_spelling(
                     }
                 })
                 .collect();
-            (
-                ascii_insert_fn(Some(insert_and_replace_chars.clone())),
-                ascii_replace_fn(Some(insert_and_replace_chars)),
-            )
+            (insert_and_replace_chars.clone(), insert_and_replace_chars)
         }
-        _ => (ascii_insert_fn(None), ascii_replace_fn(None)),
+        _ => (ascii_chars(), ascii_chars()),
+    };
+    // let insert = move |cs, idx| &insertions.iter().map(|s| s.as_ref()).collect();
+    // let replace = move |cs, idx| &replacements.iter().map(|s| s.as_ref()).collect();
+    let punct = PunctuationEdits {
+        ..Default::default()
+    };
+    let insert = InsertEdits {
+        punct: punct.clone(),
+        insertions,
+    };
+    let replace = ReplaceEdits {
+        punct,
+        replacements,
     };
     let misspellings = match &mode {
         SpellingCorruptionMode::Realistic(file) | SpellingCorruptionMode::Mixed(.., file) => {

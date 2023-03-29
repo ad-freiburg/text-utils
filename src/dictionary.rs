@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     edit::distances,
-    text::{clean, file_size, split_words},
+    text::{clean, count_words, file_size, split_words},
     unicode::{is_alphabetic, is_punctuation, normalize, Normalization, CS},
     utils::{progress_bar, py_invalid_type_error},
 };
@@ -64,99 +64,89 @@ impl Dictionary {
     ) -> anyhow::Result<Self> {
         let max_size = max_size.unwrap_or(usize::MAX);
         let max_sequences = max_sequences.unwrap_or(usize::MAX);
-        let inner = Arc::new(Mutex::new(HashMap::new()));
-        let (tx, rx) = sync_channel::<Vec<String>>(num_threads as usize);
-        let rx = Arc::new(Mutex::new(rx));
+        let num_total_lines: usize = files
+            .iter()
+            .map(|path| Ok(file_size(path)?.0))
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .sum();
+        let path_bufs: Vec<_> = files
+            .iter()
+            .map(|path| path.as_ref().to_path_buf())
+            .collect();
+        let line_iter = path_bufs
+            .into_iter()
+            .flat_map(move |path| {
+                let file = File::open(path).expect("failed to open file");
+                let reader = BufReader::new(file);
+                reader.lines().filter_map(Result::ok)
+            })
+            .take(max_sequences);
+        let line_iter = Arc::new(Mutex::new(line_iter));
+        let (count_tx, count_rx) = sync_channel(num_threads as usize);
         let mut threads = vec![];
         for _ in 0..num_threads.max(1) {
-            let rx_clone = rx.clone();
-            let inner_clone = inner.clone();
+            let line_iter_clone = line_iter.clone();
+            let count_tx_clone = count_tx.clone();
             let t_handle = thread::spawn(move || loop {
-                let Ok(lines) = rx_clone.lock().unwrap().recv() else {
+                let Some(mut line) = line_iter_clone.lock().expect("failed to lock line iter").next() else {
                     return;
                 };
-                let mut counts = HashMap::new();
-                for line in lines {
-                    let line = normalize(&clean(&line, true), Normalization::NFKC, true);
-                    if use_characters {
-                        CS::split(&line, true)
-                            .filter(|s| is_alphabetic(s) || is_punctuation(s))
-                            .for_each(|token| {
-                                if let Some(count) = counts.get_mut(token) {
-                                    *count += 1;
-                                } else {
-                                    counts.insert(token.to_string(), 1);
-                                }
-                            })
-                    } else {
-                        split_words(&line)
-                            .into_iter()
-                            .filter_map(|(_, parts)| parts)
-                            .flat_map(|parts| parts.into_iter().map(|(s, _)| s))
-                            .for_each(|token| {
-                                if let Some(count) = counts.get_mut(token) {
-                                    *count += 1;
-                                } else {
-                                    counts.insert(token.to_string(), 1);
-                                }
-                            })
-                    };
-                }
-                if let Ok(mut inner) = inner_clone.lock() {
-                    for (word, freq) in counts {
-                        *inner.entry(word).or_insert(0) += freq;
-                    }
+                line = normalize(&clean(&line, true), Normalization::NFKC, true);
+                let counts = if use_characters {
+                    CS::split(&line, true)
+                        .filter(|s| is_alphabetic(s) || is_punctuation(s))
+                        .fold(HashMap::new(), |mut counts, token| {
+                            if let Some(count) = counts.get_mut(token) {
+                                *count += 1;
+                            } else {
+                                counts.insert(token.to_string(), 1);
+                            }
+                            counts
+                        })
+                } else {
+                    split_words(&line)
+                        .into_iter()
+                        .filter_map(|(_, parts)| parts)
+                        .flat_map(|parts| parts.into_iter().map(|(s, _)| s))
+                        .fold(HashMap::new(), |mut counts, token| {
+                            if let Some(count) = counts.get_mut(token) {
+                                *count += 1;
+                            } else {
+                                counts.insert(token.to_string(), 1);
+                            }
+                            counts
+                        })
+                };
+                if count_tx_clone.send(counts).is_err() {
+                    return;
                 };
             });
             threads.push(t_handle);
         }
-        let file_p_bar = progress_bar("processing files", files.len() as u64, !show_progress);
-        let multi_p_bar = MultiProgress::new();
-        multi_p_bar.add(file_p_bar.clone());
-        let mut num_sequences = 0;
-        'outer: for file in files {
-            let (num_lines, _) = file_size(file)?;
-            let chunk_size = (num_lines / num_threads as usize).clamp(1, batch_size);
-            let mut file_name = file.as_ref().to_string_lossy().to_string();
-            if file_name.len() > 16 {
-                file_name = "...".to_string() + &file_name[file_name.len() - 13..];
-            }
-            let line_p_bar = progress_bar(
-                &format!("processing lines of {file_name}"),
-                num_lines as u64,
-                !show_progress,
-            );
-            multi_p_bar.insert_after(&file_p_bar, line_p_bar.clone());
-            let lines = BufReader::new(File::open(file)?).lines();
-            for line_chunk in &lines.chunks(chunk_size) {
-                let mut line_chunk: Vec<String> = line_chunk.filter_map(|l| l.ok()).collect();
-                line_chunk.truncate(max_sequences - num_sequences);
-                let line_chunk_len = line_chunk.len();
-                tx.send(line_chunk)?;
-                num_sequences += line_chunk_len;
-                line_p_bar.inc(line_chunk_len as u64);
-                if num_sequences >= max_sequences {
-                    break 'outer;
+        let pbar = progress_bar(
+            &format!(
+                "counting {} in sequences",
+                if use_characters { "chars" } else { "words" }
+            ),
+            num_total_lines as u64,
+            !show_progress,
+        );
+        drop(count_tx);
+        let counts = count_rx
+            .into_iter()
+            .fold(HashMap::new(), |mut acc, counts| {
+                for (word, count) in counts {
+                    *acc.entry(word).or_insert(0) += count;
                 }
-            }
-            line_p_bar.finish_and_clear();
-            file_p_bar.inc(1);
-        }
-        file_p_bar.finish();
-        // we are done sending, drop the sender to signal
-        // to the thread receivers they should stop
-        drop(tx);
-        for t in threads {
-            t.join().expect("failed to join thread");
-        }
+                pbar.inc(1);
+                acc
+            });
+        pbar.finish_and_clear();
         // filter for the top max size words
         // build a binary heap for this and always pop the top element
         let mut heap = BinaryHeap::with_capacity(max_size + 1);
-        let inner = Arc::try_unwrap(inner)
-            .expect("should not fail")
-            .into_inner()
-            .expect("should not fail");
-        for (word, freq) in inner {
+        for (word, freq) in counts {
             heap.push(Reverse((freq, word)));
             if heap.len() > max_size {
                 heap.pop();

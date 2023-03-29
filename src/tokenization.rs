@@ -1578,7 +1578,7 @@ pub fn train_bpe(
     panic::set_hook(Box::new(move |info| {
         println!("thread panicked: {info}");
     }));
-    for idx in 0..num_threads {
+    for idx in 0..num_threads.max(1) {
         let count_tx_clone = count_tx.clone();
         let line_iter_clone = line_iter.clone();
         let _: JoinHandle<()> = Builder::new()
@@ -1608,7 +1608,7 @@ pub fn train_bpe(
         .into_iter()
         .fold(HashMap::new(), |mut acc, counts| {
             for (word, count) in counts {
-                *acc.entry(word).or_insert(1) += count;
+                *acc.entry(word).or_insert(0) += count;
             }
             pbar.inc(1);
             acc

@@ -52,15 +52,12 @@ class TextGenerationMetric(TensorboardMetric):
         name: str,
         output_tokenizer: tokenization.Tokenizer,
         max_items: Optional[int] = None,
-        eos_token: Optional[str] = None
     ):
         self.items = None
         self.outputs = None
         self.max_items = max_items
         self.name = name
         self.output_tokenizer = output_tokenizer
-        self.eos_token_id = self.output_tokenizer.special_token_to_id(eos_token) \
-            if eos_token is not None else None
 
     def set_values(self, items: List[data.Item], outputs: torch.Tensor):
         self.items = items

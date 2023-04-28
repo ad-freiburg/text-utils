@@ -1,4 +1,6 @@
-use crate::corrupt::{edit_word, DeleteEdits, InsertEdits, ReplaceEdits, SwapEdits};
+use crate::corrupt::{
+    edit_word, DeleteEdits, EditsAndWeights, InsertEdits, ReplaceEdits, SwapEdits,
+};
 use crate::data::{Label, TextData};
 use crate::dictionary::Dictionary;
 use crate::text::{self, split_words};
@@ -509,9 +511,9 @@ fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum SpellingCorruptionMode {
-    Artificial(f64, Option<PathBuf>),
+    Artificial(f64, f64, Option<PathBuf>),
     Realistic(PathBuf),
-    Mixed(f64, f64, Option<PathBuf>, PathBuf),
+    Mixed(f64, f64, f64, Option<PathBuf>, PathBuf),
 }
 
 impl IntoPy<PyObject> for SpellingCorruptionMode {
@@ -536,7 +538,11 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                 let path = d
                     .get_item("characters_file")
                     .map(|path| path.extract().expect("characters_file must be a string"));
-                SpellingCorruptionMode::Artificial(prob, path)
+                let temp = d
+                    .get_item("temperature")
+                    .map(|temp| temp.extract().expect("temperature must be a float"))
+                    .unwrap_or(2.0);
+                SpellingCorruptionMode::Artificial(prob, temp, path)
             }
             "realistic" => {
                 let Some(path) = d.get_item("misspellings_file") else {
@@ -553,13 +559,23 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                     return Err(py_required_key_error("artificial_prob", "mixed spelling corruption mode"));
                 };
                 let art_prob: f64 = art_prob.extract()?;
+                let art_temp = d
+                    .get_item("artificial_temperature")
+                    .map(|temp| temp.extract().expect("temperature must be a float"))
+                    .unwrap_or(2.0);
                 let char_path = d
                     .get_item("characters_file")
                     .map(|path| path.extract().expect("characters_file must be a string"));
                 let Some(missp_path) = d.get_item("misspellings_file") else {
                     return Err(py_required_key_error("misspellings_file", "mixed spelling corruption mode"));
                 };
-                SpellingCorruptionMode::Mixed(art_prob, prob, char_path, missp_path.extract()?)
+                SpellingCorruptionMode::Mixed(
+                    art_prob,
+                    prob,
+                    art_temp,
+                    char_path,
+                    missp_path.extract()?,
+                )
             }
             k => {
                 return Err(py_invalid_type_error(k, "spelling corruption mode"));
@@ -576,6 +592,17 @@ fn corrupt_spelling(
 ) -> Box<PreprocessingFn> {
     let prob = prob.clamp(0.0, 1.0);
     assert!(prob > 0.0, "corruption probability must be greater than 0");
+    // extract the probabilities for each corruption mode
+    let (art_p, real_p, art_char_edit_p, art_temp) = match mode {
+        SpellingCorruptionMode::Artificial(art_char_p, art_temp, _) => {
+            (prob, 0.0, art_char_p, art_temp)
+        }
+        SpellingCorruptionMode::Realistic(..) => (0.0, prob, 0.0, 1.0),
+        SpellingCorruptionMode::Mixed(art_p, art_char_p, art_temp, ..) => {
+            let art_p = art_p.clamp(0.0, 1.0);
+            (art_p * prob, (1.0 - art_p) * prob, art_char_p, art_temp)
+        }
+    };
     // only delete alphabetic chars or punctuation
     fn can_delete(s: &str) -> bool {
         is_alphabetic(s) || is_punctuation(s)
@@ -589,9 +616,9 @@ fn corrupt_spelling(
         is_alphabetic(a) && is_alphabetic(b)
     }
     let swap = SwapEdits { can_swap };
-    // characters we use for insertions and replacements
+    // character n-grams we use for insertions and replacements
     // must have a minimum relative frequency of 0.01%
-    let min_rel_freq = 1.0 / 10000.0;
+    let min_rel_freq = 1.0 / 10_000.0;
     let (insertions, replacements) = match &mode {
         SpellingCorruptionMode::Artificial(.., Some(char_file))
         | SpellingCorruptionMode::Mixed(.., Some(char_file), _) => {
@@ -601,42 +628,64 @@ fn corrupt_spelling(
             let mut replacements = HashMap::new();
             dict.items()
                 .sorted_by_key(|&(_, freq)| Reverse(freq))
-                .filter_map(|(w, freq)| {
-                    let rel_freq = *freq as f64 / total_freq;
+                .filter_map(|(s, freq)| {
+                    let freq = *freq as f64;
+                    let rel_freq = freq / total_freq;
                     if rel_freq < min_rel_freq {
                         return None;
                     }
-                    match w.split_whitespace().collect::<Vec<_>>().as_slice() {
-                        &[prev, cur, next] => Some((prev, cur, next)),
+                    match s.split_whitespace().collect::<Vec<_>>().as_slice() {
+                        &[prev, cur, next] => Some((prev, cur, next, freq)),
                         _ => panic!(
-                            "character dictionary must contain 3-grams separated by whitespace"
+                            "character dictionary must contain 3-grams separated by whitespace, got '{s}'"
                         ),
                     }
                 })
-                .for_each(|(prev, cur, next)| {
-                    let insert_ctx = (Cow::Owned(prev.to_string()), Cow::Owned(next.to_string()));
-                    insertions
-                        .entry(insert_ctx)
-                        .or_insert_with(Vec::new)
-                        .push(cur.to_string());
-
-                    let replace_ctx = (
-                        Cow::Owned(prev.to_string()),
-                        Cow::Owned(cur.to_string()),
-                        Cow::Owned(next.to_string()),
-                    );
-                    replacements
-                        .entry(replace_ctx)
-                        .or_insert_with(Vec::new)
-                        .push(cur.to_string())
+                .for_each(|(prev, cur, next, freq)| {
+                    let ctx = (Cow::Owned(prev.to_string()), Cow::Owned(next.to_string()));
+                    let weight = freq.powf(1.0 / art_temp);
+                    let (edits, weights) = insertions
+                        .entry(ctx.clone())
+                        .or_insert_with(|| (vec![], vec![]));
+                    edits.push(cur.to_string());
+                    weights.push(weight);
+                    let (edits, weights) = replacements
+                        .entry(ctx)
+                        .or_insert_with(|| (vec![], vec![]));
+                    edits.push(cur.to_string());
+                    weights.push(weight);
                 });
             // filter out items in replacements that match the cur char
-            replacements = replacements
+            let replacements: HashMap<_, _> = replacements
                 .into_iter()
-                .map(|(k, v)| {
-                    let v = v.into_iter().filter(|c| c != &k.1).collect();
-                    (k, v)
-                })
+                .flat_map(
+                    |((prev, next), (replacements, weights)): (
+                        (Cow<str>, Cow<str>),
+                        EditsAndWeights,
+                    )| {
+                        replacements
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, cur)| {
+                                let ctx = (
+                                    Cow::Owned(prev.to_string()),
+                                    Cow::Owned(cur.to_string()),
+                                    Cow::Owned(next.to_string()),
+                                );
+                                let mut filtered_replacements = replacements.clone();
+                                let rem = filtered_replacements.remove(idx);
+                                assert_eq!(&rem, cur);
+                                if filtered_replacements.is_empty() {
+                                    None
+                                } else {
+                                    let mut filtered_weights = weights.clone();
+                                    filtered_weights.remove(idx);
+                                    Some((ctx, (filtered_replacements, filtered_weights)))
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                )
                 .collect();
             (Some(insertions), Some(replacements))
         }
@@ -645,7 +694,7 @@ fn corrupt_spelling(
     let insert = insertions.map(|insertions| InsertEdits { insertions });
     let replace = replacements.map(|replacements| ReplaceEdits { replacements });
     let misspellings = match &mode {
-        SpellingCorruptionMode::Realistic(file) | SpellingCorruptionMode::Mixed(.., file) => {
+        SpellingCorruptionMode::Realistic(.., file) | SpellingCorruptionMode::Mixed(.., file) => {
             let file = File::open(file).expect("could not read misspellings file");
             let reader = BufReader::new(file);
             let misspellings: HashMap<String, Vec<String>> =
@@ -654,20 +703,6 @@ fn corrupt_spelling(
         }
         _ => HashMap::new(),
     };
-    let art_char_edit_p = match &mode {
-        SpellingCorruptionMode::Artificial(p, ..) | SpellingCorruptionMode::Mixed(_, p, ..) => {
-            p.clamp(0.0, 1.0)
-        }
-        _ => 0.0,
-    };
-    let (art_p, real_p) = match mode {
-        SpellingCorruptionMode::Artificial(..) => (prob, 0.0),
-        SpellingCorruptionMode::Realistic(..) => (0.0, prob),
-        SpellingCorruptionMode::Mixed(art_p, ..) => {
-            let art_p = art_p.clamp(0.0, 1.0);
-            (art_p * prob, (1.0 - art_p) * prob)
-        }
-    };
     Box::new(move |item, seed| {
         let mut rng = if let Some(seed) = seed {
             ChaCha8Rng::seed_from_u64(seed)
@@ -675,13 +710,17 @@ fn corrupt_spelling(
             ChaCha8Rng::from_entropy()
         };
         let words = split_words(&item.processed);
+        let mut changed = 0;
         let words: Vec<_> = words
             .into_iter()
             .filter_map(|(word, parts)| {
-                let mut word = word.to_string();
                 let r: f64 = rng.gen();
-                if r < real_p {
-                    if let Some(replacements) = misspellings.get(&word) {
+                changed += 1;
+                if r > real_p + art_p {
+                    changed -= 1;
+                    return Some(word.to_string());
+                } else if r < real_p {
+                    if let Some(replacements) = misspellings.get(word) {
                         let idx = rng.gen_range(0..replacements.len());
                         return Some(replacements[idx].to_string());
                     } else if let Some(parts) = parts {
@@ -709,29 +748,25 @@ fn corrupt_spelling(
                     // fallback to artificial corruption
                     // if there are no replacements for the word itself or one of its parts
                 }
-                if r < real_p + art_p {
-                    let word_len = CS::split(&word, true).count();
-                    let num_edits = (0..word_len)
-                        .filter(|_| rng.gen::<f64>() < art_char_edit_p)
-                        .count();
-                    let mut exclude: HashSet<usize> = HashSet::new();
-                    for _ in 0..num_edits {
-                        let (new_word, new_exclude) = edit_word(
-                            &word,
-                            true,
-                            &mut rng,
-                            insert.as_ref(),
-                            Some(&delete),
-                            replace.as_ref(),
-                            Some(&swap),
-                            Some(exclude),
-                        );
-                        if new_word == word {
-                            break;
-                        }
-                        word = new_word;
-                        exclude = new_exclude;
-                    }
+                let word_len = CS::split(&word, true).count();
+                let num_edits = (0..word_len)
+                    .filter(|_| rng.gen::<f64>() < art_char_edit_p)
+                    .count();
+                let mut exclude: HashSet<usize> = HashSet::new();
+                let mut word = word.to_string();
+                for _ in 0..num_edits {
+                    let (new_word, new_exclude) = edit_word(
+                        &word,
+                        true,
+                        &mut rng,
+                        insert.as_ref(),
+                        Some(&delete),
+                        replace.as_ref(),
+                        Some(&swap),
+                        Some(exclude),
+                    );
+                    word = new_word;
+                    exclude = new_exclude;
                 }
                 if word.is_empty() {
                     None
@@ -825,41 +860,52 @@ pub fn corrupt_mask(
             ChaCha8Rng::from_entropy()
         };
 
-        let mut tokens: Vec<_> = if is_word {
+        let tokens: Vec<_> = if is_word {
             split_words(&item.processed)
                 .iter()
-                .map(|&(w, _)| Some(w))
+                .map(|&(w, _)| w)
                 .collect()
         } else {
-            CS::split(&item.processed, use_graphemes)
-                .map(Some)
-                .collect()
+            CS::split(&item.processed, use_graphemes).collect()
         };
         if tokens.len() <= 1 {
             return Ok(item);
         }
         let mut i = 0;
+        let mut new_tokens = vec![];
         while i < tokens.len() {
-            let r: f64 = rng.gen();
-            if r > mask_p {
+            if rng.gen::<f64>() > mask_p {
+                new_tokens.push(tokens[i]);
+                if is_word && i < tokens.len() - 1 {
+                    new_tokens.push(" ");
+                }
                 i += 1;
                 continue;
             }
-            let num_to_mask = (geo.sample(&mut rng) as usize + min).min(tokens.len() / 2);
+            let num_to_mask = (geo.sample(&mut rng) as usize + min)
+                .min(tokens.len() / 2)
+                .min(tokens.len() - i);
             // a single masking should never be more than half of the tokens
             // to allow for more context between the tokens, should only happen
             // for very short sequences or very high corruption values
-            // one mask token for all masked characters
-            tokens[i] = Some(&mask_token);
-            for j in i + 1..(i + num_to_mask).min(tokens.len()) {
-                tokens[j] = None;
+
+            // one mask token for each masked character
+            if is_word {
+                // for word num_to_mask corresponds to the number of words to mask
+                // so we need to insert one mask token for each character in each masked word
+                for j in i..i + num_to_mask {
+                    let word_len = CS::new(&tokens[j], use_graphemes).len();
+                    new_tokens.append(&mut vec![&mask_token; word_len]);
+                    if j < tokens.len() - 1 {
+                        new_tokens.push(" ");
+                    }
+                }
+            } else {
+                new_tokens.append(&mut vec![&mask_token; num_to_mask]);
             }
-            i += num_to_mask + 1;
+            i += num_to_mask;
         }
-        let processed = tokens
-            .into_iter()
-            .flatten()
-            .join(if is_word { " " } else { "" });
+        let processed = new_tokens.join("");
         Ok(TextData { processed, ..item })
     })
 }

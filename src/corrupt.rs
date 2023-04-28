@@ -6,6 +6,7 @@ use std::{
 use crate::unicode::CS;
 use pyo3::prelude::*;
 use rand::Rng;
+use rand_distr::{Distribution, WeightedIndex};
 
 pub fn replace_word(
     word: &str,
@@ -19,8 +20,20 @@ pub fn replace_word(
     }
 }
 
+pub type EditsAndWeights = (Vec<String>, Vec<f64>);
+
 pub trait GetEdits<'s> {
-    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>>;
+    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s EditsAndWeights>;
+
+    fn sample_edit<'a>(
+        &self,
+        edits: &'a Vec<String>,
+        weights: &Vec<f64>,
+        rng: &mut impl Rng,
+    ) -> &'a str {
+        let dist = WeightedIndex::new(weights).expect("invalid weights");
+        edits[dist.sample(rng)].as_str()
+    }
 }
 
 pub trait CanEdit {
@@ -29,32 +42,34 @@ pub trait CanEdit {
 
 pub type InsertContext<'a> = (Cow<'a, str>, Cow<'a, str>);
 pub struct InsertEdits<'a> {
-    pub insertions: HashMap<InsertContext<'a>, Vec<String>>,
+    pub insertions: HashMap<InsertContext<'a>, EditsAndWeights>,
 }
 
 pub type ReplaceContext<'a> = (Cow<'a, str>, Cow<'a, str>, Cow<'a, str>);
 pub struct ReplaceEdits<'a> {
-    pub replacements: HashMap<ReplaceContext<'a>, Vec<String>>,
+    pub replacements: HashMap<ReplaceContext<'a>, EditsAndWeights>,
 }
 
 impl<'s> GetEdits<'s> for InsertEdits<'s> {
-    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s EditsAndWeights> {
+        let idx = *idx.min(&cs.len());
         let prev = cs.get(idx - 1).unwrap_or("<bow>");
-        let s = cs
-            .get(*idx)
-            .unwrap_or(cs.get(cs.len() - 1).unwrap_or("<eow>"));
+        let s = cs.get(idx).unwrap_or("<eow>");
         let ctx = (Cow::Borrowed(prev), Cow::Borrowed(s));
-        self.insertions.get(&ctx)
+        let insertions = self.insertions.get(&ctx);
+        insertions
     }
 }
 
 impl<'s> GetEdits<'s> for ReplaceEdits<'s> {
-    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+    fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s EditsAndWeights> {
+        let idx = *idx.min(&cs.len().saturating_sub(1));
         let prev = cs.get(idx - 1).unwrap_or("<bow>");
-        let s = cs.get(*idx).expect("cannot replace empty string");
+        let s = cs.get(idx).expect("cannot replace empty string");
         let next = cs.get(idx + 1).unwrap_or("<eow>");
         let ctx = (Cow::Borrowed(prev), Cow::Borrowed(s), Cow::Borrowed(next));
-        self.replacements.get(&ctx)
+        let replacements = self.replacements.get(&ctx);
+        replacements
     }
 }
 
@@ -128,6 +143,7 @@ pub fn edit_word<'s>(
 
     match edit_idx {
         0 => {
+            let insert = insert.unwrap();
             let insertions: Vec<_> = (0..=cs.len())
                 .filter_map(|idx| {
                     let excluded = exclude_indices.contains(&idx)
@@ -136,8 +152,6 @@ pub fn edit_word<'s>(
                         return None;
                     }
                     insert
-                        .as_ref()
-                        .unwrap()
                         .get_edits(&cs, &idx)
                         .map(|insertions| (idx, insertions))
                 })
@@ -145,8 +159,8 @@ pub fn edit_word<'s>(
             if insertions.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let (insert_idx, insertions) = insertions[rng.gen_range(0..insertions.len())];
-            let insertion = &insertions[rng.gen_range(0..insertions.len())];
+            let (insert_idx, (edits, weights)) = insertions[rng.gen_range(0..insertions.len())];
+            let insertion = insert.sample_edit(&edits, &weights, rng);
             let insert_len = CS::new(insertion, use_graphemes).len();
             // we inserted some string, so the length of the word changed
             // adjust excluded indices to the right of the insertion accordingly
@@ -193,14 +207,13 @@ pub fn edit_word<'s>(
             )
         }
         2 => {
+            let replace = replace.unwrap();
             let replacements: Vec<_> = (0..cs.len())
                 .filter_map(|idx| {
                     if exclude_indices.contains(&idx) {
                         return None;
                     }
                     replace
-                        .as_ref()
-                        .unwrap()
                         .get_edits(&cs, &idx)
                         .map(|replacements| (idx, replacements))
                 })
@@ -208,8 +221,9 @@ pub fn edit_word<'s>(
             if replacements.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let (replace_idx, replacements) = replacements[rng.gen_range(0..replacements.len())];
-            let replacement = &replacements[rng.gen_range(0..replacements.len())];
+            let (replace_idx, (edits, weights)) =
+                replacements[rng.gen_range(0..replacements.len())];
+            let replacement = replace.sample_edit(&edits, &weights, rng);
             let replacement_len = CS::new(replacement, use_graphemes).len();
             // shift all indices that come after the replacement by length of the replacement
             // string - 1

@@ -3,6 +3,7 @@ import copy
 from typing import Dict, Any, Optional, Tuple, Callable
 
 import einops
+from text_correction_utils.modules.grouping import Grouping
 import torch
 from torch import nn
 try:
@@ -19,7 +20,7 @@ class Embedding(nn.Module):
         self,
         x: torch.Tensor,
         **kwargs: Any
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Dict[str, Any]]:
         raise NotImplementedError
 
 
@@ -50,8 +51,8 @@ class TokenEmbedding(nn.Module):
         self,
         embedding_dim: int,
         num_embeddings: int,
-        scale_embeddings: bool = True,
         padding_idx: Optional[int] = None,
+        scale_embeddings: bool = False,
         use_8bit: bool = False
     ):
         super().__init__()
@@ -61,11 +62,13 @@ class TokenEmbedding(nn.Module):
             embed_cls = nn_8bit.StableEmbedding
         else:
             embed_cls = nn.Embedding
+
         self.emb = embed_cls(
             num_embeddings,
             embedding_dim,
             padding_idx=padding_idx
         )
+
         if scale_embeddings:
             self.scale = math.sqrt(embedding_dim)
             nn.init.normal_(self.emb.weight, mean=0, std=embedding_dim ** -0.5)
@@ -179,6 +182,7 @@ class PositionalEmbedding(nn.Module):
                 f"but got {positional_embeddings}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        assert x.ndim > 1
         positions = einops.repeat(
             torch.arange(x.shape[1], device=x.device),
             "s -> b s",
@@ -194,10 +198,15 @@ class StandardEmbedding(Embedding):
         embedding_dim: int,
         pad_token_id: int,
         dropout: float,
-        token_dropout: float = 0.0,
         max_length: Optional[int] = None,
         positional_embeddings: Optional[str] = None,
         mode: Optional[str] = None,
+        scale_embeddings: bool = False,
+        group_embeddings: Optional[str] = None,
+        group_aggregation: str = "mean",
+        group_name: str = "groups",
+        group_lengths: str = "group_lengths",
+        group_padding_mask: str = "group_padding_mask",
         use_8bit: bool = False
     ):
         super().__init__()
@@ -207,8 +216,20 @@ class StandardEmbedding(Embedding):
             embedding_dim,
             num_embeddings,
             pad_token_id,
+            scale_embeddings,
             use_8bit
         )
+
+        self.group_embeddings = group_embeddings
+        if self.group_embeddings is not None:
+            assert self.group_embeddings in {"before_pos", "after_pos"}, \
+                f"group embeddings must be either before_pos or after_pos, but got {self.group_embeddings}"
+            self.grouping = Grouping(
+                group_aggregation,
+                group_name,
+                group_lengths,
+                group_padding_mask
+            )
 
         if positional_embeddings is not None:
             assert max_length is not None, "max length must be specified together with positional embeddings"
@@ -221,11 +242,15 @@ class StandardEmbedding(Embedding):
         else:
             self.pos_embedding = None
 
-        if mode == "add_norm":
+        if mode == "norm":
+            self.norm = nn.LayerNorm(embedding_dim)
+            if positional_embeddings is not None:
+                self.pos_norm = nn.LayerNorm(embedding_dim)
+        elif mode == "add_norm":
             assert positional_embeddings is not None, "add_norm mode requires positional embeddings"
             self.norm = nn.LayerNorm(embedding_dim)
         elif mode == "add":
-            assert positional_embeddings is None, "add mode does not require positional embeddings"
+            assert positional_embeddings is not None, "add mode requires positional embeddings"
         elif mode is None:
             pass
         else:
@@ -233,26 +258,37 @@ class StandardEmbedding(Embedding):
 
         self.mode = mode
         self.drop = nn.Dropout(dropout)
-        self.token_drop = nn.Dropout1d(token_dropout)
 
     def forward(
         self,
         x: torch.Tensor,
-        **_: Dict[str, Any]
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        **kwargs: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Dict[str, Any]]:
         emb = self.embedding(x)
+        if self.group_embeddings == "before_pos":
+            emb, kwargs = self.grouping(emb, **kwargs)
+
         if self.pos_embedding is not None:
-            pos_emb = self.pos_embedding(x)
+            pos_emb = self.pos_embedding(emb)
         else:
             pos_emb = None
 
-        if self.mode == "add_norm":
-            emb = self.token_drop(self.drop(self.norm(emb + pos_emb)))
+        if self.group_embeddings == "after_pos":
+            if pos_emb is not None:
+                pos_emb, _ = self.grouping(pos_emb, **kwargs)
+            emb, kwargs = self.grouping(emb, **kwargs)
+
+        if self.mode == "norm":
+            emb = self.norm(emb)
+            if pos_emb is not None:
+                pos_emb = self.pos_norm(pos_emb)
+        elif self.mode == "add_norm":
+            emb = self.norm(emb + pos_emb)
         elif self.mode == "add":
-            emb = self.token_drop(self.drop(emb + pos_emb))
+            emb = emb + pos_emb
         elif self.mode is None:
-            emb = self.token_drop(self.drop(emb))
+            pass
         else:
             raise RuntimeError("should not happen")
 
-        return emb, pos_emb
+        return self.drop(emb), pos_emb, kwargs

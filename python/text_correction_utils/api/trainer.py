@@ -458,8 +458,6 @@ training will resume from latest checkpoint."
         # adapt config to multi gpu usage
         assert "batch_limit" in cfg, "batch_limit must be in data config"
         cfg["batch_limit"] = max(1, cfg["batch_limit"] // info.world_size)
-        if "num_threads" in cfg:
-            cfg["num_threads"] = cfg["num_threads"] // info.local_world_size
 
         train_loader = data.DataLoader.from_files(
             train_sources,

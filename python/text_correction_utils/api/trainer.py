@@ -6,7 +6,6 @@ import os
 import hashlib
 import shutil
 import time
-# from logging import INFO
 from typing import Dict, Optional, Tuple, Any, List, Callable
 import zipfile
 from tqdm import tqdm
@@ -93,6 +92,11 @@ training will resume from latest checkpoint."
         device_props = api.device_info(self.info.device)
         self.logger.info(
             f"[GPU:{self.info.rank}:{self.info.local_rank}] {device_props}"
+        )
+        cpu_props = api.cpu_info()
+        self.logger.info(
+            f"[CPU:{self.info.rank}:{self.info.local_rank}] {cpu_props}, "
+            f"{len(os.sched_getaffinity(0))} cores available"
         )
 
         torch.manual_seed(self.cfg["seed"])

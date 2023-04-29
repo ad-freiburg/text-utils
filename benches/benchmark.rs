@@ -103,6 +103,7 @@ fn bench_tokenizer(c: &mut Criterion) {
         use_graphemes: true,
         groups: ByteGroups::Bytes,
         aggregation: GroupAggregation::Mean,
+        pad_to_multiple_of: None,
     };
     let byte_tok_byte_groups =
         ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default(), None);
@@ -117,21 +118,21 @@ fn bench_tokenizer(c: &mut Criterion) {
             BenchmarkId::new("char", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| char_tok.tokenize(str, None));
+                b.iter(|| char_tok.tokenize(str, None, None, None, true));
             },
         );
         group.bench_with_input(
             BenchmarkId::new("byte (byte groups)", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| byte_tok_byte_groups.tokenize(str, None));
+                b.iter(|| byte_tok_byte_groups.tokenize(str, None, None, None, true));
             },
         );
         group.bench_with_input(
             BenchmarkId::new("byte (code point groups)", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| byte_tok_code_point_groups.tokenize(str, None));
+                b.iter(|| byte_tok_code_point_groups.tokenize(str, None, None, None, true));
             },
         );
 

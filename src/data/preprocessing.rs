@@ -748,7 +748,7 @@ fn corrupt_spelling(
                     // fallback to artificial corruption
                     // if there are no replacements for the word itself or one of its parts
                 }
-                let word_len = CS::split(&word, true).count();
+                let word_len = CS::split(word, true).count();
                 let num_edits = (0..word_len)
                     .filter(|_| rng.gen::<f64>() < art_char_edit_p)
                     .count();
@@ -894,7 +894,7 @@ pub fn corrupt_mask(
                 // for word num_to_mask corresponds to the number of words to mask
                 // so we need to insert one mask token for each character in each masked word
                 for j in i..i + num_to_mask {
-                    let word_len = CS::new(&tokens[j], use_graphemes).len();
+                    let word_len = CS::new(tokens[j], use_graphemes).len();
                     new_tokens.append(&mut vec![&mask_token; word_len]);
                     if j < tokens.len() - 1 {
                         new_tokens.push(" ");

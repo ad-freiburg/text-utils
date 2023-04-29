@@ -27,7 +27,7 @@ pub trait GetEdits<'s> {
 
     fn sample_edit<'a>(
         &self,
-        edits: &'a Vec<String>,
+        edits: &'a [String],
         weights: &Vec<f64>,
         rng: &mut impl Rng,
     ) -> &'a str {
@@ -160,7 +160,7 @@ pub fn edit_word<'s>(
                 return (cs.str.to_string(), exclude_indices);
             }
             let (insert_idx, (edits, weights)) = insertions[rng.gen_range(0..insertions.len())];
-            let insertion = insert.sample_edit(&edits, &weights, rng);
+            let insertion = insert.sample_edit(edits, weights, rng);
             let insert_len = CS::new(insertion, use_graphemes).len();
             // we inserted some string, so the length of the word changed
             // adjust excluded indices to the right of the insertion accordingly
@@ -223,7 +223,7 @@ pub fn edit_word<'s>(
             }
             let (replace_idx, (edits, weights)) =
                 replacements[rng.gen_range(0..replacements.len())];
-            let replacement = replace.sample_edit(&edits, &weights, rng);
+            let replacement = replace.sample_edit(edits, weights, rng);
             let replacement_len = CS::new(replacement, use_graphemes).len();
             // shift all indices that come after the replacement by length of the replacement
             // string - 1
@@ -297,24 +297,24 @@ mod tests {
         unicode::CS,
     };
 
-    use super::GetEdits;
+    use super::{EditsAndWeights, GetEdits};
 
     struct InsertEdits {
-        insertions: Vec<String>,
+        insertions: (Vec<String>, Vec<f64>),
     }
 
     impl<'s> GetEdits<'s> for InsertEdits {
-        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s EditsAndWeights> {
             return Some(&self.insertions);
         }
     }
 
     struct ReplaceEdits {
-        replacements: Vec<String>,
+        replacements: (Vec<String>, Vec<f64>),
     }
 
     impl<'s> GetEdits<'s> for ReplaceEdits {
-        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s Vec<String>> {
+        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s EditsAndWeights> {
             return Some(&self.replacements);
         }
     }
@@ -322,10 +322,10 @@ mod tests {
     #[test]
     fn test_edit_word() {
         let insert = InsertEdits {
-            insertions: vec!["w".to_string()],
+            insertions: (vec!["w".to_string()], vec![1.0]),
         };
         let replace = ReplaceEdits {
-            replacements: vec!["bla".to_string()],
+            replacements: (vec!["bla".to_string()], vec![1.0]),
         };
         fn can_delete(_: &str) -> bool {
             true

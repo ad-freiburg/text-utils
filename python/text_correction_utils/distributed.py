@@ -7,17 +7,26 @@ from torch.nn.parallel import DistributedDataParallel
 
 class DistributedInfo:
     def __init__(
-            self,
-            rank: int,
-            local_rank: int,
-            world_size: int,
-            local_world_size: int
+        self,
+        rank: int,
+        local_rank: int,
+        world_size: int,
+        local_world_size: int
     ) -> None:
         self.rank = rank
         self.local_rank = local_rank
         self.world_size = world_size
         self.local_world_size = local_world_size
-        self.device = torch.device(self.local_rank)
+        if torch.cuda.device_count() == local_world_size:
+            device_index = self.local_rank
+        elif torch.cuda.device_count() == 1:
+            device_index = 0
+        else:
+            raise RuntimeError(
+                f"expected either {local_world_size} or 1 GPUs available, "
+                f"but got {torch.cuda.device_count()} GPUs instead"
+            )
+        self.device = torch.device(device_index)
 
     @property
     def is_local_main_process(self) -> bool:

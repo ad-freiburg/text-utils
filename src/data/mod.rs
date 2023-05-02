@@ -1314,7 +1314,6 @@ impl DataLoader {
         if slf.iter.is_none() {
             slf.init_iter()?;
         }
-        let start = Instant::now();
         let next = if let Some((batch, tensorized)) = slf.iter.as_mut().unwrap().next() {
             Some(
                 Py::new(
@@ -1330,7 +1329,6 @@ impl DataLoader {
         } else {
             None
         };
-        println!("loading batch took {:}ms", start.elapsed().as_millis());
         Ok(next)
     }
 

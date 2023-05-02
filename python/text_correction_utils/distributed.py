@@ -38,7 +38,8 @@ class DistributedInfo:
 
     def __repr__(self) -> str:
         return f"DistributedDevice(rank={self.rank}, local_rank={self.local_rank}, " \
-               f"world_size={self.world_size}, local_world_size={self.local_world_size}, device={self.device})"
+            f"world_size={self.world_size}, local_world_size={self.local_world_size}, " \
+            f"device={self.device})"
 
 
 def unwrap_ddp(ddp: Union[DistributedDataParallel, nn.Module]) -> nn.Module:

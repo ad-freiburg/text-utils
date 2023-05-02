@@ -6,7 +6,7 @@ use std::ops::Add;
 
 pub(crate) type Matrix<T> = Vec<Vec<T>>;
 
-pub(crate) fn progress_bar(msg: &str, size: u64, hidden: bool) -> ProgressBar {
+pub fn progress_bar(msg: &str, size: u64, hidden: bool) -> ProgressBar {
     let pb = ProgressBar::new(size)
         .with_style(
             ProgressStyle::with_template(

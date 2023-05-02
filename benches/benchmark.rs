@@ -6,7 +6,8 @@ use text_correction_utils::edit::{distance, operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{
     token_groups_to_sparse_coo_matrix, ByteGroups, ByteTokenizer, ByteTokenizerConfig,
-    CharTokenizer, CharTokenizerConfig, GroupAggregation, Grouping, SpecialConfig, Tokenize,
+    CharTokenizer, CharTokenizerConfig, GroupAggregation, Grouping, SpecialConfig, TokenGroup,
+    Tokenize,
 };
 use text_correction_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
@@ -136,48 +137,29 @@ fn bench_tokenizer(c: &mut Criterion) {
             },
         );
 
-        let mut grouping: Grouping = (
-            vec![(&mut rng)
+        let grouping: Grouping = (
+            (&mut rng)
                 .sample_iter::<usize, _>(rand::distributions::Uniform::from(1..5))
                 .take(*size)
-                .collect()],
+                .map(|l| TokenGroup::Full(l))
+                .collect(),
             GroupAggregation::Mean,
         );
-        let mut sizes = vec![grouping.0[0].iter().sum::<usize>()];
+        let sizes = vec![grouping.0.iter().map(|g| g.len()).sum::<usize>(); 32];
 
         group.bench_with_input(
             BenchmarkId::new("sparse_coo_single_stage", format!("{size}")),
-            &(&grouping, &sizes),
+            &(&grouping, &sizes[..1]),
             |b, (grouping, sizes)| b.iter(|| token_groups_to_sparse_coo_matrix(&[grouping], sizes)),
         );
 
-        let second_stage = vec![4; *size / 4];
-        grouping.0.push(second_stage);
-
+        let groupings = vec![&grouping; 32];
         group.bench_with_input(
-            BenchmarkId::new("sparse_coo_two_stage", format!("{size}")),
-            &(&grouping, &sizes),
-            |b, (grouping, sizes)| b.iter(|| token_groups_to_sparse_coo_matrix(&[grouping], sizes)),
-        );
-
-        let third_stage = vec![2; *size / 8];
-        grouping.0.push(third_stage);
-
-        group.bench_with_input(
-            BenchmarkId::new("sparse_coo_three_stage", format!("{size}")),
-            &(&grouping, &sizes),
-            |b, (grouping, sizes)| b.iter(|| token_groups_to_sparse_coo_matrix(&[grouping], sizes)),
-        );
-
-        // test batched implementation with batch size 32
-        let groupings: Vec<&Grouping> = (0..32).map(|_| &grouping).collect();
-        sizes.append(&mut vec![sizes[0]; 31]);
-
-        group.bench_with_input(
-            BenchmarkId::new("sparse_coo_three_stage_batched_32", format!("{size}")),
+            BenchmarkId::new("sparse_coo_single_stage_batched_32", format!("{size}")),
             &(&groupings, &sizes),
             |b, (groupings, sizes)| b.iter(|| token_groups_to_sparse_coo_matrix(&groupings, sizes)),
         );
+        drop(groupings);
     }
 }
 

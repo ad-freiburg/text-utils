@@ -15,8 +15,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
-use std::thread::{sleep, Builder, JoinHandle};
-use std::time::Duration;
+use std::thread::{Builder, JoinHandle};
 
 pub trait DataGen: Iterator + Send {
     fn min_len(&self) -> usize;
@@ -454,7 +453,7 @@ where
                         let item = pipeline_clone(data);
                         // wait until we are the next to send out item
                         while send_next.load(Ordering::SeqCst) != idx {
-                            sleep(Duration::from_micros(100));
+                            // sleep(Duration::from_micros(100));
                         }
                         let send_result = tx_clone.send(item);
                         send_next.swap(idx + 1, Ordering::SeqCst);

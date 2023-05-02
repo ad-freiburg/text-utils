@@ -304,7 +304,7 @@ mod tests {
     }
 
     impl<'s> GetEdits<'s> for InsertEdits {
-        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s EditsAndWeights> {
+        fn get_edits<'a: 's>(&'s self, _: &CS<'a>, _: &usize) -> Option<&'s EditsAndWeights> {
             return Some(&self.insertions);
         }
     }
@@ -314,7 +314,7 @@ mod tests {
     }
 
     impl<'s> GetEdits<'s> for ReplaceEdits {
-        fn get_edits<'a: 's>(&'s self, cs: &CS<'a>, idx: &usize) -> Option<&'s EditsAndWeights> {
+        fn get_edits<'a: 's>(&'s self, _: &CS<'a>, _: &usize) -> Option<&'s EditsAndWeights> {
             return Some(&self.replacements);
         }
     }

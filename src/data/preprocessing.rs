@@ -710,14 +710,11 @@ fn corrupt_spelling(
             ChaCha8Rng::from_entropy()
         };
         let words = split_words(&item.processed);
-        let mut changed = 0;
         let words: Vec<_> = words
             .into_iter()
             .filter_map(|(word, parts)| {
                 let r: f64 = rng.gen();
-                changed += 1;
                 if r > real_p + art_p {
-                    changed -= 1;
                     return Some(word.to_string());
                 } else if r < real_p {
                     if let Some(replacements) = misspellings.get(word) {
@@ -751,7 +748,8 @@ fn corrupt_spelling(
                 let word_len = CS::split(word, true).count();
                 let num_edits = (0..word_len)
                     .filter(|_| rng.gen::<f64>() < art_char_edit_p)
-                    .count();
+                    .count()
+                    .max(1);
                 let mut exclude: HashSet<usize> = HashSet::new();
                 let mut word = word.to_string();
                 for _ in 0..num_edits {

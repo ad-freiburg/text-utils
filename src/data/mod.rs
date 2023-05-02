@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub mod loading;
 pub mod preprocessing;
@@ -748,8 +749,8 @@ impl<'a> FromPyObject<'a> for PreprocessingConfig {
 
 #[derive(Debug, Clone)]
 pub struct PreprocessingPipelineConfig {
-    preprocessing: PreprocessingConfig,
-    labeling: LabelingConfig,
+    pub preprocessing: PreprocessingConfig,
+    pub labeling: LabelingConfig,
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
@@ -771,26 +772,6 @@ impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
 // a pipeline is a function mapping an input to an output,
 // and it also sharable across threads
 pub type Pipeline<I, O> = Arc<dyn Send + Sync + 'static + Fn(I) -> O>;
-// pub struct Pipeline<I, O> {
-//     apply_fn: Arc<ApplyFn<I, O>>,
-// }
-// impl<I, O> Clone for Pipeline<I, O> {
-//     fn clone(&self) -> Self {
-//         Self {
-//             apply_fn: self.apply_fn.clone(),
-//         }
-//     }
-// }
-
-// impl<I, O> Pipeline<I, O> {
-//     pub fn apply(&self, input: I) -> O {
-//         (self.apply_fn)(input)
-//     }
-//
-//     pub fn new(apply_fn: Arc<ApplyFn<I, O>>) -> Self {
-//         Self { apply_fn }
-//     }
-// }
 
 type TextDataFn = dyn Fn(TextData, usize, u64) -> anyhow::Result<TextData> + Send + Sync + 'static;
 pub struct TextDataInfo {
@@ -1333,8 +1314,9 @@ impl DataLoader {
         if slf.iter.is_none() {
             slf.init_iter()?;
         }
-        if let Some((batch, tensorized)) = slf.iter.as_mut().unwrap().next() {
-            Ok(Some(
+        let start = Instant::now();
+        let next = if let Some((batch, tensorized)) = slf.iter.as_mut().unwrap().next() {
+            Some(
                 Py::new(
                     slf.py(),
                     DataBatch {
@@ -1344,10 +1326,12 @@ impl DataLoader {
                     },
                 )
                 .expect("should not fail"),
-            ))
+            )
         } else {
-            Ok(None)
-        }
+            None
+        };
+        println!("loading batch took {:}ms", start.elapsed().as_millis());
+        Ok(next)
     }
 
     fn set_epoch(&mut self, epoch: usize) {

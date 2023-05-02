@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 pub mod loading;
 pub mod preprocessing;

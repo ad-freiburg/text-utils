@@ -32,8 +32,7 @@ anyhow = "1.0"
 num_cpus = "1.14"
 bitvec = "1"
 numpy = "0.18"
-pprof = "0.11"
-clap = {version = "4", features = ["derive"]}
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.4"
@@ -44,8 +43,8 @@ benchmark-utils = []
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
-# debug = true
+# strip = true
+debug = true
 
 [[bench]]
 required-features = ["benchmark-utils"]

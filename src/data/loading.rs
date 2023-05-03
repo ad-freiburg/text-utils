@@ -2,6 +2,7 @@ use crate::data::{Batch, InferenceData, InferenceDataFormat, Pipeline, TextData}
 use crate::tokenization::{tokenizer, Tokenizer, TokenizerConfig};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
+use log::debug;
 use pyo3::prelude::*;
 use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{Builder, JoinHandle};
+use std::time::Instant;
 
 pub trait DataGen: Iterator + Send {
     fn min_len(&self) -> usize;
@@ -437,20 +439,30 @@ where
             println!("thread panicked: {info}");
             std::process::exit(1);
         }));
-        for idx in 0..num_threads {
+        for thread in 0..num_threads {
             let inner_clone = inner.clone();
             let tx_clone = tx.clone();
             let pipeline_clone = pipeline.clone();
             let send_next = sent_counter.clone();
             let _: JoinHandle<()> = Builder::new()
-                .name(format!("pipeline worker thread {idx}"))
+                .name(format!("pipeline worker thread {thread}"))
                 .spawn(move || {
                     loop {
+                        let start = Instant::now();
                         let Some((idx, data)) =
                             inner_clone.lock().expect("failed to lock receiver").next() else {
                                 return;
                             };
+                        debug!(
+                            "thread {thread}: loading item {idx} took {:.2}ms",
+                            start.elapsed().as_secs_f32() * 1000.0
+                        );
+                        let start = Instant::now();
                         let item = pipeline_clone(data);
+                        debug!(
+                            "thread {thread}: running pipeline on item {idx} took {:.2}ms",
+                            start.elapsed().as_secs_f32() * 1000.0
+                        );
                         // wait until we are the next to send out item
                         while send_next.load(Ordering::SeqCst) != idx {
                             // sleep(Duration::from_micros(100));
@@ -463,7 +475,7 @@ where
                         }
                     }
                 })
-                .unwrap_or_else(|_| panic!("failed building worker thread {idx}"));
+                .unwrap_or_else(|_| panic!("failed building worker thread {thread}"));
         }
         Pipe { output: rx }
     }

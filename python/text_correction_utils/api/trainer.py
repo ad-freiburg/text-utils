@@ -422,7 +422,7 @@ training will resume from latest checkpoint."
             val_limit = val_cfg
         else:
             raise ValueError(
-                "val data must either be an integer"
+                "val data must be an integer"
             )
 
         (
@@ -458,6 +458,11 @@ training will resume from latest checkpoint."
         # adapt config to multi gpu usage
         assert "batch_limit" in cfg, "batch_limit must be in data config"
         cfg["batch_limit"] = max(1, cfg["batch_limit"] // info.world_size)
+
+        train_limit = cfg.get("limit")
+        if train_limit is not None:
+            assert train_limit > val_limit, \
+                "train limit must be bigger than val limit"
 
         train_loader = data.DataLoader.from_files(
             train_sources,

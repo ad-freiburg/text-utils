@@ -8,7 +8,7 @@ use text_correction_utils::{
     data::{
         loading::{
             text_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator,
-            PipelineIterator, TensorizedIterator, TextIterationStrategy, TextIterator,
+            ItemSize, PipelineIterator, TensorizedIterator, TextIterationStrategy, TextIterator,
         },
         preprocessing::{LabelingConfig, MaskMode, PreprocessingFnConfig, SpellingCorruptionMode},
         text_data_pipeline_with_tokenizer, PreprocessingConfig, PreprocessingPipelineConfig,
@@ -142,12 +142,18 @@ fn main() -> anyhow::Result<()> {
     let start = Instant::now();
     let mut load_times = vec![];
     let mut sizes = vec![];
+    let mut ratios = vec![];
     let p_bar = progress_bar("preprocessing", num_lines.min(args.limit) as u64, false);
     loop {
         let load_batch = Instant::now();
         if let Some(item) = iter.next() {
             load_times.push(load_batch.elapsed().as_secs_f64());
             sizes.push(item.0.len());
+            let lengths: Vec<_> = item.0.iter().map(|item| item.size()).collect();
+            ratios.push(
+                lengths.iter().max().copied().unwrap_or(0) as f64
+                    / lengths.into_iter().min().unwrap_or(1) as f64,
+            );
             p_bar.inc(item.0.len() as u64);
         } else {
             break;
@@ -163,6 +169,10 @@ fn main() -> anyhow::Result<()> {
     println!(
         "average batch size: {:.2}",
         sizes.iter().sum::<usize>() as f64 / sizes.len() as f64
+    );
+    println!(
+        "average max/min ratio: {:.2}",
+        ratios.iter().sum::<f64>() / sizes.len() as f64
     );
     println!("preprocessing took {:.2}s", start.elapsed().as_secs_f64());
 

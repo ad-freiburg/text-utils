@@ -172,11 +172,11 @@ impl<'a> FromPyObject<'a> for Label {
 #[pyclass]
 pub struct Item {
     #[pyo3(get)]
-    data: TextData,
+    pub data: TextData,
     #[pyo3(get)]
-    tokenization: Tokenization,
+    pub tokenization: Tokenization,
     #[pyo3(get)]
-    label: Label,
+    pub label: Label,
 }
 
 impl ItemSize for Item {
@@ -363,17 +363,17 @@ impl InferenceData {
 #[pyclass]
 pub struct InferenceItem {
     #[pyo3(get)]
-    data: InferenceData,
+    pub data: InferenceData,
     #[pyo3(get)]
-    tokenization: Tokenization,
+    pub tokenization: Tokenization,
     #[pyo3(get)]
-    item_idx: usize,
+    pub item_idx: usize,
     #[pyo3(get)]
-    window_idx: usize,
+    pub window_idx: usize,
     #[pyo3(get)]
-    window: (usize, usize, usize, usize),
+    pub window: (usize, usize, usize, usize),
     #[pyo3(get)]
-    byte_window: (usize, usize, usize, usize),
+    pub byte_window: (usize, usize, usize, usize),
 }
 
 impl InferenceItem {

@@ -50,6 +50,9 @@ struct Args {
 
     #[arg(short, long)]
     char_file: Option<PathBuf>,
+
+    #[arg(short, long, default_value_t = 512)]
+    max_length: usize,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -78,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         preprocessing: PreprocessingConfig::Single(vec![
             PreprocessingFnConfig::Clean(true),
             PreprocessingFnConfig::Normalize(Normalization::NFKC, true),
-            PreprocessingFnConfig::ByteSubstring(512, true),
+            PreprocessingFnConfig::ByteSubstring(args.max_length, true),
             PreprocessingFnConfig::SpellingCorruption(
                 0.2,
                 true,

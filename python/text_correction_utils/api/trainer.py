@@ -696,6 +696,7 @@ training will resume from latest checkpoint."
         mean_loss = tensorboard.AverageTracker("train_loss", fmt=".2e")
         mean_forward_pass = tensorboard.AverageTracker("train_forward_pass")
         mean_batch_load = tensorboard.AverageTracker("train_batch_load")
+        mean_step = tensorboard.AverageTracker("train_step")
         mean_batch_preparation = tensorboard.AverageTracker(
             "train_batch_preparation"
         )
@@ -756,7 +757,18 @@ training will resume from latest checkpoint."
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
 
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
+            if hasattr(self.loss_fn, "step"):
+                self.loss_fn.step()
+
+            self.step += 1
+            self.epoch_step += 1
+            self.epoch_items += len(batch)
+
             if self.info.is_main_process:
+                mean_step.add((time.perf_counter() - start_batch) * 1000)
                 mean_loss.add(loss.detach())
                 mean_forward_pass.add((end_forward - start_forward) * 1000)
                 # approximation since we expect every rank to roughly
@@ -776,15 +788,6 @@ training will resume from latest checkpoint."
                     (end_preparation - start_preparation) * 1000)
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
-
-            if hasattr(self.loss_fn, "step"):
-                self.loss_fn.step()
-
-            self.step += 1
-            self.epoch_step += 1
-            self.epoch_items += len(batch)
             if self.epoch_step % self.eval_interval == 0 and self.info.is_main_process:
                 self._evaluate_and_checkpoint()
 
@@ -817,6 +820,9 @@ training will resume from latest checkpoint."
 
                 mean_batch_load.log_tensorboard(self.summary_writer, self.step)
                 mean_batch_load.log_info(self.logger, self.step)
+
+                mean_step.log_tensorboard(self.summary_writer, self.step)
+                mean_step.log_info(self.logger, self.step)
 
                 mean_batch_preparation.log_tensorboard(
                     self.summary_writer, self.step

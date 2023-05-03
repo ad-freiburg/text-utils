@@ -850,6 +850,18 @@ training will resume from latest checkpoint."
                 )
 
                 self.summary_writer.add_histogram(
+                    "train_batch_load_hist",
+                    torch.as_tensor(mean_batch_load.values),
+                    self.step
+                )
+
+                self.summary_writer.add_histogram(
+                    "train_step_hist",
+                    torch.as_tensor(mean_step.values),
+                    self.step
+                )
+
+                self.summary_writer.add_histogram(
                     "train_batch_sequence_length_hist",
                     torch.as_tensor(mean_seq_length.values),
                     self.step
@@ -873,9 +885,12 @@ training will resume from latest checkpoint."
 
                 mean_loss.reset()
                 mean_bsz.reset()
+                mean_step.reset()
                 mean_forward_pass.reset()
                 mean_batch_load.reset()
                 mean_seq_length.reset()
+                mean_seq_length_ratio.reset()
+                mean_batch_preparation.reset()
                 start = end
 
     def _evaluate_and_checkpoint(self):

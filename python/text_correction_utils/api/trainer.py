@@ -161,7 +161,6 @@ training will resume from latest checkpoint."
                     f"estimated average batch size over {len(avg_batch_size.values)} batches "
                     f"in {end - start:.2f}s"
                 )
-                exit()
 
             training_steps_per_epoch = int(
                 self.train_loader.min_items / items_per_batch

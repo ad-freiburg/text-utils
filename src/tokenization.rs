@@ -1,4 +1,4 @@
-use crate::text::{clean, count_words, file_size};
+use crate::text::{clean, count_words_whitespace, file_size, SPLIT_WORD_WHITESPACE_PATTERN};
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{accumulate, progress_bar, py_invalid_type_error, py_required_key_error};
 use anyhow::anyhow;
@@ -12,7 +12,8 @@ use regex::{escape, Regex};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -1244,7 +1245,7 @@ pub struct BPETokenizerConfig {
 
 pub type MergeOps = HashMap<Vec<u8>, u32>;
 
-pub type BPETokenizer = BaseTokenizer<BPETokenizerConfig, (MergeOps, Vec<Vec<u8>>)>;
+pub type BPETokenizer = BaseTokenizer<BPETokenizerConfig, (MergeOps, Vec<Vec<u8>>, Regex)>;
 
 impl BPETokenizer {
     pub fn new(
@@ -1268,49 +1269,179 @@ impl BPETokenizer {
             special_config,
             language_config,
             config,
-            (merge_ops, reverse_merge_ops),
+            (
+                merge_ops,
+                reverse_merge_ops,
+                Regex::new(SPLIT_WORD_WHITESPACE_PATTERN)?,
+            ),
         ))
     }
 
     fn merge_bytes(&self, s: &str) -> Vec<u32> {
-        let mut token_ids: Vec<_> = s.as_bytes().iter().map(|b| Some(*b as u32)).collect();
-        let mut bytes: Vec<_> = s.as_bytes().iter().map(|b| Some(vec![*b])).collect();
+        let mut joined_token_ids = vec![];
 
-        loop {
-            let pairs: Vec<_> = bytes
+        // for word in split_words_whitespace(s, true) {
+        for word in self.state.2.find_iter(s) {
+            // println!("\"{word}\"");
+            let word = word.as_str();
+
+            let mut bytes: Vec<_> = word.as_bytes().iter().map(|b| vec![*b]).collect();
+            let mut token_ids: Vec<Option<u32>> =
+                word.as_bytes().iter().map(|b| Some(*b as u32)).collect();
+
+            // println!("initial token ids: {:?}", token_ids);
+
+            let mut heap: BinaryHeap<_> = bytes
                 .iter()
                 .enumerate()
-                .filter(|&(_, b)| b.is_some())
-                .zip(
-                    bytes
-                        .iter()
-                        .enumerate()
-                        .filter(|&(_, b)| b.is_some())
-                        .skip(1),
-                )
+                .zip(bytes.iter().enumerate().skip(1))
                 .filter_map(|((first_idx, first), (second_idx, second))| {
-                    let mut merged = first.clone().unwrap();
-                    merged.extend(second.clone().unwrap());
-                    self.state
-                        .0
-                        .get(&merged)
-                        .map(|merge_id| (first_idx, second_idx, merged, *merge_id))
+                    let merged = [first.as_slice(), second.as_slice()].concat();
+                    let Some(merge_id) = self.state.0.get(&merged).copied() else {
+                        return None;
+                    };
+                    // heap in rust is a max heap by default
+                    // so we reverse to get the earliest merges at earlier positions in
+                    // the sequence first
+                    Some((
+                        Reverse(merge_id),
+                        Reverse(first_idx),
+                        second_idx,
+                        token_ids[first_idx],
+                        token_ids[second_idx],
+                        merged,
+                    ))
                 })
                 .collect();
-            if pairs.is_empty() {
-                break;
+
+            while let Some((
+                Reverse(merge_id),
+                Reverse(first_idx),
+                second_idx,
+                first_id,
+                second_id,
+                merged,
+            )) = heap.pop()
+            {
+                // skip if some operations refer to already merged bytes
+                // println!(
+                //     "next best merge: {}, {first_idx}, {second_idx}, {merged:?}",
+                //     merge_id + 256
+                // );
+                if token_ids[first_idx] != first_id || token_ids[second_idx] != second_id {
+                    // println!("merge is invalid");
+                    continue;
+                }
+                // push new potential merge operation with the previous available
+                // bytes onto heafirst_idx
+                let mut done = true;
+                if let Some(Some((merge_id, first_idx, second_idx, merged))) = bytes
+                    .iter()
+                    .enumerate()
+                    .take(first_idx)
+                    .rev()
+                    .find(|&(_, prev)| !prev.is_empty())
+                    .map(|(prev_idx, prev)| {
+                        let merged = [prev.as_slice(), merged.as_slice()].concat();
+                        let merge_id = self.state.0.get(&merged).copied()?;
+                        Some((merge_id, prev_idx, first_idx, merged))
+                    })
+                {
+                    heap.push((
+                        Reverse(merge_id),
+                        Reverse(first_idx),
+                        second_idx,
+                        token_ids[first_idx],
+                        token_ids[second_idx],
+                        merged,
+                    ));
+                    done = false;
+                };
+                // push new potential merge operation with the next available
+                // bytes onto heap
+                if let Some(Some((merge_id, first_idx, second_idx, merged))) = bytes
+                    .iter()
+                    .enumerate()
+                    .skip(second_idx + 1)
+                    .find(|&(_, next)| !next.is_empty())
+                    .map(|(next_idx, next)| {
+                        let merged = [merged.as_slice(), next.as_slice()].concat();
+                        let merge_id = self.state.0.get(&merged).copied()?;
+                        Some((merge_id, first_idx, next_idx, merged))
+                    })
+                {
+                    heap.push((
+                        Reverse(merge_id),
+                        Reverse(first_idx),
+                        second_idx,
+                        token_ids[first_idx],
+                        token_ids[second_idx],
+                        merged,
+                    ));
+                    done = false;
+                };
+                bytes[first_idx] = merged;
+                bytes[second_idx].clear();
+                token_ids[first_idx] = Some(256 + merge_id);
+                token_ids[second_idx] = None;
+                // println!("token_ids: {:?}", token_ids);
+                // println!("bytes: {:?}", bytes);
+                if done {
+                    // println!("done with heap length: {}", heap.len());
+                    break;
+                }
             }
-            let (first_idx, second_idx, merged, merge_id) = pairs
-                .into_iter()
-                .min_by_key(|(.., merge_id)| *merge_id)
-                .unwrap();
-            bytes[first_idx] = Some(merged);
-            bytes[second_idx] = None;
-            token_ids[first_idx] = Some(256 + merge_id);
-            token_ids[second_idx] = None;
+
+            // println!("final token ids: {token_ids:?}");
+
+            joined_token_ids.extend(token_ids.into_iter().flatten());
         }
 
-        token_ids.into_iter().flatten().collect()
+        joined_token_ids
+
+        // let mut joined_token_ids = vec![];
+        //
+        // for word in self.state.2.find_iter(s) {
+        //     let word = word.as_str();
+        //     let mut token_ids: Vec<_> = word.as_bytes().iter().map(|b| Some(*b as u32)).collect();
+        //     let mut bytes: Vec<_> = word.as_bytes().iter().map(|b| Some(vec![*b])).collect();
+        //
+        //     loop {
+        //         let pairs: Vec<_> = bytes
+        //             .iter()
+        //             .enumerate()
+        //             .filter(|&(_, b)| b.is_some())
+        //             .zip(
+        //                 bytes
+        //                     .iter()
+        //                     .enumerate()
+        //                     .filter(|&(_, b)| b.is_some())
+        //                     .skip(1),
+        //             )
+        //             .filter_map(|((first_idx, first), (second_idx, second))| {
+        //                 let mut merged = first.clone().unwrap();
+        //                 merged.extend(second.clone().unwrap());
+        //                 self.state
+        //                     .0
+        //                     .get(&merged)
+        //                     .map(|merge_id| (first_idx, second_idx, merged, *merge_id))
+        //             })
+        //             .collect();
+        //         if pairs.is_empty() {
+        //             break;
+        //         }
+        //         let (first_idx, second_idx, merged, merge_id) = pairs
+        //             .into_iter()
+        //             .min_by_key(|(.., merge_id)| *merge_id)
+        //             .unwrap();
+        //         bytes[first_idx] = Some(merged);
+        //         bytes[second_idx] = None;
+        //         token_ids[first_idx] = Some(256 + merge_id);
+        //         token_ids[second_idx] = None;
+        //     }
+        //     joined_token_ids.extend(token_ids.into_iter().flatten());
+        // }
+        // joined_token_ids
     }
 }
 
@@ -1634,7 +1765,10 @@ pub fn train_bpe(
                     if let Some(normalization) = normalization {
                         line = normalize(&line, normalization, true);
                     }
-                    let counts = count_words(&line, true);
+                    let counts: HashMap<_, _> = count_words_whitespace(&line, true)
+                        .into_iter()
+                        .map(|(w, c)| (w.to_string(), c))
+                        .collect();
                     if count_tx_clone.send(counts).is_err() {
                         // receiver is closed, so we can return this thread
                         return;
@@ -2047,6 +2181,8 @@ mod tests {
 
     use log::info;
     use numpy::ndarray::{Array1, Array2};
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
 
     use crate::{
         tokenization::{
@@ -2208,16 +2344,8 @@ mod tests {
         };
         let bpe = BPETokenizer::new(bpe_config, special_config, None).unwrap();
         info!("loaded bpe tokenizer");
-        let token_ids = bpe
-            .tokenize(
-                "this is a long reading couple restaurant",
-                None,
-                None,
-                None,
-                true,
-            )
-            .unwrap()
-            .token_ids;
+        let s = "this is a long reading couple restaurant";
+        let token_ids = bpe.tokenize(s, None, None, None, true).unwrap().token_ids;
         info!("token ids: {token_ids:?}");
         let tokens: Vec<_> = token_ids
             .iter()
@@ -2225,8 +2353,21 @@ mod tests {
             .map(|b| String::from_utf8_lossy(b).to_string())
             .collect();
         info!("tokens: {tokens:?}");
-        let str = bpe.de_tokenize(&token_ids, true);
-        info!("de-tokenized: \"{str}\"");
+        let ds = bpe.de_tokenize(&token_ids, true);
+        assert_eq!(s, ds);
+        info!("de-tokenized: \"{ds}\"");
+
+        let mut rng = ChaCha8Rng::seed_from_u64(22);
+        for _ in 0..200 {
+            let s: String = (&mut rng)
+                .sample_iter::<char, _>(rand::distributions::Standard)
+                .take(256)
+                .collect();
+
+            let token_ids = bpe.tokenize(&s, None, None, None, true).unwrap().token_ids;
+            let ds = bpe.de_tokenize(&token_ids, true);
+            assert_eq!(s, ds);
+        }
     }
 
     #[test]

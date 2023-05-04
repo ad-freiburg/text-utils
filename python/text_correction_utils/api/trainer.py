@@ -142,6 +142,7 @@ training will resume from latest checkpoint."
                     f"Estimating train loader length on main process from average batch size "
                     f"over {num_batches} batches and minimum train loader items."
                 )
+                start = time.perf_counter()
                 for idx, batch in tqdm(
                     enumerate(self.train_loader),
                     desc=f"Looping over train loader for {skip_batches + num_batches} batches, "
@@ -153,9 +154,14 @@ training will resume from latest checkpoint."
                     if idx >= skip_batches + num_batches:
                         break
                     avg_batch_size.add(len(batch))
-
+                end = time.perf_counter()
                 avg_batch_size.values = avg_batch_size.values[-num_batches:]
                 items_per_batch = avg_batch_size.value
+                self.logger.info(
+                    f"estimated average batch size over {len(avg_batch_size.values)} batches "
+                    f"in {end - start:.2f}s"
+                )
+                exit()
 
             training_steps_per_epoch = int(
                 self.train_loader.min_items / items_per_batch

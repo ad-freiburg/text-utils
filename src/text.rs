@@ -223,10 +223,12 @@ pub fn split_words(s: &str) -> Vec<(&str, Option<WordParts>)> {
         .collect()
 }
 
+pub(crate) static SPLIT_WORD_WHITESPACE_PATTERN: &str = r"\s+\S+|^\S+";
+
 #[pyfunction(signature = (s, with_leading_whitespace = false))]
-pub fn count_words(s: &str, with_leading_whitespace: bool) -> HashMap<String, usize> {
+pub fn count_words_whitespace(s: &str, with_leading_whitespace: bool) -> HashMap<&str, usize> {
     let mut counts = HashMap::new();
-    let pattern = Regex::new(r"\s+\S+|^\S+").unwrap();
+    let pattern = Regex::new(SPLIT_WORD_WHITESPACE_PATTERN).unwrap();
     for word in pattern.find_iter(s) {
         let word = if with_leading_whitespace {
             word.as_str()
@@ -236,7 +238,7 @@ pub fn count_words(s: &str, with_leading_whitespace: bool) -> HashMap<String, us
         if let Some(count) = counts.get_mut(word) {
             *count += 1;
         } else {
-            counts.insert(word.to_string(), 1);
+            counts.insert(word, 1);
         }
     }
     counts
@@ -266,7 +268,7 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
     m.add_function(wrap_pyfunction!(clean, m)?)?;
     m.add_function(wrap_pyfunction!(match_words, m)?)?;
     m.add_function(wrap_pyfunction!(file_size_py, m)?)?;
-    m.add_function(wrap_pyfunction!(count_words, m)?)?;
+    m.add_function(wrap_pyfunction!(count_words_whitespace, m)?)?;
     parent_module.add_submodule(m)?;
 
     Ok(())
@@ -275,8 +277,8 @@ pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()
 #[cfg(test)]
 mod tests {
     use crate::text::{
-        clean, count_words, match_words, possible_byte_substrings, possible_character_substrings,
-        split_words, word_boundaries,
+        clean, count_words_whitespace, match_words, possible_byte_substrings,
+        possible_character_substrings, split_words, word_boundaries,
     };
     use std::collections::HashMap;
 
@@ -306,14 +308,14 @@ mod tests {
     #[test]
     fn test_count_words() {
         let text = "this\t is \n a test sentence, it is  ";
-        let counts = count_words(text, false);
+        let counts = count_words_whitespace(text, false);
         let expected: HashMap<_, usize> = HashMap::from_iter(vec![
-            ("this".to_string(), 1),
-            ("is".to_string(), 2),
-            ("a".to_string(), 1),
-            ("test".to_string(), 1),
-            ("sentence,".to_string(), 1),
-            ("it".to_string(), 1),
+            ("this", 1),
+            ("is", 2),
+            ("a", 1),
+            ("test", 1),
+            ("sentence,", 1),
+            ("it", 1),
         ]);
         assert!(
             counts.len() == expected.len()
@@ -321,15 +323,15 @@ mod tests {
                     .iter()
                     .all(|(k, v)| expected.contains_key(k) && expected[k] == *v)
         );
-        let counts = count_words(text, true);
+        let counts = count_words_whitespace(text, true);
         let expected: HashMap<_, usize> = HashMap::from_iter(vec![
-            ("this".to_string(), 1),
-            ("\t is".to_string(), 1),
-            (" is".to_string(), 1),
-            (" \n a".to_string(), 1),
-            (" test".to_string(), 1),
-            (" sentence,".to_string(), 1),
-            (" it".to_string(), 1),
+            ("this", 1),
+            ("\t is", 1),
+            (" is", 1),
+            (" \n a", 1),
+            (" test", 1),
+            (" sentence,", 1),
+            (" it", 1),
         ]);
         assert!(
             counts.len() == expected.len()

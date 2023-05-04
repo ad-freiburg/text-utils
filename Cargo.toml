@@ -43,8 +43,8 @@ benchmark-utils = []
 [profile.release]
 lto = true
 codegen-units = 1
-# strip = true
-debug = true
+strip = true
+# debug = true
 
 [[bench]]
 required-features = ["benchmark-utils"]

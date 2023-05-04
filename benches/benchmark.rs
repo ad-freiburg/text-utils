@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::PathBuf;
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::distributions::WeightedIndex;
 use rand::{Rng, SeedableRng};
@@ -5,15 +8,15 @@ use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{
-    token_groups_to_sparse_coo_matrix, ByteGroups, ByteTokenizer, ByteTokenizerConfig,
-    CharTokenizer, CharTokenizerConfig, GroupAggregation, Grouping, SpecialConfig, TokenGroup,
-    Tokenize,
+    token_groups_to_sparse_coo_matrix, BPETokenizer, BPETokenizerConfig, ByteGroups, ByteTokenizer,
+    ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig, GroupAggregation, Grouping,
+    SpecialConfig, TokenGroup, Tokenize,
 };
 use text_correction_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
 };
 
-const INPUT_SIZES: [usize; 3] = [16, 128, 512];
+const INPUT_SIZES: [usize; 4] = [16, 128, 512, 2048];
 
 fn bench_edit_distance(c: &mut Criterion) {
     let mut group = c.benchmark_group("edit_distance");
@@ -110,11 +113,21 @@ fn bench_tokenizer(c: &mut Criterion) {
         ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default(), None);
     let byte_tok_code_point_groups =
         ByteTokenizer::new(tokenize_cfg, SpecialConfig::default(), None);
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let bpe_tok = BPETokenizer::new(
+        BPETokenizerConfig {
+            use_graphemes: true,
+            merge_file: PathBuf::from(dir).join("data/multi/bpe_multi_16384_3.merges"),
+        },
+        SpecialConfig::default(),
+        None,
+    )
+    .expect("failed to create bpe tokenizer");
+    let multi30k = fs::read_to_string(PathBuf::from(dir).join("resources/test/multi30k.txt"))
+        .expect("failed to read file")
+        .replace("\n", " ");
     for size in INPUT_SIZES.iter() {
-        let str: String = (&mut rng)
-            .sample_iter::<char, _>(rand::distributions::Standard)
-            .take(*size)
-            .collect();
+        let str = multi30k[..*size].to_string();
         group.bench_with_input(
             BenchmarkId::new("char", format!("{}", size)),
             str.as_str(),
@@ -134,6 +147,13 @@ fn bench_tokenizer(c: &mut Criterion) {
             str.as_str(),
             |b, str| {
                 b.iter(|| byte_tok_code_point_groups.tokenize(str, None, None, None, true));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("bpe", format!("{}", size)),
+            str.as_str(),
+            |b, str| {
+                b.iter(|| bpe_tok.tokenize(str, None, None, None, true));
             },
         );
 

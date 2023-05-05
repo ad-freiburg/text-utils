@@ -546,14 +546,15 @@ training will resume from latest checkpoint."
             world_size=world_size
         )
 
-        assert dist.is_initialized(), "failed to initialize process group"
-
         info = distributed.DistributedInfo(
             rank=rank,
             local_rank=rank,
             world_size=world_size,
             local_world_size=world_size
         )
+        torch.cuda.set_device(info.device)
+
+        assert dist.is_initialized(), "failed to initialize process group"
 
         if info.is_main_process and profile is not None:
             import cProfile
@@ -602,14 +603,15 @@ training will resume from latest checkpoint."
             world_size=world_size
         )
 
-        assert dist.is_initialized(), "failed to initialize process group"
-
         info = distributed.DistributedInfo(
             rank=rank,
             local_rank=local_rank,
             world_size=world_size,
             local_world_size=local_world_size
         )
+        torch.cuda.set_device(info.device)
+
+        assert dist.is_initialized(), "failed to initialize process group"
 
         resuming = os.path.exists(experiment_dir) and os.path.exists(
             os.path.join(experiment_dir, "checkpoints", "checkpoint_last.pt")

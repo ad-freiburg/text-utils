@@ -18,10 +18,14 @@ from torch.backends import cudnn, cuda  # noqa
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+from transformers.trainer_utils import is_main_process
 import yaml
 
 from text_correction_utils.modules.loss import loss_from_config
-from text_correction_utils.modules.lr_scheduler import lr_scheduler_from_config
+from text_correction_utils.modules.scheduler import (
+    lr_scheduler_from_config,
+    max_length_scheduler_from_config
+)
 from text_correction_utils.modules.optimizer import optimizer_from_config
 from text_correction_utils import (
     distributed,
@@ -78,9 +82,10 @@ training will resume from latest checkpoint."
         self.info = info
 
         # globals used throughout training
-        self.step = 0
+        self.total_step = 0
         self.epoch_step = 0
         self.epoch_items = 0
+        self.total_items = 0
         self.epoch = 0
         self.best_val_loss = float("inf")
         self.logger = logging.get_logger("TRAIN")
@@ -118,71 +123,21 @@ training will resume from latest checkpoint."
             self.cfg
         ).to(self.info.device).train()
 
-        self.train_loader, self.val_loader, self.cleanup = self._data_from_config(
+        num_epochs = self.cfg["train"]["num_epochs"]
+        (
+            self.train_loader,
+            self.val_loader,
+            self.training_items_per_epoch,
+            self.training_items,
+            self.max_length,
+            self.max_length_scheduler,
+            self.cleanup
+        ) = self._data_from_config(
             self.cfg["train"]["data"],
             self.cfg["input_tokenizer"],
+            num_epochs=num_epochs,
             seed=self.cfg["seed"],
             info=self.info
-        )
-
-        # estimate train loader length only on main process, and then broadcast the resulting length
-        # to all other processes
-        # this is important, since the learning rate scheduler depends on the number of training steps
-        # and should give the same learning rate for every steps on all processes
-        training_steps_tensor = torch.zeros(
-            2, dtype=torch.long, device=self.info.device
-        )
-        if self.info.is_main_process:
-            items_per_batch = self.cfg["train"]["data"]["batch_limit"]
-            if self.cfg["train"]["data"]["batch_limit_type"] == "padded_item_size":
-                skip_batches = int(os.environ.get("ESTIMATION_SKIP_BATCHES", 256))
-                num_batches = int(os.environ.get("ESTIMATION_NUM_BATCHES", 1024))
-                avg_batch_size = tensorboard.AverageTracker("avg_batch_size")
-                self.logger.info(
-                    f"Estimating train loader length on main process from average batch size "
-                    f"over {num_batches} batches and minimum train loader items."
-                )
-                start = time.perf_counter()
-                for idx, batch in tqdm(
-                    enumerate(self.train_loader),
-                    desc=f"Looping over train loader for {skip_batches + num_batches} batches, "
-                         f"skipping first {skip_batches} batches",
-                    total=skip_batches + num_batches,
-                    leave=False,
-                    disable=not self.info.is_main_process
-                ):
-                    if idx >= skip_batches + num_batches:
-                        break
-                    avg_batch_size.add(len(batch))
-                end = time.perf_counter()
-                avg_batch_size.values = avg_batch_size.values[-num_batches:]
-                items_per_batch = avg_batch_size.value
-                self.logger.info(
-                    f"estimated average batch size over {len(avg_batch_size.values)} batches "
-                    f"in {end - start:.2f}s"
-                )
-
-            training_steps_per_epoch = int(
-                self.train_loader.min_items / items_per_batch
-            )
-            training_steps = self.cfg["train"]["num_epochs"] * \
-                training_steps_per_epoch
-            self.logger.info(
-                f"Got an average batch size of {items_per_batch:.2f}. "
-                f"The train loader contains at least {self.train_loader.min_items:,} items, so the estimated "
-                f"number of training steps over {self.cfg['train']['num_epochs']} epochs "
-                f"is {training_steps:,} ({training_steps_per_epoch:,} per epoch)."
-            )
-            training_steps_tensor[0] = training_steps
-            training_steps_tensor[1] = training_steps_per_epoch
-
-        # distribute training step information across processes
-        dist.broadcast(training_steps_tensor, 0)
-
-        self.training_steps, self.training_steps_per_epoch = training_steps_tensor.tolist()
-        self.logger.info(
-            f"[rank:{self.info.rank}] Received from main process the estimated number of training steps: "
-            f"total={self.training_steps:,}, per_epoch={self.training_steps_per_epoch:,}"
         )
 
         self.optimizer = optimizer_from_config(
@@ -194,8 +149,10 @@ training will resume from latest checkpoint."
             num_params = 0
             param_group_infos = []
             for i, param_group in enumerate(self.optimizer.param_groups):
-                group_num_params = sum(p.numel()
-                                       for p in param_group["params"])
+                group_num_params = sum(
+                    p.numel()
+                    for p in param_group["params"]
+                )
                 other = {k: v for k, v in param_group.items() if k != "params"}
                 param_group_infos.append(
                     f"{i+1}. group: {group_num_params:,} params, other: {other}"
@@ -212,18 +169,44 @@ training will resume from latest checkpoint."
 
         self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm")
 
+        def clamp(v: float, minimum: int, maximum: int) -> int:
+            return max(min(round(v), maximum), minimum)
+
+        self.log_interval = clamp(
+            self.training_items_per_epoch * self.cfg["train"].get("log_interval", 0.001),
+            1,
+            self.training_items_per_epoch
+        )
+        self.eval_interval = clamp(
+            self.training_items_per_epoch * self.cfg["train"].get("eval_interval", 0.1),
+            1,
+            self.training_items_per_epoch
+        )
+
         if "lr_scheduler" in self.cfg["train"]:
+            self.step_interval = clamp(
+                self.training_items_per_epoch * self.cfg["train"].get("step_interval", 0.01),
+                1,
+                self.training_items_per_epoch
+            )
+            steps = self.training_items // self.step_interval
             self.lr_scheduler = lr_scheduler_from_config(
                 self.optimizer,
-                self.training_steps,
+                steps,
                 cfg["train"]["lr_scheduler"],
                 additional_lr_scheduler_fn=self._additional_lr_scheduler_fn
             )
         else:
+            self.step_interval = 0
             self.lr_scheduler = None
 
+        if self.info.is_main_process:
+            self.logger.info(
+                f"[epoch {self.epoch + 1}] logging every {self.log_interval} items, "
+                f"evaluating every {self.eval_interval} items"
+            )
+
         self.loss_fn = loss_from_config(
-            self.training_steps,
             self.cfg["train"]["loss"],
             additional_loss_fn=self._additional_loss_fn
         ).to(self.info.device).train()
@@ -232,38 +215,25 @@ training will resume from latest checkpoint."
             enabled=self.cfg["train"].get("mixed_precision", False)
         )
         mixed_precision_dtype = self.cfg["train"].get(
-            "mixed_precision_dtype", "fp16")
+            "mixed_precision_dtype", "fp16"
+        )
         if mixed_precision_dtype == "fp16":
             self.mixed_prec_dtype = torch.float16
         elif mixed_precision_dtype == "bfp16":
             self.mixed_prec_dtype = torch.bfloat16
         else:
             raise ValueError(
-                f"unknown mixed precision type {mixed_precision_dtype}, must fp16 or bfp16")
-
-        eval_interval = self.cfg["train"].get("eval_interval", 0.1)
-        log_interval = self.cfg["train"].get("log_interval", 0.01)
-
-        def clamp(v: int, low: int, up: int) -> int:
-            return min(max(low, v), up)
-
-        if isinstance(eval_interval, float):
-            eval_interval = int(eval_interval * self.training_steps_per_epoch)
-        if isinstance(log_interval, float):
-            log_interval = int(log_interval * self.training_steps_per_epoch)
-
-        self.eval_interval = clamp(
-            eval_interval, 1, self.training_steps_per_epoch)
-        self.log_interval = clamp(
-            log_interval, 1, self.training_steps_per_epoch)
+                f"unknown mixed precision type {mixed_precision_dtype}, "
+                f"must be fp16 or bfp16"
+            )
 
         if self.info.is_main_process:
             self.summary_writer = SummaryWriter(
-                log_dir=self.directories["tensorboard"])
+                log_dir=self.directories["tensorboard"]
+            )
 
             self.logger.info(f"Using model:\n{self.model}")
-            self.logger.info(
-                f"Model parameters: {api.num_parameters(self.model)}")
+            self.logger.info(f"Model parameters: {api.num_parameters(self.model)}")
 
             test_sentence = "This is a test sentence."
             self.logger.info(
@@ -274,39 +244,47 @@ training will resume from latest checkpoint."
 
             self.logger.info(f"Type 'tensorboard --logdir {self.directories['tensorboard']}' "
                              f"to view the training process in Tensorboard")
-            self.logger.info(
-                f"Evaluating every {eval_interval:,} steps, logging every {log_interval:,} steps")
         else:
             self.summary_writer = None
 
         # resume training from last checkpoint if it exists
         last_checkpoint = os.path.join(
-            self.directories["checkpoints"], "checkpoint_last.pt")
+            self.directories["checkpoints"],
+            "checkpoint_last.pt"
+        )
         if os.path.exists(last_checkpoint):
             checkpoint = io.load_checkpoint(last_checkpoint)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
                 self.lr_scheduler.load_state_dict(
-                    checkpoint["lr_scheduler_state_dict"])
+                    checkpoint["lr_scheduler_state_dict"]
+                )
             if checkpoint.get("grad_scaler_state_dict") is not None:
                 self.grad_scaler.load_state_dict(
-                    checkpoint["grad_scaler_state_dict"])
+                    checkpoint["grad_scaler_state_dict"]
+                )
             if checkpoint.get("loss_fn_state_dict") is not None:
                 self.loss_fn.load_state_dict(checkpoint["loss_fn_state_dict"])
 
-            self.step = checkpoint["step"]
+            self.total_step = checkpoint["step"]
             self.epoch = checkpoint["epoch"]
             self.best_val_loss = checkpoint["val_loss"]
             self.epoch_step = checkpoint["epoch_step"]
             self.epoch_items = checkpoint["epoch_items"]
+            self.total_items = checkpoint["total_items"]
+
+            if self.max_length_scheduler is not None:
+                self.max_length = self.max_length_scheduler(self.total_items)
+                self.train_loader.set_max_length(self.max_length)
 
             if self.info.is_main_process:
                 self.logger.info(
                     f"Resuming training from checkpoint {last_checkpoint}\n"
-                    f"Starting at epoch {self.epoch + 1} at global step {self.step:,} (epoch step {self.epoch_step:,}) "
+                    f"Starting at epoch {self.epoch + 1} at global step {self.total_step:,} "
+                    f"(total items = {self.total_items}, epoch step {self.epoch_step:,}) "
                     f"with a best validation loss of {self.best_val_loss:.6f}\n"
-                    f"Fast forwarding {self.epoch_items:,} items."
+                    f"Fast forwarding {self.epoch_items:,} items within epoch."
                 )
 
         self.model = DDP(self.model)
@@ -335,6 +313,10 @@ training will resume from latest checkpoint."
 
     @classmethod
     def _additional_lr_scheduler_fn(cls) -> Optional[Callable]:
+        return None
+
+    @classmethod
+    def _additional_max_length_scheduler_fn(cls) -> Optional[Callable]:
         return None
 
     @classmethod
@@ -418,9 +400,18 @@ training will resume from latest checkpoint."
         cls,
         cfg: Dict[str, Any],
         tokenizer_config: Dict[str, Any],
+        num_epochs: int,
         seed: Optional[int],
         info: distributed.DistributedInfo
-    ) -> Tuple[data.DataLoader, data.DataLoader, List[str]]:
+    ) -> Tuple[
+        data.DataLoader,
+        data.DataLoader,
+        int,
+        int,
+        int,
+        Optional[Callable[[int], int]],
+        List[str]
+    ]:
         cfg = copy.deepcopy(cfg)
         val_cfg = cfg.pop("val")
         if isinstance(val_cfg, int):
@@ -448,8 +439,10 @@ training will resume from latest checkpoint."
             assert default_language is not None, \
                 "expected default_language to be specified if some, but not all " \
                 "individual data sources specify a language"
-            train_languages = [default_language if lang is None else lang
-                               for lang in train_languages]
+            train_languages = [
+                default_language if lang is None else lang
+                for lang in train_languages
+            ]
         elif num_languages_specified == 0:
             train_languages = None
 
@@ -469,6 +462,10 @@ training will resume from latest checkpoint."
             assert train_limit > val_limit, \
                 "train limit must be bigger than val limit"
 
+        max_length = cfg.pop("max_length")
+        assert max_length is not None, "missing max_length in data config"
+        max_length_scheduler_cfg = cfg.pop("max_length_scheduler")
+
         train_loader = data.DataLoader.from_files(
             train_sources,
             pipeline_cfg,
@@ -476,9 +473,29 @@ training will resume from latest checkpoint."
             train_languages,
             seed=seed,
             skip=val_limit,
+            max_length=max_length,
             distributed=(info.rank, info.world_size),
             **cfg
         )
+
+        # trigger train loader, so that min_items is set
+        iter(train_loader)
+        training_items_per_epoch = train_loader.min_items
+        training_items = training_items_per_epoch * num_epochs
+
+        if max_length_scheduler_cfg is not None:
+            max_length_scheduler = max_length_scheduler_from_config(
+                training_items,
+                max_length,
+                max_length_scheduler_cfg,
+                additional_max_length_scheduler_fn=cls._additional_max_length_scheduler_fn
+            )
+            # validate with the maximum sequence length
+            # encountered during training
+            max_val_length = max(max_length_scheduler(i + 1) for i in range(training_items))
+        else:
+            max_length_scheduler = None
+            max_val_length = max_length
 
         # for validation always turn off shuffling, turn on sorting, and
         # specify a val limit
@@ -490,11 +507,20 @@ training will resume from latest checkpoint."
             pipeline_cfg,
             tokenizer_config,
             train_languages,
+            max_length=max_val_length,
             seed=seed,
             distributed=None,
             **cfg
         )
-        return train_loader, val_loader, train_cleanup
+        return (
+            train_loader,
+            val_loader,
+            training_items_per_epoch,
+            training_items,
+            max_length,
+            max_length_scheduler,
+            train_cleanup
+        )
 
     @classmethod
     def _setup_experiment(cls, work_dir: str, exp_dir: str, config_path: str, cfg: Dict[str, Any]):
@@ -703,7 +729,7 @@ training will resume from latest checkpoint."
         mean_loss = tensorboard.AverageTracker("train_loss", fmt=".2e")
         mean_forward_pass = tensorboard.AverageTracker("train_forward_pass")
         mean_batch_load = tensorboard.AverageTracker("train_batch_load")
-        mean_step = tensorboard.AverageTracker("train_step")
+        mean_step_time = tensorboard.AverageTracker("train_step_time")
         mean_batch_preparation = tensorboard.AverageTracker(
             "train_batch_preparation"
         )
@@ -723,6 +749,10 @@ training will resume from latest checkpoint."
             )
         else:
             metrics = []
+
+        log_at = self.total_items + self.log_interval
+        eval_at = self.total_items + self.eval_interval
+        step_at = self.total_items + self.step_interval
 
         train_iter = iter(self.train_loader)
         while True:
@@ -764,18 +794,23 @@ training will resume from latest checkpoint."
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
 
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
-
-            if hasattr(self.loss_fn, "step"):
-                self.loss_fn.step()
-
-            self.step += 1
+            self.total_step += 1
             self.epoch_step += 1
             self.epoch_items += len(batch)
+            self.total_items += len(batch)
+
+            if self.lr_scheduler is not None and self.total_items >= step_at:
+                self.lr_scheduler.step()
+                step_at += self.step_interval
+
+            if self.max_length_scheduler is not None:
+                max_length = self.max_length_scheduler(self.total_items)
+                if max_length != self.max_length:
+                    self.max_length = max_length
+                    self.train_loader.set_max_length(max_length)
 
             if self.info.is_main_process:
-                mean_step.add((time.perf_counter() - start_batch) * 1000)
+                mean_step_time.add((time.perf_counter() - start_batch) * 1000)
                 mean_loss.add(loss.detach())
                 mean_forward_pass.add((end_forward - start_forward) * 1000)
                 # approximation since we expect every rank to roughly
@@ -795,110 +830,123 @@ training will resume from latest checkpoint."
                     (end_preparation - start_preparation) * 1000)
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
-            if self.epoch_step % self.eval_interval == 0 and self.info.is_main_process:
+            if self.info.is_main_process and self.total_items >= eval_at and self.info.is_main_process:
                 self._evaluate_and_checkpoint()
+                eval_at += self.eval_interval
 
-            if self.epoch_step % self.log_interval == 0:
+            if self.total_items >= log_at:
                 self.logger.info(
-                    f"[step {self.step}] [GPU:{self.info.rank}:{self.info.local_rank}] nvidia-smi:\n"
+                    f"[step {self.total_step}] [GPU:{self.info.rank}:{self.info.local_rank}] nvidia-smi:\n"
                     f"{api.nvidia_smi()}"
                 )
 
-            if self.epoch_step % self.log_interval == 0 and self.info.is_main_process:
+            if self.info.is_main_process and self.total_items >= log_at:
+                # log training progress
+                self.summary_writer.add_scalar(
+                    "train_progress",
+                    self.total_items / self.training_items,
+                    self.total_step
+                )
+
                 if self.lr_scheduler is not None:
                     for i, lr in enumerate(self.lr_scheduler.get_last_lr()):
                         self.summary_writer.add_scalar(
-                            f"train_lr_{i}", lr, self.step
+                            f"train_lr_{i}", lr, self.total_step
                         )
                         self.logger.info(
-                            f"[step {self.step}] train_lr_{i}: {lr:.8f}"
+                            f"[step {self.total_step}] train_lr_{i}: {lr:.8f}"
                         )
 
-                mean_loss.log_tensorboard(self.summary_writer, self.step)
-                mean_loss.log_info(self.logger, self.step)
+                mean_loss.log_tensorboard(self.summary_writer, self.total_step)
+                mean_loss.log_info(self.logger, self.total_step)
 
-                mean_bsz.log_tensorboard(self.summary_writer, self.step)
-                mean_bsz.log_info(self.logger, self.step)
+                mean_bsz.log_tensorboard(self.summary_writer, self.total_step)
+                mean_bsz.log_info(self.logger, self.total_step)
 
                 mean_forward_pass.log_tensorboard(
-                    self.summary_writer, self.step
+                    self.summary_writer, self.total_step
                 )
-                mean_forward_pass.log_info(self.logger, self.step)
+                mean_forward_pass.log_info(self.logger, self.total_step)
 
-                mean_batch_load.log_tensorboard(self.summary_writer, self.step)
-                mean_batch_load.log_info(self.logger, self.step)
+                mean_batch_load.log_tensorboard(self.summary_writer, self.total_step)
+                mean_batch_load.log_info(self.logger, self.total_step)
 
-                mean_step.log_tensorboard(self.summary_writer, self.step)
-                mean_step.log_info(self.logger, self.step)
+                mean_step_time.log_tensorboard(self.summary_writer, self.total_step)
+                mean_step_time.log_info(self.logger, self.total_step)
 
                 mean_batch_preparation.log_tensorboard(
-                    self.summary_writer, self.step
+                    self.summary_writer, self.total_step
                 )
-                mean_batch_preparation.log_info(self.logger, self.step)
+                mean_batch_preparation.log_info(self.logger, self.total_step)
 
-                mean_seq_length.log_tensorboard(self.summary_writer, self.step)
-                mean_seq_length.log_info(self.logger, self.step)
+                mean_seq_length.log_tensorboard(self.summary_writer, self.total_step)
+                mean_seq_length.log_info(self.logger, self.total_step)
 
                 mean_seq_length_ratio.log_tensorboard(
-                    self.summary_writer, self.step
+                    self.summary_writer, self.total_step
                 )
-                mean_seq_length_ratio.log_info(self.logger, self.step)
+                mean_seq_length_ratio.log_info(self.logger, self.total_step)
 
                 items = batch.items
                 for metric in metrics:
                     metric.set_values(items, outputs)
-                    metric.log_tensorboard(self.summary_writer, self.step)
-                    metric.log_info(self.logger, self.step)
+                    metric.log_tensorboard(self.summary_writer, self.total_step)
+                    metric.log_info(self.logger, self.total_step)
 
                 self.summary_writer.add_histogram(
                     "train_batch_size_hist",
                     torch.as_tensor(mean_bsz.values),
-                    self.step
+                    self.total_step
                 )
 
                 self.summary_writer.add_histogram(
                     "train_batch_load_hist",
                     torch.as_tensor(mean_batch_load.values),
-                    self.step
+                    self.total_step
                 )
 
                 self.summary_writer.add_histogram(
                     "train_step_hist",
-                    torch.as_tensor(mean_step.values),
-                    self.step
+                    torch.as_tensor(mean_step_time.values),
+                    self.total_step
                 )
 
                 self.summary_writer.add_histogram(
                     "train_batch_sequence_length_hist",
                     torch.as_tensor(mean_seq_length.values),
-                    self.step
+                    self.total_step
                 )
 
                 self.summary_writer.add_histogram(
                     "train_sequence_length_ratio_hist",
                     torch.as_tensor(mean_seq_length_ratio.values),
-                    self.step
+                    self.total_step
                 )
 
                 end = time.perf_counter()
                 self.logger.info(
-                    f"[step {self.step}] [train_time {self.step - self.log_interval}\u2192{self.step}] "
+                    f"[step {self.total_step}] train_time for ~{self.log_interval:,} items: "
                     f"{(end - start) / 60:.2f} minutes"
                 )
+                eta_msg = logging.eta_minutes_message(
+                    (end - begin_of_epoch) / 60,
+                    self.epoch_items,
+                    self.training_items_per_epoch
+                )
                 self.logger.info(
-                    f"[step {self.step}] [epoch {self.epoch + 1}] "
-                    f"{logging.eta_minutes_message((end - begin_of_epoch) / 60, self.epoch_step, self.training_steps_per_epoch)}"
+                    f"[step {self.total_step}] [epoch {self.epoch + 1}] {eta_msg}"
                 )
 
                 mean_loss.reset()
                 mean_bsz.reset()
-                mean_step.reset()
+                mean_step_time.reset()
                 mean_forward_pass.reset()
                 mean_batch_load.reset()
                 mean_seq_length.reset()
                 mean_seq_length_ratio.reset()
                 mean_batch_preparation.reset()
                 start = end
+                log_at += self.log_interval
 
     def _evaluate_and_checkpoint(self):
         assert self.info.is_main_process, "evaluation should be only done on main process"
@@ -910,7 +958,10 @@ training will resume from latest checkpoint."
         metric_cfg = self.cfg["train"].get("metrics")
         if metric_cfg is not None:
             metrics = tensorboard.metrics_from_config(
-                metric_cfg, self.input_tokenizer, self.output_tokenizer, prefix="val"
+                metric_cfg,
+                self.input_tokenizer,
+                self.output_tokenizer,
+                prefix="val"
             )
         else:
             metrics = []
@@ -933,19 +984,22 @@ training will resume from latest checkpoint."
                 items = batch.items
                 for metric in metrics:
                     metric.set_values(items, outputs)
-                    metric.log_tensorboard(self.summary_writer, self.step)
-                    metric.log_info(self.logger, self.step)
+                    metric.log_tensorboard(self.summary_writer, self.total_step)
+                    metric.log_info(self.logger, self.total_step)
 
         end = time.perf_counter()
 
-        mean_loss.log_tensorboard(self.summary_writer, self.step)
-        mean_loss.log_info(self.logger, self.step)
+        mean_loss.log_tensorboard(self.summary_writer, self.total_step)
+        mean_loss.log_info(self.logger, self.total_step)
 
         self.logger.info(
-            f"[step {self.step}] validation took {(end - start) / 60:.2f} minutes")
+            f"[step {self.total_step}] validation took {(end - start) / 60:.2f} minutes"
+        )
         val_loss = mean_loss.value
         ckpt_path = os.path.join(
-            self.directories["checkpoints"], "checkpoint_last.pt")
+            self.directories["checkpoints"],
+            "checkpoint_last.pt"
+        )
         io.save_checkpoint(
             checkpoint_path=ckpt_path,
             model=distributed.unwrap_ddp(self.model),
@@ -953,17 +1007,20 @@ training will resume from latest checkpoint."
             lr_scheduler=self.lr_scheduler,
             loss_fn=self.loss_fn,
             grad_scaler=self.grad_scaler,
-            step=self.step,
+            step=self.total_step,
             epoch=self.epoch,
             epoch_step=self.epoch_step,
             epoch_items=self.epoch_items,
+            total_items=self.total_items,
             val_loss=val_loss
         )
 
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
             best_ckpt_path = os.path.join(
-                self.directories["checkpoints"], "checkpoint_best.pt")
+                self.directories["checkpoints"],
+                "checkpoint_best.pt"
+            )
             shutil.copy2(ckpt_path, best_ckpt_path)
 
         self.model = self.model.train()
@@ -984,7 +1041,8 @@ training will resume from latest checkpoint."
         except KeyboardInterrupt:
             if self.info.is_main_process:
                 self.logger.info(
-                    "got termination signal, evaluating and saving on main process before exiting")
+                    "got termination signal, evaluating and saving on main process before exiting"
+                )
 
         finally:
             if self.info.is_main_process:

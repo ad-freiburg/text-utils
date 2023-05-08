@@ -23,6 +23,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::ops::Sub;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 pub type PreprocessingFn =
     dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> anyhow::Result<TextData>;
@@ -50,8 +52,8 @@ pub enum PreprocessingFnConfig {
     // delete and insert whitespaces with certain probabilities
     WhitespaceCorruption(f64, f64, bool),
     // extract substrings from text
-    CharSubstring(usize, bool),
-    ByteSubstring(usize, bool),
+    CharSubstring(bool),
+    ByteSubstring(bool),
     // randomly edit and replace words in text
     SpellingCorruption(f64, bool, SpellingCorruptionMode),
     // randomly mask full words in text
@@ -101,13 +103,13 @@ impl IntoPy<PyObject> for PreprocessingFnConfig {
                 d.set_item("use_graphemes", use_g).unwrap();
                 "whitespace_corruption"
             }
-            PreprocessingFnConfig::CharSubstring(max_chars, use_g) => {
-                d.set_item("max_chars", max_chars).unwrap();
+            PreprocessingFnConfig::CharSubstring(use_g) => {
+                // d.set_item("max_chars", max_chars).unwrap();
                 d.set_item("use_graphemes", use_g).unwrap();
                 "char_substring"
             }
-            PreprocessingFnConfig::ByteSubstring(max_bytes, use_g) => {
-                d.set_item("max_bytes", max_bytes).unwrap();
+            PreprocessingFnConfig::ByteSubstring(use_g) => {
+                // d.set_item("max_bytes", max_bytes).unwrap();
                 d.set_item("use_graphemes", use_g).unwrap();
                 "byte_substring"
             }
@@ -238,10 +240,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-                let Some(max_chars) = d.get_item("max_chars") else {
-                    return Err(py_required_key_error("max_chars", "char substring config"));
-                };
-                PreprocessingFnConfig::CharSubstring(max_chars.extract()?, use_graphemes)
+                // let Some(max_chars) = d.get_item("max_chars") else {
+                //     return Err(py_required_key_error("max_chars", "char substring config"));
+                // };
+                PreprocessingFnConfig::CharSubstring(use_graphemes)
             }
             "byte_substring" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
@@ -249,10 +251,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-                let Some(max_bytes) = d.get_item("max_bytes") else {
-                    return Err(py_required_key_error("max_bytes", "byte substring config"));
-                };
-                PreprocessingFnConfig::ByteSubstring(max_bytes.extract()?, use_graphemes)
+                // let Some(max_bytes) = d.get_item("max_bytes") else {
+                //     return Err(py_required_key_error("max_bytes", "byte substring config"));
+                // };
+                PreprocessingFnConfig::ByteSubstring(use_graphemes)
             }
             "language_dropout" => {
                 let Some(p) = d.get_item("prob") else {
@@ -349,7 +351,11 @@ impl<'a> FromPyObject<'a> for LabelingConfig {
     }
 }
 
-fn switch(fns: Vec<PreprocessingFnConfig>, probs: Vec<f64>) -> Box<PreprocessingFn> {
+fn switch(
+    fns: Vec<PreprocessingFnConfig>,
+    probs: Vec<f64>,
+    max_length: Arc<AtomicUsize>,
+) -> Box<PreprocessingFn> {
     let num_fns = fns.len();
     assert!(
         num_fns > 0 && num_fns == probs.len(),
@@ -364,7 +370,10 @@ fn switch(fns: Vec<PreprocessingFnConfig>, probs: Vec<f64>) -> Box<Preprocessing
         "all switch probabilities should sum to 1"
     );
 
-    let fns: Vec<Box<PreprocessingFn>> = fns.into_iter().map(preprocessing_fn).collect();
+    let fns: Vec<Box<PreprocessingFn>> = fns
+        .into_iter()
+        .map(|cfg| preprocessing_fn(cfg, max_length.clone()))
+        .collect();
 
     // return new function that switches between multiple preprocessing functions
     // based on the given probability distribution
@@ -473,18 +482,30 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
     })
 }
 
-fn char_substring(max_chars: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
+fn char_substring(max_length: Arc<AtomicUsize>, use_graphemes: bool) -> Box<PreprocessingFn> {
     substring(
         "character".to_string(),
-        move |s| Ok(possible_character_substrings(s, max_chars, use_graphemes)),
+        move |s| {
+            Ok(possible_character_substrings(
+                s,
+                max_length.load(Ordering::Relaxed),
+                use_graphemes,
+            ))
+        },
         use_graphemes,
     )
 }
 
-fn byte_substring(max_bytes: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
+fn byte_substring(max_length: Arc<AtomicUsize>, use_graphemes: bool) -> Box<PreprocessingFn> {
     substring(
         "byte".to_string(),
-        move |s| Ok(possible_byte_substrings(s, max_bytes, use_graphemes)),
+        move |s| {
+            Ok(possible_byte_substrings(
+                s,
+                max_length.load(Ordering::Relaxed),
+                use_graphemes,
+            ))
+        },
         use_graphemes,
     )
 }
@@ -908,13 +929,16 @@ pub fn corrupt_mask(
     })
 }
 
-fn preprocessing_fn(preprocessing: PreprocessingFnConfig) -> Box<PreprocessingFn> {
+fn preprocessing_fn(
+    preprocessing: PreprocessingFnConfig,
+    max_length: Arc<AtomicUsize>,
+) -> Box<PreprocessingFn> {
     match preprocessing {
         PreprocessingFnConfig::None => Box::new(|item, _| Ok(item)),
         PreprocessingFnConfig::Chain(configs) => {
             let pfns = configs
                 .into_iter()
-                .map(preprocessing_fn)
+                .map(|cfg| preprocessing_fn(cfg, max_length.clone()))
                 .collect::<Vec<_>>();
             Box::new(move |mut item, seed| {
                 for pfn in &pfns {
@@ -925,7 +949,7 @@ fn preprocessing_fn(preprocessing: PreprocessingFnConfig) -> Box<PreprocessingFn
         }
         PreprocessingFnConfig::Clean(use_g) => apply_to_text(move |s| Ok(text::clean(s, use_g))),
         PreprocessingFnConfig::Overwrite => overwrite_original_from_processed(),
-        PreprocessingFnConfig::Switch(fns, probs) => switch(fns, probs),
+        PreprocessingFnConfig::Switch(fns, probs) => switch(fns, probs, max_length),
         PreprocessingFnConfig::WhitespaceCorruption(iw_p, dw_p, use_g) => {
             corrupt_whitespace(iw_p, dw_p, use_g)
         }
@@ -935,8 +959,12 @@ fn preprocessing_fn(preprocessing: PreprocessingFnConfig) -> Box<PreprocessingFn
         PreprocessingFnConfig::FullWhitespaces(use_graphemes) => {
             apply_to_text(move |s| Ok(full(s, use_graphemes)))
         }
-        PreprocessingFnConfig::CharSubstring(l, use_graphemes) => char_substring(l, use_graphemes),
-        PreprocessingFnConfig::ByteSubstring(l, use_graphemes) => byte_substring(l, use_graphemes),
+        PreprocessingFnConfig::CharSubstring(use_graphemes) => {
+            char_substring(max_length, use_graphemes)
+        }
+        PreprocessingFnConfig::ByteSubstring(use_graphemes) => {
+            byte_substring(max_length, use_graphemes)
+        }
         PreprocessingFnConfig::Normalize(scheme, use_graphemes) => {
             apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
         }
@@ -950,10 +978,16 @@ fn preprocessing_fn(preprocessing: PreprocessingFnConfig) -> Box<PreprocessingFn
     }
 }
 
-pub fn preprocessing(preprocessing: Vec<PreprocessingFnConfig>) -> Box<PreprocessingFn> {
+pub fn preprocessing(
+    preprocessing: Vec<PreprocessingFnConfig>,
+    max_length: Arc<AtomicUsize>,
+) -> Box<PreprocessingFn> {
     // return new function that runs all given preprocessing functions
     // in order, similar to the chain preprocessing
-    let fns: Vec<Box<PreprocessingFn>> = preprocessing.into_iter().map(preprocessing_fn).collect();
+    let fns: Vec<Box<PreprocessingFn>> = preprocessing
+        .into_iter()
+        .map(|cfg| preprocessing_fn(cfg, max_length.clone()))
+        .collect();
     Box::new(move |mut item, seed| {
         for f in fns.iter() {
             item = f(item, seed)?;

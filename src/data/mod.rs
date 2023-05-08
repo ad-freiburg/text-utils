@@ -24,6 +24,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub mod loading;
@@ -781,19 +782,23 @@ pub type TextDataPipeline = Pipeline<(TextData, TextDataInfo), anyhow::Result<It
 pub fn text_data_pipeline_with_tokenizer(
     pipeline_cfg: PreprocessingPipelineConfig,
     tokenizer_cfg: TokenizerConfig,
-) -> anyhow::Result<TextDataPipeline> {
+    max_length: usize,
+) -> anyhow::Result<(TextDataPipeline, Arc<AtomicUsize>)> {
     let tok = tokenizer(tokenizer_cfg)?;
+    let max_length = Arc::new(AtomicUsize::new(
+        max_length.saturating_sub(tok.num_special_tokens()),
+    ));
     let preprocess_fn: Box<TextDataFn> =
         match pipeline_cfg.preprocessing {
             PreprocessingConfig::Single(cfg) => {
-                let preprocessing = preprocessing(cfg);
+                let preprocessing = preprocessing(cfg, max_length.clone());
                 Box::new(move |data: TextData, _: usize, seed: u64| preprocessing(data, Some(seed)))
             }
             PreprocessingConfig::PerFile(cfgs) => {
                 let preprocessings: HashMap<_, _> = HashMap::from_iter(
                     cfgs.into_iter()
                         .enumerate()
-                        .map(|(idx, cfg)| (idx, preprocessing(cfg))),
+                        .map(|(idx, cfg)| (idx, preprocessing(cfg, max_length.clone()))),
                 );
                 Box::new(move |data, file_idx, seed| {
                     preprocessings.get(&file_idx).unwrap_or_else(|| {
@@ -803,20 +808,23 @@ pub fn text_data_pipeline_with_tokenizer(
             }
         };
     let label_fn = labeling(pipeline_cfg.labeling);
-    Ok(Arc::new(move |(data, info)| -> anyhow::Result<Item> {
-        let data = preprocess_fn(data, info.file_idx, info.seed)?;
-        Ok(Item {
-            tokenization: tok.tokenize(
-                &data.processed,
-                data.language.as_deref(),
-                None,
-                None,
-                false,
-            )?,
-            label: label_fn(&data)?,
-            data,
-        })
-    }))
+    Ok((
+        Arc::new(move |(data, info)| -> anyhow::Result<Item> {
+            let data = preprocess_fn(data, info.file_idx, info.seed)?;
+            Ok(Item {
+                tokenization: tok.tokenize(
+                    &data.processed,
+                    data.language.as_deref(),
+                    None,
+                    None,
+                    false,
+                )?,
+                label: label_fn(&data)?,
+                data,
+            })
+        }),
+        max_length,
+    ))
 }
 
 pub struct InferenceDataInfo {
@@ -1102,6 +1110,8 @@ struct DataLoader {
     buffer_size: usize,
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
+    max_length: Arc<AtomicUsize>,
+    max_length_offset: usize,
     epoch: usize,
     fast_forward: usize,
     limit: usize,
@@ -1130,6 +1140,7 @@ impl DataLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        max_length: usize,
         shuffle: bool,
         prefetch_factor: usize,
         sort: bool,
@@ -1142,8 +1153,16 @@ impl DataLoader {
             return Err(anyhow!("seed cannot be None if shuffle is true",));
         }
         let prefetch_factor = prefetch_factor.max(1);
-        let pipeline =
-            text_data_pipeline_with_tokenizer(pipeline_config, tokenizer_config.clone())?;
+        let max_tokens = max_length;
+        let (pipeline, max_length) = text_data_pipeline_with_tokenizer(
+            pipeline_config,
+            tokenizer_config.clone(),
+            max_tokens,
+        )?;
+        // the number of additional tokens added by the tokenizer,
+        // we subtract them from the user specified max length, which
+        // refers to all tokens
+        let max_length_offset = max_tokens - max_length.load(Ordering::Relaxed);
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
@@ -1161,6 +1180,8 @@ impl DataLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
+            max_length,
+            max_length_offset,
             iter: None,
             min_items: None,
             epoch: 0,
@@ -1247,6 +1268,7 @@ impl DataLoader {
         buffer_size = 128,
         batch_limit = 16,
         batch_limit_type = BatchLimitType::BatchSize,
+        max_length = 512,
         shuffle = false,
         prefetch_factor = 4,
         sort = false,
@@ -1265,6 +1287,7 @@ impl DataLoader {
         buffer_size: usize,
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
+        max_length: usize,
         shuffle: bool,
         prefetch_factor: usize,
         sort: bool,
@@ -1294,6 +1317,7 @@ impl DataLoader {
             buffer_size,
             batch_limit,
             batch_limit_type,
+            max_length,
             shuffle,
             prefetch_factor,
             sort,
@@ -1331,12 +1355,24 @@ impl DataLoader {
         Ok(next)
     }
 
+    #[getter]
+    fn max_length(&self) -> usize {
+        self.max_length.load(Ordering::Relaxed) + self.max_length_offset
+    }
+
     fn set_epoch(&mut self, epoch: usize) {
         self.epoch = epoch;
     }
 
     fn set_fast_forward(&mut self, num_items: usize) {
         self.fast_forward = num_items
+    }
+
+    fn set_max_length(&mut self, max_length: usize) {
+        self.max_length.swap(
+            max_length.saturating_sub(self.max_length_offset),
+            Ordering::SeqCst,
+        );
     }
 }
 

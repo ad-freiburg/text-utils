@@ -688,6 +688,10 @@ pub trait BaseTokenize: Send + Sync + 'static {
             }
     }
 
+    fn num_special_tokens(&self) -> usize {
+        self.num_prefix_tokens() + self.num_suffix_tokens()
+    }
+
     fn prefix_token_ids(&self) -> &[u32];
 
     fn suffix_token_ids(&self) -> &[u32];

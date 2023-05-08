@@ -98,10 +98,9 @@ class SeqLoss(nn.Module):
 
 
 def loss_from_config(
-    training_steps: int,
     cfg: Dict[str, Any],
     additional_loss_fn: Optional[Callable[
-        [int, Dict[str, Any]],
+        [Dict[str, Any]],
         nn.Module
     ]] = None
 ) -> nn.Module:
@@ -109,7 +108,7 @@ def loss_from_config(
     loss_type = cfg.pop("type")
     if loss_type == "sequence_cross_entropy":
         cfg["type"] = "cross_entropy"
-        loss = loss_from_config(training_steps, cfg)
+        loss = loss_from_config(cfg)
         return SeqLoss(loss=loss)
 
     elif loss_type == "cross_entropy":
@@ -126,24 +125,19 @@ def loss_from_config(
 
     elif loss_type == "focal":
         weight = cfg.get("weight", None)
-        if "gamma_schedule" in cfg:
-            schedule = _loss_schedule(training_steps, cfg["gamma_schedule"])
-        else:
-            schedule = None
         loss = FocalLoss(
-            weight,
+            alpha=weight,
             gamma=cfg.get("gamma", 2.),
             ignore_index=cfg.get("ignore_index", -1),
-            gamma_schedule=schedule
         )
         return loss
 
     elif loss_type == "sequence_focal":
         cfg["type"] = "focal"
-        loss = loss_from_config(training_steps, cfg)
+        loss = loss_from_config(cfg)
         return SeqLoss(loss=loss)
 
     else:
         if additional_loss_fn is not None:
-            return additional_loss_fn(training_steps, cfg)
+            return additional_loss_fn(cfg)
         raise ValueError(f"unknown loss type {loss_type}")

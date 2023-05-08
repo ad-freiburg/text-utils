@@ -142,7 +142,7 @@ def constant_with_warmup(
 
 def lr_scheduler_from_config(
     optimizer: optim.Optimizer,
-    training_steps: int,
+    steps: int,
     cfg: Dict[str, Any],
     additional_lr_scheduler_fn: Optional[Callable[
         [optim.Optimizer, int, Dict[str, Any]],
@@ -152,14 +152,53 @@ def lr_scheduler_from_config(
     cfg = copy.deepcopy(cfg)
     lr_type = cfg.pop("type")
     if lr_type == "linear_with_warmup":
-        return linear_with_warmup(optimizer, training_steps, **cfg)
+        return linear_with_warmup(optimizer, steps, **cfg)
     elif lr_type == "cosine_with_warmup":
-        return cosine_with_warmup(optimizer, training_steps, **cfg)
+        return cosine_with_warmup(optimizer, steps, **cfg)
     elif lr_type == "multi_step_with_warmup":
-        return multi_step_with_warmup(optimizer, training_steps, **cfg)
+        return multi_step_with_warmup(optimizer, steps, **cfg)
     elif lr_type == "constant_with_warmup":
-        return constant_with_warmup(optimizer, training_steps, **cfg)
+        return constant_with_warmup(optimizer, steps, **cfg)
     else:
         if additional_lr_scheduler_fn is not None:
-            return additional_lr_scheduler_fn(optimizer, training_steps, cfg)
+            return additional_lr_scheduler_fn(optimizer, steps, cfg)
         raise ValueError(f"unknown lr scheduler type {lr_type}")
+
+
+def multi_step(
+    training_items: int,
+    max_length: int,
+    steps: List[float],
+    factors: List[float]
+) -> Callable[[int], int]:
+    assert steps == sorted(steps), f"steps must be given in sorted order, got {steps}"
+    assert len(steps) == len(factors), f"expected a factor for every step, got {factors}"
+    steps = [step_at * training_items for step_at in steps]
+
+    def _multi_step(seen_items: int) -> int:
+        idx = 0
+        for step_at in steps:
+            if seen_items >= step_at:
+                idx += 1
+        return round(max_length * reduce(lambda a, b: a * b, factors[:idx], 1.0))
+
+    return _multi_step
+
+
+def max_length_scheduler_from_config(
+    training_items: int,
+    max_length: int,
+    cfg: Dict[str, Any],
+    additional_max_length_scheduler_fn: Optional[Callable[
+        [int, Dict[str, Any]],
+        Callable[[int], int]
+    ]] = None
+) -> Callable[[int], int]:
+    cfg = copy.deepcopy(cfg)
+    mls_type = cfg.pop("type")
+    if mls_type == "multi_step":
+        return multi_step(training_items, max_length, **cfg)
+    else:
+        if additional_max_length_scheduler_fn is not None:
+            return additional_max_length_scheduler_fn(training_items, cfg)
+        raise ValueError(f"unknown lr scheduler type {mls_type}")

@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         preprocessing: PreprocessingConfig::Single(vec![
             PreprocessingFnConfig::Clean(true),
             PreprocessingFnConfig::Normalize(Normalization::NFKC, true),
-            PreprocessingFnConfig::ByteSubstring(args.max_length, true),
+            PreprocessingFnConfig::ByteSubstring(true),
             PreprocessingFnConfig::SpellingCorruption(
                 0.2,
                 true,
@@ -97,7 +97,8 @@ fn main() -> anyhow::Result<()> {
         ]),
         labeling: LabelingConfig::SequenceGeneration(tokenizer_cfg.clone()),
     };
-    let pipeline = text_data_pipeline_with_tokenizer(pipeline_cfg, tokenizer_cfg.clone())?;
+    let (pipeline, _max_length) =
+        text_data_pipeline_with_tokenizer(pipeline_cfg, tokenizer_cfg.clone(), args.max_length)?;
 
     let seed = 22;
     let num_lines: usize = args

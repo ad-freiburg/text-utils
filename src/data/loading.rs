@@ -1041,12 +1041,13 @@ mod tests {
             special: SpecialConfig::default(),
             language: None,
         };
-        let pipeline = text_data_pipeline_with_tokenizer(
+        let (pipeline, _) = text_data_pipeline_with_tokenizer(
             PreprocessingPipelineConfig {
                 preprocessing: PreprocessingConfig::Single(vec![]),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
             tokenizer_cfg,
+            512,
         )?;
         // test if it works with one worker and record the time it took
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
@@ -1129,12 +1130,13 @@ mod tests {
             special: SpecialConfig::default(),
             language: None,
         };
-        let pipeline = text_data_pipeline_with_tokenizer(
+        let (pipeline, _) = text_data_pipeline_with_tokenizer(
             PreprocessingPipelineConfig {
                 preprocessing: PreprocessingConfig::Single(vec![]),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
             tokenizer_cfg,
+            512,
         )?;
         let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
         let text_iter = TextIterator::new(
@@ -1180,12 +1182,13 @@ mod tests {
             special: SpecialConfig::default(),
             language: None,
         };
-        let pipeline = text_data_pipeline_with_tokenizer(
+        let (pipeline, _) = text_data_pipeline_with_tokenizer(
             PreprocessingPipelineConfig {
                 preprocessing: PreprocessingConfig::Single(vec![]),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
             },
             tokenizer_cfg,
+            512,
         )?;
         let pipe_it = text_iter
             .filter_map(|(d, file_idx)| {

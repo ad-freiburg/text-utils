@@ -6,9 +6,8 @@ import os
 import hashlib
 import shutil
 import time
-from typing import Dict, Optional, Tuple, Any, List, Callable
 import zipfile
-from tqdm import tqdm
+from typing import Dict, Optional, Tuple, Any, List, Callable
 
 import torch
 from torch import distributed as dist
@@ -18,7 +17,6 @@ from torch.backends import cudnn, cuda  # noqa
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
-from transformers.trainer_utils import is_main_process
 import yaml
 
 from text_correction_utils.modules.loss import loss_from_config
@@ -112,10 +110,12 @@ training will resume from latest checkpoint."
         cudnn.benchmark = True
 
         self.input_tokenizer = tokenization.Tokenizer.from_config(
-            self.cfg["input_tokenizer"])
+            self.cfg["input_tokenizer"]
+        )
         if "output_tokenizer" in self.cfg:
             self.output_tokenizer = tokenization.Tokenizer.from_config(
-                self.cfg["output_tokenizer"])
+                self.cfg["output_tokenizer"]
+            )
         else:
             self.output_tokenizer = None
 
@@ -234,6 +234,10 @@ training will resume from latest checkpoint."
 
             self.logger.info(f"Using model:\n{self.model}")
             self.logger.info(f"Model parameters: {api.num_parameters(self.model)}")
+            self.logger.info(
+                f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
+                f"{self.training_items:,} total"
+            )
 
             test_sentence = "This is a test sentence."
             self.logger.info(
@@ -773,7 +777,7 @@ training will resume from latest checkpoint."
             inputs, labels = self._prepare_batch(batch)
             end_preparation = time.perf_counter()
 
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
 
             start_forward = time.perf_counter()
             with amp.autocast(
@@ -827,7 +831,8 @@ training will resume from latest checkpoint."
                         max_length = length
                 mean_batch_load.add((end_batch - start_batch) * 1000)
                 mean_batch_preparation.add(
-                    (end_preparation - start_preparation) * 1000)
+                    (end_preparation - start_preparation) * 1000
+                )
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
             if self.info.is_main_process and self.total_items >= eval_at and self.info.is_main_process:
@@ -842,10 +847,15 @@ training will resume from latest checkpoint."
 
             if self.info.is_main_process and self.total_items >= log_at:
                 # log training progress
+                progress = 100 * self.total_items / self.training_items
                 self.summary_writer.add_scalar(
                     "train_progress",
-                    self.total_items / self.training_items,
+                    progress,
                     self.total_step
+                )
+                self.logger.info(
+                    f"[step {self.total_step}] "
+                    f"train_progress: {progress:.2f}%, {self.total_items:,} / {self.training_items:,} items"
                 )
 
                 if self.lr_scheduler is not None:

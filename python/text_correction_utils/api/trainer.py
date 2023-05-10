@@ -185,7 +185,7 @@ training will resume from latest checkpoint."
 
         if "lr_scheduler" in self.cfg["train"]:
             self.step_interval = clamp(
-                self.training_items_per_epoch * self.cfg["train"].get("step_interval", 0.01),
+                self.training_items_per_epoch * self.cfg["train"].get("step_interval", 0.001),
                 1,
                 self.training_items_per_epoch
             )
@@ -254,6 +254,7 @@ training will resume from latest checkpoint."
             self.directories["checkpoints"],
             "checkpoint_last.pt"
         )
+        load_checkpoint = cfg.get("load_checkpoint")
         if os.path.exists(last_checkpoint):
             checkpoint = io.load_checkpoint(last_checkpoint)
             self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -288,18 +289,14 @@ training will resume from latest checkpoint."
                     f"with a best validation loss of {self.best_val_loss:.6f}\n"
                     f"Fast forwarding {self.epoch_items:,} items within epoch."
                 )
+        elif load_checkpoint is not None:
+            checkpoint = io.load_checkpoint(load_checkpoint)
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self.logger.info(
+                f"initializing model from checkpoint \"{load_checkpoint}\""
+            )
 
         self.model = DDP(self.model)
-        # from torch import _dynamo, _inductor
-        # _dynamo.config.log_level = INFO
-        # _dynamo.config.verbose = True
-        # _dynamo.config.print_graph_breaks = True
-        # self.model = torch.compile(
-        #     model=self.model,
-        #     dynamic=True,
-        #     backend="eager",
-        #     mode="reduce-overhead"
-        # )
 
     @classmethod
     def _model_from_config(cls, cfg: Dict[str, Any]) -> nn.Module:
@@ -466,7 +463,7 @@ training will resume from latest checkpoint."
 
         max_length = cfg.pop("max_length")
         assert max_length is not None, "missing max_length in data config"
-        max_length_scheduler_cfg = cfg.pop("max_length_scheduler")
+        max_length_scheduler_cfg = cfg.pop("max_length_scheduler", None)
 
         train_loader = data.DataLoader.from_files(
             train_sources,

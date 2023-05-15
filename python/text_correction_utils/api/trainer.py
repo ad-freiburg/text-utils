@@ -285,7 +285,7 @@ training will resume from latest checkpoint."
                 self.logger.info(
                     f"Resuming training from checkpoint {last_checkpoint}\n"
                     f"Starting at epoch {self.epoch + 1} at global step {self.total_step:,} "
-                    f"(total items = {self.total_items}, epoch step {self.epoch_step:,}) "
+                    f"(total items = {self.total_items:,}, epoch step {self.epoch_step:,}) "
                     f"with a best validation loss of {self.best_val_loss:.6f}\n"
                     f"Fast forwarding {self.epoch_items:,} items within epoch."
                 )
@@ -340,9 +340,16 @@ training will resume from latest checkpoint."
         cls,
         sources: List[Dict[str, Any]],
         info: distributed.DistributedInfo
-    ) -> Tuple[List[Tuple[str, Optional[str]]], List[Optional[str]], List[Optional[Any]], List[str]]:
+    ) -> Tuple[
+        List[Tuple[str, Optional[str]]],
+        List[Optional[str]],
+        List[Optional[Any]],
+        List[Optional[Any]],
+        List[str]
+    ]:
         src_paths = []
         src_preprocessings = []
+        src_postprocessings = []
         src_langs = []
         cleanup_paths = []
         for src in sources:
@@ -351,6 +358,7 @@ training will resume from latest checkpoint."
             if src_type == "file":
                 lang = src.get("language")
                 preprocessing = src.get("preprocessing")
+                postprocessing = src.get("postprocessing")
                 path = src["path"]
                 assert os.path.isfile(path), f"{path} is not a file"
                 temp_dir = src.get("temp_dir")
@@ -358,11 +366,13 @@ training will resume from latest checkpoint."
                     path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                     cleanup_paths.append(path)
                 src_preprocessings.append(preprocessing)
+                src_postprocessings.append(postprocessing)
                 src_paths.append((path, None))
                 src_langs.append(lang)
             elif src_type == "file_glob":
                 lang = src.get("language")
                 preprocessing = src.get("preprocessing")
+                postprocessing = src.get("postprocessing")
                 temp_dir = src.get("temp_dir")
                 for path in io.glob_safe(src["glob"]):
                     assert os.path.isfile(path), f"{path} is not a file"
@@ -370,6 +380,7 @@ training will resume from latest checkpoint."
                         path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                         cleanup_paths.append(path)
                     src_preprocessings.append(preprocessing)
+                    src_postprocessings.append(postprocessing)
                     src_paths.append((path, None))
                     src_langs.append(lang)
             elif src_type == "file_pair":
@@ -392,7 +403,13 @@ training will resume from latest checkpoint."
             else:
                 raise ValueError(f"unknown source type {src_type}")
         assert len(src_paths) > 0, "got no data sources"
-        return src_paths, src_langs, src_preprocessings, cleanup_paths
+        return (
+            src_paths,
+            src_langs,
+            src_preprocessings,
+            src_postprocessings,
+            cleanup_paths
+        )
 
     @classmethod
     def _data_from_config(
@@ -424,6 +441,7 @@ training will resume from latest checkpoint."
             train_sources,
             train_languages,
             train_preprocessings,
+            train_postprocessings,
             train_cleanup
         ) = cls._prepare_data_sources(
             cfg.pop("sources"),
@@ -451,6 +469,11 @@ training will resume from latest checkpoint."
                 "expected preprocessing to be specified per data source if not specified " \
                 "for pipeline"
             pipeline_cfg["preprocessing"] = train_preprocessings
+        if "postprocessing" not in pipeline_cfg:
+            assert all(postproc is not None for postproc in train_postprocessings), \
+                "expected postprocessing to be specified per data source if not specified " \
+                "for pipeline"
+            pipeline_cfg["postprocessing"] = train_postprocessings
 
         # adapt config to multi gpu usage
         assert "batch_limit" in cfg, "batch_limit must be in data config"
@@ -489,12 +512,8 @@ training will resume from latest checkpoint."
                 max_length_scheduler_cfg,
                 additional_max_length_scheduler_fn=cls._additional_max_length_scheduler_fn
             )
-            # validate with the maximum sequence length
-            # encountered during training
-            max_val_length = max(max_length_scheduler(i + 1) for i in range(training_items))
         else:
             max_length_scheduler = None
-            max_val_length = max_length
 
         # for validation always turn off shuffling, turn on sorting, and
         # specify a val limit
@@ -506,7 +525,7 @@ training will resume from latest checkpoint."
             pipeline_cfg,
             tokenizer_config,
             train_languages,
-            max_length=max_val_length,
+            max_length=max_length,
             seed=seed,
             distributed=None,
             **cfg
@@ -807,6 +826,7 @@ training will resume from latest checkpoint."
                 if max_length != self.max_length:
                     self.max_length = max_length
                     self.train_loader.set_max_length(max_length)
+                    self.val_loader.set_max_length(max_length)
 
             if self.info.is_main_process:
                 mean_step_time.add((time.perf_counter() - start_batch) * 1000)

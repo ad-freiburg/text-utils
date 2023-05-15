@@ -15,9 +15,6 @@ from torch import nn
 from tqdm import tqdm
 
 
-from text_correction_utils import data
-
-
 def _unpack_zip(
         zip_file_path: str,
         directory: str

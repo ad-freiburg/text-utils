@@ -3,7 +3,7 @@ use crate::data::loading::{
     text_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator, DataGen,
     ItemSize, PipelineIterator, Tensorize, TensorizedIterator, TextIterationStrategy, TextIterator,
 };
-use crate::data::preprocessing::{labeling, preprocessing, LabelingConfig, PreprocessingFnConfig};
+use crate::data::preprocessing::{preprocessing, PreprocessingFnConfig};
 use crate::text::clean;
 use crate::tokenization::{
     padding_mask, token_groups_to_sparse_coo_matrix, tokenizer, PaddingMask,
@@ -27,8 +27,22 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use self::labeling::{labeling, LabelingConfig};
+use self::postprocessing::{postprocessing, PostprocessingFn, PostprocessingFnConfig};
+use self::preprocessing::PreprocessingFn;
+
+pub mod labeling;
 pub mod loading;
+pub mod postprocessing;
 pub mod preprocessing;
+mod utils;
+
+#[derive(Default, Clone, Debug)]
+pub struct TextDataInfo {
+    pub seed: u64,
+    pub file_idx: usize,
+    pub marks: HashMap<String, String>,
+}
 
 #[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
 #[pyclass]
@@ -729,31 +743,52 @@ impl Tensorize for Batch<InferenceItem> {
 
 #[derive(Debug, Clone)]
 pub enum PreprocessingConfig {
-    Single(Vec<PreprocessingFnConfig>),
-    PerFile(Vec<Vec<PreprocessingFnConfig>>),
+    Single(PreprocessingFnConfig),
+    PerFile(Vec<PreprocessingFnConfig>),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
-        if let Ok(value) = obj.extract::<Vec<PreprocessingFnConfig>>() {
+        if let Ok(value) = obj.extract::<PreprocessingFnConfig>() {
             Ok(PreprocessingConfig::Single(value))
-        } else if let Ok(value) = obj.extract::<Vec<Vec<PreprocessingFnConfig>>>() {
+        } else if let Ok(value) = obj.extract::<Vec<PreprocessingFnConfig>>() {
             Ok(PreprocessingConfig::PerFile(value))
         } else {
             Err(PyTypeError::new_err(
-                "preprocessing config must be a list of preprocessing functions or a list of lists of preprocessing functions",
+                "preprocessing config must be a single preprocessing function or a list of preprocessing functions",
             ))
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct PreprocessingPipelineConfig {
-    pub preprocessing: PreprocessingConfig,
-    pub labeling: LabelingConfig,
+pub enum PostprocessingConfig {
+    Single(PostprocessingFnConfig),
+    PerFile(Vec<PostprocessingFnConfig>),
 }
 
-impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
+impl<'a> FromPyObject<'a> for PostprocessingConfig {
+    fn extract(obj: &'a PyAny) -> PyResult<Self> {
+        if let Ok(value) = obj.extract::<PostprocessingFnConfig>() {
+            Ok(PostprocessingConfig::Single(value))
+        } else if let Ok(value) = obj.extract::<Vec<PostprocessingFnConfig>>() {
+            Ok(PostprocessingConfig::PerFile(value))
+        } else {
+            Err(PyTypeError::new_err(
+                "postprocessing config must be a single postprocessing function or a list of postprocessing functions",
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TextDataPipelineConfig {
+    pub preprocessing: PreprocessingConfig,
+    pub labeling: LabelingConfig,
+    pub postprocessing: PostprocessingConfig,
+}
+
+impl<'a> FromPyObject<'a> for TextDataPipelineConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = obj.extract()?;
         let Some(preprocessing) = d.get_item("preprocessing") else {
@@ -762,9 +797,13 @@ impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
         let Some(labeling) = d.get_item("labeling") else {
             return Err(py_required_key_error("labeling", "preprocessing pipeline config"));
         };
-        Ok(PreprocessingPipelineConfig {
+        let Some(postprocessing) = d.get_item("postprocessing") else {
+            return Err(py_required_key_error("postprocessing", "preprocessing pipeline config"));
+        };
+        Ok(TextDataPipelineConfig {
             preprocessing: preprocessing.extract()?,
             labeling: labeling.extract()?,
+            postprocessing: postprocessing.extract()?,
         })
     }
 }
@@ -773,46 +812,48 @@ impl<'a> FromPyObject<'a> for PreprocessingPipelineConfig {
 // and it also sharable across threads
 pub type Pipeline<I, O> = Arc<dyn Send + Sync + 'static + Fn(I) -> O>;
 
-type TextDataFn = dyn Fn(TextData, usize, u64) -> anyhow::Result<TextData> + Send + Sync + 'static;
-pub struct TextDataInfo {
-    pub seed: u64,
-    pub file_idx: usize,
-}
 pub type TextDataPipeline = Pipeline<(TextData, TextDataInfo), anyhow::Result<Item>>;
 pub fn text_data_pipeline_with_tokenizer(
-    pipeline_cfg: PreprocessingPipelineConfig,
+    pipeline_cfg: TextDataPipelineConfig,
     tokenizer_cfg: TokenizerConfig,
     max_length: usize,
 ) -> anyhow::Result<(TextDataPipeline, Arc<AtomicUsize>)> {
-    let tok = tokenizer(tokenizer_cfg)?;
-    let max_length = Arc::new(AtomicUsize::new(
-        max_length.saturating_sub(tok.num_special_tokens()),
-    ));
-    let preprocess_fn: Box<TextDataFn> =
-        match pipeline_cfg.preprocessing {
-            PreprocessingConfig::Single(cfg) => {
-                let preprocessing = preprocessing(cfg, max_length.clone());
-                Box::new(move |data: TextData, _: usize, seed: u64| preprocessing(data, Some(seed)))
-            }
-            PreprocessingConfig::PerFile(cfgs) => {
-                let preprocessings: HashMap<_, _> = HashMap::from_iter(
-                    cfgs.into_iter()
-                        .enumerate()
-                        .map(|(idx, cfg)| (idx, preprocessing(cfg, max_length.clone()))),
-                );
-                Box::new(move |data, file_idx, seed| {
-                    preprocessings.get(&file_idx).unwrap_or_else(|| {
-                        panic!("could not find preprocessing for file {file_idx}")
-                    })(data, Some(seed))
-                })
-            }
-        };
+    let tokenizer = tokenizer(tokenizer_cfg)?;
+    let max_length = Arc::new(AtomicUsize::new(max_length));
+    let preprocess_fn: Box<PreprocessingFn> = match pipeline_cfg.preprocessing {
+        PreprocessingConfig::Single(cfg) => {
+            let preprocessing = preprocessing(cfg);
+            Box::new(move |data, info| preprocessing(data, info))
+        }
+        PreprocessingConfig::PerFile(cfgs) => {
+            let preprocessings: Vec<_> = cfgs.into_iter().map(|cfg| preprocessing(cfg)).collect();
+            Box::new(move |data, info| preprocessings[info.file_idx](data, info))
+        }
+    };
     let label_fn = labeling(pipeline_cfg.labeling);
+    let postprocess_fn: Box<PostprocessingFn> = match pipeline_cfg.postprocessing {
+        PostprocessingConfig::Single(cfg) => {
+            let postprocessing = postprocessing(cfg, &tokenizer, max_length.clone());
+            Box::new(move |item, info| postprocessing(item, info))
+        }
+        PostprocessingConfig::PerFile(cfgs) => {
+            let postprocessings: HashMap<_, _> = HashMap::from_iter(
+                cfgs.into_iter()
+                    .enumerate()
+                    .map(|(idx, cfg)| (idx, postprocessing(cfg, &tokenizer, max_length.clone()))),
+            );
+            Box::new(move |item, info| {
+                postprocessings.get(&info.file_idx).unwrap_or_else(|| {
+                    panic!("could not find postprocessing for file {}", info.file_idx)
+                })(item, info)
+            })
+        }
+    };
     Ok((
         Arc::new(move |(data, info)| -> anyhow::Result<Item> {
-            let data = preprocess_fn(data, info.file_idx, info.seed)?;
-            Ok(Item {
-                tokenization: tok.tokenize(
+            let (data, info) = preprocess_fn(data, info)?;
+            let item = Item {
+                tokenization: tokenizer.tokenize(
                     &data.processed,
                     data.language.as_deref(),
                     None,
@@ -821,7 +862,9 @@ pub fn text_data_pipeline_with_tokenizer(
                 )?,
                 label: label_fn(&data)?,
                 data,
-            })
+            };
+            let (item, _) = postprocess_fn(item, info)?;
+            Ok(item)
         }),
         max_length,
     ))
@@ -1111,7 +1154,6 @@ struct DataLoader {
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
     max_length: Arc<AtomicUsize>,
-    max_length_offset: usize,
     epoch: usize,
     fast_forward: usize,
     limit: usize,
@@ -1133,7 +1175,7 @@ impl DataLoader {
     fn new(
         files: Vec<(String, Option<String>)>,
         languages: Option<Vec<String>>,
-        pipeline_config: PreprocessingPipelineConfig,
+        pipeline_config: TextDataPipelineConfig,
         tokenizer_config: TokenizerConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
@@ -1153,16 +1195,11 @@ impl DataLoader {
             return Err(anyhow!("seed cannot be None if shuffle is true",));
         }
         let prefetch_factor = prefetch_factor.max(1);
-        let max_tokens = max_length;
         let (pipeline, max_length) = text_data_pipeline_with_tokenizer(
             pipeline_config,
             tokenizer_config.clone(),
-            max_tokens,
+            max_length,
         )?;
-        // the number of additional tokens added by the tokenizer,
-        // we subtract them from the user specified max length, which
-        // refers to all tokens
-        let max_length_offset = max_tokens - max_length.load(Ordering::Relaxed);
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
@@ -1181,7 +1218,6 @@ impl DataLoader {
             batch_limit,
             batch_limit_type,
             max_length,
-            max_length_offset,
             iter: None,
             min_items: None,
             epoch: 0,
@@ -1231,6 +1267,7 @@ impl DataLoader {
                         TextDataInfo {
                             file_idx,
                             seed: seed + item_idx as u64,
+                            ..Default::default()
                         },
                     ))
                 } else {
@@ -1275,11 +1312,11 @@ impl DataLoader {
         seed = None,
         skip = 0,
         limit = None,
-        distributed = None
+        distributed = None,
     ))]
     pub fn from_files(
         files: Vec<(String, Option<String>)>,
-        pipeline_config: PreprocessingPipelineConfig,
+        pipeline_config: TextDataPipelineConfig,
         tokenizer_config: TokenizerConfig,
         languages: Option<Vec<String>>,
         strategy: TextIterationStrategy,
@@ -1357,7 +1394,7 @@ impl DataLoader {
 
     #[getter]
     fn max_length(&self) -> usize {
-        self.max_length.load(Ordering::Relaxed) + self.max_length_offset
+        self.max_length.load(Ordering::Relaxed)
     }
 
     fn set_epoch(&mut self, epoch: usize) {
@@ -1369,10 +1406,7 @@ impl DataLoader {
     }
 
     fn set_max_length(&mut self, max_length: usize) {
-        self.max_length.swap(
-            max_length.saturating_sub(self.max_length_offset),
-            Ordering::SeqCst,
-        );
+        self.max_length.swap(max_length, Ordering::SeqCst);
     }
 }
 

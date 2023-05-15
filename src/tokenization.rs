@@ -24,10 +24,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 
-pub const UNK: &str = "<unk>";
-pub const BOS: &str = "<bos>";
-pub const EOS: &str = "<eos>";
-pub const PAD: &str = "<pad>";
+pub const UNK: &str = "(unk)";
+pub const BOS: &str = "(bos)";
+pub const EOS: &str = "(eos)";
+pub const PAD: &str = "(pad)";
 pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
 pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
 pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
@@ -48,7 +48,7 @@ impl SpecialTokens {
 }
 
 // language tokens
-pub const LANG_UNK: &str = "[unk]";
+pub const LANG_UNK: &str = "(lang:unk)";
 
 #[pyclass]
 pub struct LanguageTokens {}
@@ -319,9 +319,16 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 let Some(merge_file) = d.get_item("merge_file") else {
                     return Err(py_required_key_error("merge_file", "bpe tokenizer config"));
                 };
+                let max_vocab_size: Option<usize> =
+                    if let Some(value) = d.get_item("max_vocab_size") {
+                        Some(value.extract()?)
+                    } else {
+                        None
+                    };
                 TokenizeConfig::BPE(BPETokenizerConfig {
                     use_graphemes,
                     merge_file: merge_file.extract()?,
+                    max_vocab_size,
                 })
             }
             "dummy" => {
@@ -1244,6 +1251,7 @@ impl CharTokenizer {
 #[derive(Debug, Clone)]
 pub struct BPETokenizerConfig {
     pub merge_file: PathBuf,
+    pub max_vocab_size: Option<usize>,
     pub use_graphemes: bool,
 }
 
@@ -1260,7 +1268,17 @@ impl BPETokenizer {
         let mut file = File::open(&config.merge_file)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
-        let merge_ops: MergeOps = rmp_serde::from_slice(&buf)?;
+        let mut merge_ops: MergeOps = rmp_serde::from_slice(&buf)?;
+        if let Some(limit) = config.max_vocab_size {
+            // to limit vocab size we filter out all merges with an id higher than the limit
+            let limit = limit
+                .saturating_sub(special_config.tokens.len())
+                .saturating_sub(256) as u32;
+            merge_ops = merge_ops
+                .into_iter()
+                .filter(|(_, merge_id)| *merge_id < limit as u32)
+                .collect();
+        }
         let mut reverse_merge_ops: Vec<Vec<u8>> = Vec::new();
         for b in 0..256 {
             reverse_merge_ops.push(vec![b as u8]);
@@ -2159,9 +2177,9 @@ mod tests {
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(
             tok.de_tokenize(&token_ids, false),
-            "<bos>a t<unk>st<eos>".to_string()
+            "(bos)a t(unk)st(eos)".to_string()
         );
-        let text = "a <pad>täst";
+        let text = "a (pad)täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, false).unwrap();
         assert_eq!(token_ids.len(), 7 + 2);
         assert_eq!(token_ids[3], tok.pad_token_id);
@@ -2169,15 +2187,15 @@ mod tests {
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(
             tok.de_tokenize(&token_ids, false),
-            "<bos>a <pad>t<unk>st<eos>".to_string()
+            "(bos)a (pad)t(unk)st(eos)".to_string()
         );
-        let text = "a <pad>täst";
+        let text = "a (pad)täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(token_ids.len(), 11 + 2);
-        assert_eq!(tok.de_tokenize(&token_ids, true), "a <pad>tst".to_string());
+        assert_eq!(tok.de_tokenize(&token_ids, true), "a (pad)tst".to_string());
         assert_eq!(
             tok.de_tokenize(&token_ids, false),
-            "<bos>a <pad>t<unk>st<eos>".to_string()
+            "(bos)a (pad)t(unk)st(eos)".to_string()
         );
     }
 
@@ -2287,6 +2305,7 @@ mod tests {
 
         let bpe_config = BPETokenizerConfig {
             merge_file: out_file,
+            max_vocab_size: None,
             use_graphemes: true,
         };
         let bpe = BPETokenizer::new(bpe_config, special_config, None).unwrap();

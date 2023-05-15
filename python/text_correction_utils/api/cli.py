@@ -248,11 +248,11 @@ class TextCorrectionCli:
         if self.args.lang is not None:
             supported_languages = cor.supported_languages()
             assert supported_languages is not None, \
-                f"language {self.args.lang} specified but model does not \
-support multiple languages"
+                f"language {self.args.lang} specified but model does not " \
+                f"support multiple languages"
             assert self.args.lang in supported_languages, \
-                f"the model supports the languages {supported_languages}, \
-but {self.args.lang} was specified"
+                f"the model supports the languages {supported_languages}, " \
+                f"but {self.args.lang} was specified"
 
         if self.args.precision != "auto":
             cor.set_precision(self.args.precision)

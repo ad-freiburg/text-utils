@@ -890,11 +890,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::data::labeling::LabelingConfig;
     use crate::data::loading::{open, BatchLimitType, BatchedIterator};
-    use crate::data::preprocessing::LabelingConfig;
+    use crate::data::postprocessing::PostprocessingFnConfig;
+    use crate::data::preprocessing::PreprocessingFnConfig;
     use crate::data::{
-        text_data_pipeline_with_tokenizer, Item, PreprocessingConfig, PreprocessingPipelineConfig,
-        TextData, TextDataInfo,
+        text_data_pipeline_with_tokenizer, Item, PostprocessingConfig, PreprocessingConfig,
+        TextData, TextDataInfo, TextDataPipelineConfig,
     };
     use crate::tokenization::{SpecialConfig, TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
@@ -1042,9 +1044,10 @@ mod tests {
             language: None,
         };
         let (pipeline, _) = text_data_pipeline_with_tokenizer(
-            PreprocessingPipelineConfig {
-                preprocessing: PreprocessingConfig::Single(vec![]),
+            TextDataPipelineConfig {
+                preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
+                postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
             },
             tokenizer_cfg,
             512,
@@ -1060,7 +1063,7 @@ mod tests {
         let it = text_iter
             .filter_map(|(d, file_idx)| {
                 if let Ok(d) = d {
-                    Some((d, TextDataInfo { file_idx, seed: 0 }))
+                    Some((d, TextDataInfo::default()))
                 } else {
                     None
                 }
@@ -1085,7 +1088,7 @@ mod tests {
             let it = text_iter
                 .filter_map(|(d, file_idx)| {
                     if let Ok(d) = d {
-                        Some((d, TextDataInfo { file_idx, seed: 0 }))
+                        Some((d, TextDataInfo::default()))
                     } else {
                         None
                     }
@@ -1110,7 +1113,7 @@ mod tests {
             let it = text_iter
                 .filter_map(|(d, file_idx)| {
                     if let Ok(d) = d {
-                        Some((d, TextDataInfo { file_idx, seed: 0 }))
+                        Some((d, TextDataInfo::default()))
                     } else {
                         None
                     }
@@ -1131,9 +1134,10 @@ mod tests {
             language: None,
         };
         let (pipeline, _) = text_data_pipeline_with_tokenizer(
-            PreprocessingPipelineConfig {
-                preprocessing: PreprocessingConfig::Single(vec![]),
+            TextDataPipelineConfig {
+                preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
+                postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
             },
             tokenizer_cfg,
             512,
@@ -1148,7 +1152,7 @@ mod tests {
         let it = text_iter
             .filter_map(|(d, file_idx)| {
                 if let Ok(d) = d {
-                    Some((d, TextDataInfo { file_idx, seed: 0 }))
+                    Some((d, TextDataInfo::default()))
                 } else {
                     None
                 }
@@ -1183,9 +1187,10 @@ mod tests {
             language: None,
         };
         let (pipeline, _) = text_data_pipeline_with_tokenizer(
-            PreprocessingPipelineConfig {
-                preprocessing: PreprocessingConfig::Single(vec![]),
+            TextDataPipelineConfig {
+                preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
                 labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
+                postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
             },
             tokenizer_cfg,
             512,
@@ -1193,7 +1198,7 @@ mod tests {
         let pipe_it = text_iter
             .filter_map(|(d, file_idx)| {
                 if let Ok(d) = d {
-                    Some((d, TextDataInfo { file_idx, seed: 0 }))
+                    Some((d, TextDataInfo::default()))
                 } else {
                     None
                 }
@@ -1224,7 +1229,7 @@ mod tests {
                 let pipe_it = text_iter
                     .filter_map(|(d, file_idx)| {
                         if let Ok(d) = d {
-                            Some((d, TextDataInfo { file_idx, seed: 0 }))
+                            Some((d, TextDataInfo::default()))
                         } else {
                             None
                         }

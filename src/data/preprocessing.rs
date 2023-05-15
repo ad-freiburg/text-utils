@@ -1,34 +1,32 @@
 use crate::corrupt::{
     edit_word, DeleteEdits, EditsAndWeights, InsertEdits, ReplaceEdits, SwapEdits,
 };
-use crate::data::{Label, TextData};
+use crate::data::{TextData, TextDataInfo};
 use crate::dictionary::Dictionary;
 use crate::text::{self, split_words};
 use crate::text::{possible_byte_substrings, possible_character_substrings};
-use crate::tokenization::{tokenizer, TokenizerConfig};
 use crate::unicode::{is_alphabetic, is_punctuation, normalize, Normalization, CS};
-use crate::utils::{accumulate, py_invalid_type_error, py_required_key_error};
-use crate::whitespace::{find_substring_ignoring_whitespace, full, operations, remove};
+use crate::utils::{py_invalid_type_error, py_required_key_error};
+use crate::whitespace::{find_substring_ignoring_whitespace, full, remove};
 use anyhow::anyhow;
 use itertools::Itertools;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Geometric};
 use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
-use std::ops::Sub;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
-pub type PreprocessingFn =
-    dyn Send + Sync + 'static + Fn(TextData, Option<u64>) -> anyhow::Result<TextData>;
-pub type LabelingFn = dyn Send + Sync + 'static + Fn(&TextData) -> anyhow::Result<Label>;
+use super::utils::{chain, switch};
+
+pub type PreprocessingFn = dyn Send
+    + Sync
+    + 'static
+    + Fn(TextData, TextDataInfo) -> anyhow::Result<(TextData, TextDataInfo)>;
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingFnConfig {
@@ -52,93 +50,14 @@ pub enum PreprocessingFnConfig {
     // delete and insert whitespaces with certain probabilities
     WhitespaceCorruption(f64, f64, bool),
     // extract substrings from text
-    CharSubstring(bool),
-    ByteSubstring(bool),
+    CharSubstring(usize, bool),
+    ByteSubstring(usize, bool),
     // randomly edit and replace words in text
     SpellingCorruption(f64, bool, SpellingCorruptionMode),
-    // randomly mask full words in text
-    MaskCorruption(f64, bool, String, MaskMode),
     // randomly replace the language token with the given default
     LanguageDropout(f64),
-}
-
-impl IntoPy<PyObject> for PreprocessingFnConfig {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new(py);
-        let preprocessing_type = match self {
-            PreprocessingFnConfig::None => "none",
-            PreprocessingFnConfig::Chain(configs) => {
-                let py_configs = PyList::empty(py);
-                for config in configs {
-                    py_configs.append(config.into_py(py)).unwrap();
-                }
-                d.set_item("configs", py_configs).unwrap();
-                "chain"
-            }
-            PreprocessingFnConfig::Clean(use_g) => {
-                d.set_item("use_graphemes", use_g).unwrap();
-                "clean"
-            }
-            PreprocessingFnConfig::Overwrite => "overwrite",
-            PreprocessingFnConfig::Switch(configs, probs) => {
-                let py_configs = PyList::empty(py);
-                for config in configs {
-                    py_configs.append(config.into_py(py)).unwrap();
-                }
-                d.set_item("configs", py_configs).unwrap();
-                d.set_item("probabilities", PyList::new(py, probs)).unwrap();
-                "switch"
-            }
-            PreprocessingFnConfig::NoWhitespaces(use_g) => {
-                d.set_item("use_graphemes", use_g).unwrap();
-                "no_whitespaces"
-            }
-            PreprocessingFnConfig::FullWhitespaces(use_g) => {
-                d.set_item("use_graphemes", use_g).unwrap();
-                "full_whitespaces"
-            }
-            PreprocessingFnConfig::WhitespaceCorruption(iw_p, dw_p, use_g) => {
-                d.set_item("insert_whitespace_prob", iw_p).unwrap();
-                d.set_item("delete_whitespace_prob", dw_p).unwrap();
-                d.set_item("use_graphemes", use_g).unwrap();
-                "whitespace_corruption"
-            }
-            PreprocessingFnConfig::CharSubstring(use_g) => {
-                // d.set_item("max_chars", max_chars).unwrap();
-                d.set_item("use_graphemes", use_g).unwrap();
-                "char_substring"
-            }
-            PreprocessingFnConfig::ByteSubstring(use_g) => {
-                // d.set_item("max_bytes", max_bytes).unwrap();
-                d.set_item("use_graphemes", use_g).unwrap();
-                "byte_substring"
-            }
-            PreprocessingFnConfig::Normalize(scheme, use_g) => {
-                d.set_item("scheme", scheme.into_py(py)).unwrap();
-                d.set_item("use_graphemes", use_g).unwrap();
-                "normalize"
-            }
-            PreprocessingFnConfig::LanguageDropout(p) => {
-                d.set_item("prob", p).unwrap();
-                "language_dropout"
-            }
-            PreprocessingFnConfig::SpellingCorruption(p, full_del, mode) => {
-                d.set_item("prob", p).unwrap();
-                d.set_item("allow_full_delete", full_del).unwrap();
-                d.set_item("mode", mode.into_py(py)).unwrap();
-                "spelling_corruption"
-            }
-            PreprocessingFnConfig::MaskCorruption(p, use_g, mask_token, mode) => {
-                d.set_item("prob", p).unwrap();
-                d.set_item("use_graphemes", use_g).unwrap();
-                d.set_item("mask_token", mask_token).unwrap();
-                d.set_item("mode", mode.into_py(py)).unwrap();
-                "mask_corruption"
-            }
-        };
-        d.set_item("type", preprocessing_type).unwrap();
-        d.to_object(py)
-    }
+    // mark inputs with additional info
+    Mark(String, String),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
@@ -221,18 +140,7 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 let Some(probs) = d.get_item("probabilities") else {
                     return Err(py_required_key_error("probabilities", "switch config"));
                 };
-                PreprocessingFnConfig::Switch(
-                    configs
-                        .extract::<&PyList>()?
-                        .iter()
-                        .map(|any| any.extract())
-                        .collect::<PyResult<Vec<PreprocessingFnConfig>>>()?,
-                    probs
-                        .extract::<&PyList>()?
-                        .iter()
-                        .map(|any| any.extract())
-                        .collect::<PyResult<Vec<f64>>>()?,
-                )
+                PreprocessingFnConfig::Switch(configs.extract()?, probs.extract()?)
             }
             "char_substring" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
@@ -240,10 +148,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-                // let Some(max_chars) = d.get_item("max_chars") else {
-                //     return Err(py_required_key_error("max_chars", "char substring config"));
-                // };
-                PreprocessingFnConfig::CharSubstring(use_graphemes)
+                let Some(max_chars) = d.get_item("max_chars") else {
+                    return Err(py_required_key_error("max_chars", "char substring config"));
+                };
+                PreprocessingFnConfig::CharSubstring(max_chars.extract()?, use_graphemes)
             }
             "byte_substring" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
@@ -251,10 +159,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-                // let Some(max_bytes) = d.get_item("max_bytes") else {
-                //     return Err(py_required_key_error("max_bytes", "byte substring config"));
-                // };
-                PreprocessingFnConfig::ByteSubstring(use_graphemes)
+                let Some(max_bytes) = d.get_item("max_bytes") else {
+                    return Err(py_required_key_error("max_bytes", "byte substring config"));
+                };
+                PreprocessingFnConfig::ByteSubstring(max_bytes.extract()?, use_graphemes)
             }
             "language_dropout" => {
                 let Some(p) = d.get_item("prob") else {
@@ -280,27 +188,14 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                     mode.extract()?,
                 )
             }
-            "mask_corruption" => {
-                let Some(p) = d.get_item("prob") else {
-                    return Err(py_required_key_error("prob", "mask corruption config"));
+            "mark" => {
+                let Some(key) = d.get_item("key") else {
+                    return Err(py_required_key_error("key", "mark config"));
                 };
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
-                    value.extract()?
-                } else {
-                    true
+                let Some(value) = d.get_item("value") else {
+                    return Err(py_required_key_error("value", "mark config"));
                 };
-                let Some(mask_token) = d.get_item("mask_token") else {
-                    return Err(py_required_key_error("mask_token", "mask corruption config"));
-                };
-                let Some(mode) = d.get_item("mode") else {
-                    return Err(py_required_key_error("mode", "mask corruption config"));
-                };
-                PreprocessingFnConfig::MaskCorruption(
-                    p.extract()?,
-                    use_graphemes,
-                    mask_token.extract()?,
-                    mode.extract()?,
-                )
+                PreprocessingFnConfig::Mark(key.extract()?, value.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
@@ -310,105 +205,29 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum LabelingConfig {
-    // generate whitespace correction labels given processed and original sequence
-    WhitespaceCorrection(bool, TokenizerConfig),
-    // generate sequence generation labels (basically just the tokenization) of the processed sequence
-    SequenceGeneration(TokenizerConfig),
-}
-
-impl<'a> FromPyObject<'a> for LabelingConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
-        let Some(labeling_type) = d.get_item("type") else {
-            return Err(py_required_key_error("type", "labeling config"));
-        };
-        let labeling_type: String = labeling_type.extract()?;
-        let labeling_config = match labeling_type.as_str() {
-            "whitespace_correction" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
-                    value.extract()?
-                } else {
-                    true
-                };
-                let Some(tokenizer_config) = d.get_item("tokenizer") else {
-                    return Err(py_required_key_error("tokenizer", "whitespace correction config"));
-                };
-                LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer_config.extract()?)
-            }
-            "sequence_generation" => {
-                let Some(tokenizer_config) = d.get_item("tokenizer") else {
-                    return Err(py_required_key_error("tokenizer", "sequence generation config"));
-                };
-                LabelingConfig::SequenceGeneration(tokenizer_config.extract()?)
-            }
-            k => {
-                return Err(py_invalid_type_error(k, "labeling"));
-            }
-        };
-        Ok(labeling_config)
-    }
-}
-
-fn switch(
-    fns: Vec<PreprocessingFnConfig>,
-    probs: Vec<f64>,
-    max_length: Arc<AtomicUsize>,
-) -> Box<PreprocessingFn> {
-    let num_fns = fns.len();
-    assert!(
-        num_fns > 0 && num_fns == probs.len(),
-        "expected one or more preprocessing for switch preprocessing and the same \
-        number of probabilities"
-    );
-    // generate cumulative probabilities
-    let cum_p: Vec<f64> = accumulate(&probs);
-    // probabilities should sum to 1
-    assert!(
-        cum_p.last().copied().unwrap().sub(1f64).abs() < 1e-5,
-        "all switch probabilities should sum to 1"
-    );
-
-    let fns: Vec<Box<PreprocessingFn>> = fns
-        .into_iter()
-        .map(|cfg| preprocessing_fn(cfg, max_length.clone()))
-        .collect();
-
-    // return new function that switches between multiple preprocessing functions
-    // based on the given probability distribution
-    Box::new(move |item, seed| -> anyhow::Result<TextData> {
-        let mut rng = if let Some(seed) = seed {
-            ChaCha8Rng::seed_from_u64(seed)
-        } else {
-            ChaCha8Rng::from_entropy()
-        };
-        let r: f64 = rng.gen();
-        let mut idx = 0;
-        while idx < num_fns - 1 && r > cum_p[idx] {
-            idx += 1;
-        }
-        fns[idx](item, seed)
-    })
-}
-
 fn apply_to_text<F: Fn(&str) -> anyhow::Result<String> + Send + Sync + 'static>(
     f: F,
 ) -> Box<PreprocessingFn> {
-    Box::new(move |item, _| {
-        Ok(TextData {
-            processed: f(&item.processed)?,
-            ..item
-        })
+    Box::new(move |item, info| {
+        Ok((
+            TextData {
+                processed: f(&item.processed)?,
+                ..item
+            },
+            info,
+        ))
     })
 }
 
 fn overwrite_original_from_processed() -> Box<PreprocessingFn> {
-    Box::new(|item, _| {
-        Ok(TextData {
-            original: item.processed.clone(),
-            ..item
-        })
+    Box::new(|item, info| {
+        Ok((
+            TextData {
+                original: item.processed.clone(),
+                ..item
+            },
+            info,
+        ))
     })
 }
 
@@ -419,12 +238,8 @@ fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<Preproce
         iw_p > 0. || dw_p > 0.,
         "at least one of insert whitespace or delete whitespace probability must be greater 0"
     );
-    Box::new(move |item, seed| {
-        let mut rng = if let Some(seed) = seed {
-            ChaCha8Rng::seed_from_u64(seed)
-        } else {
-            ChaCha8Rng::from_entropy()
-        };
+    Box::new(move |item, info| {
+        let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
         let cs = CS::new(&item.processed, use_graphemes);
         let processed = cs
             .chars()
@@ -444,7 +259,7 @@ fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<Preproce
                 }
             })
             .join("");
-        Ok(TextData { processed, ..item })
+        Ok((TextData { processed, ..item }, info))
     })
 }
 
@@ -453,12 +268,8 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
     substring_fn: F,
     use_graphemes: bool,
 ) -> Box<PreprocessingFn> {
-    Box::new(move |item, seed| {
-        let mut rng = if let Some(seed) = seed {
-            ChaCha8Rng::seed_from_u64(seed)
-        } else {
-            ChaCha8Rng::from_entropy()
-        };
+    Box::new(move |item, info| {
+        let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
         let possible_substrings = substring_fn(&item.processed)?;
         let idx = rng.gen_range(0..possible_substrings.len());
         let (start, end, _) = possible_substrings[idx];
@@ -474,58 +285,48 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
                     ))
                 }
             };
-        Ok(TextData {
-            original,
-            processed,
-            ..item
-        })
+        Ok((
+            TextData {
+                original,
+                processed,
+                ..item
+            },
+            info,
+        ))
     })
 }
 
-fn char_substring(max_length: Arc<AtomicUsize>, use_graphemes: bool) -> Box<PreprocessingFn> {
+fn char_substring(max_length: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
     substring(
         "character".to_string(),
-        move |s| {
-            Ok(possible_character_substrings(
-                s,
-                max_length.load(Ordering::Relaxed),
-                use_graphemes,
-            ))
-        },
+        move |s| Ok(possible_character_substrings(s, max_length, use_graphemes)),
         use_graphemes,
     )
 }
 
-fn byte_substring(max_length: Arc<AtomicUsize>, use_graphemes: bool) -> Box<PreprocessingFn> {
+fn byte_substring(max_length: usize, use_graphemes: bool) -> Box<PreprocessingFn> {
     substring(
         "byte".to_string(),
-        move |s| {
-            Ok(possible_byte_substrings(
-                s,
-                max_length.load(Ordering::Relaxed),
-                use_graphemes,
-            ))
-        },
+        move |s| Ok(possible_byte_substrings(s, max_length, use_graphemes)),
         use_graphemes,
     )
 }
 
 fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
     let prob = prob.clamp(0.0, 1.0);
-    Box::new(move |item, seed| {
-        let mut rng = if let Some(seed) = seed {
-            ChaCha8Rng::seed_from_u64(seed)
-        } else {
-            ChaCha8Rng::from_entropy()
-        };
+    Box::new(move |item, info| {
+        let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
         let r: f64 = rng.gen();
         if r < prob {
-            Ok(TextData {
-                language: None,
-                ..item
-            })
+            Ok((
+                TextData {
+                    language: None,
+                    ..item
+                },
+                info,
+            ))
         } else {
-            Ok(item)
+            Ok((item, info))
         }
     })
 }
@@ -724,12 +525,8 @@ fn corrupt_spelling(
         }
         _ => HashMap::new(),
     };
-    Box::new(move |item, seed| {
-        let mut rng = if let Some(seed) = seed {
-            ChaCha8Rng::seed_from_u64(seed)
-        } else {
-            ChaCha8Rng::from_entropy()
-        };
+    Box::new(move |item, info| {
+        let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
         let words = split_words(&item.processed);
         let words: Vec<_> = words
             .into_iter()
@@ -794,162 +591,42 @@ fn corrupt_spelling(
                 }
             })
             .collect();
-        Ok(TextData {
-            processed: words.join(" "),
-            ..item
-        })
+        Ok((
+            TextData {
+                processed: words.join(" "),
+                ..item
+            },
+            info,
+        ))
     })
 }
 
-#[derive(PartialEq, Debug, Clone)]
-pub enum MaskMode {
-    Word(usize, f64),
-    Char(usize, f64),
-}
-
-impl IntoPy<PyObject> for MaskMode {
-    fn into_py(self, py: Python) -> PyObject {
-        let d = PyDict::new(py);
-        let mask_type = match self {
-            MaskMode::Word(min, p) | MaskMode::Char(min, p) => {
-                d.set_item("min", min).unwrap();
-                d.set_item("prob", p).unwrap();
-                match self {
-                    MaskMode::Word(..) => "word",
-                    MaskMode::Char(..) => "char",
-                }
-            }
-        };
-        d.set_item("type", mask_type).unwrap();
-        d.into_py(py)
-    }
-}
-
-impl<'a> FromPyObject<'a> for MaskMode {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
-        let Some(mask_type) = d.get_item("type") else {
-            return Err(py_required_key_error("type", "mask mode config"));
-        };
-        let mask_type: String = mask_type.extract()?;
-        let mask_mode_config = match mask_type.as_str() {
-            name @ ("word" | "char") => {
-                let Some(min) = d.get_item("min") else {
-                    return Err(py_required_key_error("min", format!("{name} mask mode config")));
-                };
-                let Some(p) = d.get_item("prob") else {
-                    return Err(py_required_key_error("prob", format!("{name} mask mode config")));
-                };
-                let min = min.extract()?;
-                let p = p.extract()?;
-                if name == "word" {
-                    MaskMode::Word(min, p)
-                } else {
-                    MaskMode::Char(min, p)
-                }
-            }
-            k => return Err(py_invalid_type_error(k, "mask mode config")),
-        };
-        Ok(mask_mode_config)
-    }
-}
-
-pub fn corrupt_mask(
-    mask_p: f64,
-    use_graphemes: bool,
-    mask_token: String,
-    mode: MaskMode,
-) -> Box<PreprocessingFn> {
-    let (min, expected_per_mask, geo, is_word) = match mode {
-        MaskMode::Word(min, p) | MaskMode::Char(min, p) => (
-            min,
-            min as f64 + 1.0 / p - 1.0,
-            Geometric::new(p).expect("failed to create geometric distribution"),
-            matches!(mode, MaskMode::Word(..)),
-        ),
-    };
-    assert!(min > 0, "minimum tokens to mask must be greater than 0");
-    // adjust mask probability because it refers to the percentage of tokens expected to be masked
-    // but we always mask multiple tokens per mask operation
-    let mask_p = mask_p / (expected_per_mask - mask_p);
-    Box::new(move |item, seed| {
-        let mut rng = if let Some(seed) = seed {
-            ChaCha8Rng::seed_from_u64(seed)
-        } else {
-            ChaCha8Rng::from_entropy()
-        };
-
-        let tokens: Vec<_> = if is_word {
-            split_words(&item.processed)
-                .iter()
-                .map(|&(w, _)| w)
-                .collect()
-        } else {
-            CS::split(&item.processed, use_graphemes).collect()
-        };
-        if tokens.len() <= 1 {
-            return Ok(item);
-        }
-        let mut i = 0;
-        let mut new_tokens = vec![];
-        while i < tokens.len() {
-            if rng.gen::<f64>() > mask_p {
-                new_tokens.push(tokens[i]);
-                if is_word && i < tokens.len() - 1 {
-                    new_tokens.push(" ");
-                }
-                i += 1;
-                continue;
-            }
-            let num_to_mask = (geo.sample(&mut rng) as usize + min)
-                .min(tokens.len() / 2)
-                .min(tokens.len() - i);
-            // a single masking should never be more than half of the tokens
-            // to allow for more context between the tokens, should only happen
-            // for very short sequences or very high corruption values
-
-            // one mask token for each masked character
-            if is_word {
-                // for word num_to_mask corresponds to the number of words to mask
-                // so we need to insert one mask token for each character in each masked word
-                for j in i..i + num_to_mask {
-                    let word_len = CS::new(tokens[j], use_graphemes).len();
-                    new_tokens.append(&mut vec![&mask_token; word_len]);
-                    if j < tokens.len() - 1 {
-                        new_tokens.push(" ");
-                    }
-                }
-            } else {
-                new_tokens.append(&mut vec![&mask_token; num_to_mask]);
-            }
-            i += num_to_mask;
-        }
-        let processed = new_tokens.join("");
-        Ok(TextData { processed, ..item })
+pub fn mark(key: String, value: String) -> Box<PreprocessingFn> {
+    Box::new(move |item, mut info| {
+        info.marks.insert(key.clone(), value.clone());
+        Ok((item, info))
     })
 }
 
-fn preprocessing_fn(
-    preprocessing: PreprocessingFnConfig,
-    max_length: Arc<AtomicUsize>,
-) -> Box<PreprocessingFn> {
-    match preprocessing {
-        PreprocessingFnConfig::None => Box::new(|item, _| Ok(item)),
+pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
+    match cfg {
+        PreprocessingFnConfig::None => Box::new(|input, info| Ok((input, info))),
         PreprocessingFnConfig::Chain(configs) => {
             let pfns = configs
                 .into_iter()
-                .map(|cfg| preprocessing_fn(cfg, max_length.clone()))
+                .map(|cfg| preprocessing(cfg))
                 .collect::<Vec<_>>();
-            Box::new(move |mut item, seed| {
-                for pfn in &pfns {
-                    item = pfn(item, seed)?;
-                }
-                Ok(item)
-            })
+            chain(pfns)
         }
         PreprocessingFnConfig::Clean(use_g) => apply_to_text(move |s| Ok(text::clean(s, use_g))),
         PreprocessingFnConfig::Overwrite => overwrite_original_from_processed(),
-        PreprocessingFnConfig::Switch(fns, probs) => switch(fns, probs, max_length),
+        PreprocessingFnConfig::Switch(fns, probs) => {
+            let pfns = fns
+                .into_iter()
+                .map(|cfg| preprocessing(cfg))
+                .collect::<Vec<_>>();
+            switch(pfns, probs)
+        }
         PreprocessingFnConfig::WhitespaceCorruption(iw_p, dw_p, use_g) => {
             corrupt_whitespace(iw_p, dw_p, use_g)
         }
@@ -959,11 +636,11 @@ fn preprocessing_fn(
         PreprocessingFnConfig::FullWhitespaces(use_graphemes) => {
             apply_to_text(move |s| Ok(full(s, use_graphemes)))
         }
-        PreprocessingFnConfig::CharSubstring(use_graphemes) => {
-            char_substring(max_length, use_graphemes)
+        PreprocessingFnConfig::CharSubstring(max_chars, use_graphemes) => {
+            char_substring(max_chars, use_graphemes)
         }
-        PreprocessingFnConfig::ByteSubstring(use_graphemes) => {
-            byte_substring(max_length, use_graphemes)
+        PreprocessingFnConfig::ByteSubstring(max_bytes, use_graphemes) => {
+            byte_substring(max_bytes, use_graphemes)
         }
         PreprocessingFnConfig::Normalize(scheme, use_graphemes) => {
             apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
@@ -972,83 +649,13 @@ fn preprocessing_fn(
         PreprocessingFnConfig::SpellingCorruption(p, full_del, mode) => {
             corrupt_spelling(p, full_del, mode)
         }
-        PreprocessingFnConfig::MaskCorruption(mask_p, use_graphemes, mask_token, mode) => {
-            corrupt_mask(mask_p, use_graphemes, mask_token, mode)
-        }
-    }
-}
-
-pub fn preprocessing(
-    preprocessing: Vec<PreprocessingFnConfig>,
-    max_length: Arc<AtomicUsize>,
-) -> Box<PreprocessingFn> {
-    // return new function that runs all given preprocessing functions
-    // in order, similar to the chain preprocessing
-    let fns: Vec<Box<PreprocessingFn>> = preprocessing
-        .into_iter()
-        .map(|cfg| preprocessing_fn(cfg, max_length.clone()))
-        .collect();
-    Box::new(move |mut item, seed| {
-        for f in fns.iter() {
-            item = f(item, seed)?;
-        }
-        Ok(item)
-    })
-}
-
-fn whitespace_correction_label(
-    use_graphemes: bool,
-    tokenizer_cfg: TokenizerConfig,
-) -> Box<LabelingFn> {
-    let tokenizer = tokenizer(tokenizer_cfg)
-        .expect("failed to create tokenizer for whitespace correction label function");
-    let num_prefix_tokens = tokenizer.num_prefix_tokens();
-    let num_suffix_tokens = tokenizer.num_suffix_tokens();
-    Box::new(move |item| {
-        Ok(Label::SequenceClassification(
-            vec![-1; num_prefix_tokens]
-                .into_iter()
-                .chain(
-                    operations(&item.processed, &item.original, use_graphemes)?
-                        .into_iter()
-                        .map(|l| l as i32),
-                )
-                .chain(vec![-1; num_suffix_tokens])
-                .collect(),
-        ))
-    })
-}
-
-fn sequence_generation_label(tokenizer_cfg: TokenizerConfig) -> Box<LabelingFn> {
-    let tokenizer = tokenizer(tokenizer_cfg)
-        .expect("failed to create tokenizer for sequence generation label function");
-    Box::new(move |item| {
-        let tokenization =
-            tokenizer.tokenize(&item.original, item.language.as_deref(), None, None, false)?;
-        let token_ids = tokenization
-            .token_ids
-            .into_iter()
-            .map(|t| t as i32)
-            .collect();
-        Ok(Label::SequenceGeneration(
-            token_ids,
-            tokenizer.pad_token_id(),
-        ))
-    })
-}
-
-pub fn labeling(labeling: LabelingConfig) -> Box<LabelingFn> {
-    match labeling {
-        LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer) => {
-            whitespace_correction_label(use_graphemes, tokenizer)
-        }
-        LabelingConfig::SequenceGeneration(tokenizer) => sequence_generation_label(tokenizer),
+        PreprocessingFnConfig::Mark(key, value) => mark(key, value),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::data::TextData;
+    use crate::data::{TextData, TextDataInfo};
 
     use super::corrupt_whitespace;
 
@@ -1056,14 +663,15 @@ mod tests {
     fn test_corrupt_whitespace() -> anyhow::Result<()> {
         let noise_fn = corrupt_whitespace(0.0, 1.0, true);
         let data = TextData::new("a test".to_string(), None, None);
-        let noised = noise_fn(data.clone(), Some(0))?;
+        let info = TextDataInfo::default();
+        let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.processed, "atest");
         let noise_fn = corrupt_whitespace(1.0, 0.0, true);
         let data = TextData::new("a test".to_string(), None, None);
-        let noised = noise_fn(data.clone(), Some(0))?;
+        let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.processed, "a t e s t");
         let data = TextData::new("Ginsberǵs".to_string(), None, None);
-        let noised = noise_fn(data.clone(), Some(0))?;
+        let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.processed, "G i n s b e r ǵ s");
         Ok(())
     }

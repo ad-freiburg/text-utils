@@ -50,6 +50,7 @@ class TextGenerationMetric(TensorboardMetric):
     def __init__(
         self,
         name: str,
+        input_tokenizer: tokenization.Tokenizer,
         output_tokenizer: tokenization.Tokenizer,
         max_items: Optional[int] = None,
     ):
@@ -57,6 +58,7 @@ class TextGenerationMetric(TensorboardMetric):
         self.outputs = None
         self.max_items = max_items
         self.name = name
+        self.input_tokenizer = input_tokenizer
         self.output_tokenizer = output_tokenizer
 
     def set_values(self, items: List[data.Item], outputs: torch.Tensor):
@@ -70,14 +72,18 @@ class TextGenerationMetric(TensorboardMetric):
             if self.max_items is not None and len(strings) >= self.max_items:
                 break
 
+            input = self.input_tokenizer.de_tokenize(
+                item.tokenization.token_ids,
+                ignore_special_tokens=False
+            )
             prediction = self.output_tokenizer.de_tokenize(
                 output,
-                ignore_special_tokens=True
+                ignore_special_tokens=False
             )
             strings.append(
                 "\n".join([
                     f"Lang      : {item.data.language}\n",
-                    f"Input     : {item.data.processed}\n",
+                    f"Input     : {input}\n",
                     f"Target    : {item.data.original}\n",
                     f"Prediction: {prediction}\n",
                 ])
@@ -95,7 +101,12 @@ class TextGenerationMetric(TensorboardMetric):
 
 
 class WhitespaceCorrectionMetric(TensorboardMetric):
-    def __init__(self, name: str, input_tokenizer: tokenization.Tokenizer, max_items: Optional[int] = None):
+    def __init__(
+        self,
+        name: str,
+        input_tokenizer: tokenization.Tokenizer,
+        max_items: Optional[int] = None
+    ):
         self.items = None
         self.outputs = None
         self.max_items = max_items
@@ -170,7 +181,7 @@ def metrics_from_config(
         if metric_type == "whitespace_correction":
             metric = WhitespaceCorrectionMetric(f"{prefix}whitespace_correction", input_tokenizer, **metric_opts)
         elif metric_type == "text_generation":
-            metric = TextGenerationMetric(f"{prefix}text_generation", output_tokenizer, **metric_opts)
+            metric = TextGenerationMetric(f"{prefix}text_generation", input_tokenizer, output_tokenizer, **metric_opts)
         else:
             raise ValueError(f"unknown metric type {metric_type}")
         metrics.append(metric)

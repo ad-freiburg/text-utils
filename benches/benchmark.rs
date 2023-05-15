@@ -118,6 +118,7 @@ fn bench_tokenizer(c: &mut Criterion) {
         BPETokenizerConfig {
             use_graphemes: true,
             merge_file: PathBuf::from(dir).join("data/multi/bpe_multi_16384_3.merges"),
+            max_vocab_size: None,
         },
         SpecialConfig::default(),
         None,

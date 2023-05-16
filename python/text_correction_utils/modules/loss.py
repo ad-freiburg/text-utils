@@ -1,23 +1,9 @@
 import copy
-import math
 from typing import Dict, Any, List, Optional, Callable
 
 import einops
 import torch
 from torch import nn
-from torch.cuda.amp import autocast
-
-
-def _loss_schedule(training_steps: int, schedule_type: str) -> Callable[[int], float]:
-    if schedule_type == "linear":
-        return lambda step: max(0.0, 1.0 - step / training_steps)
-    elif schedule_type == "cosine":
-        def _cosine(step: int):
-            frac = min(1.0, step / training_steps)
-            return 0.5 * (1.0 + math.cos(math.pi * frac))
-        return _cosine
-    else:
-        raise ValueError(f"unknown schedule type {schedule_type}")
 
 
 class FocalLoss(nn.Module):
@@ -28,11 +14,10 @@ class FocalLoss(nn.Module):
         gamma: float,
         reduction: str = "mean",
         ignore_index: int = -100,
-        gamma_schedule: Optional[Callable[[int], float]] = None
     ):
         super().__init__()
         self.alpha = alpha
-        self.init_gamma = gamma
+        self.gamma = gamma
         self.reduction = reduction
         self.ignore_index = ignore_index
         self.nll_loss = nn.NLLLoss(
@@ -40,10 +25,7 @@ class FocalLoss(nn.Module):
             reduction="none",
             ignore_index=ignore_index
         )
-        self.gamma_schedule = gamma_schedule
-        self.register_buffer("_step", torch.tensor(0, dtype=torch.long))
 
-    @autocast(enabled=False)
     def forward(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         assert outputs.ndim == 2 and labels.ndim == 1
         # make sure outputs and labels have correct types
@@ -60,10 +42,7 @@ class FocalLoss(nn.Module):
 
         log_pt = log_p[torch.arange(len(outputs), device=outputs.device), labels]
         pt = log_pt.exp()
-        gamma = self.init_gamma
-        if self.gamma_schedule is not None:
-            gamma *= self.gamma_schedule(self._step.item())
-        focal_term = torch.pow((1 - pt).clamp(0, 1), gamma)
+        focal_term = torch.pow((1 - pt).clamp(0, 1), self.gamma)
         ce = focal_term * ce
 
         if self.reduction == "mean":
@@ -72,13 +51,12 @@ class FocalLoss(nn.Module):
             ce = ce.sum()
         return ce
 
-    def step(self):
-        self._step += 1
-
 
 class SeqLoss(nn.Module):
     """
-    Wrapper class for sequence losses. Rearranges outputs and labels to use with standard Pytorch losses.
+    Wrapper class for sequence losses.
+    Rearranges outputs and labels for 
+    use with standard Pytorch losses.
     """
 
     def __init__(self, loss: nn.Module):
@@ -92,9 +70,26 @@ class SeqLoss(nn.Module):
         labels = einops.rearrange(labels, "b s -> (b s)")
         return self.loss(outputs, labels)
 
-    def step(self):
-        if hasattr(self.loss, "step"):
-            self.loss.step()
+
+class MultiLayerLoss(nn.Module):
+    """
+    Wrapper class for losses applied on output
+    of multiple layers. Rearranges outputs and labels
+    for use with standard Pytorch losses.
+    """
+
+    def __init__(self, loss: nn.Module):
+        super().__init__()
+        self.loss = loss
+
+    def forward(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # outputs are expected to be of shape [L, B, ...], reshape to [L * B, ...]
+        shape = outputs.shape[2:]
+        outputs = outputs.view(-1, *shape)
+        # labels are expected to be of shape [L, B, ...], reshape to [L * B, ...]
+        shape = labels.shape[2:]
+        labels = labels.view(-1, *shape)
+        return self.loss(outputs, labels)
 
 
 def loss_from_config(
@@ -106,12 +101,7 @@ def loss_from_config(
 ) -> nn.Module:
     cfg = copy.deepcopy(cfg)
     loss_type = cfg.pop("type")
-    if loss_type == "sequence_cross_entropy":
-        cfg["type"] = "cross_entropy"
-        loss = loss_from_config(cfg)
-        return SeqLoss(loss=loss)
-
-    elif loss_type == "cross_entropy":
+    if loss_type == "cross_entropy":
         weight = cfg.get("weights", None)
         weight = torch.tensor(weight, dtype=torch.float) if weight is not None else None
         loss = nn.CrossEntropyLoss(ignore_index=cfg.get("ignore_index", -1), weight=weight)
@@ -132,10 +122,13 @@ def loss_from_config(
         )
         return loss
 
-    elif loss_type == "sequence_focal":
-        cfg["type"] = "focal"
-        loss = loss_from_config(cfg)
-        return SeqLoss(loss=loss)
+    elif loss_type == "sequence":
+        loss = loss_from_config(cfg["loss"], additional_loss_fn)
+        return SeqLoss(loss)
+
+    elif loss_type == "multi_layer":
+        loss = loss_from_config(cfg["loss"], additional_loss_fn)
+        return MultiLayerLoss(loss)
 
     else:
         if additional_loss_fn is not None:

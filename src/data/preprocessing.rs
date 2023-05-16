@@ -11,7 +11,7 @@ use crate::whitespace::{find_substring_ignoring_whitespace, full, remove};
 use anyhow::anyhow;
 use itertools::Itertools;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyDict;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::borrow::Cow;

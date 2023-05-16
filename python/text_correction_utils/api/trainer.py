@@ -254,7 +254,7 @@ training will resume from latest checkpoint."
             self.directories["checkpoints"],
             "checkpoint_last.pt"
         )
-        load_checkpoint = cfg.get("load_checkpoint")
+        load_checkpoint = cfg["train"].get("load_checkpoint")
         if os.path.exists(last_checkpoint):
             checkpoint = io.load_checkpoint(last_checkpoint)
             self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -291,9 +291,16 @@ training will resume from latest checkpoint."
                 )
         elif load_checkpoint is not None:
             checkpoint = io.load_checkpoint(load_checkpoint)
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+            wrong_keys = self.model.load_state_dict(
+                checkpoint["model_state_dict"],
+                strict=False
+            )
+            assert len(wrong_keys.unexpected_keys) == 0, \
+                f"unexpected keys in checkpoint \"{load_checkpoint}\": {wrong_keys.unexpected_keys}"
+
             self.logger.info(
-                f"initializing model from checkpoint \"{load_checkpoint}\""
+                f"initializing model from checkpoint \"{load_checkpoint}\" "
+                f"(missing keys: {wrong_keys.missing_keys})"
             )
 
         self.model = DDP(self.model)
@@ -772,6 +779,8 @@ training will resume from latest checkpoint."
         eval_at = self.total_items + self.eval_interval
         step_at = self.total_items + self.step_interval
 
+        start_items = self.epoch_items
+
         train_iter = iter(self.train_loader)
         while True:
             start_batch = time.perf_counter()
@@ -949,8 +958,8 @@ training will resume from latest checkpoint."
                 )
                 eta_msg = logging.eta_minutes_message(
                     (end - begin_of_epoch) / 60,
-                    self.epoch_items,
-                    self.training_items_per_epoch
+                    self.epoch_items - start_items,
+                    self.training_items_per_epoch - start_items
                 )
                 self.logger.info(
                     f"[step {self.total_step}] [epoch {self.epoch + 1}] {eta_msg}"

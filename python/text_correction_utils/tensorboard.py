@@ -131,7 +131,7 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
                     group_name = "code_point_groups"
                 else:
                     group_name = "byte_groups"
-                end = len(item.tokenization.info[group_name]["groups"][-1]) - self.input_tokenizer.num_suffix_tokens()
+                end = len(item.tokenization.info[group_name]["groups"]) - self.input_tokenizer.num_suffix_tokens()
 
             repair_ops = []
             for pred in output[start:end]:

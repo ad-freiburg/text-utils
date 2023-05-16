@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Union, Dict, Any, List
+from typing import Optional, Union, Dict, Any, List, Tuple
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -105,22 +105,26 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
         self,
         name: str,
         input_tokenizer: tokenization.Tokenizer,
-        max_items: Optional[int] = None
+        max_items: Optional[int] = None,
+        multi_layer: bool = False
     ):
         self.items = None
         self.outputs = None
         self.max_items = max_items
         self.name = name
         self.input_tokenizer = input_tokenizer
+        self.multi_layer = multi_layer
 
     def set_values(self, items: List[data.Item], outputs: torch.Tensor):
         self.items = items
         self.outputs = torch.argmax(outputs, dim=-1).tolist()
 
-    def _get_string(self) -> str:
-        assert self.items is not None and self.outputs is not None, "call set_values before logging"
+    def _get_strings_and_acc(self, outputs) -> Tuple[str, float]:
+        assert self.items is not None
         strings = []
-        for item, output in zip(self.items, self.outputs):
+        correct = 0
+        total = 0
+        for item, output in zip(self.items, outputs):
             if self.max_items is not None and len(strings) >= self.max_items:
                 break
 
@@ -145,6 +149,9 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
                     raise RuntimeError(f"expected repair tokens to be either 0, 1, or 2, but got {pred}")
 
             target_ops = whitespace.operations(item.data.processed, item.data.original)
+            correct += sum(to == po for to, po in zip(target_ops, repair_ops))
+            total += len(target_ops)
+
             repaired = whitespace.repair(item.data.processed, repair_ops)
             strings.append(
                 "\n".join([
@@ -157,15 +164,49 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
                 ])
             )
 
-        return ("\n" + "-" * 80 + "\n").join(strings) + "\n"
+        return ("\n" + "-" * 80 + "\n").join(strings) + "\n", correct / total
 
     def log_tensorboard(self, writer: SummaryWriter, step: int):
-        s = self._get_string()
-        writer.add_text(self.name, s, step)
+        if self.multi_layer:
+            accuracies = {}
+            for layer in range(len(self.outputs)):
+                s, acc = self._get_strings_and_acc(self.outputs[layer])
+                # text only for last layer
+                if layer == len(self.outputs) - 1:
+                    writer.add_text(self.name, s, step)
+                accuracies[f"layer_{layer}"] = acc
+            writer.add_scalars(
+                f"{self.name}_accuracy",
+                accuracies,
+                step
+            )
+        else:
+            s, acc = self._get_strings_and_acc(self.outputs)
+            writer.add_text(self.name, s, step)
+            writer.add_scalar(
+                f"{self.name}_accuracy",
+                acc,
+                step
+            )
 
     def log_info(self, logger: logging.Logger, step: int):
-        s = self._get_string()
-        logger.info(f"[step {step}] {self.name}\n{s}")
+        if self.multi_layer:
+            for layer in range(len(self.outputs)):
+                s, acc = self._get_strings_and_acc(self.outputs[layer])
+                # text only for last layer
+                if layer == len(self.outputs) - 1:
+                    logger.info(f"[step {step}] {self.name}\n{s}")
+                logger.info(
+                    f"[step {step}] {self.name} "
+                    f"layer {layer} accuracy: {100 * acc:.2f}"
+                )
+        else:
+            s, acc = self._get_strings_and_acc(self.outputs)
+            logger.info(f"[step {step}] {self.name}\n{s}")
+            logger.info(
+                f"[step {step}] {self.name} "
+                f"accuracy: {100 * acc:.2f}"
+            )
 
 
 def metrics_from_config(

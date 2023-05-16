@@ -200,6 +200,7 @@ class TransformerEncoder(Encoder):
         self,
         x: torch.Tensor,
         pos: Optional[torch.Tensor] = None,
+        return_intermediate: bool = False,
         **kwargs: Any
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         padding_mask = kwargs.get(self.padding_mask)
@@ -223,12 +224,14 @@ class TransformerEncoder(Encoder):
         else:
             raise ValueError(f"unknown with_pos={self.with_pos}, must be either None or one of alibi, attention")
 
+        outputs = []
         enc = x
         for i in range(self.num_layers):
             enc = self.transformer[0 if self.share_parameters else i](
                 enc, pos, padding_mask=padding_mask, attn_mask=attn_mask
             )
-        return enc, kwargs
+            outputs.append(enc)
+        return torch.stack(outputs) if return_intermediate else outputs[-1], kwargs
 
 
 class RNNEncoder(Encoder):

@@ -84,11 +84,10 @@ class MultiLayerLoss(nn.Module):
 
     def forward(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         # outputs are expected to be of shape [L, B, ...], reshape to [L * B, ...]
-        shape = outputs.shape[2:]
-        outputs = outputs.view(-1, *shape)
-        # labels are expected to be of shape [L, B, ...], reshape to [L * B, ...]
-        shape = labels.shape[2:]
-        labels = labels.view(-1, *shape)
+        num_layers = len(outputs)
+        outputs = einops.rearrange(outputs, "l b ... -> (l b) ...")
+        # labels are expected to be of shape [B, ...], reshape to [L * B, ...]
+        labels = einops.repeat(labels, "b ... -> (l b) ...", l=num_layers)
         return self.loss(outputs, labels)
 
 

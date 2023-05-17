@@ -612,19 +612,13 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
     match cfg {
         PreprocessingFnConfig::None => Box::new(|input, info| Ok((input, info))),
         PreprocessingFnConfig::Chain(configs) => {
-            let pfns = configs
-                .into_iter()
-                .map(|cfg| preprocessing(cfg))
-                .collect::<Vec<_>>();
+            let pfns = configs.into_iter().map(preprocessing).collect::<Vec<_>>();
             chain(pfns)
         }
         PreprocessingFnConfig::Clean(use_g) => apply_to_text(move |s| Ok(text::clean(s, use_g))),
         PreprocessingFnConfig::Overwrite => overwrite_original_from_processed(),
         PreprocessingFnConfig::Switch(fns, probs) => {
-            let pfns = fns
-                .into_iter()
-                .map(|cfg| preprocessing(cfg))
-                .collect::<Vec<_>>();
+            let pfns = fns.into_iter().map(preprocessing).collect::<Vec<_>>();
             switch(pfns, probs)
         }
         PreprocessingFnConfig::WhitespaceCorruption(iw_p, dw_p, use_g) => {

@@ -66,11 +66,11 @@ pub fn switch_on_mark<I: 'static, O: 'static>(
             let mark = info
                 .marks
                 .get(&key)
-                .expect(&format!("mark \"{key}\" not found"));
+                .unwrap_or_else(|| panic!("mark \"{key}\" not found"));
             let idx = values
                 .iter()
                 .position(|v| v == mark)
-                .expect(&format!("\"{mark}\" not found in values"));
+                .unwrap_or_else(|| panic!("\"{mark}\" not found in supported values"));
             fns[idx](input, info)
         },
     )

@@ -1061,7 +1061,7 @@ mod tests {
         )?;
 
         let it = text_iter
-            .filter_map(|(d, file_idx)| {
+            .filter_map(|(d, _)| {
                 if let Ok(d) = d {
                     Some((d, TextDataInfo::default()))
                 } else {
@@ -1086,7 +1086,7 @@ mod tests {
                 None,
             )?;
             let it = text_iter
-                .filter_map(|(d, file_idx)| {
+                .filter_map(|(d, _)| {
                     if let Ok(d) = d {
                         Some((d, TextDataInfo::default()))
                     } else {
@@ -1111,7 +1111,7 @@ mod tests {
                 None,
             )?;
             let it = text_iter
-                .filter_map(|(d, file_idx)| {
+                .filter_map(|(d, _)| {
                     if let Ok(d) = d {
                         Some((d, TextDataInfo::default()))
                     } else {
@@ -1150,7 +1150,7 @@ mod tests {
         )?;
 
         let it = text_iter
-            .filter_map(|(d, file_idx)| {
+            .filter_map(|(d, _)| {
                 if let Ok(d) = d {
                     Some((d, TextDataInfo::default()))
                 } else {
@@ -1196,7 +1196,7 @@ mod tests {
             512,
         )?;
         let pipe_it = text_iter
-            .filter_map(|(d, file_idx)| {
+            .filter_map(|(d, _)| {
                 if let Ok(d) = d {
                     Some((d, TextDataInfo::default()))
                 } else {
@@ -1227,7 +1227,7 @@ mod tests {
                 )?;
 
                 let pipe_it = text_iter
-                    .filter_map(|(d, file_idx)| {
+                    .filter_map(|(d, _)| {
                         if let Ok(d) = d {
                             Some((d, TextDataInfo::default()))
                         } else {

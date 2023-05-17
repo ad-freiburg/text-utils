@@ -10,7 +10,7 @@ use rand_distr::{Distribution, Geometric};
 use crate::tokenization::{Tokenization, TokenizationInfo, Tokenizer};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 
-use super::utils::{chain, on_mark, switch};
+use super::utils::{chain, on_mark, switch, switch_on_mark};
 use super::{Item, Label, TextDataInfo};
 
 pub type PostprocessingFn =
@@ -23,6 +23,7 @@ pub enum PostprocessingFnConfig {
     Switch(Vec<PostprocessingFnConfig>, Vec<f64>),
     TokenMasking(f64, usize, f64, String),
     OnMark(String, String, Vec<PostprocessingFnConfig>),
+    SwitchOnMark(String, Vec<String>, Vec<PostprocessingFnConfig>),
     ClipLength,
 }
 
@@ -61,6 +62,22 @@ impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
                     return Err(py_required_key_error("configs", "on mark config"));
                 };
                 PostprocessingFnConfig::OnMark(key.extract()?, value.extract()?, cfgs.extract()?)
+            }
+            "switch_on_mark" => {
+                let Some(key) = d.get_item("key") else {
+                    return Err(py_required_key_error("key", "switch on mark config"));
+                };
+                let Some(values) = d.get_item("values") else {
+                    return Err(py_required_key_error("values", "switch on mark config"));
+                };
+                let Some(configs) = d.get_item("configs") else {
+                    return Err(py_required_key_error("configs", "switch on mark config"));
+                };
+                PostprocessingFnConfig::SwitchOnMark(
+                    key.extract()?,
+                    values.extract()?,
+                    configs.extract()?,
+                )
             }
             "token_masking" => {
                 let Some(p) = d.get_item("prob") else {
@@ -239,6 +256,13 @@ pub fn postprocessing(
                 max_length,
             );
             on_mark(pfn, key, value)
+        }
+        PostprocessingFnConfig::SwitchOnMark(key, values, configs) => {
+            let pfns = configs
+                .into_iter()
+                .map(|cfg| postprocessing(cfg, tokenizer, max_length.clone()))
+                .collect();
+            switch_on_mark(pfns, key, values)
         }
         PostprocessingFnConfig::ClipLength => clip_length(max_length, tokenizer),
         PostprocessingFnConfig::TokenMasking(p, min, num_p, mask_token) => {

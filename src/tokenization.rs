@@ -1274,10 +1274,7 @@ impl BPETokenizer {
             let limit = limit
                 .saturating_sub(special_config.tokens.len())
                 .saturating_sub(256) as u32;
-            merge_ops = merge_ops
-                .into_iter()
-                .filter(|(_, merge_id)| *merge_id < limit as u32)
-                .collect();
+            merge_ops.retain(|_, &mut merge_id| merge_id < limit);
         }
         let mut reverse_merge_ops: Vec<Vec<u8>> = Vec::new();
         for b in 0..256 {

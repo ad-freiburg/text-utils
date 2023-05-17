@@ -823,10 +823,10 @@ pub fn text_data_pipeline_with_tokenizer(
     let preprocess_fn: Box<PreprocessingFn> = match pipeline_cfg.preprocessing {
         PreprocessingConfig::Single(cfg) => {
             let preprocessing = preprocessing(cfg);
-            Box::new(move |data, info| preprocessing(data, info))
+            Box::new(preprocessing)
         }
         PreprocessingConfig::PerFile(cfgs) => {
-            let preprocessings: Vec<_> = cfgs.into_iter().map(|cfg| preprocessing(cfg)).collect();
+            let preprocessings: Vec<_> = cfgs.into_iter().map(preprocessing).collect();
             Box::new(move |data, info| preprocessings[info.file_idx](data, info))
         }
     };
@@ -834,7 +834,7 @@ pub fn text_data_pipeline_with_tokenizer(
     let postprocess_fn: Box<PostprocessingFn> = match pipeline_cfg.postprocessing {
         PostprocessingConfig::Single(cfg) => {
             let postprocessing = postprocessing(cfg, &tokenizer, max_length.clone());
-            Box::new(move |item, info| postprocessing(item, info))
+            Box::new(postprocessing)
         }
         PostprocessingConfig::PerFile(cfgs) => {
             let postprocessings: HashMap<_, _> = HashMap::from_iter(

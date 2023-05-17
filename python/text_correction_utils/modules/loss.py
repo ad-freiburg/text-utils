@@ -28,6 +28,8 @@ class FocalLoss(nn.Module):
 
     def forward(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         assert outputs.ndim == 2 and labels.ndim == 1
+        assert outputs.shape[0] == labels.shape[0], \
+            f"first dimensions of outputs and labels should be equal: {outputs.shape} != {labels.shape}"
         # make sure outputs and labels have correct types
         outputs = outputs.float()
         labels = labels.long()
@@ -53,13 +55,12 @@ class FocalLoss(nn.Module):
 
 
 class SeqLoss(nn.Module):
-    """
-    Wrapper class for sequence losses.
-    Rearranges outputs and labels for 
-    use with standard Pytorch losses.
-    """
-
     def __init__(self, loss: nn.Module):
+        """
+        Wrapper class for sequence losses.
+        Rearranges outputs and labels for
+        use with standard Pytorch losses.
+        """
         super().__init__()
         self.loss = loss
 
@@ -72,22 +73,23 @@ class SeqLoss(nn.Module):
 
 
 class MultiLayerLoss(nn.Module):
-    """
-    Wrapper class for losses applied on output
-    of multiple layers. Rearranges outputs and labels
-    for use with standard Pytorch losses.
-    """
-
     def __init__(self, loss: nn.Module):
+        """
+        Wrapper class for losses applied on output
+        of multiple layers. Rearranges outputs and labels
+        for use with standard Pytorch losses.
+        """
         super().__init__()
         self.loss = loss
 
     def forward(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        # outputs are expected to be of shape [L, B, ...], reshape to [L * B, ...]
-        num_layers = len(outputs)
-        outputs = einops.rearrange(outputs, "l b ... -> (l b) ...")
-        # labels are expected to be of shape [B, ...], reshape to [L * B, ...]
-        labels = einops.repeat(labels, "b ... -> (l b) ...", l=num_layers)
+        # outputs are expected to be of shape [L, B, ...] reshape to [L * B, ...]
+        num_layers, batch_size = outputs.shape[:2]
+        shape = outputs.shape[2:]
+        outputs = outputs.reshape(num_layers * batch_size, *shape)
+        # labels are expected to be of shape [B, ...] repeat to [L * B, ...]
+        dim = labels.ndim
+        labels = labels.unsqueeze(0).repeat(*([num_layers] + [1] * dim))
         return self.loss(outputs, labels)
 
 

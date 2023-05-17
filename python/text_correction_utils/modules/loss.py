@@ -89,7 +89,8 @@ class MultiLayerLoss(nn.Module):
         outputs = outputs.reshape(num_layers * batch_size, *shape)
         # labels are expected to be of shape [B, ...] repeat to [L * B, ...]
         dim = labels.ndim
-        labels = labels.unsqueeze(0).repeat(*([num_layers] + [1] * dim))
+        shape = labels.shape[1:]
+        labels = labels.unsqueeze(0).repeat(*([num_layers] + [1] * dim)).reshape(num_layers * batch_size, *shape)
         return self.loss(outputs, labels)
 
 

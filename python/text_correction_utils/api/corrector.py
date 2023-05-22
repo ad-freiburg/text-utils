@@ -10,7 +10,14 @@ import torch
 from torch import autocast, nn
 from torch.backends import cudnn, cuda
 
-from text_correction_utils import api, logging, configuration, io, data
+from text_correction_utils import (
+    api,
+    logging,
+    configuration,
+    io,
+    data,
+    tokenization
+)
 
 __all__ = ["ModelInfo"]
 
@@ -171,6 +178,10 @@ class TextCorrector:
         for param in self.model.parameters():
             param.requires_grad = False
         self.model.to(self.device)
+
+        self.input_tokenizer = tokenization.Tokenizer.from_config(
+            self.cfg["input_tokenizer"]
+        )
 
         self._mixed_precision_dtype = torch.float32
         self._inference_loader_cfg = self._build_inference_loader_config()

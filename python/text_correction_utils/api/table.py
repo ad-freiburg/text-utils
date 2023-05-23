@@ -144,6 +144,7 @@ def generate_report(
         batch_size: int,
         sort_by_length: bool,
         device: torch.device,
+        batch_max_tokens: Optional[int] = None,
         file_path: Optional[str] = None
 ) -> Optional[str]:
     if precision == torch.float16:
@@ -167,7 +168,8 @@ def generate_report(
             ["GPU memory", f"{torch.cuda.max_memory_reserved(device) // 1024 ** 2:,} MiB"],
             ["Parameters", f"{utils.num_parameters(model)['total'] / 1000 ** 2:,.1f} M"],
             ["Precision", precision_str],
-            ["Batch size", f"{batch_size:,}"],
+            ["Batch size", f"{batch_size:,}"] if batch_max_tokens is None else
+            ["Batch max tokens", f"{batch_max_tokens:,}"],
             ["Sorted", "yes" if sort_by_length else "no"],
             ["Device",  f"{utils.cpu_info()}{', ' + utils.device_info(device) if device.type == 'cuda' else ''}"],
         ],

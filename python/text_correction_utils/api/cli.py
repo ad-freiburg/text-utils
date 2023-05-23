@@ -335,6 +335,7 @@ class TextCorrectionCli:
                     self.args.batch_size,
                     not self.args.unsorted,
                     cor.device,
+                    batch_max_tokens=self.args.batch_max_tokens,
                 )
                 print(report)
 
@@ -363,10 +364,14 @@ class TextCorrectionCli:
                         print(opt.to_str(self.args.output_format))
                 else:
                     # read stdin completely, then potentially sort and correct
-                    inputs = [self.parse_input(
-                        line.strip(), self.args.lang) for line in sys.stdin]
+                    inputs = [
+                        self.parse_input(line.strip(), self.args.lang)
+                        for line in sys.stdin
+                    ]
                     sized_it = ProgressIterator(
-                        iter(inputs), self.inference_data_size)
+                        iter(inputs),
+                        self.inference_data_size
+                    )
                     outputs = self.correct_iter(cor, sized_it)
                     for opt in outputs:
                         print(opt.to_str(self.args.output_format))
@@ -386,6 +391,7 @@ class TextCorrectionCli:
                         self.args.batch_size,
                         not self.args.unsorted,
                         cor.device,
+                        batch_max_tokens=self.args.batch_max_tokens,
                     )
                     print(report)
 

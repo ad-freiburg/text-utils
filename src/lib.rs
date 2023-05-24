@@ -7,6 +7,7 @@ pub mod data;
 pub mod dictionary;
 pub mod edit;
 pub mod metrics;
+pub mod prefix_tree;
 pub mod text;
 pub mod tokenization;
 pub mod unicode;
@@ -27,6 +28,7 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     metrics::add_submodule(py, m)?;
     unicode::add_submodule(py, m)?;
     corrupt::add_submodule(py, m)?;
+    prefix_tree::add_submodule(py, m)?;
 
     Ok(())
 }

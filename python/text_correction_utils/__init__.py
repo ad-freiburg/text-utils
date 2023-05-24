@@ -8,7 +8,8 @@ from text_correction_utils._internal import (
     dictionary,
     windows,
     metrics,
-    unicode
+    unicode,
+    prefix_tree
 )
 from text_correction_utils import (
     api,

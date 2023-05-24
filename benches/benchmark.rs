@@ -6,6 +6,7 @@ use rand::distributions::WeightedIndex;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
+use text_correction_utils::prefix_tree::PrefixTree;
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{
     token_groups_to_sparse_coo_matrix, BPETokenizer, BPETokenizerConfig, ByteGroups, ByteTokenizer,
@@ -228,11 +229,35 @@ fn bench_utils(c: &mut Criterion) {
     }
 }
 
+fn bench_prefix_tree(c: &mut Criterion) {
+    let mut group = c.benchmark_group("prefix_tree");
+    for size in INPUT_SIZES {
+        let key = "a".repeat(size);
+        let mut tree = PrefixTree::new();
+        group.bench_with_input(
+            BenchmarkId::new("insert", format!("{size}")),
+            &key,
+            |b, input| {
+                b.iter(|| tree.insert(input, 1));
+            },
+        );
+        tree.insert(&key, 1);
+        group.bench_with_input(
+            BenchmarkId::new("get", format!("{size}")),
+            &key,
+            |b, input| {
+                b.iter(|| tree.get(input));
+            },
+        );
+    }
+}
+
 criterion_group!(
     benches,
     bench_edit_distance,
     bench_text,
     bench_tokenizer,
-    bench_utils
+    bench_utils,
+    bench_prefix_tree
 );
 criterion_main!(benches);

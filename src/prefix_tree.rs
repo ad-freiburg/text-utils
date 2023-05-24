@@ -61,10 +61,11 @@ impl<T> PrefixTree<T> {
     fn find(&self, key: impl AsRef<str>) -> Option<&Node<T>> {
         let mut node = &self.root;
         for idx in key.as_ref().as_bytes() {
-            if !node.children.contains_key(idx) {
+            if let Some(child) = node.children.get(idx) {
+                node = child;
+            } else {
                 return None;
             }
-            node = node.children.get(idx).unwrap();
         }
         Some(node)
     }

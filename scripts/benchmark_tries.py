@@ -40,44 +40,6 @@ def benchmark(args: argparse.Namespace):
     random.shuffle(pairs)
 
     start = time.perf_counter()
-    trie = prefix_tree.Node()
-    for property, name in tqdm(pairs, "creating prefix tree", leave=False):
-        trie.insert(name, property)
-    end = time.perf_counter()
-    print(f"Prefix tree: Built in {end - start:.2f} seconds")
-
-    start = time.perf_counter()
-    for property, name in tqdm(pairs, "getting values", leave=False):
-        trie.get(name)
-    end = time.perf_counter()
-    print(f"Prefix tree: Get value in {1000 * (end - start):.2f}ms")
-
-    start = time.perf_counter()
-    for property, name in tqdm(pairs, "checking prefixes", leave=False):
-        trie.contains_prefix(name)
-    end = time.perf_counter()
-    print(f"Prefix tree: Check for prefix in {1000 * (end - start):.2f}ms")
-
-    start = time.perf_counter()
-    for property, name in tqdm(pairs[:n], "checking continuations", leave=False):
-        for cont in continuations:
-            trie.contains_prefix(name + cont)
-    end = time.perf_counter()
-    runtime = 1000 * (end - start)
-    print(f"Prefix tree: Check for continuations without subtree indexing in {runtime:.2f}ms "
-          f"({runtime / min(len(pairs), n):.2f}ms on avg)")
-
-    start = time.perf_counter()
-    for property, name in tqdm(pairs[:n], "checking continuations", leave=False):
-        root = trie.find(name)
-        for cont in continuations:
-            root.contains_prefix(cont)
-    end = time.perf_counter()
-    runtime = 1000 * (end - start)
-    print(f"Prefix tree: Check for continuations with subtree indexing in {runtime:.2f}ms "
-          f"({runtime / min(len(pairs), n):.2f}ms on avg)")
-
-    start = time.perf_counter()
     trie = prefix_tree.Tree()
     for property, name in tqdm(pairs, "creating prefix tree", leave=False):
         trie.insert(name, property)
@@ -113,24 +75,24 @@ def benchmark(args: argparse.Namespace):
     print(f"Rust prefix tree: Check for continuations with subtree indexing in {runtime:.2f}ms "
           f"({runtime / min(len(pairs), n):.2f}ms on avg)")
 
-    # start = time.perf_counter()
-    # trie = marisa_trie.BytesTrie(
-    #     ((name, property.encode())
-    #      for property, name in pairs)
-    # )
-    # end = time.perf_counter()
-    # print(f"Marisa trie: Built in {end - start:.2f} seconds")
-    # start = time.perf_counter()
-    # for property, name in pairs:
-    #     trie.get(name)[0]
-    # end = time.perf_counter()
-    # print(f"Marisa trie: Get value in {1000 * (end - start):.2f}ms")
-    #
-    # start = time.perf_counter()
-    # for property, name in pairs:
-    #     trie.keys(name)
-    # end = time.perf_counter()
-    # print(f"Marisa trie: Check for prefix in {1000 * (end - start):.2f}ms")
+    start = time.perf_counter()
+    trie = marisa_trie.BytesTrie(
+        ((name, property.encode())
+         for property, name in pairs)
+    )
+    end = time.perf_counter()
+    print(f"Marisa trie: Built in {end - start:.2f} seconds")
+    start = time.perf_counter()
+    for property, name in pairs:
+        trie.get(name)[0]
+    end = time.perf_counter()
+    print(f"Marisa trie: Get value in {1000 * (end - start):.2f}ms")
+
+    start = time.perf_counter()
+    for property, name in pairs:
+        trie.keys(name)
+    end = time.perf_counter()
+    print(f"Marisa trie: Check for prefix in {1000 * (end - start):.2f}ms")
 
 
 if __name__ == "__main__":

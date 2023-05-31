@@ -57,15 +57,42 @@ where
         }
     }
 
+    #[inline]
     fn contains_prefix(&self, prefix: impl AsRef<str>) -> bool {
         self.find(prefix).is_some()
     }
 
+    fn contains_continuations(
+        &self,
+        prefix: impl AsRef<str>,
+        continuations: &[impl AsRef<str>],
+    ) -> Vec<bool> {
+        let Some(node) = self.find(prefix) else {
+            return vec![false; continuations.len()];
+        };
+        continuations
+            .iter()
+            .map(|cont| node.contains_prefix(cont))
+            .collect()
+    }
+
+    #[inline]
     fn get(&self, key: impl AsRef<str>) -> Option<&Self::Value> {
         match self.find(key) {
             Some(node) => node.get_value(),
             None => None,
         }
+    }
+
+    fn get_continuations(
+        &self,
+        key: impl AsRef<str>,
+        continuations: &[impl AsRef<str>],
+    ) -> Vec<Option<&Self::Value>> {
+        let Some(node) = self.find(key) else {
+            return vec![None; continuations.len()];
+        };
+        continuations.iter().map(|cont| node.get(cont)).collect()
     }
 
     fn build_from_iter<S: AsRef<str>>(iter: impl IntoIterator<Item = (S, Self::Value)>) -> Self {
@@ -132,37 +159,145 @@ where
 }
 
 #[pyclass]
+#[pyo3(name = "Tree")]
+pub struct PyTree {
+    root: Node<PyObject>,
+}
+
+#[pymethods]
+impl PyTree {
+    #[new]
+    fn new() -> Self {
+        Self {
+            root: Node::default(),
+        }
+    }
+
+    fn insert(&mut self, key: &str, value: PyObject) {
+        self.root.insert(key, value);
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.root.contains(key)
+    }
+
+    fn contains_prefix(&self, prefix: &str) -> bool {
+        self.root.contains_prefix(prefix)
+    }
+
+    fn get(&self, key: &str) -> Option<&PyObject> {
+        self.root.get(key)
+    }
+
+    fn contains_continuations(&self, prefix: &str, continuations: Vec<&str>) -> Vec<bool> {
+        self.root.contains_continuations(prefix, &continuations)
+    }
+
+    fn get_continuations(&self, prefix: &str, continuations: Vec<&str>) -> Vec<Option<&PyObject>> {
+        self.root.get_continuations(prefix, &continuations)
+    }
+}
+
+#[pyclass]
 #[pyo3(name = "Node")]
 #[derive(Default)]
 pub struct PyNode {
     #[pyo3(get)]
     value: Option<PyObject>,
-    children: BTreeMap<u8, Box<PyNode>>,
+    children: BTreeMap<u8, Py<PyNode>>,
 }
 
-impl PrefixTreeNode for PyNode {
-    type Value = PyObject;
-
+impl PyNode {
     #[inline]
-    fn get_value(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
+    fn get_child(&self, py: Python<'_>, key: &u8) -> Option<Py<PyNode>> {
+        self.children.get(key).map(move |node| node.clone_ref(py))
+    }
+}
+
+#[pymethods]
+impl PyNode {
+    #[new]
+    fn new() -> Self {
+        Self::default()
     }
 
-    fn set_value(&mut self, value: Self::Value) {
-        self.value = Some(value);
+    fn insert(&mut self, py: Python<'_>, key: &str, value: PyObject) -> anyhow::Result<()> {
+        let bytes = key.as_bytes();
+        if bytes.is_empty() {
+            return Err(anyhow::anyhow!("key is empty"));
+        }
+        let mut node = match self.get_child(py, &bytes[0]) {
+            Some(node) => node,
+            None => {
+                let node = Py::new(py, PyNode::new())?;
+                self.children.insert(bytes[0], node.clone_ref(py));
+                node
+            }
+        };
+        for byte in &bytes[1..] {
+            let next = node.as_ref(py).borrow().get_child(py, byte);
+            if let Some(next) = next {
+                node = next;
+                continue;
+            };
+            let next = Py::new(py, PyNode::new())?;
+            node.as_ref(py)
+                .borrow_mut()
+                .children
+                .insert(*byte, next.clone_ref(py));
+            node = next;
+        }
+        node.as_ref(py).borrow_mut().value = Some(value);
+        Ok(())
     }
 
-    #[inline]
-    fn get_child(&self, key: &u8) -> Option<&Self> {
-        self.children.get(key).map(|node| node.as_ref())
+    fn is_terminal(&self) -> bool {
+        self.value.is_some()
     }
 
-    fn set_child(&mut self, key: &u8, value: Self) {
-        self.children.insert(*key, Box::new(value));
+    fn find(&self, py: Python<'_>, key: &str) -> Option<Py<Self>> {
+        let bytes = key.as_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+        let mut node: Py<Self> = match self.get_child(py, &bytes[0]) {
+            Some(child) => child,
+            None => return None,
+        };
+        for byte in &bytes[1..] {
+            let next = match node.as_ref(py).borrow().get_child(py, byte) {
+                Some(child) => child,
+                None => return None,
+            };
+            node = next;
+        }
+        Some(node)
     }
 
-    fn get_child_mut(&mut self, key: &u8) -> Option<&mut Self> {
-        self.children.get_mut(key).map(|node| node.as_mut())
+    fn contains_prefix(&self, py: Python<'_>, key: &str) -> bool {
+        self.find(py, key).is_some()
+    }
+
+    fn contains(&self, py: Python<'_>, key: &str) -> bool {
+        match self.find(py, key) {
+            Some(node) => {
+                let node_ref = node.as_ref(py);
+                node_ref.borrow().is_terminal()
+            }
+            None => false,
+        }
+    }
+
+    fn get(&self, py: Python<'_>, key: &str) -> Option<PyObject> {
+        match self.find(py, key) {
+            None => None,
+            Some(node) => node
+                .as_ref(py)
+                .borrow()
+                .value
+                .as_ref()
+                .map(|value| value.clone_ref(py)),
+        }
     }
 }
 
@@ -170,6 +305,7 @@ impl PrefixTreeNode for PyNode {
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "prefix_tree")?;
     m.add_class::<PyNode>()?;
+    m.add_class::<PyTree>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

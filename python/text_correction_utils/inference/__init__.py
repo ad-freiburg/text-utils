@@ -7,9 +7,9 @@ from torch.nn.utils import rnn
 
 class Beam:
     def __init__(
-            self,
-            token_ids: List[int],
-            log_probs: List[float]
+        self,
+        token_ids: List[int],
+        log_probs: List[float]
     ) -> None:
         self.token_ids: List[int] = token_ids
         self.log_probs: List[float] = log_probs
@@ -53,7 +53,7 @@ IdxSelectFn = Callable[
 # selects (multiple) indices and scores from a given token distribution
 IndicesSelectFn = Callable[
     [
-        # distribution over next token id, shape [vocab_size]
+        # distribution over next token ids, shape [k, vocab_size]
         torch.Tensor,
         # idx of input batch element for which the next token is selected
         int
@@ -133,8 +133,8 @@ def beam_select_fn(beam_width: int) -> IndicesSelectFn:
 
 
 def _sub_select(
-        inputs: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        mask: Union[int, torch.Tensor]
+    inputs: Union[torch.Tensor, Dict[str, torch.Tensor]],
+    mask: Union[int, torch.Tensor]
 ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
     if isinstance(inputs, torch.Tensor):
         return inputs[mask]
@@ -148,18 +148,21 @@ def _sub_select(
 
 @torch.inference_mode()
 def search(
-        decode_fn: DecodeFn,
-        initial_token_ids: List[List[int]],
-        pad_token_id: int,
-        max_length: int,
-        select_fn: IdxSelectFn,
-        stop_fn: StopFn,
-        device: torch.device,
-        kwargs_select_fn: Optional[KwargsSelectFn] = None,
-        **kwargs: Any,
+    decode_fn: DecodeFn,
+    initial_token_ids: List[List[int]],
+    pad_token_id: int,
+    max_length: int,
+    stop_fn: StopFn,
+    device: torch.device,
+    select_fn: Optional[IdxSelectFn] = None,
+    kwargs_select_fn: Optional[KwargsSelectFn] = None,
+    **kwargs: Any,
 ) -> List[List[int]]:
     batch_size = len(initial_token_ids)
     assert batch_size > 0
+
+    if select_fn is None:
+        select_fn = greedy_select_fn()
 
     lengths = []
     padded_initial_token_ids = []
@@ -170,8 +173,12 @@ def search(
             token_ids + [pad_token_id] * (max_length + 1 - num_tokens))
         lengths.append(num_tokens)
 
-    log_prob = torch.zeros(batch_size, max_length + 1,
-                           dtype=torch.float, device=device)
+    log_prob = torch.zeros(
+        batch_size,
+        max_length + 1,
+        dtype=torch.float,
+        device=device
+    )
     token_ids = torch.as_tensor(
         padded_initial_token_ids, dtype=torch.long, device=device)
     lengths = torch.as_tensor(lengths, dtype=torch.long, device=device)
@@ -211,7 +218,9 @@ def search(
         lengths_of_decoded_indices = lengths[mask]
         log_softmax_scores = torch.log_softmax(
             decoder_output[torch.arange(
-                decoder_output.shape[0], device=device), lengths_of_decoded_indices - 1],
+                decoder_output.shape[0],
+                device=device
+            ), lengths_of_decoded_indices - 1],
             dim=1
         )
 
@@ -257,24 +266,26 @@ def log_likelihood_score(normalize_by_length: bool = True, alpha: float = 1.0) -
 
 @torch.inference_mode()
 def beam_search(
-        decode_fn: DecodeFn,
-        initial_token_ids: List[List[int]],
-        vocab_size: int,
-        pad_token_id: int,
-        max_length: int,
-        stop_fn: StopFn,
-        device: torch.device,
-        normalize_by_length: bool,
-        alpha: float,
-        beam_width: int,
-        kwargs_select_fn: Optional[KwargsSelectFn] = None,
-        **kwargs: Any
+    decode_fn: DecodeFn,
+    initial_token_ids: List[List[int]],
+    vocab_size: int,
+    pad_token_id: int,
+    max_length: int,
+    stop_fn: StopFn,
+    device: torch.device,
+    normalize_by_length: bool,
+    alpha: float,
+    beam_width: int,
+    select_fn: Optional[IndicesSelectFn] = None,
+    kwargs_select_fn: Optional[KwargsSelectFn] = None,
+    **kwargs: Any
 ) -> List[List[Beam]]:
     batch_size = len(initial_token_ids)
 
     score_fn = log_likelihood_score(normalize_by_length, alpha)
     beam_width = min(beam_width, vocab_size - 1)  # never produce pad
-    select_fn = beam_select_fn(2 * beam_width)
+    if select_fn is None:
+        select_fn = beam_select_fn(2 * beam_width)
 
     beam_queues: List[List[Beam]] = [[] for _ in range(batch_size)]
 
@@ -363,7 +374,7 @@ def beam_search(
             beam_log_probs = beam_log_probs.tolist()
             beam_candidates = []
             for beam_idx, (beam, scores, token_ids, log_probs) in enumerate(zip(
-                    current_beams[idx], beam_scores, beam_token_ids, beam_log_probs
+                current_beams[idx], beam_scores, beam_token_ids, beam_log_probs
             )):
                 for token_id, score, log_prob in zip(token_ids, scores, log_probs):
                     beam_candidate = Beam.from_beam(beam, log_prob, token_id)

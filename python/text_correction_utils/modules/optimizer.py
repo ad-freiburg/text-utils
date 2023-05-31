@@ -68,6 +68,9 @@ def optimizer_from_config(
         optim_cls = optim_8bit.Adam if use_8bit else optim.Adam
     elif opt_type == "sgd":
         optim_cls = optim_8bit.SGD if use_8bit else optim.SGD
+    elif opt_type == "sophia":
+        from Sophia import SophiaG
+        optim_cls = SophiaG
     else:
         if additional_optimizer_fn is not None:
             return additional_optimizer_fn(model, cfg)

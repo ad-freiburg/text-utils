@@ -6,7 +6,7 @@ use rand::distributions::WeightedIndex;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
-use text_correction_utils::prefix_tree::PrefixTree;
+use text_correction_utils::prefix_tree::{Node, PrefixTreeSearch};
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{
     token_groups_to_sparse_coo_matrix, BPETokenizer, BPETokenizerConfig, ByteGroups, ByteTokenizer,
@@ -233,7 +233,7 @@ fn bench_prefix_tree(c: &mut Criterion) {
     let mut group = c.benchmark_group("prefix_tree");
     for size in INPUT_SIZES {
         let key = "a".repeat(size);
-        let mut tree = PrefixTree::new();
+        let mut tree = Node::<i32>::default();
         group.bench_with_input(
             BenchmarkId::new("insert", format!("{size}")),
             &key,

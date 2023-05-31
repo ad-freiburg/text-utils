@@ -44,6 +44,9 @@ test = [
 8bit = [
     "bitsandbytes>=0.37",
 ]
+optimizers = [
+    "Sophia-Optimizer>=0.2.0"
+]
 
 [project.urls]
 Github = "https://github.com/ad-freiburg/text-correction-utils"

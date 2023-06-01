@@ -11,6 +11,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=str, required=True)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--interactive", action="store_true")
     return parser.parse_args()
 
 
@@ -49,6 +50,16 @@ def benchmark(args: argparse.Namespace):
         trie.insert(name, int(identifier[1:]))
     end = time.perf_counter()
     print(f"Rust prefix tree: Built in {end - start:.2f} seconds")
+
+    if args.interactive:
+        while True:
+            name = input("Enter prefix: ")
+            if name == "exit":
+                break
+            print(f"Is prefix: {trie.contains_prefix(name)}")
+            print(f"Has value: {trie.get(name)}")
+            print(f"Continuations: {trie.find_continuations(name)}")
+        return
 
     start = time.perf_counter()
     for name, _ in tqdm(pairs, "getting values", leave=False):

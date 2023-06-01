@@ -11,9 +11,26 @@ pub trait PrefixTreeNode {
 
     fn get_child(&self, key: &u8) -> Option<&Self>;
 
+    fn get_children(&self) -> Box<dyn Iterator<Item = (&u8, &Self)> + '_>;
+
     fn set_child(&mut self, key: &u8, value: Self);
 
     fn get_child_mut(&mut self, key: &u8) -> Option<&mut Self>;
+}
+
+pub struct Continuations<I> {
+    inner: I,
+}
+
+impl<I> Iterator for Continuations<I>
+where
+    I: Iterator,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
 }
 
 pub trait PrefixTreeSearch
@@ -38,9 +55,9 @@ where
     }
 
     #[inline]
-    fn find(&self, key: impl AsRef<str>) -> Option<&Self> {
+    fn find(&self, prefix: impl AsRef<str>) -> Option<&Self> {
         let mut node = self;
-        for idx in key.as_ref().as_bytes() {
+        for idx in prefix.as_ref().as_bytes() {
             if let Some(child) = node.get_child(idx) {
                 node = child;
             } else {
@@ -64,10 +81,10 @@ where
 
     fn contains_continuations(
         &self,
-        prefix: impl AsRef<str>,
+        key: impl AsRef<str>,
         continuations: &[impl AsRef<str>],
     ) -> Vec<bool> {
-        let Some(node) = self.find(prefix) else {
+        let Some(node) = self.find(key) else {
             return vec![false; continuations.len()];
         };
         continuations
@@ -93,6 +110,27 @@ where
             return vec![None; continuations.len()];
         };
         continuations.iter().map(|cont| node.get(cont)).collect()
+    }
+
+    fn find_continuations_with(
+        &self,
+        prefix: Vec<u8>,
+    ) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
+        Box::new(self.get_children().flat_map(
+            move |(byte, child)| -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
+                let mut pfx = prefix.clone();
+                pfx.push(*byte);
+                if let Some(value) = child.get_value() {
+                    Box::new(vec![(pfx, value)].into_iter())
+                } else {
+                    Box::new(child.find_continuations_with(pfx))
+                }
+            },
+        ))
+    }
+
+    fn find_continuations(&self) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
+        self.find_continuations_with(vec![])
     }
 
     fn build_from_iter<S: AsRef<str>>(iter: impl IntoIterator<Item = (S, Self::Value)>) -> Self {
@@ -143,6 +181,10 @@ impl<V> PrefixTreeNode for Node<V> {
 
     fn set_child(&mut self, key: &u8, value: Self) {
         self.children.insert(*key, Box::new(value));
+    }
+
+    fn get_children(&self) -> Box<dyn Iterator<Item = (&u8, &Self)> + '_> {
+        Box::new(self.children.iter().map(|(k, v)| (k, v.as_ref())))
     }
 }
 
@@ -195,6 +237,15 @@ impl PyTree {
 
     fn get_continuations(&self, prefix: &str, continuations: Vec<&str>) -> Vec<Option<&PyObject>> {
         self.root.get_continuations(prefix, &continuations)
+    }
+
+    fn find_continuations(&self, prefix: &str) -> Vec<(String, &PyObject)> {
+        let Some(node) = self.root.find(prefix) else {
+            return vec![];
+        };
+        node.find_continuations_with(prefix.as_bytes().to_vec())
+            .map(|(k, v)| (String::from_utf8_lossy(&k).to_string(), v))
+            .collect()
     }
 }
 

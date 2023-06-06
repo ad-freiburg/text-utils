@@ -3,6 +3,7 @@ from io import TextIOWrapper
 import sys
 import time
 import logging
+import warnings
 from typing import Iterator, Union, Optional, Type
 
 import torch
@@ -264,6 +265,8 @@ class TextCorrectionCli:
         return len(item.text.encode("utf8"))
 
     def run(self) -> None:
+        # ignore warnings in CLI, so the user doesn't get confused
+        warnings.filterwarnings("ignore")
         if self.args.profile is not None:
             file = self.args.profile
             self.args.profile = None
@@ -331,7 +334,7 @@ class TextCorrectionCli:
                     num_lines,
                     num_bytes,
                     end - start,
-                    cor._mixed_precision_dtype,
+                    cor._precision_dtype_str,
                     self.args.batch_size,
                     not self.args.unsorted,
                     cor.device,
@@ -387,7 +390,7 @@ class TextCorrectionCli:
                         sized_it.num_items,
                         sized_it.total_size,
                         time.perf_counter() - start,
-                        cor._mixed_precision_dtype,
+                        cor._precision_dtype_str,
                         self.args.batch_size,
                         not self.args.unsorted,
                         cor.device,

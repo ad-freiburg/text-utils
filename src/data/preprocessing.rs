@@ -58,6 +58,8 @@ pub enum PreprocessingFnConfig {
     LanguageDropout(f64),
     // mark inputs with additional info
     Mark(String, String),
+    // prefix
+    Prefix(String),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
@@ -196,6 +198,12 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                     return Err(py_required_key_error("value", "mark config"));
                 };
                 PreprocessingFnConfig::Mark(key.extract()?, value.extract()?)
+            }
+            "prefix" => {
+                let Some(prefix) = d.get_item("prefix") else {
+                    return Err(py_required_key_error("prefix", "prefix config"));
+                };
+                PreprocessingFnConfig::Prefix(prefix.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
@@ -644,6 +652,7 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
             corrupt_spelling(p, full_del, mode)
         }
         PreprocessingFnConfig::Mark(key, value) => mark(key, value),
+        PreprocessingFnConfig::Prefix(prefix) => apply_to_text(move |s| Ok(prefix.clone() + s)),
     }
 }
 

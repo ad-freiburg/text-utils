@@ -1,3 +1,4 @@
+#[cfg(feature = "prefix-tree-btree")]
 use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
@@ -120,11 +121,12 @@ where
             move |(byte, child)| -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
                 let mut pfx = prefix.clone();
                 pfx.push(*byte);
-                if let Some(value) = child.get_value() {
-                    Box::new(vec![(pfx, value)].into_iter())
+                let value = if let Some(value) = child.get_value() {
+                    vec![(pfx.clone(), value)]
                 } else {
-                    Box::new(child.find_continuations_with(pfx))
-                }
+                    vec![]
+                };
+                Box::new(value.into_iter().chain(child.find_continuations_with(pfx)))
             },
         ))
     }
@@ -144,11 +146,13 @@ where
 
 impl<N> PrefixTreeSearch for N where N: Sized + PrefixTreeNode + Default {}
 
+#[cfg(feature = "prefix-tree-btree")]
 pub struct Node<V> {
     pub value: Option<V>,
     children: BTreeMap<u8, Box<Node<V>>>,
 }
 
+#[cfg(feature = "prefix-tree-btree")]
 impl<V> Default for Node<V> {
     fn default() -> Self {
         Self {
@@ -158,6 +162,7 @@ impl<V> Default for Node<V> {
     }
 }
 
+#[cfg(feature = "prefix-tree-btree")]
 impl<V> PrefixTreeNode for Node<V> {
     type Value = V;
 
@@ -181,6 +186,62 @@ impl<V> PrefixTreeNode for Node<V> {
 
     fn set_child(&mut self, key: &u8, value: Self) {
         self.children.insert(*key, Box::new(value));
+    }
+
+    fn get_children(&self) -> Box<dyn Iterator<Item = (&u8, &Self)> + '_> {
+        Box::new(self.children.iter().map(|(k, v)| (k, v.as_ref())))
+    }
+}
+
+#[cfg(not(feature = "prefix-tree-btree"))]
+pub struct Node<V> {
+    pub value: Option<V>,
+    children: Vec<(u8, Box<Node<V>>)>,
+}
+
+#[cfg(not(feature = "prefix-tree-btree"))]
+impl<V> Default for Node<V> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            children: Vec::new(),
+        }
+    }
+}
+
+#[cfg(not(feature = "prefix-tree-btree"))]
+impl<V> PrefixTreeNode for Node<V> {
+    type Value = V;
+
+    #[inline]
+    fn get_child(&self, key: &u8) -> Option<&Self> {
+        match self.children.binary_search_by_key(key, |&(byte, _)| byte) {
+            Ok(idx) => Some(self.children[idx].1.as_ref()),
+            Err(_) => None,
+        }
+    }
+
+    fn get_child_mut(&mut self, key: &u8) -> Option<&mut Self> {
+        match self.children.binary_search_by_key(key, |&(byte, _)| byte) {
+            Ok(idx) => Some(self.children[idx].1.as_mut()),
+            Err(_) => None,
+        }
+    }
+
+    #[inline]
+    fn get_value(&self) -> Option<&Self::Value> {
+        self.value.as_ref()
+    }
+
+    fn set_value(&mut self, value: Self::Value) {
+        self.value = Some(value);
+    }
+
+    fn set_child(&mut self, key: &u8, value: Self) {
+        match self.children.binary_search_by_key(key, |&(byte, _)| byte) {
+            Ok(idx) => self.children[idx].1 = Box::new(value),
+            Err(idx) => self.children.insert(idx, (*key, Box::new(value))),
+        }
     }
 
     fn get_children(&self) -> Box<dyn Iterator<Item = (&u8, &Self)> + '_> {

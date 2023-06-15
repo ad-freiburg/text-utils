@@ -16,7 +16,7 @@ log = "0.4"
 env_logger = "0.10"
 rayon = "1.6"
 indicatif = { version = "0.17", features = ["rayon"] }
-pyo3 = { version = "0.18", features = ["anyhow", "extension-module", "abi3-py38", "auto-initialize", "macros"] }
+pyo3 = { version = "0.19", features = ["anyhow", "extension-module", "abi3-py38", "auto-initialize", "macros"] }
 itertools = "0.10"
 rand = "0.8"
 rand_distr = "0.4"
@@ -31,14 +31,15 @@ num = "0.4"
 anyhow = "1.0"
 num_cpus = "1.14"
 bitvec = "1"
-numpy = "0.18"
+numpy = "0.19"
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
-criterion = "0.4"
+criterion = "0.5"
 
 [features]
 benchmark-utils = []
+prefix-tree-btree = []
 
 [profile.release]
 lto = true

@@ -58,7 +58,8 @@ def benchmark(args: argparse.Namespace):
                 break
             print(f"Is prefix: {trie.contains_prefix(name)}")
             print(f"Has value: {trie.get(name)}")
-            print(f"Continuations: {trie.find_continuations(name)}")
+            conts = trie.find_continuations(name)
+            print(f"{len(conts):,} continuations: {conts[:50]}")
         return
 
     start = time.perf_counter()

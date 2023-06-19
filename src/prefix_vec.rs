@@ -1,10 +1,5 @@
 use core::cmp::Ordering;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{
-    fs::File,
-    io::{BufReader, Write},
-    path::Path,
-};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     prefix::PrefixTreeSearch,
@@ -172,7 +167,7 @@ impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
         }
     }
 
-    fn contains_continuations(&self, prefix: &[u8], continuations: &[&[u8]]) -> Vec<bool> {
+    fn contains_continuations(&self, prefix: &[u8], continuations: &[Vec<u8>]) -> Vec<bool> {
         match self.find(prefix) {
             (None, _) => vec![false; continuations.len()],
             (Some((left, right)), _) => continuations
@@ -192,25 +187,6 @@ impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
                 })
                 .collect(),
         }
-    }
-}
-
-impl<V> PrefixVec<V>
-where
-    V: Serialize + DeserializeOwned,
-{
-    pub fn save(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let mut file = File::create(path)?;
-        let data = serde_json::to_vec(&self)?;
-        file.write_all(&data)?;
-        Ok(())
-    }
-
-    pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let data = serde_json::from_reader(reader)?;
-        Ok(data)
     }
 }
 

@@ -1,6 +1,8 @@
 use crate::text::{clean, count_words_whitespace, file_size, SPLIT_WORD_WHITESPACE_PATTERN};
 use crate::unicode::{normalize, Normalization, CS};
-use crate::utils::{accumulate, progress_bar, py_invalid_type_error, py_required_key_error};
+use crate::utils::{
+    accumulate, progress_bar, py_invalid_type_error, py_required_key_error, SerializeFlatbuffer,
+};
 use anyhow::anyhow;
 use itertools::Itertools;
 use log::info;
@@ -16,7 +18,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::hash::Hash;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -968,17 +970,12 @@ where
             .into_iter()
             .sorted_by_key(|&(_, id)| id)
             .collect::<Vec<_>>();
-        let buf = rmp_serde::to_vec(&tokens)?;
-        let mut file = File::create(file)?;
-        file.write_all(&buf)?;
+        tokens.save(file)?;
         Ok(())
     }
 
     fn from_file(file: impl AsRef<Path>, start_id: u32) -> anyhow::Result<Self> {
-        let mut file = File::open(file)?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        let tokens: Vec<Token> = rmp_serde::from_slice(&buf)?;
+        let tokens: Vec<Token> = Vec::load(file)?;
         let vocab: HashMap<_, _> = tokens
             .into_iter()
             .enumerate()
@@ -1265,10 +1262,7 @@ impl BPETokenizer {
         special_config: SpecialConfig,
         language_config: Option<LanguageConfig>,
     ) -> anyhow::Result<Self> {
-        let mut file = File::open(&config.merge_file)?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        let mut merge_ops: MergeOps = rmp_serde::from_slice(&buf)?;
+        let mut merge_ops = MergeOps::load(&config.merge_file)?;
         if let Some(limit) = config.max_vocab_size {
             // to limit vocab size we filter out all merges with an id higher than the limit
             let limit = limit
@@ -1776,8 +1770,7 @@ pub fn train_bpe(
         pbar.inc(1);
     }
     pbar.finish_and_clear();
-    let file = File::create(out_file)?;
-    merge_ops.serialize(&mut rmp_serde::Serializer::new(file))?;
+    merge_ops.save(out_file)?;
     Ok(())
 }
 

@@ -1,8 +1,37 @@
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fmt::Display;
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::ops::Add;
+use std::path::Path;
+
+pub trait SerializeFlatbuffer
+where
+    Self: Sized + Serialize + DeserializeOwned,
+{
+    fn save(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let mut file = File::create(path)?;
+        let mut s = flexbuffers::FlexbufferSerializer::new();
+        self.serialize(&mut s)?;
+        file.write_all(s.view())?;
+        Ok(())
+    }
+
+    fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)?;
+        let deserialized = flexbuffers::from_slice(&buffer)?;
+        Ok(deserialized)
+    }
+}
+
+impl<T> SerializeFlatbuffer for T where T: Sized + Serialize + DeserializeOwned {}
 
 pub(crate) type Matrix<T> = Vec<Vec<T>>;
 

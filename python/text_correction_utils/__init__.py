@@ -9,7 +9,7 @@ from text_correction_utils._internal import (
     windows,
     metrics,
     unicode,
-    prefix_tree
+    prefix
 )
 from text_correction_utils import (
     api,

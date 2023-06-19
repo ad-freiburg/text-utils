@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     prefix::PrefixTreeSearch,
     unicode::{normalize, Normalization},
@@ -102,7 +104,7 @@ where
         self.find(prefix).is_some()
     }
 
-    fn contains_continuations(&self, prefix: &[u8], continuations: &[&[u8]]) -> Vec<bool> {
+    fn contains_continuations(&self, prefix: &[u8], continuations: &[Vec<u8>]) -> Vec<bool> {
         let Some(node) = self.find(prefix) else {
             return vec![false; continuations.len()];
         };
@@ -133,6 +135,7 @@ where
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Node<V> {
     pub value: Option<V>,
     children: BTreeMap<u8, Box<Node<V>>>,

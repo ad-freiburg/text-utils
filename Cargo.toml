@@ -39,7 +39,6 @@ criterion = "0.5"
 
 [features]
 benchmark-utils = []
-prefix-tree-btree = []
 
 [profile.release]
 lto = true

@@ -44,52 +44,52 @@ def benchmark(args: argparse.Namespace):
     n = 1_000
     random.shuffle(pairs)
 
-    start = time.perf_counter()
-    trie = prefix_tree.Tree()
-    for name, identifier in tqdm(pairs, "creating prefix tree", leave=False):
-        trie.insert(name, int(identifier[1:]))
-    end = time.perf_counter()
-    print(f"Rust prefix tree: Built in {end - start:.2f} seconds")
-
-    if args.interactive:
-        while True:
-            name = input("Enter prefix: ")
-            if name == "exit":
-                break
-            print(f"Is prefix: {trie.contains_prefix(name)}")
-            print(f"Has value: {trie.get(name)}")
-            conts = trie.find_continuations(name)
-            print(f"{len(conts):,} continuations: {conts[:50]}")
-        return
-
-    start = time.perf_counter()
-    for name, _ in tqdm(pairs, "getting values", leave=False):
-        trie.get(name)
-    end = time.perf_counter()
-    print(f"Rust prefix tree: Get value in {1000 * (end - start):.2f}ms")
-
-    start = time.perf_counter()
-    for name, _ in tqdm(pairs, "checking prefixes", leave=False):
-        trie.contains_prefix(name)
-    end = time.perf_counter()
-    print(f"Rust prefix tree: Check for prefix in {1000 * (end - start):.2f}ms")
-
-    start = time.perf_counter()
-    for name, _ in tqdm(pairs[:n], "checking continuations", leave=False):
-        for cont in continuations:
-            trie.contains_prefix(name + cont)
-    end = time.perf_counter()
-    runtime = 1000 * (end - start)
-    print(f"Rust prefix tree: Check for continuations without subtree indexing in {runtime:.2f}ms "
-          f"({runtime / min(len(pairs), n):.2f}ms on avg)")
-
-    start = time.perf_counter()
-    for name, _ in tqdm(pairs[:n], "checking continuations", leave=False):
-        trie.contains_continuations(name, continuations)
-    end = time.perf_counter()
-    runtime = 1000 * (end - start)
-    print(f"Rust prefix tree: Check for continuations with subtree indexing in {runtime:.2f}ms "
-          f"({runtime / min(len(pairs), n):.2f}ms on avg)")
+    # start = time.perf_counter()
+    # trie = prefix_tree.Tree()
+    # for name, identifier in tqdm(pairs, "creating prefix tree", leave=False):
+    #     trie.insert(name, int(identifier[1:]))
+    # end = time.perf_counter()
+    # print(f"Rust prefix tree: Built in {end - start:.2f} seconds")
+    #
+    # if args.interactive:
+    #     while True:
+    #         name = input("Enter prefix: ")
+    #         if name == "exit":
+    #             break
+    #         print(f"Is prefix: {trie.contains_prefix(name)}")
+    #         print(f"Has value: {trie.get(name)}")
+    #         conts = trie.find_continuations(name)
+    #         print(f"{len(conts):,} continuations: {conts[:50]}")
+    #     return
+    #
+    # start = time.perf_counter()
+    # for name, _ in tqdm(pairs, "getting values", leave=False):
+    #     trie.get(name)
+    # end = time.perf_counter()
+    # print(f"Rust prefix tree: Get value in {1000 * (end - start):.2f}ms")
+    #
+    # start = time.perf_counter()
+    # for name, _ in tqdm(pairs, "checking prefixes", leave=False):
+    #     trie.contains_prefix(name)
+    # end = time.perf_counter()
+    # print(f"Rust prefix tree: Check for prefix in {1000 * (end - start):.2f}ms")
+    #
+    # start = time.perf_counter()
+    # for name, _ in tqdm(pairs[:n], "checking continuations", leave=False):
+    #     for cont in continuations:
+    #         trie.contains_prefix(name + cont)
+    # end = time.perf_counter()
+    # runtime = 1000 * (end - start)
+    # print(f"Rust prefix tree: Check for continuations without subtree indexing in {runtime:.2f}ms "
+    #       f"({runtime / min(len(pairs), n):.2f}ms on avg)")
+    #
+    # start = time.perf_counter()
+    # for name, _ in tqdm(pairs[:n], "checking continuations", leave=False):
+    #     trie.contains_continuations(name, continuations)
+    # end = time.perf_counter()
+    # runtime = 1000 * (end - start)
+    # print(f"Rust prefix tree: Check for continuations with subtree indexing in {runtime:.2f}ms "
+    #       f"({runtime / min(len(pairs), n):.2f}ms on avg)")
 
     start = time.perf_counter()
     trie = marisa_trie.BytesTrie(

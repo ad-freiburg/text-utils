@@ -3,10 +3,13 @@ use std::path::PathBuf;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::distributions::WeightedIndex;
+use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_correction_utils::edit::{distance, operations};
-use text_correction_utils::prefix_tree::{Node, PrefixTreeSearch};
+use text_correction_utils::prefix::PrefixTreeSearch;
+use text_correction_utils::prefix_tree::Node;
+use text_correction_utils::prefix_vec::PrefixVec;
 use text_correction_utils::text::{clean, match_words, word_boundaries};
 use text_correction_utils::tokenization::{
     token_groups_to_sparse_coo_matrix, BPETokenizer, BPETokenizerConfig, ByteGroups, ByteTokenizer,
@@ -229,27 +232,49 @@ fn bench_utils(c: &mut Criterion) {
     }
 }
 
-fn bench_prefix_tree(c: &mut Criterion) {
-    let mut group = c.benchmark_group("prefix_tree");
-    for size in INPUT_SIZES {
-        let key = "a".repeat(size);
-        let mut tree = Node::<i32>::default();
-        group.bench_with_input(
-            BenchmarkId::new("insert", format!("{size}")),
-            &key,
-            |b, input| {
-                b.iter(|| tree.insert(input, 1));
-            },
-        );
-        tree.insert(&key, 1);
-        group.bench_with_input(
-            BenchmarkId::new("get", format!("{size}")),
-            &key,
-            |b, input| {
-                b.iter(|| tree.get(input));
-            },
-        );
-    }
+fn bench_prefix(c: &mut Criterion) {
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let multi30k = fs::read_to_string(PathBuf::from(dir).join("resources/test/multi30k.txt"))
+        .expect("failed to read file")
+        .replace("\n", " ");
+    let words: Vec<_> = multi30k.split_whitespace().collect();
+    let mut rng = ChaCha8Rng::seed_from_u64(22);
+    // sample random word from all words
+    let word = words.choose(&mut rng).unwrap();
+    let mut group = c.benchmark_group("prefix");
+
+    // benchmark prefix tree
+    let mut tree: Node<_> = words.iter().zip(0..words.len()).collect();
+    group.bench_with_input("tree_build", &words, |b, input| {
+        b.iter(|| {
+            let _tree: Node<_> = input.iter().zip(0..input.len()).collect();
+        });
+    });
+    group.bench_with_input("tree_insert", word, |b, input| {
+        b.iter(|| tree.insert(input, 1));
+    });
+    group.bench_with_input("tree_get", word, |b, input| {
+        b.iter(|| tree.get(input.as_bytes()));
+    });
+
+    // benchmark prefix vec
+    let mut vec: PrefixVec<_> = words.iter().zip(0..words.len()).collect();
+    group.bench_with_input("vec_build", &words, |b, input| {
+        b.iter(|| {
+            let _vec: PrefixVec<_> = input.iter().zip(0..input.len()).collect();
+        });
+    });
+    let test_out = PathBuf::from(dir).join("resources/test/prefix_vec.json");
+    vec.save(&test_out).unwrap();
+    group.bench_with_input("vec_load", &test_out, |b, input| {
+        b.iter(|| PrefixVec::<usize>::load(input).unwrap());
+    });
+    group.bench_with_input("vec_insert", word, |b, input| {
+        b.iter(|| vec.insert(input, 1));
+    });
+    group.bench_with_input("vec_get", word, |b, input| {
+        b.iter(|| vec.get(input.as_bytes()));
+    });
 }
 
 criterion_group!(
@@ -258,6 +283,6 @@ criterion_group!(
     bench_text,
     bench_tokenizer,
     bench_utils,
-    bench_prefix_tree
+    bench_prefix
 );
 criterion_main!(benches);

@@ -16,6 +16,7 @@ use text_correction_utils::tokenization::{
     ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig, GroupAggregation, Grouping,
     SpecialConfig, TokenGroup, Tokenize,
 };
+use text_correction_utils::utils::SerializeMsgPack;
 use text_correction_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
 };

@@ -9,7 +9,7 @@ use std::io::{BufReader, Write};
 use std::ops::Add;
 use std::path::Path;
 
-pub trait SerializeFlatbuffer
+pub trait SerializeMsgPack
 where
     Self: Sized + Serialize + DeserializeOwned,
 {
@@ -28,7 +28,7 @@ where
     }
 }
 
-impl<T> SerializeFlatbuffer for T where T: Sized + Serialize + DeserializeOwned {}
+impl<T> SerializeMsgPack for T where T: Sized + Serialize + DeserializeOwned {}
 
 pub(crate) type Matrix<T> = Vec<Vec<T>>;
 

@@ -1,7 +1,7 @@
 use crate::text::{clean, count_words_whitespace, file_size, SPLIT_WORD_WHITESPACE_PATTERN};
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{
-    accumulate, progress_bar, py_invalid_type_error, py_required_key_error, SerializeFlatbuffer,
+    accumulate, progress_bar, py_invalid_type_error, py_required_key_error, SerializeMsgPack,
 };
 use anyhow::anyhow;
 use itertools::Itertools;

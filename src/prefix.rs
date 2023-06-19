@@ -6,7 +6,7 @@ use std::{
 
 use pyo3::prelude::*;
 
-use crate::{prefix_tree::Node, prefix_vec::PrefixVec, utils::SerializeFlatbuffer};
+use crate::{prefix_tree::Node, prefix_vec::PrefixVec, utils::SerializeMsgPack};
 
 pub trait PrefixTreeSearch<V> {
     fn size(&self) -> usize;

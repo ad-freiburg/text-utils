@@ -347,6 +347,12 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 };
                 TokenizeConfig::Dummy(Duration::from_millis(millis))
             }
+            "huggingface" => {
+                let Some(name) = d.get_item("name") else {
+                    return Err(py_required_key_error("name", "huggingface tokenizer config"));
+                };
+                TokenizeConfig::Huggingface(name.extract()?)
+            }
             k => {
                 return Err(py_invalid_type_error(k, "tokenizer"));
             }

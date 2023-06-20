@@ -265,8 +265,6 @@ fn bench_prefix(c: &mut Criterion) {
             let _vec: PrefixVec<_> = input.iter().zip(0..input.len()).collect();
         });
     });
-    let test_out = PathBuf::from(dir).join("resources/test/prefix_vec.json");
-    vec.save(&test_out).unwrap();
     group.bench_with_input("vec_load", &test_out, |b, input| {
         b.iter(|| PrefixVec::<usize>::load(input).unwrap());
     });

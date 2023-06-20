@@ -80,7 +80,7 @@ impl Dictionary {
             .flat_map(move |path| {
                 let file = File::open(path).expect("failed to open file");
                 let reader = BufReader::new(file);
-                reader.lines().filter_map(Result::ok)
+                reader.lines().map_while(Result::ok)
             })
             .take(max_sequences);
         let line_iter = Arc::new(Mutex::new(line_iter));

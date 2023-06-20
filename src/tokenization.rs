@@ -25,6 +25,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
+use tokenizers as hft;
 
 pub const UNK: &str = "(unk)";
 pub const BOS: &str = "(bos)";
@@ -220,6 +221,7 @@ pub enum TokenizeConfig {
     ByT5(ByteTokenizerConfig),
     BPE(BPETokenizerConfig),
     Dummy(Duration),
+    Huggingface(String),
 }
 
 impl IntoPy<PyObject> for TokenizeConfig {
@@ -255,6 +257,10 @@ impl IntoPy<PyObject> for TokenizeConfig {
             TokenizeConfig::Dummy(delay) => {
                 d.set_item("delay", delay.as_millis()).unwrap();
                 "dummy"
+            }
+            TokenizeConfig::Huggingface(name) => {
+                d.set_item("name", name).unwrap();
+                "huggingface"
             }
         };
         d.set_item("type", tokenizer_type).unwrap();
@@ -1176,6 +1182,103 @@ impl Tokenize for DummyTokenizer {
     }
 }
 
+pub struct HuggingfaceTokenizer {
+    inner: hft::Tokenizer,
+    special_config: SpecialConfig,
+    prefix_token_ids: Vec<u32>,
+    suffix_token_ids: Vec<u32>,
+}
+
+impl HuggingfaceTokenizer {
+    pub fn new(name: impl AsRef<str>, special_config: SpecialConfig) -> anyhow::Result<Self> {
+        let name = name.as_ref().to_string();
+        let tok = hft::Tokenizer::from_pretrained(&name, None)
+            .map_err(|err| anyhow!("error loading huggingface tokenizer {}: {err}", name))?;
+        let enc = tok.encode("this is a test", true).map_err(|err| {
+            anyhow!("error encoding test string with huggingface tokenizer {name}: {err}")
+        })?;
+        let mask = enc.get_special_tokens_mask();
+        let ids = enc.get_ids();
+        let prefix_token_ids = ids
+            .iter()
+            .zip(mask)
+            .take_while(|&(_, m)| *m > 0)
+            .map(|(id, _)| *id)
+            .collect();
+        let suffix_token_ids = ids
+            .iter()
+            .zip(mask)
+            .rev()
+            .take_while(|&(_, m)| *m > 0)
+            .map(|(id, _)| *id)
+            .collect();
+        Ok(Self {
+            inner: tok,
+            special_config,
+            prefix_token_ids,
+            suffix_token_ids,
+        })
+    }
+}
+
+impl BaseTokenize for HuggingfaceTokenizer {
+    fn prefix_token_ids(&self) -> &[u32] {
+        &self.prefix_token_ids
+    }
+
+    fn suffix_token_ids(&self) -> &[u32] {
+        &self.suffix_token_ids
+    }
+
+    fn pad_token_id(&self) -> u32 {
+        self.inner
+            .token_to_id(&self.special_config.pad)
+            .unwrap_or_else(|| panic!("pad token {} not in vocab", &self.special_config.pad))
+    }
+
+    fn language_config(&self) -> Option<&LanguageConfig> {
+        None
+    }
+
+    fn special_token_to_id(&self, token: &str) -> Option<u32> {
+        self.inner.token_to_id(token)
+    }
+}
+
+impl Tokenize for HuggingfaceTokenizer {
+    fn vocab_size(&self) -> usize {
+        self.inner.get_vocab_size(true)
+    }
+
+    fn tokenize(
+        &self,
+        s: &str,
+        _lang: Option<&str>,
+        _prefix: Option<&[&str]>,
+        _suffix: Option<&[&str]>,
+        _ignore_special_tokens: bool,
+    ) -> anyhow::Result<Tokenization> {
+        let enc = self.inner.encode(s, true).map_err(|e| {
+            anyhow!("error encoding input {s:?} with huggingface tokenizer: {e:?}",)
+        })?;
+        Ok(Tokenization::new(
+            enc.get_ids().to_vec(),
+            TokenizationInfo::Empty,
+        ))
+    }
+
+    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
+        self.inner
+            .decode(token_ids.to_vec(), ignore_special_tokens)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "error decoding token ids {:?} with huggingface tokenizer: {:?}",
+                    token_ids, e
+                )
+            })
+    }
+}
+
 /// A tokenizer based on the ascii characters, digits, and punctuations marks.
 /// Can e.g. be used to efficiently (meaning small vocab size) represent most
 /// English texts.
@@ -2051,6 +2154,9 @@ pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
             Box::new(BPETokenizer::new(bpe_cfg, cfg.special, cfg.language)?)
         }
         TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
+        TokenizeConfig::Huggingface(name) => {
+            Box::new(HuggingfaceTokenizer::new(name, cfg.special)?)
+        }
     })
 }
 

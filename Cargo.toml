@@ -33,6 +33,7 @@ num_cpus = "1.14"
 bitvec = "1"
 numpy = "0.19"
 clap = { version = "4", features = ["derive"] }
+tokenizers = "0.13"
 
 [dev-dependencies]
 criterion = "0.5"
@@ -44,7 +45,6 @@ benchmark-utils = []
 lto = true
 codegen-units = 1
 strip = true
-# debug = true
 
 [[bench]]
 required-features = ["benchmark-utils"]

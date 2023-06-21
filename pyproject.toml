@@ -57,3 +57,4 @@ build-backend = "maturin"
 
 [tool.maturin]
 python-source = "python"
+module-name = "text_correction_utils._internal"

@@ -4,9 +4,6 @@ name = "text-correction-utils-rs"
 version = "0.1.4"
 edition = "2021"
 
-[package.metadata.maturin]
-name = "text_correction_utils._internal"
-
 [lib]
 name = "text_correction_utils"
 crate-type = ["cdylib", "rlib"]

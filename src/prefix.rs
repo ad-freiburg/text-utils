@@ -196,7 +196,7 @@ impl PyPrefixVec {
     }
 }
 
-/// A submodule containing an implementation of a prefix tree
+/// A submodule containing two implementations of a prefix tree
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "prefix")?;
     m.add_class::<PyPrefixTree>()?;

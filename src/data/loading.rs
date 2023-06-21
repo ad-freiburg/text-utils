@@ -120,38 +120,38 @@ where
 }
 
 pub fn text_data_generator_from_files<P: AsRef<Path>>(
-    org: P,
-    proc: Option<P>,
+    input: P,
+    target: Option<P>,
     lang: Option<String>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
-    let org_len = count_lines(org.as_ref())?;
-    let org_iter = LossyUtf8Reader::new(BufReader::new(open(org.as_ref())?)).lines();
-    let mut proc_iter = if let Some(proc) = proc {
-        let proc_len = count_lines(proc.as_ref())?;
+    let input_len = count_lines(input.as_ref())?;
+    let input_iter = LossyUtf8Reader::new(BufReader::new(open(input.as_ref())?)).lines();
+    let mut target_iter = if let Some(target) = target {
+        let target_len = count_lines(target.as_ref())?;
         assert_eq!(
-            org_len,
-            proc_len,
+            input_len,
+            target_len,
             "expected same number of lines for {:?} and {:?}",
-            org.as_ref(),
-            proc.as_ref()
+            input.as_ref(),
+            target.as_ref()
         );
-        Some(LossyUtf8Reader::new(BufReader::new(open(proc.as_ref())?)).lines())
+        Some(LossyUtf8Reader::new(BufReader::new(open(target.as_ref())?)).lines())
     } else {
         None
     };
-    let iter = org_iter.map(move |org_s| {
-        let proc_s = if proc_iter.is_some() {
-            match proc_iter.as_mut().unwrap().next() {
+    let iter = input_iter.map(move |input_s| {
+        let target_s = if target_iter.is_some() {
+            match target_iter.as_mut().unwrap().next() {
                 Some(result) => Some(result?),
                 None => None,
             }
         } else {
             None
         };
-        Ok(TextData::new(org_s?, proc_s, lang.clone()))
+        Ok(TextData::new(input_s?, target_s, lang.clone()))
     });
     Ok(Box::new(DataGenerator {
-        min_len: org_len,
+        min_len: input_len,
         iter,
     }))
 }
@@ -174,19 +174,19 @@ pub fn inference_data_generator_from_file(
 }
 
 pub fn text_data_generator_from_sequences(
-    original: Vec<String>,
-    processed: Option<Vec<String>>,
+    input: Vec<String>,
+    target: Option<Vec<String>>,
     language: Option<Vec<String>>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
-    let len = original.len();
-    let org_iter = original.into_iter();
-    let mut proc_iter = if let Some(processed) = processed {
-        if processed.len() != len {
+    let len = input.len();
+    let input_iter = input.into_iter();
+    let mut target_iter = if let Some(target) = target {
+        if target.len() != len {
             return Err(anyhow!(
-                "expect the same number of processed sequences as original sequences"
+                "expect the same number of target sequences as input sequences"
             ));
         }
-        Some(processed.into_iter())
+        Some(target.into_iter())
     } else {
         None
     };
@@ -198,9 +198,9 @@ pub fn text_data_generator_from_sequences(
     } else {
         None
     };
-    let iter = org_iter.map(move |org_s| {
-        let proc_s = if let Some(proc_iter_mut) = proc_iter.as_mut() {
-            proc_iter_mut.next()
+    let iter = input_iter.map(move |input_s| {
+        let target_s = if let Some(target_iter_mut) = target_iter.as_mut() {
+            target_iter_mut.next()
         } else {
             None
         };
@@ -209,7 +209,7 @@ pub fn text_data_generator_from_sequences(
         } else {
             None
         };
-        Ok(TextData::new(org_s, proc_s, lang_s))
+        Ok(TextData::new(input_s, target_s, lang_s))
     });
     Ok(Box::new(DataGenerator { iter, min_len: len }))
 }
@@ -930,18 +930,18 @@ mod tests {
         // first check sequential lines with one file
         assert_eq!(it.min_len(), 29000);
         let _data = TextData {
-            original: MULTI30K_FIRST.to_string(),
-            processed: MULTI30K_FIRST.to_string(),
+            target: MULTI30K_FIRST.to_string(),
+            input: MULTI30K_FIRST.to_string(),
             language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
-            original: MULTI30K_SECOND.to_string(),
-            processed: MULTI30K_SECOND.to_string(),
+            target: MULTI30K_SECOND.to_string(),
+            input: MULTI30K_SECOND.to_string(),
             language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
-        // check sequential lines with original and processed
+        // check sequential lines with input and target
         let multi30k = text_data_generator_from_files(&d, Some(&d2), Some("1".to_string()))?;
         let mut it = TextIterator::new(
             vec![multi30k],
@@ -951,14 +951,14 @@ mod tests {
 
         assert_eq!(it.min_len(), 29000);
         let _data = TextData {
-            original: MULTI30K_FIRST.to_string(),
-            processed: MULTI30K_REV_FIRST.to_string(),
+            target: MULTI30K_FIRST.to_string(),
+            input: MULTI30K_REV_FIRST.to_string(),
             language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
-            original: MULTI30K_SECOND.to_string(),
-            processed: MULTI30K_REV_SECOND.to_string(),
+            target: MULTI30K_SECOND.to_string(),
+            input: MULTI30K_REV_SECOND.to_string(),
             language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
@@ -973,26 +973,26 @@ mod tests {
 
         assert_eq!(it.min_len(), 2 * 29000);
         let _data = TextData {
-            original: MULTI30K_FIRST.to_string(),
-            processed: MULTI30K_FIRST.to_string(),
+            target: MULTI30K_FIRST.to_string(),
+            input: MULTI30K_FIRST.to_string(),
             language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
-            original: MULTI30K_REV_FIRST.to_string(),
-            processed: MULTI30K_REV_FIRST.to_string(),
+            target: MULTI30K_REV_FIRST.to_string(),
+            input: MULTI30K_REV_FIRST.to_string(),
             language: Some("2".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
         let _data = TextData {
-            original: MULTI30K_SECOND.to_string(),
-            processed: MULTI30K_SECOND.to_string(),
+            target: MULTI30K_SECOND.to_string(),
+            input: MULTI30K_SECOND.to_string(),
             language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
-            original: MULTI30K_REV_SECOND.to_string(),
-            processed: MULTI30K_REV_SECOND.to_string(),
+            target: MULTI30K_REV_SECOND.to_string(),
+            input: MULTI30K_REV_SECOND.to_string(),
             language: Some("2".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
@@ -1160,7 +1160,7 @@ mod tests {
             .pipe(pipeline.clone(), 0);
         let lines = BufReader::new(open(&d)?).lines();
         for (item, line) in it.zip(lines) {
-            assert_eq!(item.unwrap().data.original, line.unwrap())
+            assert_eq!(item.unwrap().data.target, line.unwrap())
         }
         Ok(())
     }
@@ -1211,7 +1211,7 @@ mod tests {
             let lines: Vec<&String> = line_batch.into_iter().collect();
             assert!(batch.len() == lines.len());
             for (item, line) in batch.into_iter().zip(lines.into_iter()) {
-                assert_eq!(item.data.original, *line);
+                assert_eq!(item.data.target, *line);
             }
         }
         // now check the batched iterator with any combinations of shuffling and sorting
@@ -1255,7 +1255,7 @@ mod tests {
                     assert!(batch.len() > 0);
                     assert!(batch_size <= 256,);
                     for item in batch {
-                        let count = line_counter.get_mut(&item.data.original).unwrap();
+                        let count = line_counter.get_mut(&item.data.target).unwrap();
                         *count += 1;
                     }
                 }

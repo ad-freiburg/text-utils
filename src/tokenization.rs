@@ -91,32 +91,24 @@ impl Default for SpecialConfig {
 impl<'a> FromPyObject<'a> for SpecialConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
+        let Some(pad) = d.get_item("pad") else {
+            return Err(py_required_key_error("pad", "special config"));
+        };
+        let Some(tokens) = d.get_item("tokens") else {
+            return Err(py_required_key_error("tokens", "special config"));
+        };
         Ok(Self {
-            pad: if let Some(value) = d.get_item("pad") {
-                value.extract()?
-            } else {
-                PAD.to_string()
-            },
-            tokens: if let Some(value) = d.get_item("tokens") {
-                value.extract()?
-            } else {
-                SPECIAL_TOKENS.iter().map(|s| s.to_string()).collect()
-            },
+            pad: pad.extract()?,
+            tokens: tokens.extract()?,
             prefix: if let Some(value) = d.get_item("prefix") {
                 value.extract()?
             } else {
-                DEFAULT_PREFIX_TOKENS
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
+                vec![]
             },
             suffix: if let Some(value) = d.get_item("suffix") {
                 value.extract()?
             } else {
-                DEFAULT_SUFFIX_TOKENS
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
+                vec![]
             },
         })
     }
@@ -1190,6 +1182,7 @@ impl Tokenize for DummyTokenizer {
 
 pub struct HuggingfaceTokenizer {
     inner: hft::Tokenizer,
+    inner_prefix_and_suffix_length: (usize, usize),
     special_config: SpecialConfig,
     prefix_token_ids: Vec<u32>,
     suffix_token_ids: Vec<u32>,
@@ -1205,24 +1198,42 @@ impl HuggingfaceTokenizer {
         })?;
         let mask = enc.get_special_tokens_mask();
         let ids = enc.get_ids();
-        let prefix_token_ids = ids
+        let mut prefix_token_ids: Vec<_> = ids
             .iter()
             .zip(mask)
             .take_while(|&(_, m)| *m > 0)
             .map(|(id, _)| *id)
             .collect();
-        let suffix_token_ids = ids
+        let mut suffix_token_ids: Vec<_> = ids
             .iter()
             .zip(mask)
             .rev()
             .take_while(|&(_, m)| *m > 0)
             .map(|(id, _)| *id)
             .collect();
+        let inner_prefix_and_suffix_length = (prefix_token_ids.len(), suffix_token_ids.len());
+        if !special_config.prefix.is_empty() {
+            prefix_token_ids.extend(
+                special_config
+                    .prefix
+                    .iter()
+                    .map(|token| tok.token_to_id(token).unwrap()),
+            );
+        }
+        if !special_config.suffix.is_empty() {
+            suffix_token_ids.extend(
+                special_config
+                    .suffix
+                    .iter()
+                    .map(|token| tok.token_to_id(token).unwrap()),
+            );
+        }
         Ok(Self {
             inner: tok,
             special_config,
             prefix_token_ids,
             suffix_token_ids,
+            inner_prefix_and_suffix_length,
         })
     }
 }
@@ -1260,17 +1271,44 @@ impl Tokenize for HuggingfaceTokenizer {
         &self,
         s: &str,
         _lang: Option<&str>,
-        _prefix: Option<&[&str]>,
-        _suffix: Option<&[&str]>,
+        prefix: Option<&[&str]>,
+        suffix: Option<&[&str]>,
         _ignore_special_tokens: bool,
     ) -> anyhow::Result<Tokenization> {
         let enc = self.inner.encode(s, true).map_err(|e| {
             anyhow!("error encoding input {s:?} with huggingface tokenizer: {e:?}",)
         })?;
-        Ok(Tokenization::new(
-            enc.get_ids().to_vec(),
-            TokenizationInfo::Empty,
-        ))
+        let pfx: Vec<_> = prefix
+            .unwrap_or(&[])
+            .iter()
+            .map(|token| {
+                self.special_token_to_id(token)
+                    .ok_or(anyhow!("prefix token {} not in vocab", token))
+            })
+            .collect::<Result<_, _>>()?;
+        let sfx: Vec<_> = suffix
+            .unwrap_or(&[])
+            .iter()
+            .map(|token| {
+                self.special_token_to_id(token)
+                    .ok_or(anyhow!("suffix token {} not in vocab", token))
+            })
+            .collect::<Result<_, _>>()?;
+        let (pfx_len, sfx_len) = self.inner_prefix_and_suffix_length;
+        let token_ids = self
+            .prefix_token_ids()
+            .iter()
+            .cloned()
+            .chain(pfx)
+            .chain(
+                enc.get_ids()[pfx_len..enc.len().saturating_sub(sfx_len)]
+                    .iter()
+                    .cloned(),
+            )
+            .chain(self.suffix_token_ids().iter().cloned())
+            .chain(sfx)
+            .collect();
+        Ok(Tokenization::new(token_ids, TokenizationInfo::Empty))
     }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {

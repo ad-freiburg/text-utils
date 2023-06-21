@@ -143,7 +143,7 @@ training will resume from latest checkpoint."
         self.optimizer = optimizer_from_config(
             self.model,
             self.cfg["train"]["optimizer"],
-            additional_optimizer_fn=self._additional_optimizer_fn
+            additional_optimizer_fn=self._additional_optimizer_fn()
         )
         if self.info.is_main_process:
             num_params = 0
@@ -194,7 +194,7 @@ training will resume from latest checkpoint."
                 self.optimizer,
                 steps,
                 cfg["train"]["lr_scheduler"],
-                additional_lr_scheduler_fn=self._additional_lr_scheduler_fn
+                additional_lr_scheduler_fn=self._additional_lr_scheduler_fn()
             )
         else:
             self.step_interval = 0
@@ -202,7 +202,7 @@ training will resume from latest checkpoint."
 
         self.loss_fn = loss_from_config(
             self.cfg["train"]["loss"],
-            additional_loss_fn=self._additional_loss_fn
+            additional_loss_fn=self._additional_loss_fn()
         ).to(self.info.device).train()
 
         self.grad_scaler = amp.GradScaler(
@@ -393,19 +393,19 @@ training will resume from latest checkpoint."
             elif src_type == "file_pair":
                 lang = src.get("language")
                 preprocessing = src.get("preprocessing")
-                org_path = src["original_path"]
-                proc_path = src["processed_path"]
-                assert os.path.isfile(org_path) and os.path.isfile(proc_path), \
-                    f"one of {org_path} or {proc_path} is not a file"
+                input_path = src["input_path"]
+                target_path = src["target_path"]
+                assert os.path.isfile(input_path) and os.path.isfile(target_path), \
+                    f"one of {input_path} or {target_path} is not a file"
                 temp_dir = src.get("temp_dir")
                 if temp_dir is not None:
-                    org_path = cls._copy_file_to_tmp_dir(
-                        org_path, temp_dir, info)
-                    proc_path = cls._copy_file_to_tmp_dir(
-                        proc_path, temp_dir, info)
-                    cleanup_paths.extend([org_path, proc_path])
+                    input_path = cls._copy_file_to_tmp_dir(
+                        input_path, temp_dir, info)
+                    target_path = cls._copy_file_to_tmp_dir(
+                        target_path, temp_dir, info)
+                    cleanup_paths.extend([input_path, target_path])
                 src_preprocessings.append(preprocessing)
-                src_paths.append((org_path, proc_path))
+                src_paths.append((input_path, target_path))
                 src_langs.append(lang)
             else:
                 raise ValueError(f"unknown source type {src_type}")
@@ -517,7 +517,7 @@ training will resume from latest checkpoint."
                 training_items,
                 max_length,
                 max_length_scheduler_cfg,
-                additional_max_length_scheduler_fn=cls._additional_max_length_scheduler_fn
+                additional_max_length_scheduler_fn=cls._additional_max_length_scheduler_fn()
             )
         else:
             max_length_scheduler = None

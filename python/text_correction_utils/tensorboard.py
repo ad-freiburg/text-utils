@@ -84,7 +84,7 @@ class TextGenerationMetric(TensorboardMetric):
                 "\n".join([
                     f"Lang      : {item.data.language}\n",
                     f"Input     : {input}\n",
-                    f"Target    : {item.data.original}\n",
+                    f"Target    : {item.data.target}\n",
                     f"Prediction: {prediction}\n",
                 ])
             )
@@ -148,16 +148,16 @@ class WhitespaceCorrectionMetric(TensorboardMetric):
                 else:
                     raise RuntimeError(f"expected repair tokens to be either 0, 1, or 2, but got {pred}")
 
-            target_ops = whitespace.operations(item.data.processed, item.data.original)
+            target_ops = whitespace.operations(item.data.input, item.data.target)
             correct += sum(to == po for to, po in zip(target_ops, repair_ops))
             total += len(target_ops)
 
-            repaired = whitespace.repair(item.data.processed, repair_ops)
+            repaired = whitespace.repair(item.data.input, repair_ops)
             strings.append(
                 "\n".join([
                     f"Lang       : {item.data.language}\n",
-                    f"Input      : {item.data.processed}\n",
-                    f"Target     : {item.data.original}\n",
+                    f"Input      : {item.data.input}\n",
+                    f"Target     : {item.data.target}\n",
                     f"Target pred: {''.join(target_ops)}\n",
                     f"Prediction : {''.join(repair_ops)}\n",
                     f"Repaired   : {repaired}"

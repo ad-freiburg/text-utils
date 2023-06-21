@@ -94,6 +94,14 @@ class MultiLayerLoss(nn.Module):
         return self.loss(outputs, labels)
 
 
+class ZeroLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, outputs: torch.Tensor, _: torch.Tensor) -> torch.Tensor:
+        return torch.tensor(0, dtype=torch.float, device=outputs.device)
+
+
 def loss_from_config(
     cfg: Dict[str, Any],
     additional_loss_fn: Optional[Callable[
@@ -103,7 +111,11 @@ def loss_from_config(
 ) -> nn.Module:
     cfg = copy.deepcopy(cfg)
     loss_type = cfg.pop("type")
-    if loss_type == "cross_entropy":
+
+    if loss_type == "zero":
+        return ZeroLoss()
+
+    elif loss_type == "cross_entropy":
         weight = cfg.get("weights", None)
         weight = torch.tensor(weight, dtype=torch.float) if weight is not None else None
         loss = nn.CrossEntropyLoss(ignore_index=cfg.get("ignore_index", -1), weight=weight)

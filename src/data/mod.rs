@@ -16,13 +16,11 @@ use crate::windows::{windows, WindowConfig};
 use anyhow::{anyhow, Context};
 use numpy::ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArray2, PyArrayDyn};
-use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,60 +42,38 @@ pub struct TextDataInfo {
     pub marks: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
+#[derive(Clone, Debug)]
 #[pyclass]
 pub struct TextData {
     #[pyo3(get)]
-    original: String,
+    input: String,
     #[pyo3(get)]
-    processed: String,
+    target: String,
     #[pyo3(get)]
     language: Option<String>,
 }
 
 impl TextData {
-    pub fn new(original: String, processed: Option<String>, language: Option<String>) -> Self {
-        let processed = processed.unwrap_or_else(|| original.clone());
+    pub fn new(input: String, target: Option<String>, language: Option<String>) -> Self {
+        let target = target.unwrap_or_else(|| input.clone());
         TextData {
-            original,
-            processed,
+            input,
+            target,
             language,
         }
     }
 }
 
-#[pymethods]
-impl TextData {
-    #[new]
-    #[pyo3(signature = (original, processed = None, language = None))]
-    fn new_py(
-        original: String,
-        processed: Option<String>,
-        language: Option<String>,
-    ) -> PyResult<Self> {
-        Ok(Self::new(original, processed, language))
-    }
-
-    fn __hash__(&self) -> u64 {
-        let mut s = DefaultHasher::new();
-        self.hash(&mut s);
-        s.finish()
-    }
-
-    fn __richcmp__(&self, other: &Self, op: CompareOp) -> bool {
-        op.matches(self.cmp(other))
-    }
-}
-
 pub enum TensorizedLabelInfo {
     Empty,
-    SequenceGeneration((Array2<i32>, PaddingMask, Vec<usize>)),
+    ConditionalGeneration((Array2<i32>, PaddingMask, Vec<usize>)),
 }
 
 impl IntoPy<PyObject> for TensorizedLabelInfo {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
-        if let TensorizedLabelInfo::SequenceGeneration((token_ids, padding_mask, lengths)) = self {
+        if let TensorizedLabelInfo::ConditionalGeneration((token_ids, padding_mask, lengths)) = self
+        {
             let token_ids: Py<PyArray2<i32>> = token_ids.into_pyarray(py).into_py(py);
             d.set_item("token_ids", token_ids).unwrap();
             d.set_item("padding_mask", padding_mask.into_py(py))
@@ -112,7 +88,8 @@ impl IntoPy<PyObject> for TensorizedLabelInfo {
 pub enum Label {
     Classification(i32),
     SequenceClassification(Vec<i32>),
-    SequenceGeneration(Vec<i32>, u32),
+    ConditionalGeneration(Vec<i32>, u32),
+    Empty,
 }
 
 impl IntoPy<PyObject> for Label {
@@ -127,59 +104,15 @@ impl IntoPy<PyObject> for Label {
                 d.set_item("labels", labels).unwrap();
                 "sequence_classification"
             }
-            Label::SequenceGeneration(labels, pad_token_id) => {
+            Label::ConditionalGeneration(labels, pad_token_id) => {
                 d.set_item("labels", labels).unwrap();
                 d.set_item("pad_token_id", pad_token_id).unwrap();
-                "sequence_generation"
+                "conditional_generation"
             }
+            Label::Empty => "empty",
         };
         d.set_item("type", label_type).unwrap();
         d.into()
-    }
-}
-
-impl<'a> FromPyObject<'a> for Label {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
-        let Some(label_type) = d.get_item("type") else {
-            return Err(py_required_key_error("type", "label"));
-        };
-        let label_type: String = label_type.extract()?;
-        let label = match label_type.as_str() {
-            "classification" => {
-                let Some(label) = d.get_item("label") else {
-                    return Err(py_required_key_error(
-                        "label",
-                        "classification label"));
-                };
-                Label::Classification(label.extract()?)
-            }
-            "sequence_classification" => {
-                let Some(labels) = d.get_item("labels") else {
-                    return Err(py_required_key_error(
-                        "labels",
-                        "sequence classification label"));
-                };
-                Label::SequenceClassification(labels.extract()?)
-            }
-            "sequence_generation" => {
-                let Some(labels) = d.get_item("labels") else {
-                    return Err(py_required_key_error(
-                        "labels",
-                        "sequence generation label"));
-                };
-                let Some(pad_token_id) = d.get_item("pad_token_id") else {
-                    return Err(py_required_key_error(
-                        "pad_token_id",
-                        "sequence generation label"));
-                };
-                Label::SequenceGeneration(labels.extract()?, pad_token_id.extract()?)
-            }
-            k => {
-                return Err(py_invalid_type_error(k, "label"));
-            }
-        };
-        Ok(label)
     }
 }
 
@@ -591,13 +524,14 @@ fn label_lengths(labels: &[&Label]) -> Vec<usize> {
         .map(|&label| match label {
             Label::Classification(_) => 1,
             Label::SequenceClassification(label, ..) => label.len(),
-            Label::SequenceGeneration(label, ..) => {
+            Label::ConditionalGeneration(label, ..) => {
                 assert!(
                     label.len() > 1,
-                    "sequence generation label must be at least two tokens long"
+                    "conditional generation label must be at least two tokens long"
                 );
                 label.len() - 1
             }
+            Label::Empty => 0,
         })
         .collect()
 }
@@ -607,10 +541,11 @@ fn prepare_label_info(labels: &[&Label]) -> (TensorizedLabelInfo, Vec<usize>, us
     let label_lengths = label_lengths(labels);
     let max_label_length = label_lengths.iter().max().copied().unwrap_or(0);
     let label_info = match labels[0] {
-        Label::SequenceGeneration(..) => {
-            let mut label_vec = Vec::new();
+        Label::ConditionalGeneration(..) => {
+            let mut label_vec =
+                Vec::with_capacity(labels.len() * max_label_length.saturating_sub(1));
             for (idx, label) in labels.iter().enumerate() {
-                if let Label::SequenceGeneration(label, pad_token_id) = label {
+                if let Label::ConditionalGeneration(label, pad_token_id) = label {
                     label_vec.extend(label.iter().cloned().take(label.len() - 1).chain(vec![
                                 *pad_token_id as i32;
                                 max_label_length - label_lengths[idx]
@@ -621,7 +556,7 @@ fn prepare_label_info(labels: &[&Label]) -> (TensorizedLabelInfo, Vec<usize>, us
             }
             let label_arr = Array2::from_shape_vec((labels.len(), max_label_length), label_vec)
                 .expect("should not fail");
-            TensorizedLabelInfo::SequenceGeneration((
+            TensorizedLabelInfo::ConditionalGeneration((
                 label_arr,
                 padding_mask(label_lengths.as_slice()).expect("failed to create padding mask"),
                 label_lengths.clone(),
@@ -661,12 +596,13 @@ impl Tensorize for Batch<Item> {
                     .cloned()
                     .chain(vec![-1; max_label_length - label_lengths[idx]])
                     .collect(),
-                Label::SequenceGeneration(labels, ..) => labels
+                Label::ConditionalGeneration(labels, ..) => labels
                     .iter()
                     .cloned()
                     .skip(1)
                     .chain(vec![-1; max_label_length - label_lengths[idx]])
                     .collect(),
+                Label::Empty => vec![],
             });
         }
         let label_arr = match labels.len() {
@@ -749,15 +685,18 @@ pub enum PreprocessingConfig {
 
 impl<'a> FromPyObject<'a> for PreprocessingConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
-        if let Ok(value) = obj.extract::<PreprocessingFnConfig>() {
-            Ok(PreprocessingConfig::Single(value))
-        } else if let Ok(value) = obj.extract::<Vec<PreprocessingFnConfig>>() {
-            Ok(PreprocessingConfig::PerFile(value))
-        } else {
-            Err(PyTypeError::new_err(
-                "preprocessing config must be a single preprocessing function or a list of preprocessing functions",
-            ))
-        }
+        let mut errs = vec![];
+        match obj.extract::<PreprocessingFnConfig>() {
+            Ok(value) => return Ok(PreprocessingConfig::Single(value)),
+            Err(e) => errs.push(e),
+        };
+        match obj.extract::<Vec<PreprocessingFnConfig>>() {
+            Ok(value) => return Ok(PreprocessingConfig::PerFile(value)),
+            Err(e) => errs.push(e),
+        };
+        Err(PyTypeError::new_err(format!(
+            "failed to extract preprocessing config with the following errors: {errs:#?}"
+        )))
     }
 }
 
@@ -854,7 +793,7 @@ pub fn text_data_pipeline_with_tokenizer(
             let (data, info) = preprocess_fn(data, info)?;
             let item = Item {
                 tokenization: tokenizer.tokenize(
-                    &data.processed,
+                    &data.input,
                     data.language.as_deref(),
                     None,
                     None,
@@ -1236,14 +1175,13 @@ impl DataLoader {
     fn init_iter(&mut self) -> anyhow::Result<()> {
         let seed = self.seed.unwrap_or(0) + self.epoch as u64;
         let mut generators = vec![];
-        for (idx, (original_file, processed_file)) in self.files.iter().enumerate() {
+        for (idx, (input_file, target_file)) in self.files.iter().enumerate() {
             let lang = if self.languages.is_some() {
                 Some(self.languages.as_ref().unwrap()[idx].clone())
             } else {
                 None
             };
-            let generator =
-                text_data_generator_from_files(original_file, processed_file.as_ref(), lang)?;
+            let generator = text_data_generator_from_files(input_file, target_file.as_ref(), lang)?;
             generators.push(generator);
         }
 

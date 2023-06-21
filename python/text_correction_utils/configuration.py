@@ -22,7 +22,7 @@ def _replace_env(s: str, _: str) -> Any:
             env_var = os.environ[env_var]
         s = s[:match.start() + length_change] + env_var + s[match.end() + length_change:]
         length_change = len(s) - org_length
-    return yaml.load(s, Loader=yaml.FullLoader)
+    return yaml.full_load(s)
 
 
 def _replace_non_env_var(s: str, base_dir: str) -> Any:
@@ -30,21 +30,25 @@ def _replace_non_env_var(s: str, base_dir: str) -> Any:
     abs_path_regex = re.compile(r"^abspath\((.+)\)$")
     rel_path_regex = re.compile(r"^relpath\((.+)\)$")
     eval_regex = re.compile(r"^eval\((.+)\)$")
+    pad_regex = re.compile(r"^pad\((.+);(\d+);(\d+);(.)\)$")
     file_regex_match = file_regex.fullmatch(s)
     abs_path_regex_match = abs_path_regex.fullmatch(s)
     rel_path_regex_match = rel_path_regex.fullmatch(s)
     eval_regex_match = eval_regex.fullmatch(s)
+    pad_regex_match = pad_regex.fullmatch(s)
     num_matches = (
         (file_regex_match is not None) +
         (abs_path_regex_match is not None) +
         (rel_path_regex_match is not None) +
-        (eval_regex_match is not None)
+        (eval_regex_match is not None) +
+        (pad_regex_match is not None)
     )
     assert num_matches <= 1, f"more than one config command matches '{s}'"
     if file_regex_match is not None:
         file_path = file_regex_match.group(1)
         file_path = str(_replace_non_env_var(file_path, base_dir))
-        return load_config(os.path.join(base_dir, file_path))
+        cfg = load_config(os.path.join(base_dir, file_path))
+        return cfg
     elif abs_path_regex_match is not None:
         path = abs_path_regex_match.group(1)
         path = str(_replace_non_env_var(path, base_dir))
@@ -68,6 +72,15 @@ def _replace_non_env_var(s: str, base_dir: str) -> Any:
             length_change = len(expression) - org_length
         expression = str(_replace_non_env_var(expression, base_dir))
         return eval(expression)
+    elif pad_regex_match is not None:
+        s = pad_regex_match.group(1)
+        left = int(pad_regex_match.group(2))
+        right = int(pad_regex_match.group(3))
+        pad_char = pad_regex_match.group(4)
+        s = str(_replace_non_env_var(s, base_dir))
+        s = s.rjust(len(s) + left, pad_char)
+        s = s.ljust(len(s) + right, pad_char)
+        return s
     else:
         return s
 
@@ -115,10 +128,10 @@ def load_config(yaml_path: str) -> Any:
         raw_yaml = inf.read()
 
     base_dir = os.path.abspath(os.path.dirname(yaml_path))
-    parsed_yaml = yaml.load(raw_yaml, Loader=yaml.FullLoader)
+    parsed_yaml = yaml.full_load(raw_yaml)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_env)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env_var)
-    return yaml.load(yaml.dump(parsed_yaml), Loader=yaml.FullLoader)
+    return parsed_yaml
 
 
 def load_config_from_experiment(dir: str) -> Any:

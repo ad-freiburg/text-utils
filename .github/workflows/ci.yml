@@ -10,6 +10,9 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
+      - name: System dependencies
+        run: |
+          sudo apt install openssl -y
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:

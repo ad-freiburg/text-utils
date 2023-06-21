@@ -39,7 +39,7 @@ pub enum PreprocessingFnConfig {
     // normalize the sequence
     // (using a unicode normalization scheme, see https://en.wikipedia.org/wiki/Unicode_equivalence#Normalization)
     Normalize(Normalization, bool),
-    // overwrite original text with processed text
+    // overwrite target text with input text
     Overwrite,
     // switch between multiple preprocessing functions
     Switch(Vec<PreprocessingFnConfig>, Vec<f64>),
@@ -58,8 +58,10 @@ pub enum PreprocessingFnConfig {
     LanguageDropout(f64),
     // mark inputs with additional info
     Mark(String, String),
-    // prefix
+    // add prefix to input sequence
     Prefix(String),
+    // concatenate input and target sequences with a separator
+    Concatenate(String),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
@@ -205,6 +207,14 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 };
                 PreprocessingFnConfig::Prefix(prefix.extract()?)
             }
+            "concatenate" => {
+                let separator = if let Some(sep) = d.get_item("separator") {
+                    sep.extract()?
+                } else {
+                    "".to_string()
+                };
+                PreprocessingFnConfig::Concatenate(separator)
+            }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
             }
@@ -219,7 +229,7 @@ fn apply_to_text<F: Fn(&str) -> anyhow::Result<String> + Send + Sync + 'static>(
     Box::new(move |item, info| {
         Ok((
             TextData {
-                processed: f(&item.processed)?,
+                input: f(&item.input)?,
                 ..item
             },
             info,
@@ -227,11 +237,11 @@ fn apply_to_text<F: Fn(&str) -> anyhow::Result<String> + Send + Sync + 'static>(
     })
 }
 
-fn overwrite_original_from_processed() -> Box<PreprocessingFn> {
+fn overwrite_target_from_input() -> Box<PreprocessingFn> {
     Box::new(|item, info| {
         Ok((
             TextData {
-                original: item.processed.clone(),
+                target: item.input.clone(),
                 ..item
             },
             info,
@@ -248,8 +258,8 @@ fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<Preproce
     );
     Box::new(move |item, info| {
         let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
-        let cs = CS::new(&item.processed, use_graphemes);
-        let processed = cs
+        let cs = CS::new(&item.input, use_graphemes);
+        let input = cs
             .chars()
             .enumerate()
             .map(|(idx, c)| {
@@ -267,7 +277,7 @@ fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<Preproce
                 }
             })
             .join("");
-        Ok((TextData { processed, ..item }, info))
+        Ok((TextData { input, ..item }, info))
     })
 }
 
@@ -278,25 +288,24 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
 ) -> Box<PreprocessingFn> {
     Box::new(move |item, info| {
         let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
-        let possible_substrings = substring_fn(&item.processed)?;
+        let possible_substrings = substring_fn(&item.input)?;
         let idx = rng.gen_range(0..possible_substrings.len());
         let (start, end, _) = possible_substrings[idx];
-        let processed = item.processed[start..end].to_string();
-        let original =
-            match find_substring_ignoring_whitespace(&item.original, &processed, use_graphemes) {
-                Some(s) => s.trim().to_string(),
-                None => {
-                    return Err(anyhow!(
-                        "original and processed sequences can only differ in \
+        let input = item.input[start..end].to_string();
+        let target = match find_substring_ignoring_whitespace(&item.target, &input, use_graphemes) {
+            Some(s) => s.trim().to_string(),
+            None => {
+                return Err(anyhow!(
+                    "input and target sequences can only differ in \
             whitespaces when applying the {} substring preprocessing",
-                        name
-                    ))
-                }
-            };
+                    name
+                ))
+            }
+        };
         Ok((
             TextData {
-                original,
-                processed,
+                target,
+                input,
                 ..item
             },
             info,
@@ -535,7 +544,7 @@ fn corrupt_spelling(
     };
     Box::new(move |item, info| {
         let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
-        let words = split_words(&item.processed);
+        let words = split_words(&item.input);
         let words: Vec<_> = words
             .into_iter()
             .filter_map(|(word, parts)| {
@@ -601,7 +610,7 @@ fn corrupt_spelling(
             .collect();
         Ok((
             TextData {
-                processed: words.join(" "),
+                input: words.join(" "),
                 ..item
             },
             info,
@@ -616,6 +625,13 @@ pub fn mark(key: String, value: String) -> Box<PreprocessingFn> {
     })
 }
 
+pub fn concatenate(separator: String) -> Box<PreprocessingFn> {
+    Box::new(move |mut item, info| {
+        item.input = item.input + &separator + &item.target;
+        Ok((item, info))
+    })
+}
+
 pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
     match cfg {
         PreprocessingFnConfig::None => Box::new(|input, info| Ok((input, info))),
@@ -624,7 +640,7 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
             chain(pfns)
         }
         PreprocessingFnConfig::Clean(use_g) => apply_to_text(move |s| Ok(text::clean(s, use_g))),
-        PreprocessingFnConfig::Overwrite => overwrite_original_from_processed(),
+        PreprocessingFnConfig::Overwrite => overwrite_target_from_input(),
         PreprocessingFnConfig::Switch(fns, probs) => {
             let pfns = fns.into_iter().map(preprocessing).collect::<Vec<_>>();
             switch(pfns, probs)
@@ -653,6 +669,7 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
         }
         PreprocessingFnConfig::Mark(key, value) => mark(key, value),
         PreprocessingFnConfig::Prefix(prefix) => apply_to_text(move |s| Ok(prefix.clone() + s)),
+        PreprocessingFnConfig::Concatenate(separator) => concatenate(separator),
     }
 }
 
@@ -668,14 +685,14 @@ mod tests {
         let data = TextData::new("a test".to_string(), None, None);
         let info = TextDataInfo::default();
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
-        assert_eq!(&noised.processed, "atest");
+        assert_eq!(&noised.input, "atest");
         let noise_fn = corrupt_whitespace(1.0, 0.0, true);
         let data = TextData::new("a test".to_string(), None, None);
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
-        assert_eq!(&noised.processed, "a t e s t");
+        assert_eq!(&noised.input, "a t e s t");
         let data = TextData::new("Ginsberǵs".to_string(), None, None);
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
-        assert_eq!(&noised.processed, "G i n s b e r ǵ s");
+        assert_eq!(&noised.input, "G i n s b e r ǵ s");
         Ok(())
     }
 }

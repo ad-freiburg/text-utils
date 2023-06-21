@@ -91,7 +91,7 @@ fn main() -> anyhow::Result<()> {
             ),
             PreprocessingFnConfig::WhitespaceCorruption(0.05, 0.2, true),
         ])),
-        labeling: LabelingConfig::SequenceGeneration(tokenizer_cfg.clone()),
+        labeling: LabelingConfig::ConditionalGeneration(tokenizer_cfg.clone()),
         postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
     };
     let (pipeline, _max_length) =

@@ -13,10 +13,12 @@ pub type LabelingFn = dyn Send + Sync + 'static + Fn(&TextData) -> anyhow::Resul
 
 #[derive(Debug, Clone)]
 pub enum LabelingConfig {
-    // generate whitespace correction labels given processed and original sequence
+    // whitespace correction labels given processed and original sequence
     WhitespaceCorrection(bool, TokenizerConfig),
-    // generate sequence generation labels (basically just the tokenization) of the processed sequence
-    SequenceGeneration(TokenizerConfig),
+    // the tokenization of the original sequence
+    ConditionalGeneration(TokenizerConfig),
+    // no labeling
+    None,
 }
 
 impl<'a> FromPyObject<'a> for LabelingConfig {
@@ -38,12 +40,13 @@ impl<'a> FromPyObject<'a> for LabelingConfig {
                 };
                 LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer_config.extract()?)
             }
-            "sequence_generation" => {
+            "conditional_generation" => {
                 let Some(tokenizer_config) = d.get_item("tokenizer") else {
-                    return Err(py_required_key_error("tokenizer", "sequence generation config"));
+                    return Err(py_required_key_error("tokenizer", "conditional generation config"));
                 };
-                LabelingConfig::SequenceGeneration(tokenizer_config.extract()?)
+                LabelingConfig::ConditionalGeneration(tokenizer_config.extract()?)
             }
+            "none" => LabelingConfig::None,
             k => {
                 return Err(py_invalid_type_error(k, "labeling"));
             }
@@ -65,7 +68,7 @@ fn whitespace_correction_label(
             vec![-1; num_prefix_tokens]
                 .into_iter()
                 .chain(
-                    operations(&item.processed, &item.original, use_graphemes)?
+                    operations(&item.input, &item.target, use_graphemes)?
                         .into_iter()
                         .map(|l| l as i32),
                 )
@@ -75,18 +78,18 @@ fn whitespace_correction_label(
     })
 }
 
-fn sequence_generation_label(tokenizer_cfg: TokenizerConfig) -> Box<LabelingFn> {
+fn conditional_sequence_generation(tokenizer_cfg: TokenizerConfig) -> Box<LabelingFn> {
     let tokenizer = tokenizer(tokenizer_cfg)
-        .expect("failed to create tokenizer for sequence generation label function");
+        .expect("failed to create tokenizer for conditional generation label function");
     Box::new(move |item| {
         let tokenization =
-            tokenizer.tokenize(&item.original, item.language.as_deref(), None, None, false)?;
+            tokenizer.tokenize(&item.target, item.language.as_deref(), None, None, false)?;
         let token_ids = tokenization
             .token_ids
             .into_iter()
             .map(|t| t as i32)
             .collect();
-        Ok(Label::SequenceGeneration(
+        Ok(Label::ConditionalGeneration(
             token_ids,
             tokenizer.pad_token_id(),
         ))
@@ -98,6 +101,9 @@ pub fn labeling(labeling: LabelingConfig) -> Box<LabelingFn> {
         LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer) => {
             whitespace_correction_label(use_graphemes, tokenizer)
         }
-        LabelingConfig::SequenceGeneration(tokenizer) => sequence_generation_label(tokenizer),
+        LabelingConfig::ConditionalGeneration(tokenizer) => {
+            conditional_sequence_generation(tokenizer)
+        }
+        LabelingConfig::None => Box::new(|_| Ok(Label::Empty)),
     }
 }

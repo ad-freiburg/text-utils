@@ -187,27 +187,26 @@ fn clip_tokenization(mut tokenization: Tokenization, length: usize, suffix: usiz
 }
 
 #[inline]
+fn clip_suffix(mut labels: Vec<i32>, length: usize, suffix: usize) -> Vec<i32> {
+    if labels.len() > length {
+        for idx in 0..suffix {
+            labels[length - suffix + idx] = labels[labels.len() - suffix + idx];
+        }
+    }
+    labels
+}
+
+#[inline]
 fn clip_label(label: Label, length: usize, suffix: usize) -> Label {
     match label {
         Label::Classification(_) => label,
-        Label::SequenceClassification(mut labels) => {
-            if labels.len() > length {
-                for idx in 0..suffix {
-                    labels[length - suffix + idx] = labels[labels.len() - suffix + idx];
-                }
-                labels.truncate(length);
-            }
-            Label::SequenceClassification(labels)
+        Label::SequenceClassification(labels) => {
+            Label::SequenceClassification(clip_suffix(labels, length, suffix))
         }
-        Label::SequenceGeneration(mut labels, pad_token_id) => {
-            if labels.len() > length {
-                for idx in 0..suffix {
-                    labels[length - suffix + idx] = labels[labels.len() - suffix + idx];
-                }
-                labels.truncate(length);
-            }
-            Label::SequenceGeneration(labels, pad_token_id)
+        Label::ConditionalGeneration(labels, pad_token_id) => {
+            Label::ConditionalGeneration(clip_suffix(labels, length, suffix), pad_token_id)
         }
+        Label::Empty => label,
     }
 }
 

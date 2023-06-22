@@ -32,7 +32,9 @@ class TextCorrectionCli:
             "-m",
             "--model",
             choices=[
-                model.name for model in cls.text_corrector_cls.available_models()],
+                model.name for model in
+                cls.text_corrector_cls.available_models()
+            ],
             default=cls.text_corrector_cls.default_model().name,
             help=f"Name of the model to use for {cls.text_corrector_cls.task}"
         )
@@ -210,6 +212,9 @@ class TextCorrectionCli:
             item.language = lang
         return item
 
+    def format_output(self, item: data.InferenceData) -> str:
+        return item.to_str(self.args.output_format)
+
     def correct_iter(
         self,
         corrector: TextCorrector,
@@ -298,17 +303,17 @@ class TextCorrectionCli:
         else:
             logging.disable(logging.CRITICAL)
 
-        cor = self.setup_corrector()
-        is_cuda = cor.device.type == "cuda"
+        self.cor = self.setup_corrector()
+        is_cuda = self.cor.device.type == "cuda"
 
         if is_cuda:
-            torch.cuda.reset_peak_memory_stats(cor.device)
+            torch.cuda.reset_peak_memory_stats(self.cor.device)
 
         start = time.perf_counter()
         if self.args.correct is not None:
             ipt = self.parse_input(self.args.correct, self.args.lang)
-            opt = next(self.correct_iter(cor, iter([ipt])))
-            print(opt.to_str(self.args.output_format))
+            opt = next(self.correct_iter(self.cor, iter([ipt])))
+            print(self.format_output(opt))
 
         elif self.args.file is not None:
             if self.args.out_path is None:
@@ -318,38 +323,35 @@ class TextCorrectionCli:
                 assert isinstance(self.args.out_path, str)
                 out = self.args.out_path
 
-            self.correct_file(cor, self.args.file, self.args.lang, out)
+            self.correct_file(self.cor, self.args.file, self.args.lang, out)
 
             if self.args.report:
                 if is_cuda:
-                    torch.cuda.synchronize(cor.device)
+                    torch.cuda.synchronize(self.cor.device)
                 end = time.perf_counter()
 
                 num_lines, num_bytes = text.file_size(self.args.file)
 
                 report = generate_report(
-                    cor.task,
-                    cor.name,
-                    cor.model,
+                    self.cor.task,
+                    self.cor.name,
+                    self.cor.model,
                     num_lines,
                     num_bytes,
                     end - start,
-                    cor._precision_dtype_str,
+                    self.cor._precision_dtype_str,
                     self.args.batch_size,
                     not self.args.unsorted,
-                    cor.device,
+                    self.cor.device,
                     batch_max_tokens=self.args.batch_max_tokens,
                 )
                 print(report)
 
         elif self.args.interactive:
             while True:
-                try:
-                    ipt = self.parse_input(input(), self.args.lang)
-                    opt = next(self.correct_iter(cor, iter([ipt])))
-                    print(opt.to_str(self.args.output_format))
-                except KeyboardInterrupt:
-                    pass
+                ipt = self.parse_input(input("Input:\n"), self.args.lang)
+                opt = next(self.correct_iter(self.cor, iter([ipt])))
+                print(self.format_output(opt))
 
         else:
             if sys.stdin.isatty():
@@ -362,9 +364,9 @@ class TextCorrectionCli:
                                 for line in sys.stdin)
                     sized_it = ProgressIterator(
                         input_it, self.inference_data_size)
-                    outputs = self.correct_iter(cor, sized_it)
+                    outputs = self.correct_iter(self.cor, sized_it)
                     for opt in outputs:
-                        print(opt.to_str(self.args.output_format))
+                        print(self.format_output(opt))
                 else:
                     # read stdin completely, then potentially sort and correct
                     inputs = [
@@ -375,25 +377,25 @@ class TextCorrectionCli:
                         iter(inputs),
                         self.inference_data_size
                     )
-                    outputs = self.correct_iter(cor, sized_it)
+                    outputs = self.correct_iter(self.cor, sized_it)
                     for opt in outputs:
-                        print(opt.to_str(self.args.output_format))
+                        print(self.format_output(opt))
 
                 if self.args.report:
                     if is_cuda:
-                        torch.cuda.synchronize(cor.device)
+                        torch.cuda.synchronize(self.cor.device)
 
                     report = generate_report(
-                        cor.task,
-                        cor.name,
-                        cor.model,
+                        self.cor.task,
+                        self.cor.name,
+                        self.cor.model,
                         sized_it.num_items,
                         sized_it.total_size,
                         time.perf_counter() - start,
-                        cor._precision_dtype_str,
+                        self.cor._precision_dtype_str,
                         self.args.batch_size,
                         not self.args.unsorted,
-                        cor.device,
+                        self.cor.device,
                         batch_max_tokens=self.args.batch_max_tokens,
                     )
                     print(report)

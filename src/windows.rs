@@ -63,6 +63,7 @@ impl<'a> Window<'a> {
 pub enum WindowConfig {
     Character(usize, usize, bool),
     Bytes(usize, usize, bool),
+    Full(bool),
 }
 
 impl<'a> FromPyObject<'a> for WindowConfig {
@@ -109,6 +110,14 @@ impl<'a> FromPyObject<'a> for WindowConfig {
                     use_graphemes,
                 )
             }
+            "full" => {
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                    value.extract()?
+                } else {
+                    true
+                };
+                WindowConfig::Full(use_graphemes)
+            }
             k => return Err(py_invalid_type_error(k, "window")),
         };
         Ok(window_config)
@@ -135,6 +144,20 @@ pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> anyhow::Result<Vec<Wind
         }
         WindowConfig::Bytes(max_bytes, context_bytes, use_graphemes) => {
             byte_windows(s, max_bytes, context_bytes, use_graphemes)
+        }
+        WindowConfig::Full(use_graphemes) => {
+            let cs = CS::new(s, use_graphemes);
+            Ok(vec![Window {
+                ctx_start: 0,
+                window_start: 0,
+                window_end: cs.len(),
+                ctx_end: cs.len(),
+                byte_ctx_start: 0,
+                byte_window_start: 0,
+                byte_window_end: s.len(),
+                byte_ctx_end: s.len(),
+                str: s,
+            }])
         }
     }
 }

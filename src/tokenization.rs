@@ -71,19 +71,55 @@ pub struct SpecialConfig {
     pub suffix: Vec<String>,
 }
 
+fn validate_special_and_language_config(
+    special_config: &SpecialConfig,
+    language_config: Option<&LanguageConfig>,
+) -> anyhow::Result<()> {
+    if !special_config.tokens.contains(&special_config.pad) {
+        return Err(anyhow!("pad token not in special tokens",));
+    }
+    if special_config
+        .prefix
+        .iter()
+        .any(|tok| !special_config.tokens.contains(tok))
+    {
+        return Err(anyhow!(
+            "one or more prefix tokens are not in special tokens",
+        ));
+    }
+    if special_config
+        .suffix
+        .iter()
+        .any(|tok| !special_config.tokens.contains(tok))
+    {
+        return Err(anyhow!(
+            "one or more suffix tokens are not in special tokens",
+        ));
+    }
+    if let Some(cfg) = language_config {
+        if !cfg.languages.contains(&cfg.default_language) {
+            return Err(anyhow!("default language not in list of languages",));
+        }
+        if cfg
+            .languages
+            .iter()
+            .any(|l| !special_config.tokens.contains(l))
+        {
+            return Err(anyhow!(
+                "one or more language tokens are not in special tokens",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Default for SpecialConfig {
     fn default() -> Self {
         Self {
             pad: PAD.to_string(),
             tokens: SPECIAL_TOKENS.iter().map(|s| s.to_string()).collect(),
-            prefix: DEFAULT_PREFIX_TOKENS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            suffix: DEFAULT_SUFFIX_TOKENS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            prefix: vec![],
+            suffix: vec![],
         }
     }
 }
@@ -131,11 +167,10 @@ impl<'a> FromPyObject<'a> for TokenizerConfig {
                 .get_item("tokenize")
                 .ok_or_else(|| py_required_key_error("tokenize", "tokenizer config"))?
                 .extract()?,
-            special: if let Some(value) = d.get_item("special") {
-                value.extract()?
-            } else {
-                SpecialConfig::default()
-            },
+            special: d
+                .get_item("special")
+                .ok_or_else(|| py_required_key_error("special", "tokenizer config"))?
+                .extract()?,
             language: if let Some(value) = d.get_item("language") {
                 Some(value.extract()?)
             } else {
@@ -623,44 +658,6 @@ impl IntoPy<PyObject> for TokenizationInfo {
     }
 }
 
-// impl<'a> FromPyObject<'a> for TokenizationInfo {
-//     fn extract(ob: &'a PyAny) -> PyResult<Self> {
-//         let d: &PyDict = ob.extract()?;
-//         let Some(info_type) = d.get_item("type") else {
-//             return Err(py_required_key_error("type", "tokenization info"));
-//         };
-//         let info_type: String = info_type.extract()?;
-//         let info = match info_type.as_str() {
-//             "empty" => TokenizationInfo::Empty,
-//             "token_groups" => {
-//                 let mut token_groups = HashMap::new();
-//                 for key in d.keys() {
-//                     let key_s: String = key.extract()?;
-//                     if key_s == "type" {
-//                         continue;
-//                     }
-//                     let gd = d.get_item(key).unwrap();
-//                     let groups = gd.get_item("groups")?.extract()?;
-//                     let agg = gd.get_item("aggregation")?.extract()?;
-//                     token_groups.insert(key_s, (groups, agg));
-//                 }
-//                 TokenizationInfo::TokenGroups(token_groups)
-//             }
-//             "info" => {
-//                 let mut info = HashMap::new();
-//                 for key in d.keys() {
-//                     let key_s: String = key.extract()?;
-//                     let value = d.get_item(key).unwrap();
-//                     info.insert(key_s, value.extract()?);
-//                 }
-//                 TokenizationInfo::Info(info)
-//             }
-//             k => return Err(py_invalid_type_error(k, "tokenization info")),
-//         };
-//         Ok(info)
-//     }
-// }
-
 /// A tokenization is defined to be a combination of token ids and some additional information.
 /// This is returned by a tokenizers tokenize function.
 #[derive(Debug, Clone)]
@@ -785,37 +782,11 @@ where
         config: Config,
         state: State,
     ) -> Self {
-        let languages = if let Some(lang_cfg) = language_config.as_ref() {
-            let mut l = vec![lang_cfg.default_language.clone()];
-            l.extend(lang_cfg.languages.iter().cloned());
-            l
-        } else {
-            vec![]
-        };
-        assert!(
-            special_config.tokens.contains(&special_config.pad),
-            "pad token not in special tokens"
-        );
-        assert!(
-            special_config
-                .prefix
-                .iter()
-                .all(|tok| special_config.tokens.contains(tok)),
-            "one or more prefix tokens are not in special tokens"
-        );
-        assert!(
-            special_config
-                .suffix
-                .iter()
-                .all(|tok| special_config.tokens.contains(tok)),
-            "one or more suffix tokens are not in special tokens"
-        );
-        assert!(
-            languages.iter().all(|l| special_config.tokens.contains(l)),
-            "one or more language tokens not in special tokens:\nlanguages:{:?}\nspecial tokens:{:?}",
-            &languages,
-            &special_config.tokens
-        );
+        if let Err(e) =
+            validate_special_and_language_config(&special_config, language_config.as_ref())
+        {
+            panic!("invalid special and language config: {e}");
+        }
         let special_vocab = Vocab::build(special_config.tokens, special_offset);
         let prefix_token_ids = special_config
             .prefix
@@ -1183,7 +1154,7 @@ impl Tokenize for DummyTokenizer {
 pub struct HuggingfaceTokenizer {
     inner: hft::Tokenizer,
     inner_prefix_and_suffix_length: (usize, usize),
-    special_config: SpecialConfig,
+    pad_token_id: u32,
     prefix_token_ids: Vec<u32>,
     suffix_token_ids: Vec<u32>,
 }
@@ -1191,7 +1162,7 @@ pub struct HuggingfaceTokenizer {
 impl HuggingfaceTokenizer {
     pub fn new(name: impl AsRef<str>, special_config: SpecialConfig) -> anyhow::Result<Self> {
         let name = name.as_ref().to_string();
-        let tok = hft::Tokenizer::from_pretrained(&name, None)
+        let mut tok = hft::Tokenizer::from_pretrained(&name, None)
             .map_err(|err| anyhow!("error loading huggingface tokenizer {}: {err}", name))?;
         let enc = tok.encode("this is a test", true).map_err(|err| {
             anyhow!("error encoding test string with huggingface tokenizer {name}: {err}")
@@ -1212,25 +1183,39 @@ impl HuggingfaceTokenizer {
             .map(|(id, _)| *id)
             .collect();
         let inner_prefix_and_suffix_length = (prefix_token_ids.len(), suffix_token_ids.len());
+        for token in &special_config.tokens {
+            if tok.token_to_id(token).is_some() {
+                continue;
+            }
+            tok.add_tokens(&[hft::AddedToken {
+                content: token.clone(),
+                single_word: false,
+                lstrip: false,
+                rstrip: false,
+                normalized: false,
+                special: false,
+            }]);
+        }
         if !special_config.prefix.is_empty() {
-            prefix_token_ids.extend(
-                special_config
-                    .prefix
-                    .iter()
-                    .map(|token| tok.token_to_id(token).unwrap()),
-            );
+            prefix_token_ids.extend(special_config.prefix.iter().map(|token| {
+                tok.token_to_id(token).unwrap_or_else(|| {
+                    panic!("token '{token}' not found in huggingface tokenizer",)
+                })
+            }));
         }
         if !special_config.suffix.is_empty() {
-            suffix_token_ids.extend(
-                special_config
-                    .suffix
-                    .iter()
-                    .map(|token| tok.token_to_id(token).unwrap()),
-            );
+            suffix_token_ids.extend(special_config.suffix.iter().map(|token| {
+                tok.token_to_id(token).unwrap_or_else(|| {
+                    panic!("token '{token}' not found in huggingface tokenizer",)
+                })
+            }));
         }
+        let Some(pad_token_id) = tok.token_to_id(&special_config.pad) else {
+            return Err(anyhow!("pad token {} not found in huggingface tokenizer", special_config.pad));
+        };
         Ok(Self {
             inner: tok,
-            special_config,
+            pad_token_id,
             prefix_token_ids,
             suffix_token_ids,
             inner_prefix_and_suffix_length,
@@ -1248,9 +1233,7 @@ impl BaseTokenize for HuggingfaceTokenizer {
     }
 
     fn pad_token_id(&self) -> u32 {
-        self.inner
-            .token_to_id(&self.special_config.pad)
-            .unwrap_or_else(|| panic!("pad token {} not in vocab", &self.special_config.pad))
+        self.pad_token_id
     }
 
     fn language_config(&self) -> Option<&LanguageConfig> {

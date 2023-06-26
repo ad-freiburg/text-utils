@@ -183,7 +183,7 @@ impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
                         cont_left = new_left;
                         cont_right = new_right;
                     }
-                    self.data[left].0.len() == cont.len()
+                    true
                 })
                 .collect(),
         }

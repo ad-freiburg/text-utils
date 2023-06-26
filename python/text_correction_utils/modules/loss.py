@@ -116,24 +116,19 @@ def loss_from_config(
         return ZeroLoss()
 
     elif loss_type == "cross_entropy":
-        weight = cfg.get("weights", None)
+        weight = cfg.pop("weights", None)
         weight = torch.tensor(weight, dtype=torch.float) if weight is not None else None
-        loss = nn.CrossEntropyLoss(ignore_index=cfg.get("ignore_index", -1), weight=weight)
+        loss = nn.CrossEntropyLoss(weight=weight, **cfg)
         return loss
 
     elif loss_type == "binary_cross_entropy":
-        weight = cfg.get("weight", None)
+        weight = cfg.pop("weight", None)
         weight = torch.tensor(weight, dtype=torch.float) if weight is not None else None
-        loss = nn.BCELoss(weight=weight)
+        loss = nn.BCELoss(weight=weight, **cfg)
         return loss
 
     elif loss_type == "focal":
-        weight = cfg.get("weight", None)
-        loss = FocalLoss(
-            alpha=weight,
-            gamma=cfg.get("gamma", 2.),
-            ignore_index=cfg.get("ignore_index", -1),
-        )
+        loss = FocalLoss(**cfg)
         return loss
 
     elif loss_type == "sequence":

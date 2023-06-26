@@ -46,6 +46,10 @@ impl PyPrefixTree {
         }
     }
 
+    fn __len__(&self) -> usize {
+        self.inner.size()
+    }
+
     #[staticmethod]
     fn load(path: &str) -> anyhow::Result<Self> {
         let inner = Node::load(path)?;
@@ -126,6 +130,10 @@ impl PyPrefixVec {
         }
     }
 
+    fn __len__(&self) -> usize {
+        self.inner.size()
+    }
+
     #[staticmethod]
     fn load(path: &str) -> anyhow::Result<Self> {
         let inner = PrefixVec::load(path)?;
@@ -193,6 +201,13 @@ impl PyPrefixVec {
             .get_continuations(&prefix)
             .map(|(s, v)| (s, *v))
             .collect()
+    }
+
+    fn at(&self, idx: usize) -> Option<(String, usize)> {
+        self.inner
+            .data
+            .get(idx)
+            .map(|(s, v)| (String::from_utf8_lossy(s).to_string(), *v))
     }
 }
 

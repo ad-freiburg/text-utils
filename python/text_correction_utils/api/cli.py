@@ -4,7 +4,7 @@ import sys
 import time
 import logging
 import warnings
-from typing import Iterator, Union, Optional, Type
+from typing import Iterator, Iterable, Union, Optional, Type
 
 import torch
 
@@ -212,8 +212,8 @@ class TextCorrectionCli:
             item.language = lang
         return item
 
-    def format_output(self, item: data.InferenceData) -> str:
-        return item.to_str(self.args.output_format)
+    def format_output(self, item: data.InferenceData) -> Iterable[str]:
+        return [item.to_str(self.args.output_format)]
 
     def correct_iter(
         self,
@@ -313,7 +313,8 @@ class TextCorrectionCli:
         if self.args.correct is not None:
             ipt = self.parse_input(self.args.correct, self.args.lang)
             opt = next(self.correct_iter(self.cor, iter([ipt])))
-            print(self.format_output(opt))
+            for line in self.format_output(opt):
+                print(line)
 
         elif self.args.file is not None:
             if self.args.out_path is None:
@@ -351,7 +352,8 @@ class TextCorrectionCli:
             while True:
                 ipt = self.parse_input(input(">> "), self.args.lang)
                 opt = next(self.correct_iter(self.cor, iter([ipt])))
-                print(self.format_output(opt))
+                for line in self.format_output(opt):
+                    print(line)
 
         else:
             if sys.stdin.isatty():
@@ -366,7 +368,8 @@ class TextCorrectionCli:
                         input_it, self.inference_data_size)
                     outputs = self.correct_iter(self.cor, sized_it)
                     for opt in outputs:
-                        print(self.format_output(opt))
+                        for line in self.format_output(opt):
+                            print(line)
                 else:
                     # read stdin completely, then potentially sort and correct
                     inputs = [
@@ -379,7 +382,8 @@ class TextCorrectionCli:
                     )
                     outputs = self.correct_iter(self.cor, sized_it)
                     for opt in outputs:
-                        print(self.format_output(opt))
+                        for line in self.format_output(opt):
+                            print(line)
 
                 if self.args.report:
                     if is_cuda:

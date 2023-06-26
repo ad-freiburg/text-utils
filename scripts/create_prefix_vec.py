@@ -1,5 +1,6 @@
 import time
 import argparse
+import os
 
 
 from text_correction_utils import prefix
@@ -18,6 +19,7 @@ def create(args: argparse.Namespace):
     end = time.perf_counter()
     print(f"Prefix vec built in {end - start:.2f} seconds")
     start = time.perf_counter()
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
     trie.save(args.out)
     end = time.perf_counter()
     print(f"Prefix vec saved in {end - start:.2f} seconds")

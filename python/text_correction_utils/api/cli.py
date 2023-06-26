@@ -349,7 +349,7 @@ class TextCorrectionCli:
 
         elif self.args.interactive:
             while True:
-                ipt = self.parse_input(input("Input:\n"), self.args.lang)
+                ipt = self.parse_input(input(">> "), self.args.lang)
                 opt = next(self.correct_iter(self.cor, iter([ipt])))
                 print(self.format_output(opt))
 

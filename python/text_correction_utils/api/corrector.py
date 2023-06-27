@@ -347,8 +347,10 @@ class TextCorrector:
                 if progress_unit == "seq":
                     pbar.update(1)
                 else:
-                    pbar.update(sum(item.window_bytes()
-                                for item in window_items))
+                    pbar.update(sum(
+                        item.window_bytes()
+                        for item in window_items
+                    ))
                 prev_item_idx = item.item_idx
                 window_items = [item]
                 window_outputs = [output]
@@ -379,6 +381,6 @@ class TextCorrector:
 
         self._mixed_precision_dtype = mixed_precision_dtype
 
-    @ property
+    @property
     def mixed_precision_enabled(self) -> bool:
         return self._mixed_precision_dtype != torch.float32

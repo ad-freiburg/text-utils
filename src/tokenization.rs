@@ -2317,29 +2317,26 @@ mod tests {
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(token_ids.len(), 6);
+        assert_eq!(token_ids[3], tok.unk_token_id());
+        assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
+        assert_eq!(tok.de_tokenize(&token_ids, false), "a t(unk)st".to_string());
+        let text = "a (pad)täst";
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, false).unwrap();
+        assert_eq!(token_ids.len(), 7);
+        assert_eq!(token_ids[2], tok.pad_token_id);
         assert_eq!(token_ids[4], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(
             tok.de_tokenize(&token_ids, false),
-            "(bos)a t(unk)st(eos)".to_string()
-        );
-        let text = "a (pad)täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, false).unwrap();
-        assert_eq!(token_ids.len(), 7 + 2);
-        assert_eq!(token_ids[3], tok.pad_token_id);
-        assert_eq!(token_ids[5], tok.unk_token_id());
-        assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
-        assert_eq!(
-            tok.de_tokenize(&token_ids, false),
-            "(bos)a (pad)t(unk)st(eos)".to_string()
+            "a (pad)t(unk)st".to_string()
         );
         let text = "a (pad)täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
-        assert_eq!(token_ids.len(), 11 + 2);
+        assert_eq!(token_ids.len(), 11);
         assert_eq!(tok.de_tokenize(&token_ids, true), "a (pad)tst".to_string());
         assert_eq!(
             tok.de_tokenize(&token_ids, false),
-            "(bos)a (pad)t(unk)st(eos)".to_string()
+            "a (pad)t(unk)st".to_string()
         );
     }
 
@@ -2366,7 +2363,7 @@ mod tests {
                     HashMap::from([(
                         "byte_groups".to_string(),
                         (
-                            [1, 1, 1, 1, 2, 1, 1, 1]
+                            [1, 1, 1, 2, 1, 1]
                                 .into_iter()
                                 .map(|l| TokenGroup::Full(l))
                                 .collect(),
@@ -2377,7 +2374,7 @@ mod tests {
             }
             _ => panic!("wrong info"),
         };
-        assert_eq!(token_ids.len(), 7 + 2);
+        assert_eq!(token_ids.len(), 7);
         assert_eq!(tok.de_tokenize(&token_ids, true), text.to_string());
         let tokenize_cfg = ByteTokenizerConfig {
             groups: ByteGroups::CodePoints,
@@ -2387,10 +2384,7 @@ mod tests {
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(
-            token_ids[1..token_ids.len() - 1]
-                .iter()
-                .map(|tok| *tok as u8)
-                .collect::<Vec<u8>>(),
+            token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes().clone()
         );
         match info {
@@ -2400,20 +2394,13 @@ mod tests {
                     HashMap::from([(
                         "code_point_groups".to_string(),
                         (
-                            vec![TokenGroup::Full(1)]
+                            [[1].as_slice(), &[1], &[1], &[2], &[1], &[1]]
                                 .into_iter()
-                                .chain(
-                                    [[1].as_slice(), &[1], &[1], &[2], &[1], &[1]]
-                                        .into_iter()
-                                        .map(|vs| {
-                                            TokenGroup::Nested(
-                                                vs.into_iter()
-                                                    .map(|v| TokenGroup::Full(*v))
-                                                    .collect(),
-                                            )
-                                        })
-                                )
-                                .chain(vec![TokenGroup::Full(1)])
+                                .map(|vs| {
+                                    TokenGroup::Nested(
+                                        vs.into_iter().map(|v| TokenGroup::Full(*v)).collect(),
+                                    )
+                                })
                                 .collect(),
                             GroupAggregation::Mean
                         )

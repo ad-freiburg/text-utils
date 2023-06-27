@@ -1,9 +1,10 @@
 use crate::text::{clean, count_words_whitespace, file_size, SPLIT_WORD_WHITESPACE_PATTERN};
-use crate::unicode::{normalize, Normalization, CS};
+use crate::unicode::{self, normalize, Normalization, CS};
 use crate::utils::{
     accumulate, progress_bar, py_invalid_type_error, py_required_key_error, SerializeMsgPack,
 };
 use anyhow::anyhow;
+use hft::{NormalizedString, Normalizer};
 use itertools::Itertools;
 use log::info;
 use numpy::ndarray::{Array1, Array2};
@@ -702,6 +703,10 @@ pub trait BaseTokenize: Send + Sync + 'static {
         self.num_prefix_tokens() + self.num_suffix_tokens()
     }
 
+    fn normalize(&self, s: &str) -> String {
+        unicode::normalize(s, Normalization::NFKC, true)
+    }
+
     fn prefix_token_ids(&self) -> &[u32];
 
     fn suffix_token_ids(&self) -> &[u32];
@@ -1242,6 +1247,18 @@ impl BaseTokenize for HuggingfaceTokenizer {
 
     fn special_token_to_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)
+    }
+
+    fn normalize(&self, s: &str) -> String {
+        if let Some(normalizer) = self.inner.get_normalizer() {
+            let mut normalized = NormalizedString::from(s);
+            normalizer
+                .normalize(&mut normalized)
+                .expect("huggingface tokenizer failed during normalization");
+            normalized.get().to_string()
+        } else {
+            unicode::normalize(s, Normalization::NFKC, true)
+        }
     }
 }
 
@@ -2224,6 +2241,10 @@ impl PyTokenizer {
         self.tokenizer.special_token_to_id(token)
     }
 
+    fn normalize(&self, s: &str) -> String {
+        self.tokenizer.normalize(s)
+    }
+
     #[pyo3(signature = (token_ids, ignore_special_tokens = true))]
     fn de_tokenize(&self, token_ids: Vec<u32>, ignore_special_tokens: bool) -> String {
         self.tokenizer
@@ -2295,7 +2316,7 @@ mod tests {
         );
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
-        assert_eq!(token_ids.len(), 6 + 2);
+        assert_eq!(token_ids.len(), 6);
         assert_eq!(token_ids[4], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(
@@ -2335,10 +2356,7 @@ mod tests {
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(
-            token_ids[1..token_ids.len() - 1]
-                .iter()
-                .map(|tok| *tok as u8)
-                .collect::<Vec<u8>>(),
+            token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes().clone()
         );
         match info {

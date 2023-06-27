@@ -265,9 +265,6 @@ fn bench_prefix(c: &mut Criterion) {
             let _vec: PrefixVec<_> = input.iter().zip(0..input.len()).collect();
         });
     });
-    group.bench_with_input("vec_load", &test_out, |b, input| {
-        b.iter(|| PrefixVec::<usize>::load(input).unwrap());
-    });
     group.bench_with_input("vec_insert", word, |b, input| {
         b.iter(|| vec.insert(input, 1));
     });

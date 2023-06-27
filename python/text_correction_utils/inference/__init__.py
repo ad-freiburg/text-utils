@@ -35,19 +35,19 @@ class Beam:
 
 # maps from token ids and other kwargs to distribution over next token id
 DecodeFn = Callable[..., torch.Tensor]
-# selects an index and score from a given token distribution
+# selects indices and scores from given token distributions
 IdxSelectFn = Callable[
     [
-        # distribution over next token id, shape [vocab_size]
+        # distributions over next token id, shape [batch_size, vocab_size]
         torch.Tensor,
-        # idx of input batch element for which the next token is selected
-        int
+        # indices of input batch elements for which the next token is selected
+        List[int]
     ],
     Tuple[
-        # index of selected token
-        int,
-        # score (log_prob) of selected token
-        float
+        # indices of selected token
+        torch.Tensor,
+        # scores (log_probs) of selected token
+        torch.Tensor
     ]
 ]
 # selects (multiple) indices and scores from a given token distribution
@@ -84,40 +84,39 @@ ReScoreFn = Callable[
 BeamOrRaw = Union[Beam, Tuple[torch.Tensor, torch.Tensor]]
 StopFn = Callable[
     [
-        # beam or raw tuple of (token_ids, scores)
-        BeamOrRaw,
-        # idx of input batch element which is checked for stopping
-        int
+        # selected token ids, shape [batch_size]
+        torch.Tensor,
+        # indices of input batch elements which are checked for stopping
+        List[int]
     ],
-    bool
+    torch.Tensor
 ]
 
 
 def eos_stop_fn(eos_token_id: int) -> StopFn:
-    def _stop(inputs: BeamOrRaw, _: int) -> bool:
-        if isinstance(inputs, Beam):
-            return inputs.token_ids[-1] == eos_token_id
-        else:
-            token_ids, _ = inputs
-            return token_ids[-1] == eos_token_id
+    def _stop(token_ids: torch.Tensor, _: List[int]) -> torch.Tensor:
+        return token_ids == eos_token_id
 
     return _stop
 
 
 def greedy_select_fn() -> IdxSelectFn:
-    def _greedy(scores: torch.Tensor, _: int) -> Tuple[int, float]:
-        idx = torch.argmax(scores, dim=0)
-        return int(idx), float(scores[idx])
+    def _greedy(scores: torch.Tensor, _: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+        indices = torch.argmax(scores, dim=-1)
+        return indices, torch.gather(scores, -1, indices)
 
     return _greedy
 
 
 def sample_select_fn(sample_top_k: int) -> IdxSelectFn:
-    def _sample(scores: torch.Tensor, _: int) -> Tuple[int, float]:
-        k = min(sample_top_k, len(scores))
-        sampled_idx = torch.randint(k, (1,)).item()
-        top_k = torch.topk(scores, k, dim=0)
-        return int(top_k.indices[sampled_idx]), int(top_k.values[sampled_idx])
+    def _sample(scores: torch.Tensor, _: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+        k = min(sample_top_k, scores.shape[-1])
+        sampled_indices = torch.randint(k, (len(scores),))
+        top_k = torch.topk(scores, k, dim=-1)
+        return (
+            torch.gather(top_k.indices, -1, sampled_indices),
+            torch.gather(top_k.values, -1, sampled_indices)
+        )
 
     return _sample
 
@@ -193,7 +192,7 @@ def search(
     # all sequences are at max length or stopped by stop_fn
     while torch.sum(mask) > 0:
         decoder_lengths = _sub_select(lengths, mask)
-        max_decoder_length = torch.max(decoder_lengths)
+        max_decoder_length = torch.max(decoder_lengths)  # type: ignore
 
         if kwargs_select_fn is not None:
             decoder_kwargs = kwargs_select_fn(kwargs, mask)
@@ -202,7 +201,7 @@ def search(
 
         decoder_token_ids = _sub_select(
             token_ids, mask
-        )[:, :max_decoder_length]
+        )[:, :max_decoder_length]  # type: ignore
         # always add a padding mask, indicating which tokens are padding
         # and the lengths of the sequence to the additional arguments
         assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \
@@ -226,22 +225,18 @@ def search(
 
         batch_indices = indices[mask].tolist()
 
-        for scores, idx in zip(log_softmax_scores, batch_indices):
-            token_id, lp = select_fn(scores, idx)
-            token_ids[idx, lengths[idx]] = token_id
-            log_prob[idx, lengths[idx]] = lp
+        sel_ids, sel_lps = select_fn(log_softmax_scores, batch_indices)
+        token_ids[mask, lengths_of_decoded_indices] = sel_ids
+        log_prob[mask, lengths_of_decoded_indices] = sel_lps
 
         lengths[mask] += 1
 
         max_length_indices = torch.where(lengths >= max_length)[0]
         smaller_max_length_mask[max_length_indices] = False
 
-        new_stop_indices = []
-        for idx in batch_indices:
-            length = lengths[idx]
-            if stop_fn((token_ids[idx, :length], log_prob[idx, :length]), idx):
-                new_stop_indices.append(idx)
-        non_stop_mask[torch.tensor(new_stop_indices, dtype=torch.long)] = False
+        stop_mask = stop_fn(sel_ids, batch_indices)
+        new_stop_indices = indices[mask][stop_mask]
+        non_stop_mask[new_stop_indices] = False
 
         mask = non_stop_mask & smaller_max_length_mask
 

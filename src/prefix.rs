@@ -5,6 +5,7 @@ use std::{
 };
 
 use pyo3::prelude::*;
+use rayon::prelude::*;
 
 use crate::{prefix_tree::Node, prefix_vec::PrefixVec, utils::SerializeMsgPack};
 
@@ -100,6 +101,12 @@ impl PyPrefixTree {
         self.inner.get(&key).copied()
     }
 
+    fn batch_get(&self, keys: Vec<Vec<u8>>) -> Vec<Option<usize>> {
+        keys.into_iter()
+            .map(|key| self.inner.get(&key).copied())
+            .collect()
+    }
+
     fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
         self.continuations = Some(continuations);
     }
@@ -112,10 +119,36 @@ impl PyPrefixTree {
         Ok(self.inner.contains_continuations(&prefix, continuations))
     }
 
+    fn batch_contains_continuations(
+        &self,
+        prefixes: Vec<Vec<u8>>,
+    ) -> anyhow::Result<Vec<Vec<bool>>> {
+        let continuations = self
+            .continuations
+            .as_ref()
+            .ok_or_else(|| anyhow!("continuations not set"))?;
+        Ok(prefixes
+            .into_par_iter()
+            .map(|prefix| self.inner.contains_continuations(&prefix, continuations))
+            .collect())
+    }
+
     fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(String, usize)> {
         self.inner
             .get_continuations(&prefix)
             .map(|(s, v)| (s, *v))
+            .collect()
+    }
+
+    fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(String, usize)>> {
+        prefixes
+            .into_par_iter()
+            .map(|prefix| {
+                self.inner
+                    .get_continuations(&prefix)
+                    .map(|(s, v)| (s, *v))
+                    .collect()
+            })
             .collect()
     }
 }
@@ -184,6 +217,12 @@ impl PyPrefixVec {
         self.inner.get(&key).copied()
     }
 
+    fn batch_get(&self, keys: Vec<Vec<u8>>) -> Vec<Option<usize>> {
+        keys.into_iter()
+            .map(|key| self.inner.get(&key).copied())
+            .collect()
+    }
+
     fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
         self.continuations = Some(continuations);
     }
@@ -196,10 +235,36 @@ impl PyPrefixVec {
         Ok(self.inner.contains_continuations(&prefix, continuations))
     }
 
+    fn batch_contains_continuations(
+        &self,
+        prefixes: Vec<Vec<u8>>,
+    ) -> anyhow::Result<Vec<Vec<bool>>> {
+        let continuations = self
+            .continuations
+            .as_ref()
+            .ok_or_else(|| anyhow!("continuations not set"))?;
+        Ok(prefixes
+            .into_par_iter()
+            .map(|prefix| self.inner.contains_continuations(&prefix, continuations))
+            .collect())
+    }
+
     fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(String, usize)> {
         self.inner
             .get_continuations(&prefix)
             .map(|(s, v)| (s, *v))
+            .collect()
+    }
+
+    fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(String, usize)>> {
+        prefixes
+            .into_par_iter()
+            .map(|prefix| {
+                self.inner
+                    .get_continuations(&prefix)
+                    .map(|(s, v)| (s, *v))
+                    .collect()
+            })
             .collect()
     }
 

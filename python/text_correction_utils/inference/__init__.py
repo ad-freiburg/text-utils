@@ -1,4 +1,5 @@
 from typing import Callable, Tuple, List, Optional, Union, Dict, Any
+import copy
 
 import torch
 
@@ -13,10 +14,16 @@ class Beam:
     ) -> None:
         self.token_ids: List[int] = token_ids
         self.log_probs: List[float] = log_probs
+        self.info: Dict[str, Any] = {}
 
     @staticmethod
-    def from_beam(other: "Beam", log_p: float, token_id: int) -> "Beam":
+    def from_beam(
+        other: "Beam",
+        log_p: float,
+        token_id: int
+    ) -> "Beam":
         beam = Beam(other.token_ids + [token_id], other.log_probs + [log_p])
+        beam.info = copy.deepcopy(other.info)
         return beam
 
     @property
@@ -30,7 +37,10 @@ class Beam:
         return len(self.token_ids)
 
     def __repr__(self) -> str:
-        return f"Beam(token_ids={self.token_ids}, log_probs={self.log_probs})"
+        return f"""Beam(
+    token_ids={self.token_ids},
+    log_probs={self.log_probs}
+)"""
 
 
 # maps from token ids and other kwargs to distribution over next token id
@@ -50,38 +60,6 @@ IdxSelectFn = Callable[
         torch.Tensor
     ]
 ]
-# selects (multiple) indices and scores from a given token distribution
-IndicesSelectFn = Callable[
-    [
-        # distribution over next token ids, shape [k, vocab_size]
-        torch.Tensor,
-        # idx of input batch element for which the next token is selected
-        int
-    ],
-    Tuple[
-        # indices of selected tokens
-        torch.Tensor,
-        # scores (log_prob) of selected tokens
-        torch.Tensor
-    ]
-]
-# select specific elements for all the kwargs keys given the mask tensor
-KwargsSelectFn = Callable[
-    [Dict[str, Any], torch.Tensor],
-    Dict[str, Any]
-]
-# calculates a penalty or bonus added to the score of a beam
-ReScoreFn = Callable[
-    [
-        # beam
-        Beam,
-        # idx of input batch element which is rescored
-        int
-    ],
-    float
-]
-# determines whether to stop decoding a specific batch element
-BeamOrRaw = Union[Beam, Tuple[torch.Tensor, torch.Tensor]]
 StopFn = Callable[
     [
         # selected token ids, shape [batch_size]
@@ -90,6 +68,33 @@ StopFn = Callable[
         List[int]
     ],
     torch.Tensor
+]
+# selects (multiple) indices and scores from a given token distribution
+BeamSelectFn = Callable[
+    [
+        # distribution over next token ids, shape [batch_size, beam_size, vocab_size]
+        torch.Tensor,
+        # input beams
+        List[List[Beam]],
+        # indices of input batch elements
+        List[int]
+    ],
+    # new beam candidates, should be sorted descending by score
+    List[List[Beam]]
+]
+BeamStopFn = Callable[
+    [
+        # beam checked for stopping
+        Beam,
+        # idx of input batch element which is checked for stopping
+        int
+    ],
+    bool
+]
+# select specific elements for all the kwargs keys given the mask tensor
+KwargsSelectFn = Callable[
+    [Dict[str, Any], torch.Tensor],
+    Dict[str, Any]
 ]
 
 
@@ -121,12 +126,33 @@ def sample_select_fn(sample_top_k: int) -> IdxSelectFn:
     return _sample
 
 
-def beam_select_fn(beam_width: int) -> IndicesSelectFn:
-    def _beam(scores: torch.Tensor, _: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert scores.ndim == 2
+def beam_select_fn(beam_width: int) -> BeamSelectFn:
+    def _beam(
+        scores: torch.Tensor,
+        batch_beams: List[List[Beam]],
+        _: List[int]
+    ) -> List[List[Beam]]:
+        num_beams = [len(b) for b in batch_beams]
+        assert scores.ndim == 2 and scores.shape[0] == sum(num_beams)
         k = min(beam_width, scores.shape[1])
         top_k = torch.topk(scores, k, dim=1)
-        return top_k.indices, top_k.values
+        top_k_indices = torch.split(top_k.indices, num_beams)
+        top_k_values = torch.split(top_k.values, num_beams)
+        batch_candidates = []
+        for beams, indices, values in zip(batch_beams, top_k_indices, top_k_values):
+            candidates = []
+            for idx, (token_ids, log_probs) in enumerate(zip(indices.tolist(), values.tolist())):
+                for token_id, log_p in zip(token_ids, log_probs):
+                    candidates.append((idx, token_id, log_p))
+            candidates = sorted(
+                candidates,
+                key=lambda item: -(beams[item[0]].log_prob + item[2]),
+            )[:2 * beam_width]
+            batch_candidates.append([
+                Beam.from_beam(beams[idx], log_p, token_id)
+                for idx, token_id, log_p in candidates
+            ])
+        return batch_candidates
 
     return _beam
 
@@ -263,24 +289,22 @@ def log_likelihood_score(normalize_by_length: bool = True, alpha: float = 1.0) -
 def beam_search(
     decode_fn: DecodeFn,
     initial_token_ids: List[List[int]],
-    vocab_size: int,
     pad_token_id: int,
     max_length: int,
-    stop_fn: StopFn,
+    stop_fn: BeamStopFn,
     device: torch.device,
     normalize_by_length: bool,
     alpha: float,
     beam_width: int,
-    select_fn: Optional[IndicesSelectFn] = None,
+    select_fn: Optional[BeamSelectFn] = None,
     kwargs_select_fn: Optional[KwargsSelectFn] = None,
     **kwargs: Any
 ) -> List[List[Beam]]:
     batch_size = len(initial_token_ids)
 
     score_fn = log_likelihood_score(normalize_by_length, alpha)
-    beam_width = min(beam_width, vocab_size - 1)  # never produce pad
     if select_fn is None:
-        select_fn = beam_select_fn(2 * beam_width)
+        select_fn = beam_select_fn(beam_width)
 
     beam_queues: List[List[Beam]] = [[] for _ in range(batch_size)]
 
@@ -311,14 +335,12 @@ def beam_search(
 
         num_beams = []
         decoder_mask = []
-        decoder_log_probs = []
         decoder_token_ids = []
         decoder_lengths = []
         for idx in indices_to_decode:
             num_beams.append(len(current_beams[idx]))
             decoder_mask.extend([idx] * num_beams[-1])
             for beam in current_beams[idx]:
-                decoder_log_probs.append(beam.log_prob)
                 decoder_lengths.append(len(beam))
                 decoder_token_ids.append(
                     torch.tensor(beam.token_ids, dtype=torch.long)
@@ -329,9 +351,6 @@ def beam_search(
             batch_first=True,
             padding_value=pad_token_id
         ).to(non_blocking=True, dtype=torch.long, device=device)
-        decoder_log_probs_tensor = torch.tensor(
-            decoder_log_probs, dtype=torch.float, device=device
-        )
         decoder_mask = torch.tensor(
             decoder_mask, dtype=torch.long, device=device
         )
@@ -356,42 +375,24 @@ def beam_search(
         )[torch.arange(len(decoder_token_ids), device=device), decoder_lengths_tensor - 1, ...]
 
         log_softmax_scores = torch.log_softmax(decoder_outputs, dim=1)
+        beam_candidates = select_fn(
+            log_softmax_scores,
+            [current_beams[idx] for idx in indices_to_decode],
+            indices_to_decode
+        )
 
-        for log_scores, current_scores, idx in zip(
-                torch.split(log_softmax_scores, num_beams),
-                torch.split(decoder_log_probs_tensor, num_beams),
-                indices_to_decode
-        ):
-            beam_token_ids, beam_log_probs = select_fn(log_scores, idx)
-            beam_scores = current_scores.unsqueeze(1) + beam_log_probs
-            beam_scores = beam_scores.tolist()
-            beam_token_ids = beam_token_ids.tolist()
-            beam_log_probs = beam_log_probs.tolist()
-            beam_candidates = []
-            for beam_idx, (beam, scores, token_ids, log_probs) in enumerate(zip(
-                current_beams[idx], beam_scores, beam_token_ids, beam_log_probs
-            )):
-                for token_id, score, log_prob in zip(token_ids, scores, log_probs):
-                    beam_candidate = Beam.from_beam(beam, log_prob, token_id)
-                    beam_candidates.append((score, beam_candidate, beam_idx))
-
-            beam_candidates = sorted(
-                beam_candidates, key=lambda e: -e[0]
-            )[:2 * beam_width]
-
+        for idx, candidates in zip(indices_to_decode, beam_candidates):
             new_current_beams = []
-            new_current_scores = []
-            for i, (score, beam, beam_idx) in enumerate(beam_candidates):
+            for i, candidate in enumerate(candidates):
                 # only consider eos beams if they are in top beam_width beams
-                if i < beam_width and stop_fn(beam, idx):
+                if i < beam_width and stop_fn(candidate, idx):
                     # we record all stop beams, but only stop when the top beam should stop
                     # (because then we are sure there is no better candidate left to decode)
-                    beam_queues[idx].append(beam)
+                    beam_queues[idx].append(candidate)
                     if i == 0:
                         stop_mask[idx] = True
                 else:
-                    new_current_beams.append(beam)
-                    new_current_scores.append(score)
+                    new_current_beams.append(candidate)
 
                 if len(new_current_beams) >= beam_width:
                     break

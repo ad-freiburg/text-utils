@@ -184,6 +184,13 @@ impl PyPrefixVec {
         self.inner.contains(&prefix)
     }
 
+    fn batch_contains(&self, prefixes: Vec<Vec<u8>>) -> Vec<bool> {
+        prefixes
+            .into_iter()
+            .map(|prefix| self.inner.contains(&prefix))
+            .collect()
+    }
+
     fn get(&self, key: Vec<u8>) -> Option<usize> {
         self.inner.get(&key).copied()
     }
@@ -231,11 +238,8 @@ impl PyPrefixVec {
             .collect()
     }
 
-    fn at(&self, idx: usize) -> Option<(String, usize)> {
-        self.inner
-            .data
-            .get(idx)
-            .map(|(s, v)| (String::from_utf8_lossy(s).to_string(), *v))
+    fn at(&self, idx: usize) -> Option<(Vec<u8>, usize)> {
+        self.inner.data.get(idx).map(|(s, v)| (s.to_vec(), *v))
     }
 }
 

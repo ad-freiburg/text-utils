@@ -2,31 +2,43 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    prefix::PrefixTreeSearch,
-    unicode::{normalize, Normalization},
-};
+use crate::prefix::PrefixTreeSearch;
 
 pub trait PrefixTreeNode {
     type Value;
 
     fn get_value(&self) -> Option<&Self::Value>;
 
+    fn get_value_mut(&mut self) -> Option<&mut Self::Value>;
+
     fn set_value(&mut self, value: Self::Value);
 
     fn get_child(&self, key: &u8) -> Option<&Self>;
 
+    fn get_child_mut(&mut self, key: &u8) -> Option<&mut Self>;
+
     fn get_children(&self) -> Box<dyn Iterator<Item = (&u8, &Self)> + '_>;
 
     fn set_child(&mut self, key: &u8, value: Self);
-
-    fn get_child_mut(&mut self, key: &u8) -> Option<&mut Self>;
 
     #[inline]
     fn find(&self, key: &[u8]) -> Option<&Self> {
         let mut node = self;
         for idx in key {
             if let Some(child) = node.get_child(idx) {
+                node = child;
+            } else {
+                return None;
+            }
+        }
+        Some(node)
+    }
+
+    #[inline]
+    fn find_mut(&mut self, key: &[u8]) -> Option<&mut Self> {
+        let mut node = self;
+        for idx in key {
+            if let Some(child) = node.get_child_mut(idx) {
                 node = child;
             } else {
                 return None;
@@ -60,21 +72,6 @@ pub trait PrefixTreeNode {
     }
 }
 
-pub struct Continuations<I> {
-    inner: I,
-}
-
-impl<I> Iterator for Continuations<I>
-where
-    I: Iterator,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-    }
-}
-
 impl<N, V> PrefixTreeSearch<V> for N
 where
     N: Sized + PrefixTreeNode<Value = V> + Default,
@@ -87,10 +84,9 @@ where
     }
 
     #[inline]
-    fn insert(&mut self, key: &str, value: V) {
+    fn insert(&mut self, key: &[u8], value: V) {
         let mut node = self;
-        let key = normalize(key, Normalization::NFKC, true);
-        for idx in key.as_bytes() {
+        for idx in key {
             if node.get_child(idx).is_none() {
                 node.set_child(idx, Self::default());
             }
@@ -104,16 +100,6 @@ where
         self.find(prefix).is_some()
     }
 
-    fn contains_continuations(&self, prefix: &[u8], continuations: &[Vec<u8>]) -> Vec<bool> {
-        let Some(node) = self.find(prefix) else {
-            return vec![false; continuations.len()];
-        };
-        continuations
-            .iter()
-            .map(|cont| node.contains(cont))
-            .collect()
-    }
-
     #[inline]
     fn get(&self, prefix: &[u8]) -> Option<&V> {
         match self.find(prefix) {
@@ -122,15 +108,22 @@ where
         }
     }
 
-    fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (String, &V)> + '_> {
+    #[inline]
+    fn get_mut(&mut self, prefix: &[u8]) -> Option<&mut V> {
+        match self.find_mut(prefix) {
+            Some(node) => node.get_value_mut(),
+            None => None,
+        }
+    }
+
+    fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(node) = self.find(prefix) else {
             return Box::new(std::iter::empty());
         };
         let prefix = prefix.to_vec();
         Box::new(node.find_continuations().map(move |(cont, val)| {
             let full_cont: Vec<_> = prefix.iter().cloned().chain(cont).collect();
-            let key = String::from_utf8_lossy(&full_cont).to_string();
-            (key, val)
+            (full_cont, val)
         }))
     }
 }
@@ -167,6 +160,11 @@ impl<V> PrefixTreeNode for Node<V> {
         self.value.as_ref()
     }
 
+    #[inline]
+    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+        self.value.as_mut()
+    }
+
     fn set_value(&mut self, value: Self::Value) {
         self.value = Some(value);
     }
@@ -180,17 +178,14 @@ impl<V> PrefixTreeNode for Node<V> {
     }
 }
 
-impl<S, V> FromIterator<(S, V)> for Node<V>
-where
-    S: AsRef<str>,
-{
+impl<V> FromIterator<(Vec<u8>, V)> for Node<V> {
     fn from_iter<I>(iter: I) -> Self
     where
-        I: IntoIterator<Item = (S, V)>,
+        I: IntoIterator<Item = (Vec<u8>, V)>,
     {
         let mut tree = Self::default();
         for (key, value) in iter {
-            tree.insert(key.as_ref(), value);
+            tree.insert(&key, value);
         }
         tree
     }

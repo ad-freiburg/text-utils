@@ -3,17 +3,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     prefix::PrefixTreeSearch,
-    unicode::{normalize, Normalization},
+    prefix_tree::{Node, PrefixTreeNode},
 };
+use anyhow::anyhow;
+
+pub type Continuations = Vec<Vec<u8>>;
+pub type ContinuationTree = Node<Vec<usize>>;
 
 #[derive(Serialize, Deserialize)]
 pub struct PrefixVec<V> {
     pub data: Vec<(Vec<u8>, V)>,
+    pub(crate) cont: Option<(Continuations, ContinuationTree)>,
+}
+
+enum FindResult {
+    Found(usize, usize),
+    NotFound(usize),
 }
 
 impl<V> Default for PrefixVec<V> {
     fn default() -> Self {
-        Self { data: Vec::new() }
+        Self {
+            data: Vec::new(),
+            cont: None,
+        }
     }
 }
 
@@ -64,46 +77,44 @@ impl<V> PrefixVec<V> {
             Ok(idx) => idx,
         };
 
+        let right_bound = |right_idx: usize| -> bool {
+            right_idx < right
+                && depth < self.data[right_idx].0.len()
+                && self.data[right_idx].0[depth] <= *key
+        };
+
         // exponential search to overshoot right bound
         let mut right_idx = idx;
         let mut i = 0;
-        while right_idx < right
-            && depth < self.data[right_idx].0.len()
-            && self.data[right_idx].0[depth] <= *key
-        {
+        while right_bound(right_idx) {
             right_idx += 2usize.pow(i);
             i += 1;
         }
-        assert!(i > 0);
 
         // search linearly from the previous exponential search position
         // to find right bound
         right_idx = idx + 2usize.pow(i - 1);
-        while right_idx < right
-            && depth < self.data[right_idx].0.len()
-            && self.data[right_idx].0[depth] <= *key
-        {
+        while right_bound(right_idx) {
             right_idx += 1;
         }
 
         // now do the same for the left bound, a little bit
         // different here since left is inclusive
+        let left_bound = |left_idx: usize| -> bool {
+            left_idx > left
+                && depth < self.data[left_idx - 1].0.len()
+                && self.data[left_idx - 1].0[depth] >= *key
+        };
         let mut left_idx = idx;
         i = 0;
-        while left_idx > left
-            && depth < self.data[left_idx - 1].0.len()
-            && self.data[left_idx - 1].0[depth] >= *key
-        {
+        while left_bound(left_idx) {
             left_idx = left_idx.saturating_sub(2usize.pow(i));
             i += 1;
         }
 
         if i > 0 {
             left_idx = idx.saturating_sub(2usize.pow(i - 1));
-            while left_idx > left
-                && depth < self.data[left_idx - 1].0.len()
-                && self.data[left_idx - 1].0[depth] >= *key
-            {
+            while left_bound(left_idx) {
                 left_idx -= 1;
             }
         }
@@ -111,22 +122,84 @@ impl<V> PrefixVec<V> {
     }
 
     #[inline]
-    fn find(&self, key: &[u8]) -> (Option<(usize, usize)>, Option<&V>) {
-        let mut left = 0;
-        let mut right = self.size();
+    fn find_range(
+        &self,
+        key: &[u8],
+        mut left: usize,
+        mut right: usize,
+        start_depth: usize,
+    ) -> FindResult {
         for (depth, k) in key.iter().enumerate() {
-            let Some((new_left, new_right)) = self.range_search(k, depth, left, right) else {
-                return (None, None);
+            let Some((new_left, new_right)) = self.range_search(k, start_depth + depth, left, right) else {
+                return FindResult::NotFound(depth);
             };
             left = new_left;
             right = new_right;
         }
-        let indices = Some((left, right));
-        if self.data[left].0.len() != key.len() {
-            (indices, None)
-        } else {
-            (indices, Some(&self.data[left].1))
+        FindResult::Found(left, right)
+    }
+
+    pub fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
+        // calculate interdependencies between continuations
+        // e.g. if one continuation start with abc and is not
+        // a valid one, then all continuations starting with abc
+        // are also not valid
+
+        // build tree
+        let mut cont_tree: Node<Vec<usize>> = Node::default();
+        cont_tree.set_value(vec![]);
+        // now insert the index along path for each continuation
+        for (i, cont) in continuations.iter().enumerate() {
+            let mut node = &mut cont_tree;
+            for key in cont {
+                match node.get_child_mut(key) {
+                    Some(child) => {
+                        child.get_value_mut().unwrap().push(i);
+                    }
+                    None => {
+                        let mut child = Node::default();
+                        child.set_value(vec![i]);
+                        node.set_child(key, child);
+                    }
+                }
+                node = node.get_child_mut(key).unwrap();
+            }
         }
+        self.cont = Some((continuations, cont_tree));
+    }
+
+    pub fn contains_continuations(&self, prefix: &[u8]) -> anyhow::Result<Vec<bool>> {
+        let Some((continuations, cont_tree)) = self.cont.as_ref() else {
+            return Err(anyhow!("no continuations set"));
+        };
+        let conts = match self.find_range(prefix, 0, self.size(), 0) {
+            FindResult::NotFound(..) => vec![false; continuations.len()],
+            FindResult::Found(left, right) => {
+                let mut contains = vec![true; continuations.len()];
+                for (i, cont) in continuations.iter().enumerate() {
+                    if !contains[i] {
+                        continue;
+                    }
+                    if let FindResult::NotFound(depth) =
+                        self.find_range(cont, left, right, prefix.len())
+                    {
+                        let affected_conts = cont_tree.get(&cont[..=depth]).unwrap();
+                        // println!(
+                        //     "{} affected conts by continuation '{}' for prefix '{}' at depth {depth}: '{}'",
+                        //     affected_conts.len(),
+                        //     String::from_utf8_lossy(cont),
+                        //     String::from_utf8_lossy(prefix),
+                        //     String::from_utf8_lossy(&cont[..=depth]),
+                        // );
+                        for idx in affected_conts {
+                            contains[*idx] = false;
+                        }
+                    }
+                }
+                contains
+            }
+        };
+        Ok(conts)
     }
 }
 
@@ -135,73 +208,67 @@ impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
         self.data.len()
     }
 
-    fn insert(&mut self, key: &str, value: V) {
-        let key = normalize(key, Normalization::NFKC, true);
+    fn insert(&mut self, key: &[u8], value: V) {
         match self
             .data
-            .binary_search_by(|(prefix, _)| prefix.as_slice().cmp(key.as_bytes()))
+            .binary_search_by(|(prefix, _)| prefix.as_slice().cmp(key))
         {
             Ok(idx) => self.data[idx].1 = value,
-            Err(idx) => self.data.insert(idx, (key.as_bytes().to_vec(), value)),
+            Err(idx) => self.data.insert(idx, (key.to_vec(), value)),
         };
     }
 
     fn get(&self, prefix: &[u8]) -> Option<&V> {
-        let (_, value) = self.find(prefix);
-        value
-    }
-
-    fn contains(&self, prefix: &[u8]) -> bool {
-        let (indices, _) = self.find(prefix);
-        indices.is_some()
-    }
-
-    fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (String, &V)> + '_> {
-        match self.find(prefix) {
-            (None, _) => Box::new(std::iter::empty()),
-            (Some((left, right)), _) => Box::new(
-                self.data[left..right]
-                    .iter()
-                    .map(|(k, v)| (String::from_utf8_lossy(k.as_slice()).to_string(), v)),
-            ),
+        match self.find_range(prefix, 0, self.size(), 0) {
+            FindResult::Found(left, _) => {
+                if self.data[left].0.len() != prefix.len() {
+                    None
+                } else {
+                    Some(&self.data[left].1)
+                }
+            }
+            _ => None,
         }
     }
 
-    fn contains_continuations(&self, prefix: &[u8], continuations: &[Vec<u8>]) -> Vec<bool> {
-        match self.find(prefix) {
-            (None, _) => vec![false; continuations.len()],
-            (Some((left, right)), _) => continuations
-                .iter()
-                .map(|cont| {
-                    let mut cont_left = left;
-                    let mut cont_right = right;
-                    for (depth, k) in cont.iter().enumerate() {
-                        let Some((new_left, new_right)) =
-                            self.range_search(k, prefix.len() + depth, cont_left, cont_right) else {
-                            return false;
-                        };
-                        cont_left = new_left;
-                        cont_right = new_right;
-                    }
-                    true
-                })
-                .collect(),
+    fn get_mut(&mut self, prefix: &[u8]) -> Option<&mut V> {
+        match self.find_range(prefix, 0, self.size(), 0) {
+            FindResult::Found(left, _) => {
+                if self.data[left].0.len() != prefix.len() {
+                    None
+                } else {
+                    Some(&mut self.data[left].1)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn contains(&self, prefix: &[u8]) -> bool {
+        matches!(
+            self.find_range(prefix, 0, self.size(), 0),
+            FindResult::Found(..)
+        )
+    }
+
+    fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        match self.find_range(prefix, 0, self.size(), 0) {
+            FindResult::NotFound(..) => Box::new(std::iter::empty()),
+            FindResult::Found(left, right) => {
+                Box::new(self.data[left..right].iter().map(|(k, v)| (k.clone(), v)))
+            }
         }
     }
 }
 
-impl<S, V> FromIterator<(S, V)> for PrefixVec<V>
-where
-    S: AsRef<str>,
-{
-    fn from_iter<T: IntoIterator<Item = (S, V)>>(iter: T) -> Self {
+impl<V> FromIterator<(Vec<u8>, V)> for PrefixVec<V> {
+    fn from_iter<T: IntoIterator<Item = (Vec<u8>, V)>>(iter: T) -> Self {
         let mut pfx = Self::default();
         for (key, value) in iter {
-            if key.as_ref().is_empty() {
+            if key.is_empty() {
                 continue;
             }
-            let key = normalize(key.as_ref(), Normalization::NFKC, true);
-            pfx.data.push((key.as_bytes().to_vec(), value));
+            pfx.data.push((key, value));
         }
         // sort by prefix
         pfx.data.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -238,23 +305,23 @@ mod tests {
     #[test]
     fn test_prefix_vec() {
         let pfx = [
-            ("a", 1),
-            ("ab", 2),
-            ("abc", 3),
-            ("abcd", 4),
-            ("abcde", 5),
-            ("abd", 6),
-            ("bde", 7),
+            (b"a".to_vec(), 1),
+            (b"ab".to_vec(), 2),
+            (b"abc".to_vec(), 3),
+            (b"abcd".to_vec(), 4),
+            (b"abcde".to_vec(), 5),
+            (b"abd".to_vec(), 6),
+            (b"bde".to_vec(), 7),
         ]
         .into_iter()
         .collect::<PrefixVec<_>>();
 
-        assert_eq!(pfx.get("a".as_bytes()), Some(&1));
-        assert!(pfx.contains("a".as_bytes()));
-        assert!(!pfx.contains("bbd".as_bytes()));
-        assert_eq!(pfx.get("ab".as_bytes()), Some(&2));
-        assert_eq!(pfx.get("abf".as_bytes()), None);
-        assert!(!pfx.contains("abf".as_bytes()));
-        assert_eq!(pfx.get("abd".as_bytes()), Some(&6));
+        assert_eq!(pfx.get(b"a"), Some(&1));
+        assert!(pfx.contains(b"a"));
+        assert!(!pfx.contains(b"bbd"));
+        assert_eq!(pfx.get(b"ab"), Some(&2));
+        assert_eq!(pfx.get(b"abf"), None);
+        assert!(!pfx.contains(b"abf"));
+        assert_eq!(pfx.get(b"abd"), Some(&6));
     }
 }

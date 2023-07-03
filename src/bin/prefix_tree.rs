@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
     for (idx, line) in pbar.wrap_iter(BufReader::new(file).lines()).enumerate() {
         let line = line?;
         let splits: Vec<_> = line.split('\t').collect();
-        trie.insert(splits[0].trim(), splits[1].trim().to_string());
+        trie.insert(splits[0].trim().as_bytes(), splits[1].trim().to_string());
         if (idx + 1) % (num_lines / 10) == 0 || idx + 1 == num_lines {
             println!("num elements: {}", trie.size());
         }

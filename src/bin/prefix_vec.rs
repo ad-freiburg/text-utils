@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
             if let Ok(line) = line {
                 let splits: Vec<_> = line.split('\t').collect();
                 Some((
-                    splits[0].trim().to_string(),
+                    splits[0].trim().as_bytes().to_vec(),
                     splits[1]
                         .trim()
                         .chars()

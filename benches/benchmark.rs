@@ -237,38 +237,41 @@ fn bench_prefix(c: &mut Criterion) {
     let multi30k = fs::read_to_string(PathBuf::from(dir).join("resources/test/multi30k.txt"))
         .expect("failed to read file")
         .replace("\n", " ");
-    let words: Vec<_> = multi30k.split_whitespace().collect();
+    let words: Vec<_> = multi30k
+        .split_whitespace()
+        .map(|s| s.as_bytes().to_vec())
+        .collect();
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     // sample random word from all words
-    let word = words.choose(&mut rng).unwrap();
+    let word = words.choose(&mut rng).unwrap().as_slice();
     let mut group = c.benchmark_group("prefix");
 
     // benchmark prefix tree
-    let mut tree: Node<_> = words.iter().zip(0..words.len()).collect();
+    let mut tree: Node<_> = words.iter().cloned().zip(0..words.len()).collect();
     group.bench_with_input("tree_build", &words, |b, input| {
         b.iter(|| {
-            let _tree: Node<_> = input.iter().zip(0..input.len()).collect();
+            let _tree: Node<_> = input.iter().cloned().zip(0..input.len()).collect();
         });
     });
     group.bench_with_input("tree_insert", word, |b, input| {
         b.iter(|| tree.insert(input, 1));
     });
     group.bench_with_input("tree_get", word, |b, input| {
-        b.iter(|| tree.get(input.as_bytes()));
+        b.iter(|| tree.get(input));
     });
 
     // benchmark prefix vec
-    let mut vec: PrefixVec<_> = words.iter().zip(0..words.len()).collect();
+    let mut vec: PrefixVec<_> = words.iter().cloned().zip(0..words.len()).collect();
     group.bench_with_input("vec_build", &words, |b, input| {
         b.iter(|| {
-            let _vec: PrefixVec<_> = input.iter().zip(0..input.len()).collect();
+            let _vec: PrefixVec<_> = input.iter().cloned().zip(0..input.len()).collect();
         });
     });
     group.bench_with_input("vec_insert", word, |b, input| {
         b.iter(|| vec.insert(input, 1));
     });
     group.bench_with_input("vec_get", word, |b, input| {
-        b.iter(|| vec.get(input.as_bytes()));
+        b.iter(|| vec.get(input));
     });
 }
 

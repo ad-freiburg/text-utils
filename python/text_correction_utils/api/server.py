@@ -34,14 +34,18 @@ class TextCorrectionServer:
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.logger = get_logger("TEXT_CORRECTION_SERVER")
+        self.logger = get_logger(
+            f"{self.text_corrector_cls.task.upper()} SERVER"
+        )
         self.logger.info(f"loaded server config:\n{yaml.dump(config)}")
         self.port = int(self.config.get("port", 40000))
         # disable flask startup message and set flask mode to development
         cli.show_server_banner = lambda *_: None
         os.environ["FLASK_DEBUG"] = "development"
         self.server = Flask(__name__)
-        max_content_length = int(float(config.get("max_content_length", 1000.0)) * 1000.0)
+        max_content_length = int(
+            float(config.get("max_content_length", 1000.0)) * 1000.0
+        )
         self.server.config["MAX_CONTENT_LENGTH"] = max_content_length
         self.max_models_per_gpu = max(1, config.get("max_models_per_gpu", 3))
         self.base_url = config.get("base_url", "")
@@ -56,9 +60,11 @@ class TextCorrectionServer:
 
         @self.server.after_request
         def _after_request(response: Response) -> Response:
-            response.headers.add("Access-Control-Allow-Origin", self.allow_origin)
+            response.headers.add(
+                "Access-Control-Allow-Origin", self.allow_origin)
             response.headers.add("Access-Control-Allow-Headers", "*")
-            response.headers.add("Access-Control-Allow-Private-Network", "true")
+            response.headers.add(
+                "Access-Control-Allow-Private-Network", "true")
             return response
 
         @self.server.route(f"{self.base_url}/info")
@@ -70,12 +76,16 @@ class TextCorrectionServer:
             })
             return response
 
-        self.text_correctors: Dict[str, Tuple[TextCorrector, Optional[Stream]]] = {}
+        self.text_correctors: Dict[
+            str,
+            Tuple[TextCorrector, Optional[Stream]]
+        ] = {}
+        self.name_to_text_corrector: Dict[str, str] = {}
         self.lock = Lock()
 
         model_duplicates = {}
         model_infos = []
-        for model_name in config["models"]:
+        for cfg in config["models"]:
             if self.num_gpus > 0:
                 device = f"cuda:{len(self.text_correctors) % self.num_gpus}"
                 stream: Optional[Stream] = Stream(device)
@@ -83,27 +93,51 @@ class TextCorrectionServer:
                 device = "cpu"
                 stream = None
 
-            model_info = next(filter(lambda m: m.name == model_name, self.text_corrector_cls.available_models()), None)
-            if model_info is not None:
+            if "name" in cfg:
+                model_name = cfg["name"]
+                org_model_name = model_name
                 self.logger.info(
                     f"loading pretrained model {model_name} for task "
                     f"{self.text_corrector_cls.task} onto device {device}"
                 )
-                text_corrector = self.text_corrector_cls.from_pretrained(model_name, device)
+                text_corrector = self.text_corrector_cls.from_pretrained(
+                    model_name,
+                    device
+                )
+                model_info = next(
+                    filter(
+                        lambda m: m.name == model_name,
+                        self.text_corrector_cls.available_models()
+                    ),
+                    None
+                )
+                if model_info is None:
+                    raise RuntimeError(
+                        f"model {model_name} not found in available models"
+                    )
                 model_description = model_info.description
                 model_name = model_info.name
                 model_tags = model_info.tags
                 model_tags.append("src::pretrained")
 
-            else:
+            elif "path" in cfg:
+                path = cfg["path"]
+                org_model_name = path
                 self.logger.info(
                     f"loading model for task {self.text_corrector_cls.task} "
-                    f"from experiment {model_name} onto device {device}"
+                    f"from experiment {path} onto device {device}"
                 )
-                text_corrector = self.text_corrector_cls.from_experiment(model_name, device)
+                text_corrector = self.text_corrector_cls.from_experiment(
+                    path,
+                    device
+                )
                 model_name = text_corrector.name
                 model_description = "loaded from custom experiment"
                 model_tags = ["src::custom"]
+            else:
+                raise RuntimeError(
+                    "expected either name or path in model config"
+                )
 
             # handle the case when two models have the same name
             if model_name in self.text_correctors:
@@ -118,6 +152,7 @@ class TextCorrectionServer:
             model_infos.append((model_name, model_description, model_tags))
 
             self.text_correctors[model_name] = (text_corrector, stream)
+            self.name_to_text_corrector[org_model_name] = model_name
 
         @self.server.route(f"{self.base_url}/models")
         def _models() -> Response:

@@ -107,21 +107,27 @@ def eos_stop_fn(eos_token_id: int) -> StopFn:
 
 def greedy_select_fn() -> IdxSelectFn:
     def _greedy(scores: torch.Tensor, _: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
-        indices = torch.argmax(scores, dim=-1)
-        return indices, torch.gather(scores, -1, indices)
+        assert scores.ndim == 2
+        indices = torch.argmax(scores, dim=1)
+        scores = torch.gather(scores, -1, indices.unsqueeze(-1)).squeeze(-1)
+        return indices, scores
 
     return _greedy
 
 
 def sample_select_fn(sample_top_k: int) -> IdxSelectFn:
     def _sample(scores: torch.Tensor, _: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+        assert scores.ndim == 2
         k = min(sample_top_k, scores.shape[-1])
-        sampled_indices = torch.randint(k, (len(scores),))
-        top_k = torch.topk(scores, k, dim=-1)
-        return (
-            torch.gather(top_k.indices, -1, sampled_indices),
-            torch.gather(top_k.values, -1, sampled_indices)
+        sampled_indices = torch.randint(
+            k,
+            (len(scores), 1),
+            device=scores.device
         )
+        top_k = torch.topk(scores, k, dim=-1)
+        indices = torch.gather(top_k.indices, -1, sampled_indices).squeeze(-1)
+        scores = torch.gather(top_k.values, -1, sampled_indices).squeeze(-1)
+        return indices, scores
 
     return _sample
 

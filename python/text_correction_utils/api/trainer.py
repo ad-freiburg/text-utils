@@ -173,19 +173,22 @@ training will resume from latest checkpoint."
             return max(min(round(v), maximum), minimum)
 
         self.log_interval = clamp(
-            self.training_items_per_epoch * self.cfg["train"].get("log_interval", 0.001),
+            self.training_items_per_epoch *
+            self.cfg["train"].get("log_interval", 0.001),
             1,
             self.training_items_per_epoch
         )
         self.eval_interval = clamp(
-            self.training_items_per_epoch * self.cfg["train"].get("eval_interval", 0.1),
+            self.training_items_per_epoch *
+            self.cfg["train"].get("eval_interval", 0.1),
             1,
             self.training_items_per_epoch
         )
 
         if "lr_scheduler" in self.cfg["train"]:
             self.step_interval = clamp(
-                self.training_items_per_epoch * self.cfg["train"].get("step_interval", 0.001),
+                self.training_items_per_epoch *
+                self.cfg["train"].get("step_interval", 0.001),
                 1,
                 self.training_items_per_epoch
             )
@@ -227,11 +230,13 @@ training will resume from latest checkpoint."
             )
 
             self.logger.info(f"Using model:\n{self.model}")
-            self.logger.info(f"Model parameters: {api.num_parameters(self.model)}")
+            self.logger.info(
+                f"Model parameters: {api.num_parameters(self.model)}")
             self.logger.info(
                 f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
                 f"{self.training_items:,} total"
             )
+            exit()
             self.logger.info(
                 f"Logging every {self.log_interval:,} items, "
                 f"evaluating every {self.eval_interval:,} items"
@@ -244,8 +249,10 @@ training will resume from latest checkpoint."
                 self.logger.info(
                     f"Testing output tokenizer:\n{self.output_tokenizer.tokenize(test_sentence).token_ids}")
 
-            self.logger.info(f"Type 'tensorboard --logdir {self.directories['tensorboard']}' "
-                             f"to view the training process in Tensorboard")
+            self.logger.info(
+                f"Type 'tensorboard --logdir {self.directories['tensorboard']}' "
+                f"to view the training process in Tensorboard"
+            )
         else:
             self.summary_writer = None
 
@@ -400,9 +407,11 @@ training will resume from latest checkpoint."
                 temp_dir = src.get("temp_dir")
                 if temp_dir is not None:
                     input_path = cls._copy_file_to_tmp_dir(
-                        input_path, temp_dir, info)
+                        input_path, temp_dir, info
+                    )
                     target_path = cls._copy_file_to_tmp_dir(
-                        target_path, temp_dir, info)
+                        target_path, temp_dir, info
+                    )
                     cleanup_paths.extend([input_path, target_path])
                 src_preprocessings.append(preprocessing)
                 src_paths.append((input_path, target_path))
@@ -435,77 +444,137 @@ training will resume from latest checkpoint."
         Optional[Callable[[int], int]],
         List[str]
     ]:
-        cfg = copy.deepcopy(cfg)
-        val_cfg = cfg.pop("val")
-        if isinstance(val_cfg, int):
-            val_limit = val_cfg
-        else:
-            raise ValueError(
-                "val data must be an integer"
+        def prepare_data_loader(
+            default_language: Optional[str],
+            pipeline_cfg: Dict[str, Any],
+            sources: List[Dict[str, Any]],
+            languages: List[Optional[str]],
+            preprocessings: List[Optional[Any]],
+            postprocessings: List[Optional[Any]],
+            **kwargs: Any,
+        ) -> data.DataLoader:
+            # cfg = copy.deepcopy(cfg)
+            num_languages_specified = sum(
+                lang is not None for lang in languages
+            )
+            default_language = cfg.pop("default_language", None)
+            if num_languages_specified > 0 and num_languages_specified < len(languages):
+                assert default_language is not None, \
+                    "expected default_language to be specified if some, but not all " \
+                    "individual data sources specify a language"
+                languages = [
+                    default_language if lang is None else lang
+                    for lang in languages
+                ]
+            elif num_languages_specified == 0:
+                languages = None  # type: ignore
+
+            pipeline_cfg = copy.deepcopy(pipeline_cfg)
+            if "preprocessing" not in pipeline_cfg:
+                assert all(preproc is not None for preproc in preprocessings), \
+                    "expected preprocessing to be specified per data source if not specified " \
+                    "for pipeline"
+                pipeline_cfg["preprocessing"] = preprocessings
+            if "postprocessing" not in pipeline_cfg:
+                assert all(postproc is not None for postproc in postprocessings), \
+                    "expected postprocessing to be specified per data source if not specified " \
+                    "for pipeline"
+                pipeline_cfg["postprocessing"] = postprocessings
+
+            # adapt config to multi gpu usage
+            assert "batch_limit" in cfg, "batch_limit must be in data config"
+            cfg["batch_limit"] = max(1, cfg["batch_limit"] // info.world_size)
+
+            return data.DataLoader.from_files(
+                sources,
+                pipeline_cfg,
+                tokenizer_config,
+                languages,
+                **kwargs
             )
 
+        cfg = copy.deepcopy(cfg)
+
+        # pop some configs not used by the dataloader
+        val_cfg = cfg.pop("val")
+        max_length = cfg.pop("max_length")
+        assert max_length is not None, "missing max_length in data config"
+        max_length_scheduler_cfg = cfg.pop("max_length_scheduler", None)
+
         (
-            train_sources,
-            train_languages,
-            train_preprocessings,
-            train_postprocessings,
+            *training,
             train_cleanup
         ) = cls._prepare_data_sources(
             cfg.pop("sources"),
             info
         )
 
-        num_languages_specified = sum(
-            lang is not None for lang in train_languages
-        )
         default_language = cfg.pop("default_language", None)
-        if num_languages_specified > 0 and num_languages_specified < len(train_languages):
-            assert default_language is not None, \
-                "expected default_language to be specified if some, but not all " \
-                "individual data sources specify a language"
-            train_languages = [
-                default_language if lang is None else lang
-                for lang in train_languages
-            ]
-        elif num_languages_specified == 0:
-            train_languages = None
-
         pipeline_cfg = cfg.pop("pipeline")
-        if "preprocessing" not in pipeline_cfg:
-            assert all(preproc is not None for preproc in train_preprocessings), \
-                "expected preprocessing to be specified per data source if not specified " \
-                "for pipeline"
-            pipeline_cfg["preprocessing"] = train_preprocessings
-        if "postprocessing" not in pipeline_cfg:
-            assert all(postproc is not None for postproc in train_postprocessings), \
-                "expected postprocessing to be specified per data source if not specified " \
-                "for pipeline"
-            pipeline_cfg["postprocessing"] = train_postprocessings
 
-        # adapt config to multi gpu usage
-        assert "batch_limit" in cfg, "batch_limit must be in data config"
-        cfg["batch_limit"] = max(1, cfg["batch_limit"] // info.world_size)
+        if isinstance(val_cfg, int):
+            # if validation is a spit of the training set
+            train_limit = cfg.get("limit")
+            if train_limit is not None:
+                assert train_limit > val_cfg, \
+                    f"train limit ({train_limit:,}) is smaller or " \
+                    f"equal to val limit ({val_cfg:,})"
+            train_loader = prepare_data_loader(
+                default_language,
+                pipeline_cfg,
+                *training,
+                skip=val_cfg,
+                seed=seed,
+                max_length=max_length,
+                distributed=(info.rank, info.world_size),
+                **cfg,
+            )
+            # for validation always turn off shuffling, turn on sorting, and
+            # specify a val limit
+            val_loader = prepare_data_loader(
+                default_language,
+                pipeline_cfg,
+                *training,
+                limit=val_cfg,
+                max_length=max_length,
+                distributed=None,
+                shuffle=False,
+                sort=True
+            )
 
-        train_limit = cfg.get("limit")
-        if train_limit is not None:
-            assert train_limit > val_limit, \
-                "train limit must be bigger than val limit"
+        elif isinstance(val_cfg, list):
+            # if validation is a separate set of data sources
+            train_loader = prepare_data_loader(
+                default_language,
+                pipeline_cfg,
+                *training,
+                seed=seed,
+                max_length=max_length,
+                distributed=(info.rank, info.world_size),
+                **cfg,
+            )
+            (
+                *validation,
+                val_cleanup
+            ) = cls._prepare_data_sources(
+                val_cfg,
+                info
+            )
+            train_cleanup.extend(val_cleanup)
+            val_loader = prepare_data_loader(
+                default_language,
+                pipeline_cfg,
+                *validation,
+                max_length=max_length,
+                distributed=None,
+                shuffle=False,
+                sort=True
+            )
 
-        max_length = cfg.pop("max_length")
-        assert max_length is not None, "missing max_length in data config"
-        max_length_scheduler_cfg = cfg.pop("max_length_scheduler", None)
-
-        train_loader = data.DataLoader.from_files(
-            train_sources,
-            pipeline_cfg,
-            tokenizer_config,
-            train_languages,
-            seed=seed,
-            skip=val_limit,
-            max_length=max_length,
-            distributed=(info.rank, info.world_size),
-            **cfg
-        )
+        else:
+            raise ValueError(
+                "val data must be an integer"
+            )
 
         # trigger train loader, so that min_items is set
         iter(train_loader)
@@ -522,21 +591,6 @@ training will resume from latest checkpoint."
         else:
             max_length_scheduler = None
 
-        # for validation always turn off shuffling, turn on sorting, and
-        # specify a val limit
-        cfg["shuffle"] = False
-        cfg["sort"] = True
-        cfg["limit"] = val_limit
-        val_loader = data.DataLoader.from_files(
-            train_sources,
-            pipeline_cfg,
-            tokenizer_config,
-            train_languages,
-            max_length=max_length,
-            seed=seed,
-            distributed=None,
-            **cfg
-        )
         return (
             train_loader,
             val_loader,
@@ -640,7 +694,8 @@ training will resume from latest checkpoint."
 
         assert "SLURM_PROCID" in os.environ, "distributed training across multiple nodes is only supported with SLURM"
         rank = int(os.environ["SLURM_PROCID"])
-        local_world_size = int(os.environ.get("SLURM_NTASKS_PER_NODE", os.environ["SLURM_NTASKS"]))
+        local_world_size = int(os.environ.get(
+            "SLURM_NTASKS_PER_NODE", os.environ["SLURM_NTASKS"]))
         local_rank = rank % local_world_size
         logger.info(
             f"Running on Slurm Cluster: master_addr={master_addr}, master_port={master_port}, "
@@ -896,10 +951,12 @@ training will resume from latest checkpoint."
                 )
                 mean_forward_pass.log_info(self.logger, self.total_step)
 
-                mean_batch_load.log_tensorboard(self.summary_writer, self.total_step)
+                mean_batch_load.log_tensorboard(
+                    self.summary_writer, self.total_step)
                 mean_batch_load.log_info(self.logger, self.total_step)
 
-                mean_step_time.log_tensorboard(self.summary_writer, self.total_step)
+                mean_step_time.log_tensorboard(
+                    self.summary_writer, self.total_step)
                 mean_step_time.log_info(self.logger, self.total_step)
 
                 mean_batch_preparation.log_tensorboard(
@@ -907,7 +964,8 @@ training will resume from latest checkpoint."
                 )
                 mean_batch_preparation.log_info(self.logger, self.total_step)
 
-                mean_seq_length.log_tensorboard(self.summary_writer, self.total_step)
+                mean_seq_length.log_tensorboard(
+                    self.summary_writer, self.total_step)
                 mean_seq_length.log_info(self.logger, self.total_step)
 
                 mean_seq_length_ratio.log_tensorboard(
@@ -918,7 +976,8 @@ training will resume from latest checkpoint."
                 items = batch.items
                 for metric in metrics:
                     metric.set_values(items, outputs)
-                    metric.log_tensorboard(self.summary_writer, self.total_step)
+                    metric.log_tensorboard(
+                        self.summary_writer, self.total_step)
                     metric.log_info(self.logger, self.total_step)
 
                 self.summary_writer.add_histogram(
@@ -1018,7 +1077,8 @@ training will resume from latest checkpoint."
                 items = batch.items
                 for metric in metrics:
                     metric.set_values(items, outputs)
-                    metric.log_tensorboard(self.summary_writer, self.total_step)
+                    metric.log_tensorboard(
+                        self.summary_writer, self.total_step)
                     metric.log_info(self.logger, self.total_step)
 
         end = time.perf_counter()

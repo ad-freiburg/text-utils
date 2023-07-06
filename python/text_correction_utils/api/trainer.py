@@ -452,11 +452,9 @@ training will resume from latest checkpoint."
             postprocessings: List[Optional[Any]],
             **kwargs: Any,
         ) -> data.DataLoader:
-            # cfg = copy.deepcopy(cfg)
             num_languages_specified = sum(
                 lang is not None for lang in languages
             )
-            default_language = cfg.pop("default_language", None)
             if num_languages_specified > 0 and num_languages_specified < len(languages):
                 assert default_language is not None, \
                     "expected default_language to be specified if some, but not all " \
@@ -512,11 +510,11 @@ training will resume from latest checkpoint."
         pipeline_cfg = cfg.pop("pipeline")
 
         if isinstance(val_cfg, int):
-            # if validation is a spit of the training set
-            train_limit = cfg.get("limit")
+            # if validation is a split of the training set
+            train_limit = cfg.get("limit", None)
             if train_limit is not None:
                 assert train_limit > val_cfg, \
-                    f"train limit ({train_limit:,}) is smaller or " \
+                    f"train limit ({train_limit:,}) cannot be smaller or " \
                     f"equal to val limit ({val_cfg:,})"
             train_loader = prepare_data_loader(
                 default_language,
@@ -529,7 +527,7 @@ training will resume from latest checkpoint."
                 **cfg,
             )
             # for validation always turn off shuffling, turn on sorting, and
-            # specify a val limit
+            # specify the val limit
             val_loader = prepare_data_loader(
                 default_language,
                 pipeline_cfg,
@@ -571,9 +569,7 @@ training will resume from latest checkpoint."
             )
 
         else:
-            raise ValueError(
-                "val data must be an integer"
-            )
+            raise ValueError("unsupported validation config")
 
         # trigger train loader, so that min_items is set
         iter(train_loader)

@@ -236,7 +236,6 @@ training will resume from latest checkpoint."
                 f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
                 f"{self.training_items:,} total"
             )
-            exit()
             self.logger.info(
                 f"Logging every {self.log_interval:,} items, "
                 f"evaluating every {self.eval_interval:,} items"

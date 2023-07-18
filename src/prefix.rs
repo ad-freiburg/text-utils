@@ -25,14 +25,14 @@ pub trait PrefixTreeSearch<V> {
 #[pyclass]
 #[pyo3(name = "Tree")]
 pub struct PyPrefixTree {
-    inner: Node<usize>,
+    inner: Node<String>,
     continuations: Option<Vec<Vec<u8>>>,
 }
 
 #[pyclass]
 #[pyo3(name = "Vec")]
 pub struct PyPrefixVec {
-    inner: PrefixVec<usize>,
+    inner: PrefixVec<String>,
 }
 
 #[pymethods]
@@ -73,10 +73,7 @@ impl PyPrefixTree {
                 Ok(s) => {
                     let splits: Vec<_> = s.split('\t').collect();
                     assert!(splits.len() == 2, "invalid line: {}", s);
-                    let value: usize = splits[1]
-                        .trim()
-                        .parse()
-                        .unwrap_or_else(|_| panic!("failed to parse {} into usize", splits[1]));
+                    let value = splits[1].trim().to_string();
                     Some((splits[0].trim().as_bytes().to_vec(), value))
                 }
             })
@@ -87,7 +84,7 @@ impl PyPrefixTree {
         })
     }
 
-    fn insert(&mut self, key: &[u8], value: usize) {
+    fn insert(&mut self, key: &[u8], value: String) {
         self.inner.insert(key, value);
     }
 
@@ -95,13 +92,13 @@ impl PyPrefixTree {
         self.inner.contains(&prefix)
     }
 
-    fn get(&self, key: Vec<u8>) -> Option<usize> {
-        self.inner.get(&key).copied()
+    fn get(&self, key: Vec<u8>) -> Option<&str> {
+        self.inner.get(&key).map(|s| s.as_ref())
     }
 
-    fn batch_get(&self, keys: Vec<Vec<u8>>) -> Vec<Option<usize>> {
+    fn batch_get(&self, keys: Vec<Vec<u8>>) -> Vec<Option<&str>> {
         keys.into_iter()
-            .map(|key| self.inner.get(&key).copied())
+            .map(|key| self.inner.get(&key).map(|s| s.as_ref()))
             .collect()
     }
 
@@ -109,20 +106,20 @@ impl PyPrefixTree {
         self.continuations = Some(continuations);
     }
 
-    fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(Vec<u8>, usize)> {
+    fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(Vec<u8>, &str)> {
         self.inner
             .get_continuations(&prefix)
-            .map(|(s, v)| (s.to_vec(), *v))
+            .map(|(s, v)| (s.to_vec(), v.as_ref()))
             .collect()
     }
 
-    fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(Vec<u8>, usize)>> {
+    fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(Vec<u8>, &str)>> {
         prefixes
             .into_par_iter()
             .map(|prefix| {
                 self.inner
                     .get_continuations(&prefix)
-                    .map(|(s, v)| (s.to_vec(), *v))
+                    .map(|(s, v)| (s.to_vec(), v.as_ref()))
                     .collect()
             })
             .collect()
@@ -165,10 +162,7 @@ impl PyPrefixVec {
                 Ok(s) => {
                     let splits: Vec<_> = s.split('\t').collect();
                     assert!(splits.len() == 2, "invalid line: {}", s);
-                    let value: usize = splits[1]
-                        .trim()
-                        .parse()
-                        .unwrap_or_else(|_| panic!("failed to parse {} into usize", splits[1]));
+                    let value = splits[1].trim().to_string();
                     Some((splits[0].trim().as_bytes().to_vec(), value))
                 }
             })
@@ -176,7 +170,7 @@ impl PyPrefixVec {
         Ok(Self { inner })
     }
 
-    fn insert(&mut self, key: Vec<u8>, value: usize) {
+    fn insert(&mut self, key: Vec<u8>, value: String) {
         self.inner.insert(&key, value);
     }
 
@@ -191,13 +185,13 @@ impl PyPrefixVec {
             .collect()
     }
 
-    fn get(&self, key: Vec<u8>) -> Option<usize> {
-        self.inner.get(&key).copied()
+    fn get(&self, key: Vec<u8>) -> Option<&str> {
+        self.inner.get(&key).map(|s| s.as_ref())
     }
 
-    fn batch_get(&self, keys: Vec<Vec<u8>>) -> Vec<Option<usize>> {
+    fn batch_get(&self, keys: Vec<Vec<u8>>) -> Vec<Option<&str>> {
         keys.into_iter()
-            .map(|key| self.inner.get(&key).copied())
+            .map(|key| self.inner.get(&key).map(|s| s.as_ref()))
             .collect()
     }
 
@@ -219,27 +213,30 @@ impl PyPrefixVec {
             .collect::<anyhow::Result<_>>()
     }
 
-    fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(Vec<u8>, usize)> {
+    fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(Vec<u8>, &str)> {
         self.inner
             .get_continuations(&prefix)
-            .map(|(s, v)| (s.to_vec(), *v))
+            .map(|(s, v)| (s.to_vec(), v.as_ref()))
             .collect()
     }
 
-    fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(Vec<u8>, usize)>> {
+    fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(Vec<u8>, &str)>> {
         prefixes
             .into_par_iter()
             .map(|prefix| {
                 self.inner
                     .get_continuations(&prefix)
-                    .map(|(s, v)| (s.to_vec(), *v))
+                    .map(|(s, v)| (s.to_vec(), v.as_ref()))
                     .collect()
             })
             .collect()
     }
 
-    fn at(&self, idx: usize) -> Option<(Vec<u8>, usize)> {
-        self.inner.data.get(idx).map(|(s, v)| (s.to_vec(), *v))
+    fn at(&self, idx: usize) -> Option<(Vec<u8>, &str)> {
+        self.inner
+            .data
+            .get(idx)
+            .map(|(s, v)| (s.to_vec(), v.as_ref()))
     }
 }
 

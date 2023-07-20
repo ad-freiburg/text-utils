@@ -72,11 +72,17 @@ impl PyPrefixTree {
                 Err(_) => None,
                 Ok(s) => {
                     let splits: Vec<_> = s.split('\t').collect();
-                    assert!(splits.len() == 2, "invalid line: {}", s);
-                    let value = splits[1].trim().to_string();
-                    Some((splits[0].trim().as_bytes().to_vec(), value))
+                    assert!(splits.len() >= 3, "invalid line: {}", s);
+                    let value = splits[0].trim();
+                    Some(
+                        splits[2..]
+                            .iter()
+                            .map(|&s| (s.trim().as_bytes().to_vec(), value.to_string()))
+                            .collect::<Vec<_>>(),
+                    )
                 }
             })
+            .flatten()
             .collect();
         Ok(Self {
             inner,
@@ -161,11 +167,17 @@ impl PyPrefixVec {
                 Err(_) => None,
                 Ok(s) => {
                     let splits: Vec<_> = s.split('\t').collect();
-                    assert!(splits.len() == 2, "invalid line: {}", s);
-                    let value = splits[1].trim().to_string();
-                    Some((splits[0].trim().as_bytes().to_vec(), value))
+                    assert!(splits.len() >= 3, "invalid line: {}", s);
+                    let value = splits[0].trim();
+                    Some(
+                        splits[2..]
+                            .iter()
+                            .map(|&s| (s.trim().as_bytes().to_vec(), value.to_string()))
+                            .collect::<Vec<_>>(),
+                    )
                 }
             })
+            .flatten()
             .collect();
         Ok(Self { inner })
     }

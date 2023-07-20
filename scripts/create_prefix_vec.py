@@ -27,12 +27,12 @@ def create(args: argparse.Namespace):
             print(f"Preparing file with tokenizer into {of.name}")
             for line in inf:
                 line = line.strip().split("\t")
-                assert len(line) == 2
-                line[0] = tokenizer.de_tokenize(
-                    tokenizer.tokenize(line[0]).token_ids[num_pfx:-num_sfx],
-                    False
-                ).strip()
-                # line[0] = tokenizer.normalize(line[0])
+                assert len(line) >= 3
+                for i in range(2, len(line)):
+                    line[i] = tokenizer.de_tokenize(
+                        tokenizer.tokenize(line[i]).token_ids[num_pfx:-num_sfx],
+                        False
+                    ).strip()
                 of.write("\t".join(line) + "\n")
             trie = prefix.Vec.from_file(of.name)
     else:

@@ -48,6 +48,23 @@ pub trait PrefixTreeNode {
     }
 
     #[inline]
+    fn get_path(&self, key: &[u8]) -> Vec<&Self::Value> {
+        let mut node = self;
+        let mut path = vec![];
+        for idx in key {
+            if let Some(child) = node.get_child(idx) {
+                if let Some(value) = child.get_value() {
+                    path.push(value);
+                }
+                node = child;
+            } else {
+                return path;
+            }
+        }
+        path
+    }
+
+    #[inline]
     fn find_continuations(&self) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
         Box::new(self.get_children().flat_map(
             move |(byte, child)| -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {

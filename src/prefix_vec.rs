@@ -1,32 +1,21 @@
 use core::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    prefix::PrefixTreeSearch,
-    prefix_tree::{Node, PrefixTreeNode},
-};
-use anyhow::anyhow;
-
-pub type Continuations = Vec<Vec<u8>>;
-pub type ContinuationTree = Node<Vec<usize>>;
+use crate::prefix::PrefixTreeSearch;
 
 #[derive(Serialize, Deserialize)]
 pub struct PrefixVec<V> {
     pub data: Vec<(Vec<u8>, V)>,
-    pub(crate) cont: Option<(Continuations, ContinuationTree)>,
 }
 
-enum FindResult {
+pub(crate) enum FindResult {
     Found(usize, usize),
     NotFound(usize),
 }
 
 impl<V> Default for PrefixVec<V> {
     fn default() -> Self {
-        Self {
-            data: Vec::new(),
-            cont: None,
-        }
+        Self { data: Vec::new() }
     }
 }
 
@@ -122,7 +111,7 @@ impl<V> PrefixVec<V> {
     }
 
     #[inline]
-    fn find_range(
+    pub(crate) fn find_range(
         &self,
         key: &[u8],
         mut left: usize,
@@ -137,69 +126,6 @@ impl<V> PrefixVec<V> {
             right = new_right;
         }
         FindResult::Found(left, right)
-    }
-
-    pub fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
-        // calculate interdependencies between continuations
-        // e.g. if one continuation start with abc and is not
-        // a valid one, then all continuations starting with abc
-        // are also not valid
-
-        // build tree
-        let mut cont_tree: Node<Vec<usize>> = Node::default();
-        cont_tree.set_value(vec![]);
-        // now insert the index along path for each continuation
-        for (i, cont) in continuations.iter().enumerate() {
-            let mut node = &mut cont_tree;
-            for key in cont {
-                match node.get_child_mut(key) {
-                    Some(child) => {
-                        child.get_value_mut().unwrap().push(i);
-                    }
-                    None => {
-                        let mut child = Node::default();
-                        child.set_value(vec![i]);
-                        node.set_child(key, child);
-                    }
-                }
-                node = node.get_child_mut(key).unwrap();
-            }
-        }
-        self.cont = Some((continuations, cont_tree));
-    }
-
-    pub fn contains_continuations(&self, prefix: &[u8]) -> anyhow::Result<Vec<bool>> {
-        let Some((continuations, cont_tree)) = self.cont.as_ref() else {
-            return Err(anyhow!("no continuations set"));
-        };
-        let conts = match self.find_range(prefix, 0, self.size(), 0) {
-            FindResult::NotFound(..) => vec![false; continuations.len()],
-            FindResult::Found(left, right) => {
-                let mut contains = vec![true; continuations.len()];
-                for (i, cont) in continuations.iter().enumerate() {
-                    if !contains[i] {
-                        continue;
-                    }
-                    if let FindResult::NotFound(depth) =
-                        self.find_range(cont, left, right, prefix.len())
-                    {
-                        let affected_conts = cont_tree.get(&cont[..=depth]).unwrap();
-                        // println!(
-                        //     "{} affected conts by continuation '{}' for prefix '{}' at depth {depth}: '{}'",
-                        //     affected_conts.len(),
-                        //     String::from_utf8_lossy(cont),
-                        //     String::from_utf8_lossy(prefix),
-                        //     String::from_utf8_lossy(&cont[..=depth]),
-                        // );
-                        for idx in affected_conts {
-                            contains[*idx] = false;
-                        }
-                    }
-                }
-                contains
-            }
-        };
-        Ok(conts)
     }
 }
 

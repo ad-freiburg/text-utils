@@ -3,10 +3,15 @@ use std::{
     io::{BufRead, BufReader},
 };
 
+use anyhow::anyhow;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::{prefix_tree::Node, prefix_vec::PrefixVec, utils::SerializeMsgPack};
+use crate::{
+    prefix_tree::{Node, PrefixTreeNode},
+    prefix_vec::{FindResult, PrefixVec},
+    utils::SerializeMsgPack,
+};
 
 pub trait PrefixTreeSearch<V> {
     fn size(&self) -> usize;
@@ -22,114 +27,14 @@ pub trait PrefixTreeSearch<V> {
     fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_>;
 }
 
-#[pyclass]
-#[pyo3(name = "Tree")]
-pub struct PyPrefixTree {
-    inner: Node<String>,
-    continuations: Option<Vec<Vec<u8>>>,
-}
+pub type Continuations = Vec<Vec<u8>>;
+pub type ContinuationTree = Node<Vec<usize>>;
 
 #[pyclass]
 #[pyo3(name = "Vec")]
 pub struct PyPrefixVec {
     inner: PrefixVec<String>,
-}
-
-#[pymethods]
-impl PyPrefixTree {
-    #[new]
-    fn new() -> Self {
-        Self {
-            inner: Node::default(),
-            continuations: None,
-        }
-    }
-
-    fn __len__(&self) -> usize {
-        self.inner.size()
-    }
-
-    #[staticmethod]
-    fn load(path: &str) -> anyhow::Result<Self> {
-        let inner = Node::load(path)?;
-        Ok(Self {
-            inner,
-            continuations: None,
-        })
-    }
-
-    fn save(&self, path: &str) -> anyhow::Result<()> {
-        self.inner.save(path)?;
-        Ok(())
-    }
-
-    #[staticmethod]
-    fn from_file(path: &str) -> anyhow::Result<Self> {
-        let file = File::open(path)?;
-        let inner = BufReader::new(file)
-            .lines()
-            .filter_map(|line| match line {
-                Err(_) => None,
-                Ok(s) => {
-                    let splits: Vec<_> = s.split('\t').collect();
-                    assert!(splits.len() >= 3, "invalid line: {}", s);
-                    let value = splits[0].trim();
-                    Some(
-                        splits[2..]
-                            .iter()
-                            .map(|&s| (s.trim().as_bytes().to_vec(), value.to_string()))
-                            .collect::<Vec<_>>(),
-                    )
-                }
-            })
-            .flatten()
-            .collect();
-        Ok(Self {
-            inner,
-            continuations: None,
-        })
-    }
-
-    fn insert(&mut self, key: &[u8], value: String) {
-        self.inner.insert(key, value);
-    }
-
-    fn contains(&self, prefix: Vec<u8>) -> bool {
-        self.inner.contains(&prefix)
-    }
-
-    fn get(&self, key: Vec<u8>) -> Option<&str> {
-        self.inner.get(&key).map(|s| s.as_ref())
-    }
-
-    fn batch_get(&self, keys: Vec<Vec<u8>>) -> Vec<Option<&str>> {
-        keys.into_iter()
-            .map(|key| self.inner.get(&key).map(|s| s.as_ref()))
-            .collect()
-    }
-
-    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
-        self.continuations = Some(continuations);
-    }
-
-    fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(Vec<u8>, &str)> {
-        self.inner
-            .get_continuations(&prefix)
-            .map(|(s, v)| (s.to_vec(), v.as_ref()))
-            .collect()
-    }
-
-    fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(Vec<u8>, &str)>> {
-        prefixes
-            .into_par_iter()
-            .map(|prefix| {
-                self.inner
-                    .get_continuations(&prefix)
-                    .map(|(s, v)| (s.to_vec(), v.as_ref()))
-                    .collect()
-            })
-            .collect()
-    }
+    cont: Option<(Continuations, ContinuationTree)>,
 }
 
 #[pymethods]
@@ -138,6 +43,7 @@ impl PyPrefixVec {
     fn new() -> Self {
         Self {
             inner: PrefixVec::default(),
+            cont: None,
         }
     }
 
@@ -148,13 +54,38 @@ impl PyPrefixVec {
     #[staticmethod]
     fn load(path: &str) -> anyhow::Result<Self> {
         let inner = PrefixVec::load(path)?;
-        Ok(Self { inner })
+        Ok(Self { inner, cont: None })
+    }
+
+    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
+        // calculate interdependencies between continuations
+        // e.g. if one continuation start with abc and is not
+        // a valid one, then all continuations starting with abc
+        // are also not valid
+
+        // build tree
+        let mut cont_tree: Node<Vec<usize>> = Node::default();
+        // cont_tree.set_value((None, vec![]));
+        // now insert the index along path for each continuation
+        for (i, cont) in continuations.iter().enumerate() {
+            let mut node = &mut cont_tree;
+            for key in cont {
+                if node.get_child(key).is_none() {
+                    node.set_child(key, Node::default());
+                }
+                node = node.get_child_mut(key).unwrap();
+            }
+            if let Some(val) = node.get_value_mut() {
+                val.push(i);
+            } else {
+                node.set_value(vec![i]);
+            }
+        }
+        self.cont = Some((continuations, cont_tree));
     }
 
     fn save(&mut self, path: &str) -> anyhow::Result<()> {
-        let cont = self.inner.cont.take();
         self.inner.save(path)?;
-        self.inner.cont = cont;
         Ok(())
     }
 
@@ -179,7 +110,7 @@ impl PyPrefixVec {
             })
             .flatten()
             .collect();
-        Ok(Self { inner })
+        Ok(Self { inner, cont: None })
     }
 
     fn insert(&mut self, key: Vec<u8>, value: String) {
@@ -207,28 +138,39 @@ impl PyPrefixVec {
             .collect()
     }
 
-    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
-        self.inner.set_continuations(continuations)
-    }
-
-    fn contains_continuations(&self, prefix: Vec<u8>) -> anyhow::Result<Vec<bool>> {
-        self.inner.contains_continuations(&prefix)
-    }
-
-    fn batch_contains_continuations(
-        &self,
-        prefixes: Vec<Vec<u8>>,
-    ) -> anyhow::Result<Vec<Vec<bool>>> {
-        prefixes
-            .into_par_iter()
-            .map(|prefix| self.inner.contains_continuations(&prefix))
-            .collect::<anyhow::Result<_>>()
-    }
-
     fn get_continuations(&self, prefix: Vec<u8>) -> Vec<(Vec<u8>, &str)> {
         self.inner
             .get_continuations(&prefix)
             .map(|(s, v)| (s.to_vec(), v.as_ref()))
+            .collect()
+    }
+
+    fn continuation_mask(&self, prefix: &[u8]) -> anyhow::Result<(Vec<bool>, bool)> {
+        let Some((continuations, cont_tree)) = self.cont.as_ref() else {
+            return Err(anyhow!("no continuations set"));
+        };
+        let data = match self.inner.find_range(prefix, 0, self.inner.size(), 0) {
+            FindResult::NotFound(..) => return Ok((vec![false; continuations.len()], false)),
+            FindResult::Found(left, right) => &self.inner.data[left..right],
+        };
+        let mut mask = vec![false; continuations.len()];
+        for (cont, _) in data {
+            for cont_indices in cont_tree.get_path(&cont[prefix.len()..]) {
+                for idx in cont_indices {
+                    mask[*idx] = true;
+                }
+            }
+        }
+        Ok((mask, !data.is_empty() && data[0].0.len() == prefix.len()))
+    }
+
+    fn batch_continuation_mask(
+        &self,
+        prefixes: Vec<Vec<u8>>,
+    ) -> anyhow::Result<(Vec<Vec<bool>>, Vec<bool>)> {
+        prefixes
+            .into_par_iter()
+            .map(|prefix| self.continuation_mask(&prefix))
             .collect()
     }
 
@@ -252,10 +194,9 @@ impl PyPrefixVec {
     }
 }
 
-/// A submodule containing two implementations of a prefix tree
+/// A submodule containing python implementations of a prefix tree
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "prefix")?;
-    m.add_class::<PyPrefixTree>()?;
     m.add_class::<PyPrefixVec>()?;
     parent_module.add_submodule(m)?;
 

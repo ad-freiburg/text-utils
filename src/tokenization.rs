@@ -1167,8 +1167,12 @@ pub struct HuggingfaceTokenizer {
 impl HuggingfaceTokenizer {
     pub fn new(name: impl AsRef<str>, special_config: SpecialConfig) -> anyhow::Result<Self> {
         let name = name.as_ref().to_string();
-        let mut tok = hft::Tokenizer::from_pretrained(&name, None)
-            .map_err(|err| anyhow!("error loading huggingface tokenizer {}: {err}", name))?;
+        let mut tok = if Path::new(&name).exists() {
+            hft::Tokenizer::from_file(&name)
+        } else {
+            hft::Tokenizer::from_pretrained(&name, None)
+        }
+        .map_err(|err| anyhow!("error loading huggingface tokenizer {}: {err}", name))?;
         let enc = tok.encode("this is a test", true).map_err(|err| {
             anyhow!("error encoding test string with huggingface tokenizer {name}: {err}")
         })?;

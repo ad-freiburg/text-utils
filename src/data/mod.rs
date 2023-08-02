@@ -766,7 +766,11 @@ pub fn text_data_pipeline_with_tokenizer(
         }
         PreprocessingConfig::PerFile(cfgs) => {
             let preprocessings: Vec<_> = cfgs.into_iter().map(preprocessing).collect();
-            Box::new(move |data, info| preprocessings[info.file_idx](data, info))
+            Box::new(move |data, info| {
+                preprocessings.get(info.file_idx).unwrap_or_else(|| {
+                    panic!("could not find preprocessing for file {}", info.file_idx)
+                })(data, info)
+            })
         }
     };
     let label_fn = labeling(pipeline_cfg.labeling);
@@ -776,13 +780,12 @@ pub fn text_data_pipeline_with_tokenizer(
             Box::new(postprocessing)
         }
         PostprocessingConfig::PerFile(cfgs) => {
-            let postprocessings: HashMap<_, _> = HashMap::from_iter(
-                cfgs.into_iter()
-                    .enumerate()
-                    .map(|(idx, cfg)| (idx, postprocessing(cfg, &tokenizer, max_length.clone()))),
-            );
+            let postprocessings: Vec<_> = cfgs
+                .into_iter()
+                .map(|cfg| postprocessing(cfg, &tokenizer, max_length.clone()))
+                .collect();
             Box::new(move |item, info| {
-                postprocessings.get(&info.file_idx).unwrap_or_else(|| {
+                postprocessings.get(info.file_idx).unwrap_or_else(|| {
                     panic!("could not find postprocessing for file {}", info.file_idx)
                 })(item, info)
             })

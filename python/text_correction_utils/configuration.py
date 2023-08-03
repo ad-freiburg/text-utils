@@ -1,7 +1,7 @@
 import os
 import re
-import tempfile
-import zipfile
+# import tempfile
+# import zipfile
 from typing import Any, Callable
 
 import yaml
@@ -15,12 +15,14 @@ def _replace_env(s: str, _: str) -> Any:
         env_var, env_default = match.group(1), match.group(2)
         if env_var not in os.environ:
             if env_default == "":
-                raise ValueError(f"environment variable {env_var} not found and no default was given")
+                raise ValueError(
+                    f"environment variable {env_var} not found and no default was given")
             else:
                 env_var = env_default
         else:
             env_var = os.environ[env_var]
-        s = s[:match.start() + length_change] + env_var + s[match.end() + length_change:]
+        s = s[:match.start() + length_change] + env_var + \
+            s[match.end() + length_change:]
         length_change = len(s) - org_length
     return yaml.full_load(s)
 
@@ -136,10 +138,9 @@ def load_config(yaml_path: str) -> Any:
 
 def load_config_from_experiment(dir: str) -> Any:
     info = load_config(os.path.join(dir, "info.yaml"))
-    if not os.path.exists(os.path.join(dir, "configs.zip")):
-        return load_config(os.path.join(dir, info["config_name"]))
+    return load_config(os.path.join(dir, info["config_name"]))
 
-    with zipfile.ZipFile(os.path.join(dir, "configs.zip"), "r", zipfile.ZIP_DEFLATED) as inz:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            inz.extractall(tmp_dir)
-            return load_config(os.path.join(tmp_dir, info["config_name"]))
+    # with zipfile.ZipFile(os.path.join(dir, "configs.zip"), "r", zipfile.ZIP_DEFLATED) as inz:
+    #     with tempfile.TemporaryDirectory() as tmp_dir:
+    #         inz.extractall(tmp_dir)
+    #         return load_config(os.path.join(tmp_dir, info["config_name"]))

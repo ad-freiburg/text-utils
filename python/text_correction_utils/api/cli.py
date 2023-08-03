@@ -311,6 +311,7 @@ class TextCorrectionCli:
 
         start = time.perf_counter()
         if self.args.correct is not None:
+            self.args.progress = False
             ipt = self.parse_input(self.args.correct, self.args.lang)
             opt = next(self.correct_iter(self.cor, iter([ipt])))
             for line in self.format_output(opt):
@@ -349,6 +350,7 @@ class TextCorrectionCli:
                 print(report)
 
         elif self.args.interactive:
+            self.args.progress = False
             while True:
                 ipt = self.parse_input(input(">> "), self.args.lang)
                 opt = next(self.correct_iter(self.cor, iter([ipt])))
@@ -362,10 +364,14 @@ class TextCorrectionCli:
             try:
                 if self.args.unsorted:
                     # correct lines from stdin as they come
-                    input_it = (self.parse_input(line.strip(), self.args.lang)
-                                for line in sys.stdin)
+                    input_it = (
+                        self.parse_input(line.strip(), self.args.lang)
+                        for line in sys.stdin
+                    )
                     sized_it = ProgressIterator(
-                        input_it, self.inference_data_size)
+                        input_it,
+                        self.inference_data_size
+                    )
                     outputs = self.correct_iter(self.cor, sized_it)
                     for opt in outputs:
                         for line in self.format_output(opt):

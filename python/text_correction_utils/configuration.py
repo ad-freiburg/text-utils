@@ -14,11 +14,7 @@ def _replace_env(s: str, _: str) -> Any:
     for match in env_regex.finditer(s):
         env_var, env_default = match.group(1), match.group(2)
         if env_var not in os.environ:
-            if env_default == "":
-                raise ValueError(
-                    f"environment variable {env_var} not found and no default was given")
-            else:
-                env_var = env_default
+            env_var = env_default
         else:
             env_var = os.environ[env_var]
         s = s[:match.start() + length_change] + env_var + \

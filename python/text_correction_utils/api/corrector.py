@@ -141,8 +141,8 @@ class TextCorrector:
 
     def __init__(
         self,
-            model_dir: str,
-            device: Union[str, int]
+        model_dir: str,
+        device: Union[str, int]
     ) -> None:
         self.logger = logging.get_logger(self._task_upper())
 
@@ -184,6 +184,13 @@ class TextCorrector:
         )
 
         self._mixed_precision_dtype = torch.float32
+        use_mp = self.cfg["train"].get("mixed_precision", False)
+        if use_mp:
+            precision = self.cfg["train"].get("mixed_precision_dtype", "fp32")
+        else:
+            precision = "fp32"
+        self.set_precision(precision)
+
         self._inference_loader_cfg = self._build_inference_loader_config()
 
     def _build_inference_loader_config(self) -> Dict[str, Any]:

@@ -17,6 +17,12 @@ from torch.backends import cudnn, cuda  # noqa
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+from peft import (
+    LoraConfig,
+    IA3Config,
+    PeftConfig,
+    TaskType
+)
 import yaml
 
 from text_correction_utils.modules.loss import loss_from_config
@@ -74,7 +80,12 @@ training will resume from latest checkpoint."
         )
         return parser
 
-    def __init__(self, cfg: Dict[str, Any], directories: Dict[str, str], info: distributed.DistributedInfo):
+    def __init__(
+        self,
+        cfg: Dict[str, Any],
+        directories: Dict[str, str],
+        info: distributed.DistributedInfo
+    ):
         self.cfg = cfg
         self.directories = directories
         self.info = info
@@ -121,7 +132,45 @@ training will resume from latest checkpoint."
 
         self.model = self._model_from_config(
             self.cfg
-        ).to(self.info.device).train()
+        )
+
+        peft = self.cfg["train"].get("peft", None)
+        if peft is not None:
+            assert "peft_task" in self.cfg["train"], \
+                "also specify peft_task together with peft config"
+            task = self.cfg["train"]["peft_task"]
+            assert task in {"lm", "seq2seq"}, \
+                "peft task type must be either lm or seq2seq"
+            assert peft["type"] in {"lora", "ia3"}, \
+                "only lora and ia3 are supported for now"
+            if self.info.is_main_process:
+                self.logger.info(
+                    "preparing model for parametering efficient fine tuning with config:\n"
+                    f"{yaml.dump(peft)}"
+                )
+            task_type = TaskType.CAUSAL_LM if task == "lm" else TaskType.SEQ_2_SEQ_LM
+            if peft["type"] == "lora":
+                peft_cfg = LoraConfig(
+                    r=peft["r"],
+                    lora_alpha=peft.get("alpha", peft["r"]),
+                    lora_dropout=peft.get("dropout", 0.0),
+                    bias="none",
+                    target_modules=peft["target_modules"],
+                    task_type=task_type
+                )
+            else:
+                peft_cfg = IA3Config(
+                    target_modules=peft["target_modules"],
+                    feedforward_modules=peft.get("feedforward_modules", []),
+                    task_type=task_type
+                )
+            self.model = self._prepare_peft(
+                self.model,
+                peft_cfg,
+                peft.get("use_8bit", False)
+            )
+
+        self.model = self.model.to(self.info.device).train()
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (
@@ -162,12 +211,8 @@ training will resume from latest checkpoint."
             self.logger.info(
                 f"Optimizer parameter groups:\n{param_group_info}"
             )
-            model_params = api.num_parameters(self.model)
-            assert model_params["trainable"] == num_params, \
-                f"number of trainable parameters in model {model_params['trainable']:,}, " \
-                f"and optimized parameters {num_params:,} do not match"
 
-        self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm")
+        self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm", None)
 
         def clamp(v: float, minimum: int, maximum: int) -> int:
             return max(min(round(v), maximum), minimum)
@@ -231,7 +276,8 @@ training will resume from latest checkpoint."
 
             self.logger.info(f"Using model:\n{self.model}")
             self.logger.info(
-                f"Model parameters: {api.num_parameters(self.model)}")
+                f"Model parameters: {api.num_parameters(self.model)}"
+            )
             self.logger.info(
                 f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
                 f"{self.training_items:,} total"
@@ -310,6 +356,15 @@ training will resume from latest checkpoint."
             )
 
         self.model = DDP(self.model)
+
+    @classmethod
+    def _prepare_peft(
+        cls,
+        model: nn.Module,
+        peft_cfg: PeftConfig,
+        use_8bit: bool = False
+    ) -> nn.Module:
+        raise NotImplementedError
 
     @classmethod
     def _model_from_config(cls, cfg: Dict[str, Any]) -> nn.Module:

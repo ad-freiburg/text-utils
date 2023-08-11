@@ -97,7 +97,7 @@ MaskSelectFn = Callable[
     Dict[str, Any]
 ]
 MaskUpdateFn = Callable[
-    [Dict[str, Any], Dict[str, Any], torch.Tensor],
+    [Dict[str, Any], Dict[str, Any], List[int]],
     None
 ]
 
@@ -236,11 +236,12 @@ def search(
     while torch.sum(mask) > 0:
         decoder_lengths = _sub_select(lengths, mask)
         max_decoder_length = torch.max(decoder_lengths)  # type: ignore
+        indices_mask = indices[mask]
 
-        if kwargs_select_fn is not None:
-            decoder_kwargs = kwargs_select_fn(kwargs, mask)
-        else:
-            decoder_kwargs = kwargs
+        decoder_kwargs = kwargs_select_fn(
+            kwargs,
+            indices_mask
+        ) if kwargs_select_fn is not None else kwargs
 
         decoder_token_ids = _sub_select(
             token_ids, mask
@@ -256,8 +257,9 @@ def search(
             decoder_token_ids,
             **decoder_kwargs
         )
+        batch_indices = indices_mask.tolist()
         if kwargs_update_fn is not None:
-            kwargs_update_fn(kwargs, decoder_info, mask)
+            kwargs_update_fn(kwargs, decoder_info, batch_indices)
 
         lengths_of_decoded_indices = lengths[mask]
         log_softmax_scores = torch.log_softmax(
@@ -270,8 +272,6 @@ def search(
             ],
             dim=1
         )
-
-        batch_indices = indices[mask].tolist()
 
         sel_ids, sel_lps = select_fn(log_softmax_scores, batch_indices)
         token_ids[mask, lengths_of_decoded_indices] = sel_ids
@@ -401,12 +401,6 @@ def beam_search(
             decoder_lengths_tensor - 1,
             ...
         ]
-        if kwargs_update_fn is not None:
-            kwargs_update_fn(
-                kwargs,
-                decoder_info,
-                decoder_mask
-            )
 
         log_softmax_scores = torch.log_softmax(decoder_outputs, dim=1)
         beam_candidates = select_fn(
@@ -415,6 +409,7 @@ def beam_search(
             indices_to_decode
         )
 
+        beam_indices = []
         for idx, candidates in zip(indices_to_decode, beam_candidates):
             new_current_beams = []
             for i, candidate in enumerate(candidates):
@@ -432,7 +427,15 @@ def beam_search(
                     break
 
             current_beams[idx] = new_current_beams
+            beam_indices.extend(idx for _ in range(len(new_current_beams)))
             search_depths[idx] += 1
+
+        if kwargs_update_fn is not None:
+            kwargs_update_fn(
+                kwargs,
+                decoder_info,
+                beam_indices
+            )
 
     out_beams = []
     for idx, (beam_queue, active_beams) in enumerate(zip(beam_queues, current_beams)):

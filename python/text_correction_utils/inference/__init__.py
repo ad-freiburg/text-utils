@@ -43,8 +43,8 @@ class Beam:
 )"""
 
 
-# maps from token ids and other kwargs to distribution over next token id
-DecodeFn = Callable[..., torch.Tensor]
+# maps from token ids and other kwargs to distribution over next token id and other info
+DecodeFn = Callable[..., Tuple[torch.Tensor, Dict[str, Any]]]
 # selects indices and scores from given token distributions
 IdxSelectFn = Callable[
     [
@@ -92,9 +92,13 @@ BeamStopFn = Callable[
     bool
 ]
 # select specific elements for all the kwargs keys given the mask tensor
-KwargsSelectFn = Callable[
+MaskSelectFn = Callable[
     [Dict[str, Any], torch.Tensor],
     Dict[str, Any]
+]
+MaskUpdateFn = Callable[
+    [Dict[str, Any], Dict[str, Any], torch.Tensor],
+    None
 ]
 
 
@@ -186,7 +190,8 @@ def search(
     stop_fn: StopFn,
     device: torch.device,
     select_fn: Optional[IdxSelectFn] = None,
-    kwargs_select_fn: Optional[KwargsSelectFn] = None,
+    kwargs_select_fn: Optional[MaskSelectFn] = None,
+    kwargs_update_fn: Optional[MaskUpdateFn] = None,
     **kwargs: Any,
 ) -> List[List[int]]:
     batch_size = len(initial_token_ids)
@@ -211,11 +216,17 @@ def search(
         device=device
     )
     token_ids = torch.as_tensor(
-        padded_initial_token_ids, dtype=torch.long, device=device)
+        padded_initial_token_ids,
+        dtype=torch.long,
+        device=device
+    )
     lengths = torch.as_tensor(lengths, dtype=torch.long, device=device)
 
     smaller_max_length_mask = torch.ones(
-        batch_size, dtype=torch.bool, device=device)
+        batch_size,
+        dtype=torch.bool,
+        device=device
+    )
     smaller_max_length_mask[lengths >= max_length] = False
     non_stop_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
     indices = torch.arange(batch_size, dtype=torch.long, device=device)
@@ -241,17 +252,22 @@ def search(
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
         decoder_kwargs["lengths"] = decoder_lengths
 
-        decoder_output = decode_fn(
+        decoder_output, decoder_info = decode_fn(
             decoder_token_ids,
             **decoder_kwargs
         )
+        if kwargs_update_fn is not None:
+            kwargs_update_fn(kwargs, decoder_info, mask)
 
         lengths_of_decoded_indices = lengths[mask]
         log_softmax_scores = torch.log_softmax(
-            decoder_output[torch.arange(
-                decoder_output.shape[0],
-                device=device
-            ), lengths_of_decoded_indices - 1],
+            decoder_output[
+                torch.arange(
+                    decoder_output.shape[0],
+                    device=device
+                ),
+                lengths_of_decoded_indices - 1
+            ],
             dim=1
         )
 
@@ -303,7 +319,8 @@ def beam_search(
     alpha: float,
     beam_width: int,
     select_fn: Optional[BeamSelectFn] = None,
-    kwargs_select_fn: Optional[KwargsSelectFn] = None,
+    kwargs_select_fn: Optional[MaskSelectFn] = None,
+    kwargs_update_fn: Optional[MaskUpdateFn] = None,
     **kwargs: Any
 ) -> List[List[Beam]]:
     batch_size = len(initial_token_ids)
@@ -375,10 +392,21 @@ def beam_search(
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
         decoder_kwargs["lengths"] = decoder_lengths
 
-        decoder_outputs = decode_fn(
+        decoder_outputs, decoder_info = decode_fn(
             decoder_token_ids,
             **decoder_kwargs
-        )[torch.arange(len(decoder_token_ids), device=device), decoder_lengths_tensor - 1, ...]
+        )
+        decoder_outputs = decoder_outputs[
+            torch.arange(len(decoder_mask), device=device),
+            decoder_lengths_tensor - 1,
+            ...
+        ]
+        if kwargs_update_fn is not None:
+            kwargs_update_fn(
+                kwargs,
+                decoder_info,
+                decoder_mask
+            )
 
         log_softmax_scores = torch.log_softmax(decoder_outputs, dim=1)
         beam_candidates = select_fn(

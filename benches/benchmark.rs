@@ -273,6 +273,10 @@ fn bench_prefix(c: &mut Criterion) {
     group.bench_with_input("vec_get", word, |b, input| {
         b.iter(|| vec.get(input));
     });
+    vec.compute_memo(2);
+    group.bench_with_input("vec_get_memo_2", word, |b, input| {
+        b.iter(|| vec.get(input));
+    });
 }
 
 criterion_group!(

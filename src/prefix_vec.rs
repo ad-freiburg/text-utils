@@ -1,11 +1,12 @@
 use core::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
-use crate::prefix::PrefixTreeSearch;
+use crate::{prefix::PrefixTreeSearch, prefix_tree::Node};
 
 #[derive(Serialize, Deserialize)]
 pub struct PrefixVec<V> {
     pub data: Vec<(Vec<u8>, V)>,
+    range_memo: Option<(Node<(usize, usize)>, usize)>,
 }
 
 pub(crate) enum FindResult {
@@ -15,7 +16,10 @@ pub(crate) enum FindResult {
 
 impl<V> Default for PrefixVec<V> {
     fn default() -> Self {
-        Self { data: Vec::new() }
+        Self {
+            data: Vec::new(),
+            range_memo: None,
+        }
     }
 }
 
@@ -118,7 +122,26 @@ impl<V> PrefixVec<V> {
         mut right: usize,
         start_depth: usize,
     ) -> FindResult {
-        for (depth, k) in key.iter().enumerate() {
+        let skip = if start_depth == 0 && !key.is_empty() {
+            let mut skip = 0;
+            if let Some((memo, max_depth)) = &self.range_memo {
+                let max_length = key.len().min(*max_depth);
+                if let Some(range) = memo.get(&key[..max_length]) {
+                    left = range.0;
+                    right = range.1;
+                    if *max_depth >= key.len() {
+                        return FindResult::Found(left, right);
+                    }
+                    skip = *max_depth;
+                } else {
+                    return FindResult::NotFound(max_length);
+                }
+            }
+            skip
+        } else {
+            0
+        };
+        for (depth, k) in key.iter().enumerate().skip(skip) {
             let Some((new_left, new_right)) = self.range_search(k, start_depth + depth, left, right) else {
                 return FindResult::NotFound(depth);
             };
@@ -126,6 +149,38 @@ impl<V> PrefixVec<V> {
             right = new_right;
         }
         FindResult::Found(left, right)
+    }
+
+    fn get_memo(
+        &self,
+        mut memo: Node<(usize, usize)>,
+        pfx: Vec<u8>,
+        d: usize,
+        max_d: usize,
+    ) -> Node<(usize, usize)> {
+        if d >= max_d {
+            return memo;
+        }
+        let Some(&(left, right)) = memo.get(&pfx) else {
+            return memo;
+        };
+        for k in 0..=255 {
+            if let Some(range) = self.range_search(&k, d, left, right) {
+                let mut pfx_k = pfx.clone();
+                pfx_k.push(k);
+                memo.insert(&pfx_k, range);
+                memo = self.get_memo(memo, pfx_k, d + 1, max_d);
+            };
+        }
+        memo
+    }
+
+    pub fn compute_memo(&mut self, max_depth: usize) {
+        self.range_memo.take();
+        let mut memo = Node::default();
+        memo.insert(&[], (0, self.size()));
+        let memo = self.get_memo(memo, vec![], 0, max_depth);
+        self.range_memo = Some((memo, max_depth));
     }
 }
 
@@ -230,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_prefix_vec() {
-        let pfx = [
+        let mut pfx: PrefixVec<_> = [
             (b"a".to_vec(), 1),
             (b"ab".to_vec(), 2),
             (b"abc".to_vec(), 3),
@@ -240,7 +295,17 @@ mod tests {
             (b"bde".to_vec(), 7),
         ]
         .into_iter()
-        .collect::<PrefixVec<_>>();
+        .collect();
+
+        assert_eq!(pfx.get(b"a"), Some(&1));
+        assert!(pfx.contains(b"a"));
+        assert!(!pfx.contains(b"bbd"));
+        assert_eq!(pfx.get(b"ab"), Some(&2));
+        assert_eq!(pfx.get(b"abf"), None);
+        assert!(!pfx.contains(b"abf"));
+        assert_eq!(pfx.get(b"abd"), Some(&6));
+
+        pfx.compute_memo(2);
 
         assert_eq!(pfx.get(b"a"), Some(&1));
         assert!(pfx.contains(b"a"));

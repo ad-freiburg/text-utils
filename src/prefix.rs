@@ -57,6 +57,11 @@ impl PyPrefixVec {
         Ok(Self { inner, cont: None })
     }
 
+    #[pyo3(signature = (max_depth=2))]
+    fn compute_memo(&mut self, max_depth: usize) {
+        self.inner.compute_memo(max_depth);
+    }
+
     fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
         // calculate interdependencies between continuations
         // e.g. if one continuation start with abc and is not

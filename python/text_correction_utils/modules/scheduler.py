@@ -140,6 +140,36 @@ def constant_with_warmup(
     return multi_step_with_warmup(optimizer, training_steps, warmup_steps, [], [])
 
 
+def cont_sqrt_with_warmup(
+    optimizer: optim.Optimizer,
+    warmup_steps: Union[float, int],
+) -> optim.lr_scheduler.SequentialLR:
+    """
+
+    Lr scheduler that warms up linearly, then decays the
+    learning rate using a square root schedule on the
+    ratio of warmup steps to current step
+
+    :param optimizer: optimizer instance
+    :param warmup_steps: number of warmup steps
+    :return: lr scheduler
+    """
+    assert isinstance(warmup_steps, int) and warmup_steps >= 0, \
+        f"expected warmup steps to be an integer for this scheduler, but got {warmup_steps}"
+
+    def _sqrt(step: int) -> float:
+        return math.sqrt(warmup_steps / step)
+
+    return optim.lr_scheduler.SequentialLR(
+        optimizer,
+        [
+            _warmup(optimizer, warmup_steps),
+            optim.lr_scheduler.LambdaLR(optimizer, _sqrt)
+        ],
+        [warmup_steps]
+    )
+
+
 def lr_scheduler_from_config(
     optimizer: optim.Optimizer,
     steps: int,

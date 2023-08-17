@@ -30,7 +30,7 @@ class TextCorrector:
 
     @classmethod
     def _task_upper(cls) -> str:
-        return cls.task.upper().replace(" ", "_")
+        return cls.task.upper()
 
     @classmethod
     def available_models(cls) -> List[ModelInfo]:
@@ -117,7 +117,9 @@ class TextCorrector:
         if device != "cpu" and not torch.cuda.is_available():
             device = "cpu"
         dev = torch.device(device)
-        info = configuration.load_config(os.path.join(experiment_dir, "info.yaml"))
+        info = configuration.load_config(
+            os.path.join(experiment_dir, "info.yaml")
+        )
         cfg = configuration.load_config(os.path.join(
             experiment_dir,
             info["config_name"]
@@ -173,10 +175,6 @@ class TextCorrector:
         self.model = model
         self.cfg = cfg
         self.logger.debug(f"got config:\n{self.cfg}")
-
-        self.input_tokenizer = tokenization.Tokenizer.from_config(
-            self.cfg["input_tokenizer"]
-        )
 
         self._mixed_precision_dtype = torch.float32
         use_mp = self.cfg["train"].get("mixed_precision", False)

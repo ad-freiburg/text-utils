@@ -7,7 +7,7 @@ import hashlib
 import shutil
 import time
 import zipfile
-from typing import Dict, Optional, Tuple, Any, List, Callable
+from typing import Dict, Optional, Tuple, Any, List, Callable, Union
 
 import torch
 from torch import distributed as dist
@@ -97,6 +97,7 @@ training will resume from latest checkpoint."
         self.total_items = 0
         self.epoch = 0
         self.best_val_loss = float("inf")
+        self.best_benchmark: Optional[float] = None
         self.logger = logging.get_logger("TRAIN")
 
         if self.info.is_main_process:
@@ -183,6 +184,7 @@ training will resume from latest checkpoint."
             self.cleanup
         ) = self._data_from_config(
             self.cfg["train"]["data"],
+            self.cfg["val"]["data"],
             self.cfg["input_tokenizer"],
             num_epochs=num_epochs,
             seed=self.cfg["seed"],
@@ -218,24 +220,24 @@ training will resume from latest checkpoint."
             return max(min(round(v), maximum), minimum)
 
         self.log_interval = clamp(
-            self.training_items_per_epoch *
+            self.training_items *
             self.cfg["train"].get("log_interval", 0.001),
             1,
-            self.training_items_per_epoch
+            self.training_items
         )
         self.eval_interval = clamp(
-            self.training_items_per_epoch *
+            self.training_items *
             self.cfg["train"].get("eval_interval", 0.1),
             1,
-            self.training_items_per_epoch
+            self.training_items
         )
 
         if "lr_scheduler" in self.cfg["train"]:
             self.step_interval = clamp(
-                self.training_items_per_epoch *
+                self.training_items *
                 self.cfg["train"].get("step_interval", 0.001),
                 1,
-                self.training_items_per_epoch
+                self.training_items
             )
             steps = self.training_items // self.step_interval
             self.lr_scheduler = lr_scheduler_from_config(
@@ -484,7 +486,8 @@ training will resume from latest checkpoint."
     @classmethod
     def _data_from_config(
         cls,
-        cfg: Dict[str, Any],
+        train_cfg: Dict[str, Any],
+        val_cfg: Union[List[Any], int],
         tokenizer_config: Dict[str, Any],
         num_epochs: int,
         seed: Optional[int],
@@ -534,8 +537,8 @@ training will resume from latest checkpoint."
                 pipeline_cfg["postprocessing"] = postprocessings
 
             # adapt config to multi gpu usage
-            assert "batch_limit" in cfg, "batch_limit must be in data config"
-            cfg["batch_limit"] = max(1, cfg["batch_limit"] // info.world_size)
+            assert "batch_limit" in train_cfg, "batch_limit must be in data config"
+            train_cfg["batch_limit"] = max(1, train_cfg["batch_limit"] // info.world_size)
 
             return data.DataLoader.from_files(
                 sources,
@@ -545,28 +548,27 @@ training will resume from latest checkpoint."
                 **kwargs
             )
 
-        cfg = copy.deepcopy(cfg)
+        train_cfg = copy.deepcopy(train_cfg)
 
         # pop some configs not used by the dataloader
-        val_cfg = cfg.pop("val")
-        max_length = cfg.pop("max_length")
+        max_length = train_cfg.pop("max_length")
         assert max_length is not None, "missing max_length in data config"
-        max_length_scheduler_cfg = cfg.pop("max_length_scheduler", None)
+        max_length_scheduler_cfg = train_cfg.pop("max_length_scheduler", None)
 
         (
             *training,
             train_cleanup
         ) = cls._prepare_data_sources(
-            cfg.pop("sources"),
+            train_cfg.pop("sources"),
             info
         )
 
-        default_language = cfg.pop("default_language", None)
-        pipeline_cfg = cfg.pop("pipeline")
+        default_language = train_cfg.pop("default_language", None)
+        pipeline_cfg = train_cfg.pop("pipeline")
 
         if isinstance(val_cfg, int):
             # if validation is a split of the training set
-            train_limit = cfg.get("limit", None)
+            train_limit = train_cfg.get("limit", None)
             if train_limit is not None:
                 assert train_limit > val_cfg, \
                     f"train limit ({train_limit:,}) cannot be smaller or " \
@@ -579,7 +581,7 @@ training will resume from latest checkpoint."
                 seed=seed,
                 max_length=max_length,
                 distributed=(info.rank, info.world_size),
-                **cfg,
+                **train_cfg,
             )
             # for validation always turn off shuffling, turn on sorting, and
             # specify the val limit
@@ -603,7 +605,7 @@ training will resume from latest checkpoint."
                 seed=seed,
                 max_length=max_length,
                 distributed=(info.rank, info.world_size),
-                **cfg,
+                **train_cfg,
             )
             (
                 *validation,
@@ -965,7 +967,11 @@ training will resume from latest checkpoint."
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
             if self.info.is_main_process and self.total_items >= eval_at:
+                if "cooldown" in self.cfg["val"]:
+                    self._cooldown()
                 self._evaluate_and_checkpoint()
+                if "benchmark" in self.cfg["val"]:
+                    self._benchmark_and_checkpoint()
                 eval_at += self.eval_interval
 
             if self.info.is_main_process and self.total_items >= log_at:
@@ -1098,7 +1104,7 @@ training will resume from latest checkpoint."
 
         self.model = self.model.eval()
         self.loss_fn = self.loss_fn.eval()
-        metric_cfg = self.cfg["train"].get("metrics")
+        metric_cfg = self.cfg["val"].get("metrics")
         if metric_cfg is not None:
             metrics = tensorboard.metrics_from_config(
                 metric_cfg,
@@ -1128,7 +1134,9 @@ training will resume from latest checkpoint."
                 for metric in metrics:
                     metric.set_values(items, outputs)
                     metric.log_tensorboard(
-                        self.summary_writer, self.total_step)
+                        self.summary_writer,
+                        self.total_step
+                    )
                     metric.log_info(self.logger, self.total_step)
 
         end = time.perf_counter()
@@ -1170,6 +1178,12 @@ training will resume from latest checkpoint."
         self.model = self.model.train()
         self.loss_fn = self.loss_fn.train()
 
+    def _benchmark_and_checkpoint(self):
+        raise NotImplementedError
+
+    def _cooldown(self):
+        pass
+
     def run(self):
         try:
             while self.epoch < self.cfg["train"]["num_epochs"]:
@@ -1191,7 +1205,11 @@ training will resume from latest checkpoint."
         finally:
             if self.info.is_main_process:
                 start = time.perf_counter()
+                if "cooldown" in self.cfg["val"]:
+                    self._cooldown()
                 self._evaluate_and_checkpoint()
+                if "benchmark" in self.cfg["val"]:
+                    self._benchmark_and_checkpoint()
                 end = time.perf_counter()
                 self.logger.info(
                     f"final evaluation and checkpointing took {end - start:.2f}s")

@@ -33,7 +33,8 @@ def save_checkpoint(
     optimizer: Optional[optim.Optimizer] = None,
     lr_scheduler: Optional[Any] = None,
     loss_fn: Optional[nn.Module] = None,
-    grad_scaler: Optional[amp.GradScaler] = None
+    grad_scaler: Optional[amp.GradScaler] = None,
+    **kwargs: Dict[str, Any]
 ) -> None:
     """
     Saves a checkpoint to a file.
@@ -68,7 +69,8 @@ def save_checkpoint(
         "loss_fn_state_dict": None if loss_fn is None
         else loss_fn.state_dict(),
         "grad_scaler_state_dict": None if grad_scaler is None
-        else grad_scaler.state_dict()
+        else grad_scaler.state_dict(),
+        **kwargs
     }
     torch.save(state, f=checkpoint_path)
 

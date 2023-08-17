@@ -72,12 +72,12 @@ class TextCorrector:
 
     @classmethod
     def from_pretrained(
-            cls,
-            model: Optional[str] = None,
-            device: Union[str, int] = "cuda",
-            download_dir: Optional[str] = None,
-            cache_dir: Optional[str] = None,
-            force_download: bool = False
+        cls,
+        model: Optional[str] = None,
+        device: Union[str, int] = "cuda",
+        download_dir: Optional[str] = None,
+        cache_dir: Optional[str] = None,
+        force_download: bool = False
     ):
         if model is None:
             model = cls.default_model().name
@@ -106,15 +106,32 @@ class TextCorrector:
         assert len(sub_dirs) == 1, \
             f"expected extracted zip for model {model} to contain " \
             f"one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
-        return cls(os.path.join(zip_dir, sub_dirs[0]), device)
+        return cls.from_experiment(os.path.join(zip_dir, sub_dirs[0]), device)
 
     @classmethod
     def from_experiment(
         cls,
         experiment_dir: str,
-        device: Union[str, int] = "cuda"
+        device: Union[str, int, torch.device] = "cuda"
     ):
-        return cls(experiment_dir, device)
+        if device != "cpu" and not torch.cuda.is_available():
+            device = "cpu"
+        dev = torch.device(device)
+        info = configuration.load_config(os.path.join(experiment_dir, "info.yaml"))
+        cfg = configuration.load_config(os.path.join(
+            experiment_dir,
+            info["config_name"]
+        ))
+        model = cls._model_from_config(cfg)
+        best_checkpoint_path = os.path.join(
+            experiment_dir,
+            "checkpoints",
+            "checkpoint_best.pt"
+        )
+        best_checkpoint = io.load_checkpoint(best_checkpoint_path)
+        model.load_state_dict(best_checkpoint["model_state_dict"])
+        model = model.eval().requires_grad_(False).to(dev)
+        return cls(model, cfg, dev)
 
     @property
     def name(self) -> str:
@@ -141,8 +158,9 @@ class TextCorrector:
 
     def __init__(
         self,
-        model_dir: str,
-        device: Union[str, int]
+        model: nn.Module,
+        cfg: Dict[str, Any],
+        device: torch.device
     ) -> None:
         self.logger = logging.get_logger(self._task_upper())
 
@@ -151,33 +169,10 @@ class TextCorrector:
         cudnn.benchmark = True
         cuda.matmul.allow_tf32 = True
 
-        if device != "cpu" and not torch.cuda.is_available():
-            self.logger.info(
-                "could not find a GPU, using CPU as fallback option")
-            device = "cpu"
-
-        self.device = torch.device(device)
-
-        info = configuration.load_config(os.path.join(model_dir, "info.yaml"))
-        self.logger.debug(f"loaded info:\n{info}")
-        self.cfg = configuration.load_config(os.path.join(
-            model_dir,
-            info["config_name"]
-        ))
-        self.logger.debug(f"loaded config:\n{self.cfg}")
-
-        self.model = self._model_from_config(self.cfg)
-        best_checkpoint_path = os.path.join(
-            model_dir,
-            "checkpoints",
-            "checkpoint_best.pt"
-        )
-        best_checkpoint = io.load_checkpoint(best_checkpoint_path)
-        self.model.load_state_dict(best_checkpoint["model_state_dict"])
-        self.model.eval()
-        for param in self.model.parameters():
-            param.requires_grad = False
-        self.model.to(self.device)
+        self.device = device
+        self.model = model
+        self.cfg = cfg
+        self.logger.debug(f"got config:\n{self.cfg}")
 
         self.input_tokenizer = tokenization.Tokenizer.from_config(
             self.cfg["input_tokenizer"]

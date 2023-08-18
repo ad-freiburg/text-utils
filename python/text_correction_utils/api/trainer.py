@@ -984,7 +984,8 @@ training will resume from latest checkpoint."
                 )
                 self.logger.info(
                     f"[step {self.total_step}] "
-                    f"train_progress: {progress:.2f}%, {self.total_items:,} / {self.training_items:,} items"
+                    f"train_progress: {progress:.2f}%, "
+                    f"{self.total_items:,} / {self.training_items:,} items"
                 )
 
                 if self.lr_scheduler is not None:

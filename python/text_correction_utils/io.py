@@ -34,7 +34,7 @@ def save_checkpoint(
     lr_scheduler: Optional[Any] = None,
     loss_fn: Optional[nn.Module] = None,
     grad_scaler: Optional[amp.GradScaler] = None,
-    **kwargs: Dict[str, Any]
+    **kwargs: Any
 ) -> None:
     """
     Saves a checkpoint to a file.

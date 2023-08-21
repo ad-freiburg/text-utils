@@ -16,7 +16,6 @@ from text_correction_utils import (
     configuration,
     io,
     data,
-    tokenization
 )
 
 __all__ = ["ModelInfo"]
@@ -177,8 +176,7 @@ class TextCorrector:
         self.logger.debug(f"got config:\n{self.cfg}")
 
         self._mixed_precision_dtype = torch.float32
-        use_mp = self.cfg["train"].get("mixed_precision", False)
-        if use_mp:
+        if self.cfg["train"].get("mixed_precision", False):
             precision = self.cfg["train"].get("mixed_precision_dtype", "fp32")
         else:
             precision = "fp32"

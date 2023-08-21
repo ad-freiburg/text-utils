@@ -233,10 +233,13 @@ training will resume from latest checkpoint."
         )
 
         if "lr_scheduler" in self.cfg["train"]:
+            lower = self.cfg["train"]["data"]["batch_limit"]
+            if self.cfg["train"]["data"]["batch_limit_type"] != "batch_size":
+                lower = lower // self.cfg["train"]["data"]["max_length"]
             self.step_interval = clamp(
                 self.training_items *
                 self.cfg["train"].get("step_interval", 0.001),
-                1,
+                lower,
                 self.training_items
             )
             steps = self.training_items // self.step_interval
@@ -287,6 +290,7 @@ training will resume from latest checkpoint."
             self.logger.info(
                 f"Logging every {self.log_interval:,} items, "
                 f"evaluating every {self.eval_interval:,} items"
+                + f", stepping every {self.step_interval:,} items" if self.lr_scheduler is not None else ""
             )
 
             test_sentence = "This is a test sentence."
@@ -310,31 +314,7 @@ training will resume from latest checkpoint."
         )
         load_checkpoint = cfg["train"].get("load_checkpoint")
         if os.path.exists(last_checkpoint):
-            checkpoint = io.load_checkpoint(last_checkpoint)
-            self.model.load_state_dict(checkpoint["model_state_dict"])
-            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
-                self.lr_scheduler.load_state_dict(
-                    checkpoint["lr_scheduler_state_dict"]
-                )
-            if checkpoint.get("grad_scaler_state_dict") is not None:
-                self.grad_scaler.load_state_dict(
-                    checkpoint["grad_scaler_state_dict"]
-                )
-            if checkpoint.get("loss_fn_state_dict") is not None:
-                self.loss_fn.load_state_dict(checkpoint["loss_fn_state_dict"])
-
-            self.total_step = checkpoint["step"]
-            self.epoch = checkpoint["epoch"]
-            self.best_val_loss = checkpoint["val_loss"]
-            self.epoch_step = checkpoint["epoch_step"]
-            self.epoch_items = checkpoint["epoch_items"]
-            self.total_items = checkpoint["total_items"]
-
-            if self.max_length_scheduler is not None:
-                self.max_length = self.max_length_scheduler(self.total_items)
-                self.train_loader.set_max_length(self.max_length)
-
+            self._load_checkpoint(last_checkpoint)
             if self.info.is_main_process:
                 self.logger.info(
                     f"Resuming training from checkpoint {last_checkpoint}\n"
@@ -358,6 +338,35 @@ training will resume from latest checkpoint."
             )
 
         self.model = DDP(self.model)
+
+    def _load_checkpoint(self, path: str):
+        checkpoint = io.load_checkpoint(path)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
+            self.lr_scheduler.load_state_dict(
+                checkpoint["lr_scheduler_state_dict"]
+            )
+        if checkpoint.get("grad_scaler_state_dict") is not None:
+            self.grad_scaler.load_state_dict(
+                checkpoint["grad_scaler_state_dict"]
+            )
+        if checkpoint.get("loss_fn_state_dict") is not None:
+            self.loss_fn.load_state_dict(checkpoint["loss_fn_state_dict"])
+
+        self.total_step = checkpoint["step"]
+        self.epoch = checkpoint["epoch"]
+        self.best_val_loss = checkpoint["val_loss"]
+        self.epoch_step = checkpoint["epoch_step"]
+        self.epoch_items = checkpoint["epoch_items"]
+        self.total_items = checkpoint["total_items"]
+
+        if self.max_length_scheduler is not None:
+            self.max_length = self.max_length_scheduler(self.total_items)
+            self.train_loader.set_max_length(self.max_length)
+
+        self.train_loader.set_epoch(self.epoch)
+        self.train_loader.set_fast_forward(self.epoch_items)
 
     @classmethod
     def _prepare_peft(

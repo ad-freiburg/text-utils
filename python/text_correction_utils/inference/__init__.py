@@ -97,7 +97,7 @@ MaskSelectFn = Callable[
     Dict[str, Any]
 ]
 MaskUpdateFn = Callable[
-    [Dict[str, Any], Dict[str, Any], List[int]],
+    [Dict[str, Any], Dict[str, Any], torch.Tensor],
     None
 ]
 
@@ -266,15 +266,15 @@ def search(
                 torch.arange(b, device=device),
                 decoder_lengths - 1
             ]
-        batch_indices = indices_mask.tolist()
         if kwargs_update_fn is not None:
-            kwargs_update_fn(kwargs, decoder_info, batch_indices)
+            kwargs_update_fn(kwargs, decoder_info, indices_mask)
 
         log_softmax_scores = torch.log_softmax(
             decoder_outputs,
             dim=1
         )
 
+        batch_indices = indices_mask.tolist()
         sel_ids, sel_lps = select_fn(log_softmax_scores, batch_indices)
         token_ids[mask, decoder_lengths] = sel_ids
         log_prob[mask, decoder_lengths] = sel_lps
@@ -439,7 +439,7 @@ def beam_search(
             kwargs_update_fn(
                 kwargs,
                 decoder_info,
-                beam_indices
+                torch.tensor(beam_indices, device=device, dtype=torch.long)
             )
 
     out_beams = []

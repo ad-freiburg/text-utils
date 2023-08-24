@@ -13,6 +13,7 @@ import torch
 from torch import distributed as dist
 from torch import multiprocessing as mp
 from torch import nn
+from torch.optim import lr_scheduler
 from torch.backends import cudnn, cuda  # noqa
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -41,6 +42,10 @@ from text_correction_utils import (
     api,
     tensorboard
 )
+
+
+def clamp(v: float, minimum: int, maximum: int) -> int:
+    return max(min(round(v), maximum), minimum)
 
 
 class Trainer:
@@ -216,26 +221,39 @@ training will resume from latest checkpoint."
 
         self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm", None)
 
-        def clamp(v: float, minimum: int, maximum: int) -> int:
-            return max(min(round(v), maximum), minimum)
-
+        lower = self.cfg["train"]["data"]["batch_limit"]
+        if self.cfg["train"]["data"]["batch_limit_type"] != "batch_size":
+            lower = lower // self.cfg["train"]["data"]["max_length"]
         self.log_interval = clamp(
             self.training_items *
             self.cfg["train"].get("log_interval", 0.001),
-            1,
+            lower,
             self.training_items
         )
         self.eval_interval = clamp(
             self.training_items *
             self.cfg["train"].get("eval_interval", 0.1),
-            1,
+            lower,
             self.training_items
         )
+        cooldown = self.cfg["val"].get("cooldown", None)
+        if cooldown is not None:
+            assert isinstance(cooldown, float) and 0 < cooldown < 1, \
+                f"cooldown must be a float between 0 and 1, but got {cooldown}"
+            self.cooldown_items = clamp(
+                self.training_items * cooldown,
+                lower,
+                self.training_items
+            )
+            assert self.cooldown_items < self.eval_interval, \
+                f"cooldown items {self.cooldown_items:,} cannot be less " \
+                f"than evaluation interval {self.eval_interval:,}"
+        else:
+            self.cooldown_items = 0
+
+        self.cooldown_scheduler: Optional[lr_scheduler.LambdaLR] = None
 
         if "lr_scheduler" in self.cfg["train"]:
-            lower = self.cfg["train"]["data"]["batch_limit"]
-            if self.cfg["train"]["data"]["batch_limit_type"] != "batch_size":
-                lower = lower // self.cfg["train"]["data"]["max_length"]
             self.step_interval = clamp(
                 self.training_items *
                 self.cfg["train"].get("step_interval", 0.001),
@@ -339,9 +357,34 @@ training will resume from latest checkpoint."
 
         self.model = DDP(self.model)
 
+    def _save_checkpoint(
+        self,
+        path: str,
+        val_loss: float,
+        full: bool = True,
+        **kwargs: Any
+    ):
+        save = {
+            "checkpoint_path": path,
+            "model": distributed.unwrap_ddp(self.model),
+            "step": self.total_step,
+            "epoch": self.epoch,
+            "epoch_step": self.epoch_step,
+            "epoch_items": self.epoch_items,
+            "total_items": self.total_items,
+            "val_loss": val_loss,
+            **kwargs
+        }
+        if full:
+            save["optimizer"] = self.optimizer
+            save["lr_scheduler"] = self.lr_scheduler
+            save["loss_fn"] = self.loss_fn
+            save["grad_scaler"] = self.grad_scaler
+        io.save_checkpoint(**save)
+
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
+        distributed.unwrap_ddp(self.model).load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
             self.lr_scheduler.load_state_dict(
@@ -840,7 +883,8 @@ training will resume from latest checkpoint."
 
     def _prepare_batch(
         self,
-        batch: data.DataBatch
+        batch: data.DataBatch,
+        train: bool = True,
     ) -> Tuple[Dict[str, Any], torch.Tensor]:
         assert len(batch) > 0, "got empty batch"
         token_ids_np, pad_mask_np, lengths, info, labels_np, _ = batch.tensors()
@@ -893,6 +937,7 @@ training will resume from latest checkpoint."
 
         log_at = self.total_items + self.log_interval
         eval_at = self.total_items + self.eval_interval
+        cooldown_at = eval_at - self.cooldown_items
         step_at = self.total_items + self.step_interval
 
         start_items = self.epoch_items
@@ -913,7 +958,7 @@ training will resume from latest checkpoint."
                 )
 
             start_preparation = time.perf_counter()
-            inputs, labels = self._prepare_batch(batch)
+            inputs, labels = self._prepare_batch(batch, train=True)
             end_preparation = time.perf_counter()
 
             self.optimizer.zero_grad(set_to_none=True)
@@ -932,7 +977,8 @@ training will resume from latest checkpoint."
             if self.clip_grad_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.clip_grad_norm
+                    self.model.parameters(),
+                    self.clip_grad_norm
                 )
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
@@ -942,8 +988,11 @@ training will resume from latest checkpoint."
             self.epoch_items += len(batch)
             self.total_items += len(batch)
 
-            if self.lr_scheduler is not None and self.total_items >= step_at:
-                self.lr_scheduler.step()
+            if self.total_items >= step_at:
+                if self.cooldown_scheduler is not None:
+                    self.cooldown_scheduler.step()
+                elif self.lr_scheduler is not None:
+                    self.lr_scheduler.step()
                 step_at += self.step_interval
 
             if self.max_length_scheduler is not None:
@@ -975,13 +1024,43 @@ training will resume from latest checkpoint."
                 )
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
-            if self.info.is_main_process and self.total_items >= eval_at:
-                if "cooldown" in self.cfg["val"]:
-                    self._cooldown()
-                self._evaluate_and_checkpoint()
-                if "benchmark" in self.cfg["val"]:
-                    self._benchmark_and_checkpoint()
+            if self.cooldown_items > 0 and self.total_items >= cooldown_at:
+                self._start_cooldown()
+
+            if self.total_items >= eval_at:
+                if self.info.is_main_process:
+                    # evaluate and benchmark only on main process
+                    self._evaluate_and_checkpoint()
+                    if "benchmark" in self.cfg["val"]:
+                        self._benchmark_and_checkpoint()
+
+                if self.cooldown_items > 0:
+                    if self.info.is_main_process:
+                        self.logger.info(
+                            f"[step {self.total_step}] resetting to "
+                            f"to checkpoint before cooldown"
+                        )
+                    # stop cooldown
+                    self._stop_cooldown()
+
+                    # reset some stuff
+                    log_at = self.total_items + self.log_interval
+                    step_at = self.total_items + self.step_interval
+                    start_items = self.epoch_items
+                    train_iter = iter(self.train_loader)
+
+                    # reset the statistics
+                    mean_loss.reset()
+                    mean_bsz.reset()
+                    mean_step_time.reset()
+                    mean_forward_pass.reset()
+                    mean_batch_load.reset()
+                    mean_seq_length.reset()
+                    mean_seq_length_ratio.reset()
+                    mean_batch_preparation.reset()
+
                 eval_at += self.eval_interval
+                cooldown_at = eval_at - self.cooldown_items
 
             if self.info.is_main_process and self.total_items >= log_at:
                 # log training progress only on main process
@@ -997,8 +1076,9 @@ training will resume from latest checkpoint."
                     f"{self.total_items:,} / {self.training_items:,} items"
                 )
 
-                if self.lr_scheduler is not None:
-                    for i, lr in enumerate(self.lr_scheduler.get_last_lr()):
+                lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
+                if lr_scheduler is not None:
+                    for i, lr in enumerate(lr_scheduler.get_last_lr()):
                         self.summary_writer.add_scalar(
                             f"train_lr_{i}", lr, self.total_step
                         )
@@ -1127,7 +1207,7 @@ training will resume from latest checkpoint."
 
         start = time.perf_counter()
         for batch_num, batch in enumerate(self.val_loader):
-            inputs, labels = self._prepare_batch(batch=batch)
+            inputs, labels = self._prepare_batch(batch, train=False)
 
             with torch.inference_mode(), amp.autocast(
                 enabled=self.grad_scaler.is_enabled(),
@@ -1162,20 +1242,7 @@ training will resume from latest checkpoint."
             self.directories["checkpoints"],
             "checkpoint_last.pt"
         )
-        io.save_checkpoint(
-            checkpoint_path=ckpt_path,
-            model=distributed.unwrap_ddp(self.model),
-            optimizer=self.optimizer,
-            lr_scheduler=self.lr_scheduler,
-            loss_fn=self.loss_fn,
-            grad_scaler=self.grad_scaler,
-            step=self.total_step,
-            epoch=self.epoch,
-            epoch_step=self.epoch_step,
-            epoch_items=self.epoch_items,
-            total_items=self.total_items,
-            val_loss=val_loss
-        )
+        self._save_checkpoint(ckpt_path, val_loss)
 
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
@@ -1183,7 +1250,7 @@ training will resume from latest checkpoint."
                 self.directories["checkpoints"],
                 "checkpoint_best.pt"
             )
-            shutil.copy2(ckpt_path, best_ckpt_path)
+            self._save_checkpoint(best_ckpt_path, val_loss, full=False)
 
         self.model = self.model.train()
         self.loss_fn = self.loss_fn.train()
@@ -1191,8 +1258,43 @@ training will resume from latest checkpoint."
     def _benchmark_and_checkpoint(self):
         raise NotImplementedError
 
-    def _cooldown(self):
-        pass
+    def _start_cooldown(self):
+        # already started
+        if self.cooldown_scheduler is not None:
+            return
+        # cooldown scheduler linearly decays lr from
+        # current value to 0
+        if self.lr_scheduler is not None:
+            factor = self.lr_scheduler.get_last_lr()[0] / self.cfg["train"]["optimizer"]["lr"]
+        else:
+            factor = 1.0
+        steps = self.cooldown_items // self.step_interval
+        steps = max(1, steps)
+        self.cooldown_scheduler = lr_scheduler.LambdaLR(
+            self.optimizer,
+            lambda step: (1 - (min(step, steps) / steps)) * factor
+        )
+        path = os.path.join(
+            self.directories["checkpoints"],
+            "cooldown_checkpoint.pt"
+        )
+        self._save_checkpoint(path, self.best_val_loss)
+
+    def _stop_cooldown(self):
+        # already stopped
+        if self.cooldown_scheduler is None:
+            return
+        self.cooldown_scheduler = None
+        path = os.path.join(
+            self.directories["checkpoints"],
+            "cooldown_checkpoint.pt"
+        )
+        # load cooldown checkpoint, but pay special attention
+        # to best val loss, because it is reset in self._load_checkpoint
+        val_loss = self.best_val_loss
+        self._load_checkpoint(path)
+        self.best_val_loss = val_loss
+        os.remove(path)
 
     def run(self):
         try:
@@ -1215,16 +1317,18 @@ training will resume from latest checkpoint."
         finally:
             if self.info.is_main_process:
                 start = time.perf_counter()
-                if "cooldown" in self.cfg["val"]:
-                    self._cooldown()
-                self._evaluate_and_checkpoint()
-                if "benchmark" in self.cfg["val"]:
-                    self._benchmark_and_checkpoint()
+                ckpt_path = os.path.join(
+                    self.directories["checkpoints"],
+                    "checkpoint_last.pt"
+                )
+                self._save_checkpoint(ckpt_path, self.best_val_loss)
                 end = time.perf_counter()
                 self.logger.info(
-                    f"final evaluation and checkpointing took {end - start:.2f}s")
+                    f"final checkpointing took {end - start:.2f}s"
+                )
             if len(self.cleanup) > 0 and self.info.is_local_main_process:
                 self.logger.info(
-                    f"deleting temporary data sources on local main process with rank {self.info.rank}")
+                    f"deleting temporary data sources on local main process with rank {self.info.rank}"
+                )
                 for path in self.cleanup:
                     os.remove(path)

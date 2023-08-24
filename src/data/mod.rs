@@ -66,19 +66,23 @@ impl TextData {
 
 pub enum TensorizedLabelInfo {
     Empty,
-    ConditionalGeneration((Array2<i32>, PaddingMask, Vec<usize>)),
+    Generation(Array2<i32>, PaddingMask, Vec<usize>, Option<Vec<usize>>),
 }
 
 impl IntoPy<PyObject> for TensorizedLabelInfo {
     fn into_py(self, py: Python<'_>) -> PyObject {
         let d = PyDict::new(py);
-        if let TensorizedLabelInfo::ConditionalGeneration((token_ids, padding_mask, lengths)) = self
+        if let TensorizedLabelInfo::Generation(token_ids, padding_mask, lengths, prefix_lengths) =
+            self
         {
             let token_ids: Py<PyArray2<i32>> = token_ids.into_pyarray(py).into_py(py);
             d.set_item("token_ids", token_ids).unwrap();
             d.set_item("padding_mask", padding_mask.into_py(py))
                 .unwrap();
             d.set_item("lengths", lengths).unwrap();
+            if let Some(prefix_lengths) = prefix_lengths {
+                d.set_item("prefix_lengths", prefix_lengths).unwrap();
+            }
         };
         d.into_py(py)
     }
@@ -88,7 +92,7 @@ impl IntoPy<PyObject> for TensorizedLabelInfo {
 pub enum Label {
     Classification(i32),
     SequenceClassification(Vec<i32>),
-    ConditionalGeneration(Vec<i32>, u32),
+    Generation(Vec<i32>, u32, Option<usize>),
     Empty,
 }
 
@@ -104,10 +108,13 @@ impl IntoPy<PyObject> for Label {
                 d.set_item("labels", labels).unwrap();
                 "sequence_classification"
             }
-            Label::ConditionalGeneration(labels, pad_token_id) => {
+            Label::Generation(labels, pad_token_id, prefix_length) => {
                 d.set_item("labels", labels).unwrap();
                 d.set_item("pad_token_id", pad_token_id).unwrap();
-                "conditional_generation"
+                if let Some(prefix_length) = prefix_length {
+                    d.set_item("prefix_length", prefix_length).unwrap();
+                }
+                "generation"
             }
             Label::Empty => "empty",
         };
@@ -524,10 +531,10 @@ fn label_lengths(labels: &[&Label]) -> Vec<usize> {
         .map(|&label| match label {
             Label::Classification(_) => 1,
             Label::SequenceClassification(label, ..) => label.len(),
-            Label::ConditionalGeneration(label, ..) => {
+            Label::Generation(label, ..) => {
                 assert!(
                     label.len() > 1,
-                    "conditional generation label must be at least two tokens long"
+                    "generation label must be at least two tokens long"
                 );
                 label.len() - 1
             }
@@ -541,26 +548,35 @@ fn prepare_label_info(labels: &[&Label]) -> (TensorizedLabelInfo, Vec<usize>, us
     let label_lengths = label_lengths(labels);
     let max_label_length = label_lengths.iter().max().copied().unwrap_or(0);
     let label_info = match labels[0] {
-        Label::ConditionalGeneration(..) => {
+        Label::Generation(..) => {
             let mut label_vec =
                 Vec::with_capacity(labels.len() * max_label_length.saturating_sub(1));
+            let mut prefix_lengths = Vec::with_capacity(labels.len());
             for (idx, label) in labels.iter().enumerate() {
-                if let Label::ConditionalGeneration(label, pad_token_id) = label {
+                if let Label::Generation(label, pad_token_id, prefix_length) = label {
                     label_vec.extend(label.iter().cloned().take(label.len() - 1).chain(vec![
                                 *pad_token_id as i32;
                                 max_label_length - label_lengths[idx]
                             ]));
+                    if let Some(prefix_length) = prefix_length {
+                        prefix_lengths.push(*prefix_length);
+                    }
                 } else {
                     unreachable!()
                 }
             }
             let label_arr = Array2::from_shape_vec((labels.len(), max_label_length), label_vec)
                 .expect("should not fail");
-            TensorizedLabelInfo::ConditionalGeneration((
+            TensorizedLabelInfo::Generation(
                 label_arr,
                 padding_mask(label_lengths.as_slice()).expect("failed to create padding mask"),
                 label_lengths.clone(),
-            ))
+                if prefix_lengths.is_empty() {
+                    None
+                } else {
+                    Some(prefix_lengths)
+                },
+            )
         }
         _ => TensorizedLabelInfo::Empty,
     };
@@ -596,7 +612,7 @@ impl Tensorize for Batch<Item> {
                     .cloned()
                     .chain(vec![-1; max_label_length - label_lengths[idx]])
                     .collect(),
-                Label::ConditionalGeneration(labels, ..) => labels
+                Label::Generation(labels, ..) => labels
                     .iter()
                     .cloned()
                     .skip(1)

@@ -171,12 +171,8 @@ fn clip_tokenization_info(info: TokenizationInfo) -> TokenizationInfo {
 }
 
 #[inline]
-fn clip_tokenization(mut tokenization: Tokenization, length: usize, suffix: usize) -> Tokenization {
+fn clip_tokenization(mut tokenization: Tokenization, length: usize) -> Tokenization {
     if tokenization.token_ids.len() > length {
-        for idx in 0..suffix {
-            tokenization.token_ids[length - suffix + idx] =
-                tokenization.token_ids[tokenization.token_ids.len() - suffix + idx];
-        }
         tokenization.token_ids.truncate(length);
         tokenization.info = clip_tokenization_info(tokenization.info);
     }
@@ -187,35 +183,26 @@ fn clip_tokenization(mut tokenization: Tokenization, length: usize, suffix: usiz
 }
 
 #[inline]
-fn clip_suffix(mut labels: Vec<i32>, length: usize, suffix: usize) -> Vec<i32> {
-    if labels.len() > length {
-        for idx in 0..suffix {
-            labels[length - suffix + idx] = labels[labels.len() - suffix + idx];
-        }
-    }
-    labels
-}
-
-#[inline]
-fn clip_label(label: Label, length: usize, suffix: usize) -> Label {
+fn clip_label(mut label: Label, length: usize) -> Label {
     match label {
-        Label::Classification(_) => label,
-        Label::SequenceClassification(labels) => {
-            Label::SequenceClassification(clip_suffix(labels, length, suffix))
+        Label::Classification(_) => (),
+        Label::SequenceClassification(ref mut labels) => {
+            labels.truncate(length);
         }
-        Label::ConditionalGeneration(labels, pad_token_id) => {
-            Label::ConditionalGeneration(clip_suffix(labels, length, suffix), pad_token_id)
+        Label::Generation(ref mut labels, .., ref mut prefix_length) => {
+            labels.truncate(length);
+            *prefix_length = prefix_length.map(|l| l.min(length));
         }
-        Label::Empty => label,
-    }
+        Label::Empty => (),
+    };
+    label
 }
 
-pub fn clip_length(max_length: Arc<AtomicUsize>, tokenizer: &Tokenizer) -> Box<PostprocessingFn> {
-    let num_suffix_tokens = tokenizer.num_suffix_tokens();
+pub fn clip_length(max_length: Arc<AtomicUsize>) -> Box<PostprocessingFn> {
     Box::new(move |item, info| {
         let length = max_length.load(Ordering::Relaxed);
-        let tokenization = clip_tokenization(item.tokenization, length, num_suffix_tokens);
-        let label = clip_label(item.label, length, num_suffix_tokens);
+        let tokenization = clip_tokenization(item.tokenization, length);
+        let label = clip_label(item.label, length);
         Ok((
             Item {
                 tokenization,
@@ -263,7 +250,7 @@ pub fn postprocessing(
                 .collect();
             switch_on_mark(pfns, key, values)
         }
-        PostprocessingFnConfig::ClipLength => clip_length(max_length, tokenizer),
+        PostprocessingFnConfig::ClipLength => clip_length(max_length),
         PostprocessingFnConfig::TokenMasking(p, min, num_p, mask_token) => {
             let Some(mask_token_id) = tokenizer.special_token_to_id(&mask_token) else {
                 panic!("mask token {mask_token} not found in tokenizer");

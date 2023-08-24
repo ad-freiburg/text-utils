@@ -6,7 +6,7 @@ use std::{
 
 use text_correction_utils::{
     data::{
-        labeling::LabelingConfig,
+        labeling::{GenerationConfig, LabelingConfig},
         loading::{
             text_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator,
             ItemSize, PipelineIterator, TensorizedIterator, TextIterationStrategy, TextIterator,
@@ -91,7 +91,7 @@ fn main() -> anyhow::Result<()> {
             ),
             PreprocessingFnConfig::WhitespaceCorruption(0.05, 0.2, true),
         ])),
-        labeling: LabelingConfig::ConditionalGeneration(tokenizer_cfg.clone()),
+        labeling: LabelingConfig::Generation(tokenizer_cfg.clone(), GenerationConfig::TargetOnly),
         postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
     };
     let (pipeline, _max_length) =

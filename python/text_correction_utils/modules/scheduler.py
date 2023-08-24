@@ -154,10 +154,12 @@ def cont_sqrt_with_warmup(
     :param warmup_steps: number of warmup steps
     :return: lr scheduler
     """
-    assert isinstance(warmup_steps, int) and warmup_steps >= 0, \
+    assert isinstance(warmup_steps, int), \
         f"expected warmup steps to be an integer for this scheduler, but got {warmup_steps}"
+    warmup_steps = max(1, warmup_steps)
 
     def _sqrt(step: int) -> float:
+        step = max(1, step)
         return math.sqrt(warmup_steps / step)
 
     return optim.lr_scheduler.SequentialLR(
@@ -189,6 +191,8 @@ def lr_scheduler_from_config(
         return multi_step_with_warmup(optimizer, steps, **cfg)
     elif lr_type == "constant_with_warmup":
         return constant_with_warmup(optimizer, steps, **cfg)
+    elif lr_type == "cont_sqrt_with_warmup":
+        return cont_sqrt_with_warmup(optimizer, **cfg)
     else:
         if additional_lr_scheduler_fn is not None:
             return additional_lr_scheduler_fn(optimizer, steps, cfg)

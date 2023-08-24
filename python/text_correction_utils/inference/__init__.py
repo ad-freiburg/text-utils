@@ -256,7 +256,6 @@ def search(
 
         decoder_outputs, decoder_info = decode_fn(
             decoder_token_ids,
-            decoder_lengths,
             **decoder_kwargs
         )
         b, s, _ = decoder_outputs.shape
@@ -393,11 +392,10 @@ def beam_search(
         assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \
             "padding_mask and lengths are added automatically, do not provide them yourself"
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
-        decoder_kwargs["lengths"] = decoder_lengths
+        decoder_kwargs["lengths"] = decoder_lengths_tensor
 
         decoder_outputs, decoder_info = decode_fn(
             decoder_token_ids,
-            decoder_lengths_tensor,
             **decoder_kwargs
         )
         b, s, _ = decoder_outputs.shape

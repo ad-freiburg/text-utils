@@ -43,7 +43,7 @@ class Beam:
 )"""
 
 
-# maps from token ids and other kwargs to distribution over next token id and other info
+# maps from token ids, length, and other kwargs to distribution over next token id and other info
 DecodeFn = Callable[..., Tuple[torch.Tensor, Dict[str, Any]]]
 # selects indices and scores from given token distributions
 IdxSelectFn = Callable[
@@ -235,6 +235,7 @@ def search(
     # all sequences are at max length or stopped by stop_fn
     while torch.sum(mask) > 0:
         decoder_lengths = _sub_select(lengths, mask)
+        assert isinstance(decoder_lengths, torch.Tensor)
         max_decoder_length = torch.max(decoder_lengths)  # type: ignore
         indices_mask = indices[mask]
 
@@ -253,29 +254,31 @@ def search(
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
         decoder_kwargs["lengths"] = decoder_lengths
 
-        decoder_output, decoder_info = decode_fn(
+        decoder_outputs, decoder_info = decode_fn(
             decoder_token_ids,
+            decoder_lengths,
             **decoder_kwargs
         )
+        b, s, _ = decoder_outputs.shape
+        if s == 1:
+            decoder_outputs = decoder_outputs[:, 0]
+        else:
+            decoder_outputs = decoder_outputs[
+                torch.arange(b, device=device),
+                decoder_lengths - 1
+            ]
         batch_indices = indices_mask.tolist()
         if kwargs_update_fn is not None:
             kwargs_update_fn(kwargs, decoder_info, batch_indices)
 
-        lengths_of_decoded_indices = lengths[mask]
         log_softmax_scores = torch.log_softmax(
-            decoder_output[
-                torch.arange(
-                    decoder_output.shape[0],
-                    device=device
-                ),
-                lengths_of_decoded_indices - 1
-            ],
+            decoder_outputs,
             dim=1
         )
 
         sel_ids, sel_lps = select_fn(log_softmax_scores, batch_indices)
-        token_ids[mask, lengths_of_decoded_indices] = sel_ids
-        log_prob[mask, lengths_of_decoded_indices] = sel_lps
+        token_ids[mask, decoder_lengths] = sel_ids
+        log_prob[mask, decoder_lengths] = sel_lps
 
         lengths[mask] += 1
 
@@ -394,13 +397,17 @@ def beam_search(
 
         decoder_outputs, decoder_info = decode_fn(
             decoder_token_ids,
+            decoder_lengths_tensor,
             **decoder_kwargs
         )
-        decoder_outputs = decoder_outputs[
-            torch.arange(len(decoder_mask), device=device),
-            decoder_lengths_tensor - 1,
-            ...
-        ]
+        b, s, _ = decoder_outputs.shape
+        if s == 1:
+            decoder_outputs = decoder_outputs[:, 0]
+        else:
+            decoder_outputs = decoder_outputs[
+                torch.arange(b, device=device),
+                decoder_lengths_tensor - 1
+            ]
 
         log_softmax_scores = torch.log_softmax(decoder_outputs, dim=1)
         beam_candidates = select_fn(

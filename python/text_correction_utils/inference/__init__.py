@@ -206,7 +206,8 @@ def search(
         num_tokens = len(token_ids)
         assert num_tokens <= max_length, "initial token ids cannot be longer than max length"
         padded_initial_token_ids.append(
-            token_ids + [pad_token_id] * (max_length + 1 - num_tokens))
+            token_ids + [pad_token_id] * (max_length + 1 - num_tokens)
+        )
         lengths.append(num_tokens)
 
     log_prob = torch.zeros(

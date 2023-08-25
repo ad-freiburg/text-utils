@@ -1311,7 +1311,7 @@ training will resume from latest checkpoint."
         except KeyboardInterrupt:
             if self.info.is_main_process:
                 self.logger.info(
-                    "got termination signal, evaluating and saving on main process before exiting"
+                    "got termination signal, saving on main process before exiting"
                 )
 
         finally:

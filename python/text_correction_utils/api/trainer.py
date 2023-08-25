@@ -271,6 +271,10 @@ training will resume from latest checkpoint."
             self.step_interval = 0
             self.lr_scheduler = None
 
+        self.log_at = self.log_interval
+        self.eval_at = self.eval_interval
+        self.step_at = self.step_interval
+
         self.loss_fn = loss_from_config(
             self.cfg["train"]["loss"],
             additional_loss_fn=self._additional_loss_fn()
@@ -403,6 +407,9 @@ training will resume from latest checkpoint."
         self.epoch_step = checkpoint["epoch_step"]
         self.epoch_items = checkpoint["epoch_items"]
         self.total_items = checkpoint["total_items"]
+        self.log_at = self.total_items + self.log_interval
+        self.eval_at = self.total_items + self.eval_interval
+        self.step_at = self.total_items + self.step_interval
 
         if self.max_length_scheduler is not None:
             self.max_length = self.max_length_scheduler(self.total_items)
@@ -935,11 +942,6 @@ training will resume from latest checkpoint."
         else:
             metrics = []
 
-        log_at = self.total_items + self.log_interval
-        eval_at = self.total_items + self.eval_interval
-        cooldown_at = eval_at - self.cooldown_items
-        step_at = self.total_items + self.step_interval
-
         start_items = self.epoch_items
 
         train_iter = iter(self.train_loader)
@@ -988,12 +990,12 @@ training will resume from latest checkpoint."
             self.epoch_items += len(batch)
             self.total_items += len(batch)
 
-            if self.total_items >= step_at:
+            if self.total_items >= self.step_at:
                 if self.cooldown_scheduler is not None:
                     self.cooldown_scheduler.step()
                 elif self.lr_scheduler is not None:
                     self.lr_scheduler.step()
-                step_at += self.step_interval
+                self.step_at += self.step_interval
 
             if self.max_length_scheduler is not None:
                 max_length = self.max_length_scheduler(self.total_items)
@@ -1024,10 +1026,10 @@ training will resume from latest checkpoint."
                 )
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
-            if self.cooldown_items > 0 and self.total_items >= cooldown_at:
+            if self.cooldown_items > 0 and self.total_items >= self.eval_at - self.cooldown_items:
                 self._start_cooldown()
 
-            if self.total_items >= eval_at:
+            if self.total_items >= self.eval_at:
                 if self.info.is_main_process:
                     # evaluate and benchmark only on main process
                     self._evaluate_and_checkpoint()
@@ -1043,10 +1045,7 @@ training will resume from latest checkpoint."
                     # stop cooldown
                     self._stop_cooldown()
 
-                    # reset some stuff
-                    log_at = self.total_items + self.log_interval
-                    step_at = self.total_items + self.step_interval
-                    start_items = self.epoch_items
+                    # trigger train loader again
                     train_iter = iter(self.train_loader)
 
                     # reset the statistics
@@ -1059,10 +1058,9 @@ training will resume from latest checkpoint."
                     mean_seq_length_ratio.reset()
                     mean_batch_preparation.reset()
 
-                eval_at += self.eval_interval
-                cooldown_at = eval_at - self.cooldown_items
+                self.eval_at += self.eval_interval
 
-            if self.info.is_main_process and self.total_items >= log_at:
+            if self.info.is_main_process and self.total_items >= self.log_at:
                 # log training progress only on main process
                 progress = 100 * self.total_items / self.training_items
                 self.summary_writer.add_scalar(
@@ -1180,12 +1178,12 @@ training will resume from latest checkpoint."
                 mean_batch_preparation.reset()
                 start = end
 
-            if self.total_items >= log_at:
+            if self.total_items >= self.log_at:
                 self.logger.info(
                     f"[step {self.total_step}] [GPU:{self.info.rank}:{self.info.local_rank}] nvidia-smi:\n"
                     f"{api.nvidia_smi()}"
                 )
-                log_at += self.log_interval
+                self.log_at += self.log_interval
 
     def _evaluate_and_checkpoint(self):
         assert self.info.is_main_process, "evaluation should be only done on main process"

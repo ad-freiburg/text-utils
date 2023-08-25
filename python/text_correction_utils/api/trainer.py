@@ -1,4 +1,5 @@
 import argparse
+import math
 import copy
 import sys
 import random
@@ -45,7 +46,7 @@ from text_correction_utils import (
 
 
 def clamp(v: float, minimum: int, maximum: int) -> int:
-    return max(min(round(v), maximum), minimum)
+    return max(min(math.floor(v), maximum), minimum)
 
 
 class Trainer:

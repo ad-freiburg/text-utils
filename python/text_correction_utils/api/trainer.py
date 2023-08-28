@@ -420,6 +420,11 @@ training will resume from latest checkpoint."
         self.train_loader.set_epoch(self.epoch)
         self.train_loader.set_fast_forward(self.epoch_items)
 
+        # reset eval, log, and step counters
+        self.log_at = math.ceil(self.total_items / self.log_interval) * self.log_interval
+        self.eval_at = math.ceil(self.total_items / self.eval_interval) * self.eval_interval
+        self.step_at = math.ceil(self.total_items / self.step_interval) * self.step_interval
+
     @classmethod
     def _prepare_peft(
         cls,
@@ -1297,12 +1302,6 @@ training will resume from latest checkpoint."
         val_loss = self.best_val_loss
         self._load_checkpoint(path)
         self.best_val_loss = val_loss
-
-        # reset eval, log, and step counters
-        self.log_at = math.ceil(self.total_items / self.log_interval) * self.log_interval
-        self.eval_at = math.ceil(self.total_items / self.eval_interval) * self.eval_interval
-        self.step_at = math.ceil(self.total_items / self.step_interval) * self.step_interval
-
         os.remove(path)
 
     def run(self):

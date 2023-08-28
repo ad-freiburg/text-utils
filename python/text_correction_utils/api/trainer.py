@@ -1038,6 +1038,8 @@ training will resume from latest checkpoint."
                     if "benchmark" in self.cfg["val"]:
                         self._benchmark_and_checkpoint()
 
+                self.eval_at += self.eval_interval
+
                 if self.cooldown_items > 0:
                     if self.info.is_main_process:
                         self.logger.info(
@@ -1059,8 +1061,6 @@ training will resume from latest checkpoint."
                     mean_seq_length.reset()
                     mean_seq_length_ratio.reset()
                     mean_batch_preparation.reset()
-
-                self.eval_at += self.eval_interval
 
             if self.info.is_main_process and self.total_items >= self.log_at:
                 # log training progress only on main process

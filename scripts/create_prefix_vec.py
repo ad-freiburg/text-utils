@@ -29,8 +29,9 @@ def create(args: argparse.Namespace):
                 line = line.strip().split("\t")
                 assert len(line) >= 3
                 for i in range(2, len(line)):
+                    token_ids = tokenizer.tokenize(line[i]).token_ids
                     line[i] = tokenizer.de_tokenize(
-                        tokenizer.tokenize(line[i]).token_ids[num_pfx:-num_sfx],
+                        token_ids[num_pfx:len(token_ids) - num_sfx],
                         False
                     ).strip()
                 of.write("\t".join(line) + "\n")

@@ -1,13 +1,13 @@
 import os
 import re
-# import tempfile
+import tempfile
 # import zipfile
 from typing import Any, Callable
 
 import yaml
 
 
-def _replace_env(s: str, _: str) -> Any:
+def _replace_env(s: str, _: str) -> str:
     env_regex = re.compile(r"env\(([A-Z0-9_]+):?(.*?)\)")
     org_length = len(s)
     length_change = 0
@@ -20,7 +20,7 @@ def _replace_env(s: str, _: str) -> Any:
         s = s[:match.start() + length_change] + env_var + \
             s[match.end() + length_change:]
         length_change = len(s) - org_length
-    return yaml.safe_load(s)
+    return s
 
 
 def _replace_non_env_var(s: str, base_dir: str) -> Any:
@@ -129,7 +129,9 @@ def load_config(yaml_path: str) -> Any:
     parsed_yaml = yaml.safe_load(raw_yaml)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_env)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env_var)
-    return parsed_yaml
+    with tempfile.TemporaryFile("w") as tf:
+        yaml.safe_dump(parsed_yaml, tf)
+        return yaml.safe_load(tf)
 
 
 def load_config_from_experiment(dir: str) -> Any:

@@ -1276,8 +1276,7 @@ training will resume from latest checkpoint."
             factor = self.lr_scheduler.get_last_lr()[0] / self.cfg["train"]["optimizer"]["lr"]
         else:
             factor = 1.0
-        steps = self.cooldown_items // self.step_interval
-        steps = max(1, steps)
+        steps = max(1, min(self.cooldown_items, self.eval_at - self.total_items) // self.step_interval)
         self.cooldown_scheduler = lr_scheduler.LambdaLR(
             self.optimizer,
             lambda step: (1 - (min(step, steps) / steps)) * factor

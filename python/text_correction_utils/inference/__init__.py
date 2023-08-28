@@ -26,6 +26,12 @@ class Beam:
         beam.info = copy.deepcopy(other.info)
         return beam
 
+    def truncate_prefix(
+        self,
+        length: int
+    ) -> "Beam":
+        return Beam(self.token_ids[length:], self.log_probs[length:])
+
     @property
     def log_prob(self) -> float:
         return sum(self.log_probs)
@@ -192,6 +198,7 @@ def search(
     select_fn: Optional[IdxSelectFn] = None,
     kwargs_select_fn: Optional[MaskSelectFn] = None,
     kwargs_update_fn: Optional[MaskUpdateFn] = None,
+    return_full: bool = False,
     **kwargs: Any,
 ) -> List[List[int]]:
     batch_size = len(initial_token_ids)
@@ -209,6 +216,7 @@ def search(
             token_ids + [pad_token_id] * (max_length + 1 - num_tokens)
         )
         lengths.append(num_tokens)
+    initial_lengths = list(lengths)
 
     log_prob = torch.zeros(
         batch_size,
@@ -296,14 +304,18 @@ def search(
     outputs = []
     for i in range(batch_size):
         length = lengths[i]
-        outputs.append(token_ids[i][:length])
+        start = initial_lengths[i] if return_full else 0
+        outputs.append(token_ids[i][start:length])
     return outputs
 
 
-def log_likelihood_score(normalize_by_length: bool = True, alpha: float = 1.0) -> Callable[[Beam], float]:
-    def _score(beam: Beam) -> float:
+def log_likelihood_score(
+    normalize_by_length: bool = True,
+    alpha: float = 1.0
+) -> Callable[[Beam, int], float]:
+    def _score(beam: Beam, length: int) -> float:
         if normalize_by_length:
-            return beam.log_prob / (len(beam) ** alpha)
+            return beam.log_prob / (length ** alpha)
         else:
             return beam.log_prob
 
@@ -324,6 +336,7 @@ def beam_search(
     select_fn: Optional[BeamSelectFn] = None,
     kwargs_select_fn: Optional[MaskSelectFn] = None,
     kwargs_update_fn: Optional[MaskUpdateFn] = None,
+    return_full: bool = False,
     **kwargs: Any
 ) -> List[List[Beam]]:
     batch_size = len(initial_token_ids)
@@ -336,9 +349,11 @@ def beam_search(
 
     search_depths: List[int] = []
     current_beams: List[List[Beam]] = []
+    initial_lenghts = []
     for b in range(batch_size):
         # initialize beams
         token_ids = initial_token_ids[b]
+        initial_lenghts.append(len(token_ids))
         log_prob = [0.0] * len(token_ids)
         beam = Beam(token_ids, log_prob)
         current_beams.append([beam])
@@ -446,10 +461,17 @@ def beam_search(
     out_beams = []
     for idx, (beam_queue, active_beams) in enumerate(zip(beam_queues, current_beams)):
         beam_queue = sorted(
-            beam_queue, key=lambda b: -score_fn(b)
+            beam_queue, key=lambda b: -score_fn(b, initial_lenghts[idx])
         )[:beam_width]
         if len(beam_queue) < beam_width:
-            active_beams = sorted(active_beams, key=lambda e: -score_fn(e))
+            active_beams = sorted(
+                active_beams,
+                key=lambda b: -score_fn(b, initial_lenghts[idx])
+            )
             beam_queue.extend(active_beams[:beam_width - len(beam_queue)])
-        out_beams.append(beam_queue)
+        pfx = initial_lenghts[idx] if return_full else 0
+        out_beams.append([
+            beam.truncate_prefix(pfx)
+            for beam in beam_queue
+        ])
     return out_beams

@@ -1031,37 +1031,6 @@ training will resume from latest checkpoint."
             if self.cooldown_items > 0 and self.total_items >= self.eval_at - self.cooldown_items:
                 self._start_cooldown()
 
-            if self.total_items >= self.eval_at:
-                if self.info.is_main_process:
-                    # evaluate and benchmark only on main process
-                    self._evaluate_and_checkpoint()
-                    if "benchmark" in self.cfg["val"]:
-                        self._benchmark_and_checkpoint()
-
-                self.eval_at += self.eval_interval
-
-                if self.cooldown_items > 0:
-                    if self.info.is_main_process:
-                        self.logger.info(
-                            f"[step {self.total_step}] resetting to "
-                            f"to checkpoint before cooldown"
-                        )
-                    # stop cooldown
-                    self._stop_cooldown()
-
-                    # trigger train loader again
-                    train_iter = iter(self.train_loader)
-
-                    # reset the statistics
-                    mean_loss.reset()
-                    mean_bsz.reset()
-                    mean_step_time.reset()
-                    mean_forward_pass.reset()
-                    mean_batch_load.reset()
-                    mean_seq_length.reset()
-                    mean_seq_length_ratio.reset()
-                    mean_batch_preparation.reset()
-
             if self.info.is_main_process and self.total_items >= self.log_at:
                 # log training progress only on main process
                 progress = 100 * self.total_items / self.training_items
@@ -1123,7 +1092,9 @@ training will resume from latest checkpoint."
                 for metric in metrics:
                     metric.set_values(items, outputs)
                     metric.log_tensorboard(
-                        self.summary_writer, self.total_step)
+                        self.summary_writer,
+                        self.total_step
+                    )
                     metric.log_info(self.logger, self.total_step)
 
                 self.summary_writer.add_histogram(
@@ -1186,6 +1157,38 @@ training will resume from latest checkpoint."
                     f"{api.nvidia_smi()}"
                 )
                 self.log_at += self.log_interval
+
+            if self.total_items >= self.eval_at:
+                if self.info.is_main_process:
+                    # evaluate and benchmark only on main process
+                    self._evaluate_and_checkpoint()
+                    if "benchmark" in self.cfg["val"]:
+                        self._benchmark_and_checkpoint()
+
+                self.eval_at += self.eval_interval
+
+                if self.cooldown_items > 0:
+                    if self.info.is_main_process:
+                        self.logger.info(
+                            f"[step {self.total_step}] resetting to "
+                            f"to checkpoint before cooldown"
+                        )
+                    # stop cooldown
+                    self._stop_cooldown()
+
+                    # trigger train loader again
+                    train_iter = iter(self.train_loader)
+
+                    # reset the statistics
+                    mean_loss.reset()
+                    mean_bsz.reset()
+                    mean_step_time.reset()
+                    mean_forward_pass.reset()
+                    mean_batch_load.reset()
+                    mean_seq_length.reset()
+                    mean_seq_length_ratio.reset()
+                    mean_batch_preparation.reset()
+                    start = time.perf_counter()
 
     def _evaluate_and_checkpoint(self):
         assert self.info.is_main_process, "evaluation should be only done on main process"

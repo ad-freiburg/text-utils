@@ -389,7 +389,9 @@ training will resume from latest checkpoint."
 
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
-        distributed.unwrap_ddp(self.model).load_state_dict(checkpoint["model_state_dict"])
+        distributed.unwrap_ddp(
+            self.model
+        ).load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
             self.lr_scheduler.load_state_dict(
@@ -400,7 +402,9 @@ training will resume from latest checkpoint."
                 checkpoint["grad_scaler_state_dict"]
             )
         if checkpoint.get("loss_fn_state_dict") is not None:
-            self.loss_fn.load_state_dict(checkpoint["loss_fn_state_dict"])
+            self.loss_fn.load_state_dict(
+                checkpoint["loss_fn_state_dict"]
+            )
 
         self.total_step = checkpoint["step"]
         self.epoch = checkpoint["epoch"]
@@ -408,9 +412,6 @@ training will resume from latest checkpoint."
         self.epoch_step = checkpoint["epoch_step"]
         self.epoch_items = checkpoint["epoch_items"]
         self.total_items = checkpoint["total_items"]
-        self.log_at = self.total_items + self.log_interval
-        self.eval_at = self.total_items + self.eval_interval
-        self.step_at = self.total_items + self.step_interval
 
         if self.max_length_scheduler is not None:
             self.max_length = self.max_length_scheduler(self.total_items)
@@ -1293,6 +1294,12 @@ training will resume from latest checkpoint."
         val_loss = self.best_val_loss
         self._load_checkpoint(path)
         self.best_val_loss = val_loss
+
+        # reset eval, log, and step counters
+        self.log_at = math.ceil(self.total_items / self.log_interval) * self.log_interval
+        self.eval_at = math.ceil(self.total_items / self.eval_interval) * self.eval_interval
+        self.step_at = math.ceil(self.total_items / self.step_interval) * self.step_interval
+
         os.remove(path)
 
     def run(self):

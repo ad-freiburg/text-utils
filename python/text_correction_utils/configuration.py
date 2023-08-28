@@ -131,7 +131,8 @@ def load_config(yaml_path: str) -> Any:
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env_var)
     with tempfile.TemporaryFile("w") as tf:
         yaml.safe_dump(parsed_yaml, tf)
-        return yaml.safe_load(tf.read())
+        tf.seek(0)
+        return yaml.safe_load(tf)
 
 
 def load_config_from_experiment(dir: str) -> Any:

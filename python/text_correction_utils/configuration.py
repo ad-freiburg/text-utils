@@ -20,7 +20,7 @@ def _replace_env(s: str, _: str) -> Any:
         s = s[:match.start() + length_change] + env_var + \
             s[match.end() + length_change:]
         length_change = len(s) - org_length
-    return yaml.full_load(s)
+    return yaml.safe_load(s)
 
 
 def _replace_non_env_var(s: str, base_dir: str) -> Any:
@@ -126,7 +126,7 @@ def load_config(yaml_path: str) -> Any:
         raw_yaml = inf.read()
 
     base_dir = os.path.abspath(os.path.dirname(yaml_path))
-    parsed_yaml = yaml.full_load(raw_yaml)
+    parsed_yaml = yaml.safe_load(raw_yaml)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_env)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env_var)
     return parsed_yaml

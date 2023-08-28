@@ -20,7 +20,7 @@ def _replace_env(s: str, _: str) -> str:
         s = s[:match.start() + length_change] + env_var + \
             s[match.end() + length_change:]
         length_change = len(s) - org_length
-    return s
+    return yaml.safe_load(s)
 
 
 def _replace_non_env_var(s: str, base_dir: str) -> Any:

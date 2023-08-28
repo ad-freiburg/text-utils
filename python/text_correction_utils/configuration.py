@@ -129,7 +129,7 @@ def load_config(yaml_path: str) -> Any:
     parsed_yaml = yaml.safe_load(raw_yaml)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_env)
     parsed_yaml = _handle_cfg(parsed_yaml, base_dir, _replace_non_env_var)
-    with tempfile.TemporaryFile("w") as tf:
+    with tempfile.TemporaryFile() as tf:
         yaml.safe_dump(parsed_yaml, tf)
         tf.seek(0)
         return yaml.safe_load(tf)

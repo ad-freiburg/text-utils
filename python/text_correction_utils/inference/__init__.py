@@ -304,7 +304,7 @@ def search(
     outputs = []
     for i in range(batch_size):
         length = lengths[i]
-        start = initial_lengths[i] if return_full else 0
+        start = 0 if return_full else initial_lengths[i]
         outputs.append(token_ids[i][start:length])
     return outputs
 
@@ -469,7 +469,7 @@ def beam_search(
                 key=lambda b: -score_fn(b, initial_lenghts[idx])
             )
             beam_queue.extend(active_beams[:beam_width - len(beam_queue)])
-        pfx = initial_lenghts[idx] if return_full else 0
+        pfx = 0 if return_full else initial_lenghts[idx]
         out_beams.append([
             beam.truncate_prefix(pfx)
             for beam in beam_queue

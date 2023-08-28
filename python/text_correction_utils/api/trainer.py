@@ -1028,9 +1028,6 @@ training will resume from latest checkpoint."
                 )
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
-            if self.cooldown_items > 0 and self.total_items >= self.eval_at - self.cooldown_items:
-                self._start_cooldown()
-
             if self.info.is_main_process and self.total_items >= self.log_at:
                 # log training progress only on main process
                 progress = 100 * self.total_items / self.training_items
@@ -1157,6 +1154,9 @@ training will resume from latest checkpoint."
                     f"{api.nvidia_smi()}"
                 )
                 self.log_at += self.log_interval
+
+            if self.cooldown_items > 0 and self.total_items >= self.eval_at - self.cooldown_items:
+                self._start_cooldown()
 
             if self.total_items >= self.eval_at:
                 if self.info.is_main_process:

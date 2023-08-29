@@ -275,8 +275,6 @@ def search(
                 torch.arange(b, device=device),
                 decoder_lengths - 1
             ]
-        if kwargs_update_fn is not None:
-            kwargs_update_fn(kwargs, decoder_info, indices_mask)
 
         log_softmax_scores = torch.log_softmax(
             decoder_outputs,
@@ -298,6 +296,10 @@ def search(
         non_stop_mask[new_stop_indices] = False
 
         mask = non_stop_mask & smaller_max_length_mask
+
+        if kwargs_update_fn is not None:
+            update_mask = torch.arange(b, device=device)[mask[indices_mask]]
+            kwargs_update_fn(kwargs, decoder_info, update_mask)
 
     token_ids = token_ids.tolist()
 
@@ -363,9 +365,7 @@ def beam_search(
 
     while True:
         indices_to_decode = []
-        for idx, (stop, search_depth, beams) in enumerate(zip(
-                stop_mask, search_depths, current_beams
-        )):
+        for idx, (stop, search_depth, beams) in enumerate(zip(stop_mask, search_depths, current_beams)):
             if not stop and search_depth < max_length and len(beams) > 0:
                 indices_to_decode.append(idx)
 
@@ -409,6 +409,12 @@ def beam_search(
             "padding_mask and lengths are added automatically, do not provide them yourself"
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
         decoder_kwargs["lengths"] = decoder_lengths_tensor
+        if kwargs_update_fn is not None:
+            kwargs_update_fn(
+                kwargs,
+                decoder_info,
+                torch.tensor(beam_indices, device=device, dtype=torch.long)
+            )
 
         decoder_outputs, decoder_info = decode_fn(
             decoder_token_ids,
@@ -450,13 +456,6 @@ def beam_search(
             current_beams[idx] = new_current_beams
             beam_indices.extend(idx for _ in range(len(new_current_beams)))
             search_depths[idx] += 1
-
-        if kwargs_update_fn is not None:
-            kwargs_update_fn(
-                kwargs,
-                decoder_info,
-                torch.tensor(beam_indices, device=device, dtype=torch.long)
-            )
 
     out_beams = []
     for idx, (beam_queue, active_beams) in enumerate(zip(beam_queues, current_beams)):

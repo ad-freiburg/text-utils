@@ -251,7 +251,7 @@ training will resume from latest checkpoint."
                 self.training_items
             )
             assert self.cooldown_items < self.eval_interval, \
-                f"cooldown items {self.cooldown_items:,} cannot be less " \
+                f"cooldown items {self.cooldown_items:,} must be smaller " \
                 f"than evaluation interval {self.eval_interval:,}"
         else:
             self.cooldown_items = 0

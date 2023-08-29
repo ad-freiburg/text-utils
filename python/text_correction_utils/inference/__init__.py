@@ -447,8 +447,8 @@ def beam_search(
                     break
 
             current_beams[idx] = new_current_beams
-            update_info[idx] = (i, len(new_current_beams))
             search_depths[idx] += 1
+            update_info[idx] = (i, len(new_current_beams))
 
         indices_to_decode = get_indices_to_decode()
 

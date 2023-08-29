@@ -363,17 +363,16 @@ def beam_search(
 
     stop_mask = [False for _ in range(batch_size)]
 
-    while True:
+    def get_indices_to_decode() -> List[int]:
         indices_to_decode = []
         for idx, (stop, search_depth, beams) in enumerate(zip(stop_mask, search_depths, current_beams)):
             if not stop and search_depth < max_length and len(beams) > 0:
                 indices_to_decode.append(idx)
+        return indices_to_decode
 
-        if len(indices_to_decode) == 0:
-            break
+    indices_to_decode = get_indices_to_decode()
 
-        num_beams = [len(current_beams[idx]) for idx in indices_to_decode]
-
+    while len(indices_to_decode) > 0:
         num_beams = []
         decoder_mask = []
         decoder_token_ids = []
@@ -409,12 +408,6 @@ def beam_search(
             "padding_mask and lengths are added automatically, do not provide them yourself"
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
         decoder_kwargs["lengths"] = decoder_lengths_tensor
-        if kwargs_update_fn is not None:
-            kwargs_update_fn(
-                kwargs,
-                decoder_info,
-                torch.tensor(beam_indices, device=device, dtype=torch.long)
-            )
 
         decoder_outputs, decoder_info = decode_fn(
             decoder_token_ids,
@@ -436,26 +429,41 @@ def beam_search(
             indices_to_decode
         )
 
-        beam_indices = []
-        for idx, candidates in zip(indices_to_decode, beam_candidates):
+        update_info = {}
+        for i, (idx, candidates) in enumerate(zip(indices_to_decode, beam_candidates)):
             new_current_beams = []
-            for i, candidate in enumerate(candidates):
+            for num, candidate in enumerate(candidates):
                 # only consider eos beams if they are in top beam_width beams
-                if i < beam_width and stop_fn(candidate, idx):
+                stop = stop_fn(candidate, idx)
+                if num < beam_width and stop:
                     # we record all stop beams, but only stop when the top beam should stop
                     # (because then we are sure there is no better candidate left to decode)
                     beam_queues[idx].append(candidate)
-                    if i == 0:
-                        stop_mask[idx] = True
-                else:
+                    stop_mask[idx] |= num == 0
+                elif not stop:
                     new_current_beams.append(candidate)
 
                 if len(new_current_beams) >= beam_width:
                     break
 
             current_beams[idx] = new_current_beams
-            beam_indices.extend(idx for _ in range(len(new_current_beams)))
+            update_info[idx] = (i, len(new_current_beams))
             search_depths[idx] += 1
+
+        indices_to_decode = get_indices_to_decode()
+
+        if kwargs_update_fn is not None:
+            update_mask = []
+            for idx in indices_to_decode:
+                if idx not in update_info:
+                    continue
+                i, num = update_info[idx]
+                update_mask.extend([i] * num)
+            kwargs_update_fn(
+                kwargs,
+                decoder_info,
+                torch.tensor(update_mask, device=device, dtype=torch.long)
+            )
 
     out_beams = []
     for idx, (beam_queue, active_beams) in enumerate(zip(beam_queues, current_beams)):

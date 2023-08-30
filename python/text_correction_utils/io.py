@@ -23,17 +23,16 @@ def glob_safe(pattern: str, error_on_empty: bool = True) -> List[str]:
 
 def save_checkpoint(
     checkpoint_path: str,
-    model: nn.Module,
+    model_state_dict: Dict[str, Any],
     step: int,
     epoch: int,
     epoch_step: int,
     epoch_items: int,
     total_items: int,
     val_loss: float,
-    optimizer: Optional[optim.Optimizer] = None,
-    lr_scheduler: Optional[Any] = None,
-    loss_fn: Optional[nn.Module] = None,
-    grad_scaler: Optional[amp.GradScaler] = None,
+    optimizer_state_dict: Optional[Dict[str, Any]] = None,
+    lr_scheduler_state_dict: Optional[Dict[str, Any]] = None,
+    loss_fn_state_dict: Optional[Dict[str, Any]] = None,
     **kwargs: Any
 ) -> None:
     """
@@ -55,21 +54,16 @@ def save_checkpoint(
     if checkpoint_dir != "":
         os.makedirs(checkpoint_dir, exist_ok=True)
     state = {
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": model_state_dict,
         "step": step,
         "epoch": epoch,
         "epoch_step": epoch_step,
         "epoch_items": epoch_items,
         "total_items": total_items,
         "val_loss": val_loss,
-        "optimizer_state_dict": None if optimizer is None
-        else optimizer.state_dict(),
-        "lr_scheduler_state_dict": None if lr_scheduler is None
-        else lr_scheduler.state_dict(),
-        "loss_fn_state_dict": None if loss_fn is None
-        else loss_fn.state_dict(),
-        "grad_scaler_state_dict": None if grad_scaler is None
-        else grad_scaler.state_dict(),
+        "optimizer_state_dict": optimizer_state_dict,
+        "lr_scheduler_state_dict": lr_scheduler_state_dict,
+        "loss_fn_state_dict": loss_fn_state_dict,
         **kwargs
     }
     torch.save(state, f=checkpoint_path)

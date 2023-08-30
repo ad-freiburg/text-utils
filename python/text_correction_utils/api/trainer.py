@@ -1,6 +1,7 @@
 import argparse
 import math
 import copy
+import functools
 import sys
 import random
 import os
@@ -11,19 +12,28 @@ import zipfile
 from typing import Dict, Optional, Tuple, Any, List, Callable, Union
 
 import torch
+# from torch.profiler import profile, schedule, tensorboard_trace_handler
 from torch import distributed as dist
 from torch import multiprocessing as mp
 from torch import nn
 from torch.optim import lr_scheduler
 from torch.backends import cudnn, cuda  # noqa
-from torch.cuda import amp
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.api import (
+    MixedPrecision,
+    ShardingStrategy,
+    StateDictType,
+    FullStateDictConfig,
+    FullOptimStateDictConfig,
+    CPUOffload,
+    BackwardPrefetch,
+)
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.utils.tensorboard.writer import SummaryWriter
 from peft import (
     LoraConfig,
     IA3Config,
     PeftConfig,
-    TaskType
 )
 import yaml
 
@@ -47,6 +57,9 @@ from text_correction_utils import (
 
 def clamp(v: float, minimum: int, maximum: int) -> int:
     return max(min(math.floor(v), maximum), minimum)
+
+
+ShardingPolicy = Callable[[nn.Module, bool, int], bool]
 
 
 class Trainer:
@@ -137,25 +150,23 @@ training will resume from latest checkpoint."
         else:
             self.output_tokenizer = None
 
-        self.model = self._model_from_config(
-            self.cfg
-        )
+        model, sharding_policy = self._model_from_config(self.cfg)
 
         peft = self.cfg["train"].get("peft", None)
         if peft is not None:
             assert "peft_task" in self.cfg["train"], \
                 "also specify peft_task together with peft config"
-            task = self.cfg["train"]["peft_task"]
-            assert task in {"lm", "seq2seq"}, \
-                "peft task type must be either lm or seq2seq"
+            # task = self.cfg["train"]["peft_task"]
+            # assert task in {"lm", "seq2seq"}, \
+            #     "peft task type must be either lm or seq2seq"
             assert peft["type"] in {"lora", "ia3"}, \
                 "only lora and ia3 are supported for now"
             if self.info.is_main_process:
                 self.logger.info(
                     "preparing model for parametering efficient fine tuning with config:\n"
-                    f"{yaml.dump(peft)}"
+                    f"{yaml.safe_dump(peft)}"
                 )
-            task_type = TaskType.CAUSAL_LM if task == "lm" else TaskType.SEQ_2_SEQ_LM
+            # task_type = TaskType.CAUSAL_LM if task == "lm" else TaskType.SEQ_2_SEQ_LM
             if peft["type"] == "lora":
                 peft_cfg = LoraConfig(
                     r=peft["r"],
@@ -163,21 +174,83 @@ training will resume from latest checkpoint."
                     lora_dropout=peft.get("dropout", 0.0),
                     bias="none",
                     target_modules=peft["target_modules"],
-                    task_type=task_type
+                    # task_type=task_type
                 )
             else:
                 peft_cfg = IA3Config(
                     target_modules=peft["target_modules"],
                     feedforward_modules=peft.get("feedforward_modules", []),
-                    task_type=task_type
+                    # task_type=task_type
                 )
-            self.model = self._prepare_peft(
-                self.model,
+            model = self._prepare_peft(
+                model,
                 peft_cfg,
                 peft.get("use_8bit", False)
             )
 
-        self.model = self.model.to(self.info.device).train()
+        precision = self.cfg["train"].get("precision", "fp32")
+        if precision == "fp32":
+            self.precision_dtype = torch.float32
+        elif precision == "fp16":
+            self.precision_dtype = torch.float16
+        elif precision == "bfp16":
+            self.precision_dtype = torch.bfloat16
+        else:
+            raise ValueError(
+                f"unknown precision {precision}, "
+                f"must be fp32, fp16 or bfp16"
+            )
+
+        dist_cfg = self.cfg["train"].get("distributed", {})
+        offload_params = dist_cfg.get("offload", False)
+        prefetch = dist_cfg.get("prefetch", True)
+        strategy = ShardingStrategy[dist_cfg.get("strategy", "NO_SHARD")]
+        if self.info.world_size <= 1 and strategy in {
+            ShardingStrategy.FULL_SHARD,
+            ShardingStrategy.HYBRID_SHARD
+        }:
+            strategy = ShardingStrategy.NO_SHARD
+        if strategy != ShardingStrategy.NO_SHARD:
+            shard_size = dist_cfg.get("shard_size", None)
+            if shard_size is not None:
+                sharding_policy = functools.partial(
+                    size_based_auto_wrap_policy,
+                    min_num_params=shard_size,
+                    force_leaf_modules=None,
+                    exclude_wrap_modules=None
+                )
+            elif sharding_policy is None:
+                if self.info.is_main_process:
+                    self.logger.info(
+                        f"sharding strategy is {strategy.name}, but got "
+                        f"no sharding policy, disabling sharding"
+                    )
+                strategy = ShardingStrategy.NO_SHARD
+            offload_state_dict = True
+        else:
+            offload_params = False
+            offload_state_dict = False
+
+        self.model: FSDP = FSDP(
+            model,
+            auto_wrap_policy=sharding_policy,
+            mixed_precision=MixedPrecision(
+                param_dtype=self.precision_dtype,
+                reduce_dtype=self.precision_dtype,
+                buffer_dtype=self.precision_dtype
+            ),
+            cpu_offload=CPUOffload(offload_params=offload_params),
+            sync_module_states=True,
+            sharding_strategy=strategy,
+            backward_prefetch=BackwardPrefetch.BACKWARD_PRE if prefetch else BackwardPrefetch.BACKWARD_POST,
+            device_id=self.info.device
+        )
+        FSDP.set_state_dict_type(
+            self.model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True),
+            FullOptimStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True)
+        )
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (
@@ -220,7 +293,7 @@ training will resume from latest checkpoint."
                 f"Optimizer parameter groups:\n{param_group_info}"
             )
 
-        self.clip_grad_norm = self.cfg["train"].get("clip_grad_norm", None)
+        self.clip_grad_norm: Optional[float] = self.cfg["train"].get("clip_grad_norm", None)
 
         lower = self.cfg["train"]["data"]["batch_limit"]
         if self.cfg["train"]["data"]["batch_limit_type"] != "batch_size":
@@ -285,22 +358,6 @@ training will resume from latest checkpoint."
             additional_loss_fn=self._additional_loss_fn()
         ).to(self.info.device).train()
 
-        self.grad_scaler = amp.GradScaler(
-            enabled=self.cfg["train"].get("mixed_precision", False)
-        )
-        mixed_precision_dtype = self.cfg["train"].get(
-            "mixed_precision_dtype", "fp16"
-        )
-        if mixed_precision_dtype == "fp16":
-            self.mixed_prec_dtype = torch.float16
-        elif mixed_precision_dtype == "bfp16":
-            self.mixed_prec_dtype = torch.bfloat16
-        else:
-            raise ValueError(
-                f"unknown mixed precision type {mixed_precision_dtype}, "
-                f"must be fp16 or bfp16"
-            )
-
         if self.info.is_main_process:
             self.summary_writer = SummaryWriter(
                 log_dir=self.directories["tensorboard"]
@@ -309,6 +366,9 @@ training will resume from latest checkpoint."
             self.logger.info(f"Using model:\n{self.model}")
             self.logger.info(
                 f"Model parameters: {api.num_parameters(self.model)}"
+            )
+            self.logger.info(
+                f"Training with {precision} precision and {strategy.name} sharding strategy"
             )
             self.logger.info(
                 f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
@@ -322,10 +382,12 @@ training will resume from latest checkpoint."
 
             test_sentence = "This is a test sentence."
             self.logger.info(
-                f"Testing input tokenizer:\n{self.input_tokenizer.tokenize(test_sentence).token_ids}")
+                f"Testing input tokenizer:\n{self.input_tokenizer.tokenize(test_sentence).token_ids}"
+            )
             if self.output_tokenizer is not None:
                 self.logger.info(
-                    f"Testing output tokenizer:\n{self.output_tokenizer.tokenize(test_sentence).token_ids}")
+                    f"Testing output tokenizer:\n{self.output_tokenizer.tokenize(test_sentence).token_ids}"
+                )
 
             self.logger.info(
                 f"Type 'tensorboard --logdir {self.directories['tensorboard']}' "
@@ -364,7 +426,15 @@ training will resume from latest checkpoint."
                 f"(missing keys: {wrong_keys.missing_keys})"
             )
 
-        self.model = DDP(self.model)
+        # self.profiler = profile(
+        #     schedule=schedule(wait=100, warmup=1, active=3, repeat=100),
+        #     on_trace_ready=tensorboard_trace_handler(
+        #         self.directories["tensorboard"],
+        #         f"rank {self.info.rank}"
+        #     ),
+        #     profile_memory=True
+        # )
+        # self.profiler.start()
 
     def _save_checkpoint(
         self,
@@ -373,9 +443,10 @@ training will resume from latest checkpoint."
         full: bool = True,
         **kwargs: Any
     ):
+        assert self.info.is_main_process, "only save on main process"
         save = {
             "checkpoint_path": path,
-            "model": distributed.unwrap_ddp(self.model),
+            "model_state_dict": self.model.state_dict(),
             "step": self.total_step,
             "epoch": self.epoch,
             "epoch_step": self.epoch_step,
@@ -385,25 +456,28 @@ training will resume from latest checkpoint."
             **kwargs
         }
         if full:
-            save["optimizer"] = self.optimizer
-            save["lr_scheduler"] = self.lr_scheduler
-            save["loss_fn"] = self.loss_fn
-            save["grad_scaler"] = self.grad_scaler
+            optimizer = FSDP.optim_state_dict(
+                self.model,
+                self.optimizer,
+            )
+            save["optimizer_state_dict"] = optimizer
+            save["loss_fn_state_dict"] = self.loss_fn.state_dict()
+            if self.lr_scheduler is not None:
+                save["lr_scheduler_state_dict"] = self.lr_scheduler.state_dict()
         io.save_checkpoint(**save)
 
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
-        distributed.unwrap_ddp(
-            self.model
-        ).load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        optim_state_dict = FSDP.optim_state_dict_to_load(
+            checkpoint["optimizer_state_dict"],
+            self.model,
+            self.optimizer,
+        )
+        self.optimizer.load_state_dict(optim_state_dict)
         if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
             self.lr_scheduler.load_state_dict(
                 checkpoint["lr_scheduler_state_dict"]
-            )
-        if checkpoint.get("grad_scaler_state_dict") is not None:
-            self.grad_scaler.load_state_dict(
-                checkpoint["grad_scaler_state_dict"]
             )
         if checkpoint.get("loss_fn_state_dict") is not None:
             self.loss_fn.load_state_dict(
@@ -439,7 +513,10 @@ training will resume from latest checkpoint."
         raise NotImplementedError
 
     @classmethod
-    def _model_from_config(cls, cfg: Dict[str, Any]) -> nn.Module:
+    def _model_from_config(
+        cls,
+        cfg: Dict[str, Any]
+    ) -> Tuple[nn.Module, Optional[ShardingPolicy]]:
         raise NotImplementedError
 
     @classmethod
@@ -729,7 +806,7 @@ training will resume from latest checkpoint."
         os.makedirs(exp_dir, exist_ok=True)
         # save the resolved config to the experiment directory
         with open(os.path.join(exp_dir, config_name), "w", encoding="utf8") as f:
-            f.write(yaml.dump(cfg))
+            f.write(yaml.safe_dump(cfg))
         # make a backup of the raw, unresolved configs in the config directory as zip
         with zipfile.ZipFile(os.path.join(exp_dir, "configs.zip"), "w", zipfile.ZIP_DEFLATED) as zf:
             root = os.path.dirname(config_path)
@@ -742,7 +819,7 @@ training will resume from latest checkpoint."
                              os.path.join(rel_sub_dir, file))
         with open(os.path.join(exp_dir, "info.yaml"), "w", encoding="utf8") as f:
             f.write(
-                yaml.dump({
+                yaml.safe_dump({
                     "config_name": config_name,
                     "git": {
                         "branch": api.git_branch(work_dir),
@@ -851,12 +928,14 @@ training will resume from latest checkpoint."
                 cls._setup_experiment(
                     work_dir, experiment_dir, config_path, cfg)
                 logger.info(
-                    f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
+                    f"Starting experiment at {experiment_dir} with config:\n{yaml.safe_dump(cfg)}"
+                )
         else:
             cfg = configuration.load_config_from_experiment(experiment_dir)
             if info.is_main_process:
                 logger.info(
-                    f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
+                    f"Resuming from {experiment_dir} with config:\n{yaml.safe_dump(cfg)}"
+                )
 
         directories = {
             "experiment": experiment_dir,
@@ -882,11 +961,13 @@ training will resume from latest checkpoint."
             assert config_path is not None, "specify config if not resuming an existing experiment"
             cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
             logger.info(
-                f"Starting experiment at {experiment_dir} with config:\n{yaml.dump(cfg)}")
+                f"Starting experiment at {experiment_dir} with config:\n{yaml.safe_dump(cfg)}"
+            )
         else:
             cfg = configuration.load_config_from_experiment(experiment_dir)
             logger.info(
-                f"Resuming from {experiment_dir} with config:\n{yaml.dump(cfg)}")
+                f"Resuming from {experiment_dir} with config:\n{yaml.safe_dump(cfg)}"
+            )
         directories = {
             "experiment": experiment_dir,
             "checkpoints": os.path.join(experiment_dir, "checkpoints"),
@@ -954,6 +1035,7 @@ training will resume from latest checkpoint."
             metrics = []
 
         start_items = self.epoch_items
+        self.model = self.model.train()
 
         train_iter = iter(self.train_loader)
         while True:
@@ -977,24 +1059,16 @@ training will resume from latest checkpoint."
             self.optimizer.zero_grad(set_to_none=True)
 
             start_forward = time.perf_counter()
-            with amp.autocast(
-                enabled=self.grad_scaler.is_enabled(),
-                dtype=self.mixed_prec_dtype
-            ):
-                outputs, loss_dict = self.model(**inputs)
-                loss = self.loss_fn(outputs, labels)
-                loss = loss + sum(loss_dict.values())
+            outputs, loss_dict = self.model(**inputs)
+            loss = self.loss_fn(outputs, labels)
+            loss = loss + sum(loss_dict.values())
             end_forward = time.perf_counter()
 
-            self.grad_scaler.scale(loss).backward()
             if self.clip_grad_norm is not None:
-                self.grad_scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.clip_grad_norm
-                )
-            self.grad_scaler.step(self.optimizer)
-            self.grad_scaler.update()
+                self.model.clip_grad_norm_(self.clip_grad_norm)
+
+            self.optimizer.step()
+            # self.profiler.step()
 
             self.total_step += 1
             self.epoch_step += 1
@@ -1201,6 +1275,7 @@ training will resume from latest checkpoint."
 
     def _evaluate_and_checkpoint(self):
         assert self.info.is_main_process, "evaluation should be only done on main process"
+        assert self.summary_writer is not None
 
         mean_loss = tensorboard.AverageTracker("val_loss", fmt=".2e")
 
@@ -1221,15 +1296,11 @@ training will resume from latest checkpoint."
         for batch_num, batch in enumerate(self.val_loader):
             inputs, labels = self._prepare_batch(batch, train=False)
 
-            with torch.inference_mode(), amp.autocast(
-                enabled=self.grad_scaler.is_enabled(),
-                dtype=self.mixed_prec_dtype
-            ):
-                outputs, loss_dict = self.model(**inputs)
-                loss = self.loss_fn(outputs, labels)
-                loss = loss + sum(loss_dict.values())
+            outputs, loss_dict = self.model(**inputs)
+            loss = self.loss_fn(outputs, labels)
+            loss = loss + sum(loss_dict.values())
 
-                mean_loss.add(loss.item())
+            mean_loss.add(loss.item())
 
             if batch_num == 0:
                 items = batch.items
@@ -1326,6 +1397,7 @@ training will resume from latest checkpoint."
                 )
 
         finally:
+            # self.profiler.stop()
             if self.info.is_main_process:
                 start = time.perf_counter()
                 ckpt_path = os.path.join(

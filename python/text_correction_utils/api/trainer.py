@@ -214,6 +214,11 @@ training will resume from latest checkpoint."
         if strategy != ShardingStrategy.NO_SHARD:
             shard_size = dist_cfg.get("shard_size", None)
             if shard_size is not None:
+                if self.info.is_main_process:
+                    self.logger.info(
+                        f"sharding based on number of parameters with "
+                        f"a minimum of {shard_size:,}"
+                    )
                 sharding_policy = functools.partial(
                     size_based_auto_wrap_policy,
                     min_num_params=shard_size,

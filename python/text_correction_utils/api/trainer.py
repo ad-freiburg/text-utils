@@ -1112,6 +1112,8 @@ training will resume from latest checkpoint."
                 mean_seq_length_ratio.add(max_length / max(1, min_length))
 
             if self.info.is_main_process and self.total_items >= self.log_at:
+                assert self.summary_writer is not None
+
                 # log training progress only on main process
                 progress = 100 * self.total_items / self.training_items
                 self.summary_writer.add_scalar(
@@ -1231,9 +1233,9 @@ training will resume from latest checkpoint."
                 mean_batch_preparation.reset()
                 start = end
 
-            if self.total_items >= self.log_at:
+            if self.total_items >= self.log_at and self.info.is_local_main_process:
                 self.logger.info(
-                    f"[step {self.total_step}] [GPU:{self.info.rank}:{self.info.local_rank}] nvidia-smi:\n"
+                    f"[step {self.total_step}] [rank {self.info.rank}] nvidia-smi:\n"
                     f"{api.nvidia_smi()}"
                 )
                 self.log_at += self.log_interval

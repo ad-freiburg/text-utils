@@ -12,6 +12,7 @@ import zipfile
 from typing import Dict, Optional, Tuple, Any, List, Callable, Union
 
 import torch
+from torch.backends import cuda, cudnn
 # from torch.profiler import profile, schedule, tensorboard_trace_handler
 from torch import distributed as dist
 from torch import multiprocessing as mp
@@ -251,6 +252,8 @@ training will resume from latest checkpoint."
             FullStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True),
             FullOptimStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True)
         )
+        compile = self.cfg["train"].get("compile", False)
+        self.model = torch.compile(self.model, disable=not compile)
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (
@@ -857,6 +860,8 @@ training will resume from latest checkpoint."
             local_world_size=world_size
         )
         torch.cuda.set_device(info.device)
+        cuda.matmul.allow_tf32 = True
+        cudnn.allow_tf32 = True
 
         assert dist.is_initialized(), "failed to initialize process group"
 
@@ -915,6 +920,8 @@ training will resume from latest checkpoint."
             local_world_size=local_world_size
         )
         torch.cuda.set_device(info.device)
+        cuda.matmul.allow_tf32 = True
+        cudnn.allow_tf32 = True
 
         assert dist.is_initialized(), "failed to initialize process group"
 

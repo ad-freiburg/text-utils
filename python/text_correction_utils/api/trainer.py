@@ -156,8 +156,8 @@ training will resume from latest checkpoint."
 
         peft = self.cfg["train"].get("peft", None)
         if peft is not None:
-            assert "peft_task" in self.cfg["train"], \
-                "also specify peft_task together with peft config"
+            # assert "peft_task" in self.cfg["train"], \
+            #     "also specify peft_task together with peft config"
             # task = self.cfg["train"]["peft_task"]
             # assert task in {"lm", "seq2seq"}, \
             #     "peft task type must be either lm or seq2seq"

@@ -235,6 +235,7 @@ training will resume from latest checkpoint."
                 strategy = ShardingStrategy.NO_SHARD
             offload_state_dict = True
         else:
+            sharding_policy = None
             offload_params = False
             offload_state_dict = False
 

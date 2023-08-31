@@ -29,6 +29,7 @@ from torch.distributed.fsdp.api import (
     CPUOffload,
     BackwardPrefetch,
 )
+from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from torch.utils.tensorboard.writer import SummaryWriter
 from peft import (
@@ -445,6 +446,10 @@ training will resume from latest checkpoint."
         #     profile_memory=True
         # )
         # self.profiler.start()
+
+        self.grad_scaler = ShardedGradScaler(
+            enabled=precision != "fp32"
+        )
 
     def _save_checkpoint(
         self,
@@ -1073,16 +1078,23 @@ training will resume from latest checkpoint."
             self.optimizer.zero_grad(set_to_none=True)
 
             start_fwdbwd = time.perf_counter()
-            outputs, loss_dict = self.model(**inputs)
-            loss = self.loss_fn(outputs, labels)
-            loss = loss + sum(loss_dict.values())
-            loss.backward()
+            with torch.autocast(
+                "cuda",
+                dtype=self.precision_dtype,
+                enabled=self.precision_dtype != torch.float32
+            ):
+                outputs, loss_dict = self.model(**inputs)
+                loss = self.loss_fn(outputs, labels)
+                loss = loss + sum(loss_dict.values())
+            self.grad_scaler.scale(loss).backward()
             end_fwdbwd = time.perf_counter()
 
             if self.clip_grad_norm is not None:
+                self.grad_scaler.unscale_(self.optimizer)
                 self.model.clip_grad_norm_(self.clip_grad_norm)
 
-            self.optimizer.step()
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
             # self.profiler.step()
 
             self.total_step += 1
@@ -1316,9 +1328,14 @@ training will resume from latest checkpoint."
         for batch_num, batch in enumerate(self.val_loader):
             inputs, labels = self._prepare_batch(batch, train=False)
 
-            outputs, loss_dict = self.model(**inputs)
-            loss = self.loss_fn(outputs, labels)
-            loss = loss + sum(loss_dict.values())
+            with torch.autocast(
+                "cuda",
+                dtype=self.precision_dtype,
+                enabled=self.precision_dtype != torch.float32
+            ):
+                outputs, loss_dict = self.model(**inputs)
+                loss = self.loss_fn(outputs, labels)
+                loss = loss + sum(loss_dict.values())
 
             mean_loss.add(loss.item())
 

@@ -1260,6 +1260,8 @@ training will resume from latest checkpoint."
                     if "benchmark" in self.cfg["val"]:
                         self._benchmark_and_checkpoint()
 
+                dist.barrier()
+
                 if self.cooldown_items > 0:
                     if self.info.is_main_process:
                         self.logger.info(
@@ -1268,6 +1270,7 @@ training will resume from latest checkpoint."
                         )
                     # stop cooldown
                     self._stop_cooldown()
+                    dist.barrier()
 
                     # trigger train loader again
                     train_iter = iter(self.train_loader)
@@ -1427,3 +1430,5 @@ training will resume from latest checkpoint."
                 )
                 for path in self.cleanup:
                     os.remove(path)
+
+            dist.barrier()

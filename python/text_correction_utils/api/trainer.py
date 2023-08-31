@@ -1011,7 +1011,7 @@ training will resume from latest checkpoint."
         start = time.perf_counter()
 
         mean_loss = tensorboard.AverageTracker("train_loss", fmt=".2e")
-        mean_forward_pass = tensorboard.AverageTracker("train_forward_pass")
+        mean_fwdbwd_pass = tensorboard.AverageTracker("train_forward_backward_pass")
         mean_batch_load = tensorboard.AverageTracker("train_batch_load")
         mean_step_time = tensorboard.AverageTracker("train_step_time")
         mean_batch_preparation = tensorboard.AverageTracker(
@@ -1058,11 +1058,12 @@ training will resume from latest checkpoint."
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            start_forward = time.perf_counter()
+            start_fwdbwd = time.perf_counter()
             outputs, loss_dict = self.model(**inputs)
             loss = self.loss_fn(outputs, labels)
             loss = loss + sum(loss_dict.values())
-            end_forward = time.perf_counter()
+            loss.backward()
+            end_fwdbwd = time.perf_counter()
 
             if self.clip_grad_norm is not None:
                 self.model.clip_grad_norm_(self.clip_grad_norm)
@@ -1092,7 +1093,7 @@ training will resume from latest checkpoint."
             if self.info.is_main_process:
                 mean_step_time.add((time.perf_counter() - start_batch) * 1000)
                 mean_loss.add(loss.detach())
-                mean_forward_pass.add((end_forward - start_forward) * 1000)
+                mean_fwdbwd_pass.add((end_fwdbwd - start_fwdbwd) * 1000)
                 # approximation since we expect every rank to roughly
                 # have the same batch size
                 batch_size = len(batch) * self.info.world_size
@@ -1143,10 +1144,10 @@ training will resume from latest checkpoint."
                 mean_bsz.log_tensorboard(self.summary_writer, self.total_step)
                 mean_bsz.log_info(self.logger, self.total_step)
 
-                mean_forward_pass.log_tensorboard(
+                mean_fwdbwd_pass.log_tensorboard(
                     self.summary_writer, self.total_step
                 )
-                mean_forward_pass.log_info(self.logger, self.total_step)
+                mean_fwdbwd_pass.log_info(self.logger, self.total_step)
 
                 mean_batch_load.log_tensorboard(
                     self.summary_writer, self.total_step)
@@ -1226,7 +1227,7 @@ training will resume from latest checkpoint."
                 mean_loss.reset()
                 mean_bsz.reset()
                 mean_step_time.reset()
-                mean_forward_pass.reset()
+                mean_fwdbwd_pass.reset()
                 mean_batch_load.reset()
                 mean_seq_length.reset()
                 mean_seq_length_ratio.reset()
@@ -1266,7 +1267,7 @@ training will resume from latest checkpoint."
                     mean_loss.reset()
                     mean_bsz.reset()
                     mean_step_time.reset()
-                    mean_forward_pass.reset()
+                    mean_fwdbwd_pass.reset()
                     mean_batch_load.reset()
                     mean_seq_length.reset()
                     mean_seq_length_ratio.reset()

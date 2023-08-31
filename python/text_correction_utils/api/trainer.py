@@ -232,6 +232,7 @@ training will resume from latest checkpoint."
             offload_params = False
             offload_state_dict = False
 
+        compile = self.cfg["train"].get("compile", False)
         self.model: FSDP = FSDP(
             model,
             auto_wrap_policy=sharding_policy,
@@ -244,7 +245,8 @@ training will resume from latest checkpoint."
             sync_module_states=True,
             sharding_strategy=strategy,
             backward_prefetch=BackwardPrefetch.BACKWARD_PRE if prefetch else BackwardPrefetch.BACKWARD_POST,
-            device_id=self.info.device
+            device_id=self.info.device,
+            use_orig_params=compile
         )
         FSDP.set_state_dict_type(
             self.model,
@@ -252,7 +254,6 @@ training will resume from latest checkpoint."
             FullStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True),
             FullOptimStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True)
         )
-        compile = self.cfg["train"].get("compile", False)
         self.model = torch.compile(self.model, disable=not compile)
 
         num_epochs = self.cfg["train"]["num_epochs"]

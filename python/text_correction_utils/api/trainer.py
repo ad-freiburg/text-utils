@@ -699,10 +699,6 @@ training will resume from latest checkpoint."
                     "for pipeline"
                 pipeline_cfg["postprocessing"] = postprocessings
 
-            # adapt config to multi gpu usage
-            assert "batch_limit" in train_cfg, "batch_limit must be in data config"
-            train_cfg["batch_limit"] = max(1, train_cfg["batch_limit"] // info.world_size)
-
             return data.DataLoader.from_files(
                 sources,
                 pipeline_cfg,
@@ -712,6 +708,10 @@ training will resume from latest checkpoint."
             )
 
         train_cfg = copy.deepcopy(train_cfg)
+
+        # adapt config to multi gpu usage
+        assert "batch_limit" in train_cfg, "batch_limit must be in data config"
+        train_cfg["batch_limit"] = max(1, train_cfg["batch_limit"] // info.world_size)
 
         # pop some configs not used by the dataloader
         max_length = train_cfg.pop("max_length")

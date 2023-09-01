@@ -10,6 +10,7 @@ import shutil
 import time
 import zipfile
 from typing import Dict, Optional, Tuple, Any, List, Callable, Union
+from text_correction_utils.api.utils import get_peft_config
 
 import torch
 from torch.backends import cuda, cudnn
@@ -32,11 +33,7 @@ from torch.distributed.fsdp.api import (
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from torch.utils.tensorboard.writer import SummaryWriter
-from peft import (
-    LoraConfig,
-    IA3Config,
-    PeftConfig,
-)
+from peft import PeftConfig
 import yaml
 
 from text_correction_utils.modules.loss import loss_from_config
@@ -156,37 +153,14 @@ training will resume from latest checkpoint."
 
         peft = self.cfg["train"].get("peft", None)
         if peft is not None:
-            # assert "peft_task" in self.cfg["train"], \
-            #     "also specify peft_task together with peft config"
-            # task = self.cfg["train"]["peft_task"]
-            # assert task in {"lm", "seq2seq"}, \
-            #     "peft task type must be either lm or seq2seq"
-            assert peft["type"] in {"lora", "ia3"}, \
-                "only lora and ia3 are supported for now"
             if self.info.is_main_process:
                 self.logger.info(
                     "preparing model for parametering efficient fine tuning with config:\n"
                     f"{yaml.safe_dump(peft)}"
                 )
-            # task_type = TaskType.CAUSAL_LM if task == "lm" else TaskType.SEQ_2_SEQ_LM
-            if peft["type"] == "lora":
-                peft_cfg = LoraConfig(
-                    r=peft["r"],
-                    lora_alpha=peft.get("alpha", peft["r"]),
-                    lora_dropout=peft.get("dropout", 0.0),
-                    bias="none",
-                    target_modules=peft["target_modules"],
-                    # task_type=task_type
-                )
-            else:
-                peft_cfg = IA3Config(
-                    target_modules=peft["target_modules"],
-                    feedforward_modules=peft.get("feedforward_modules", []),
-                    # task_type=task_type
-                )
             model = self._prepare_peft(
                 model,
-                peft_cfg,
+                get_peft_config(peft),
                 peft.get("use_8bit", False)
             )
 

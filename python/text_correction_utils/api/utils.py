@@ -7,6 +7,7 @@ import zipfile
 import subprocess
 from pathlib import Path
 from typing import Union, Dict, List, Any, Optional, Iterator, Callable
+from peft import PeftConfig, LoraConfig, IA3Config
 
 import requests
 import numpy as np
@@ -16,8 +17,8 @@ from tqdm import tqdm
 
 
 def _unpack_zip(
-        zip_file_path: str,
-        directory: str
+    zip_file_path: str,
+    directory: str
 ) -> None:
     with zipfile.ZipFile(zip_file_path, "r") as zip_file:
         zip_file.extractall(directory)
@@ -211,3 +212,22 @@ def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = Fa
         unit_scale=True,
         unit_divisor=1000
     )
+
+
+def get_peft_config(peft: Dict[str, Any]) -> PeftConfig:
+    assert peft["type"] in {"lora", "ia3"}, \
+        "only lora and ia3 are supported for now"
+    if peft["type"] == "lora":
+        peft_cfg = LoraConfig(
+            r=peft["r"],
+            lora_alpha=peft.get("alpha", peft["r"]),
+            lora_dropout=peft.get("dropout", 0.0),
+            bias="none",
+            target_modules=peft["target_modules"],
+        )
+    else:
+        peft_cfg = IA3Config(
+            target_modules=peft["target_modules"],
+            feedforward_modules=peft.get("feedforward_modules", []),
+        )
+    return peft_cfg

@@ -1368,11 +1368,12 @@ training will resume from latest checkpoint."
             self.optimizer,
             lambda step: (1 - (min(step, steps) / steps)) * factor
         )
-        path = os.path.join(
-            self.directories["checkpoints"],
-            "cooldown_checkpoint.pt"
-        )
-        self._save_checkpoint(path, self.best_val_loss)
+        if self.info.is_main_process:
+            path = os.path.join(
+                self.directories["checkpoints"],
+                "cooldown_checkpoint.pt"
+            )
+            self._save_checkpoint(path, self.best_val_loss)
 
     def _stop_cooldown(self):
         # already stopped

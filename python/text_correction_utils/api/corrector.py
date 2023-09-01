@@ -175,12 +175,8 @@ class TextCorrector:
         self.cfg = cfg
         self.logger.debug(f"got config:\n{self.cfg}")
 
-        self._mixed_precision_dtype = torch.float32
-        if self.cfg["train"].get("mixed_precision", False):
-            precision = self.cfg["train"].get("mixed_precision_dtype", "fp32")
-        else:
-            precision = "fp32"
-        self.set_precision(precision)
+        self._precision_dtype = torch.float32
+        self.set_precision(self.cfg["train"].get("precision", "fp32"))
 
         self._inference_loader_cfg = self._build_inference_loader_config()
 
@@ -197,14 +193,10 @@ class TextCorrector:
     def _run_model(self, batch: data.InferenceBatch) -> Any:
         inputs = self._prepare_batch(batch)
         # this is a slight hack for now, because fp32 on cpu throws an error even when enabled=False
-        if self.mixed_precision_enabled:
-            with autocast(
-                device_type=self.device.type,
-                dtype=self._mixed_precision_dtype,
-                enabled=self.mixed_precision_enabled
-            ):
-                outputs = self._inference(inputs)
-        else:
+        with autocast(
+            device_type=self.device.type,
+            dtype=self._precision_dtype,
+        ):
             outputs = self._inference(inputs)
         return outputs
 
@@ -364,21 +356,17 @@ class TextCorrector:
         assert precision in {"fp32", "fp16", "bfp16"}
 
         if precision == "fp32":
-            mixed_precision_dtype = torch.float32
+            precision_dtype = torch.float32
         elif precision == "fp16":
-            mixed_precision_dtype = torch.float16
+            precision_dtype = torch.float16
         else:
-            mixed_precision_dtype = torch.bfloat16
+            precision_dtype = torch.bfloat16
 
         if self.device.type == "cpu" and precision == "fp16":
             self.logger.info(
                 "setting precision to bfp16 instead of fp16, "
                 "because fp16 is not supported on CPU yet"
             )
-            mixed_precision_dtype = torch.bfloat16
+            precision_dtype = torch.bfloat16
 
-        self._mixed_precision_dtype = mixed_precision_dtype
-
-    @property
-    def mixed_precision_enabled(self) -> bool:
-        return self._mixed_precision_dtype != torch.float32
+        self._precision_dtype = precision_dtype

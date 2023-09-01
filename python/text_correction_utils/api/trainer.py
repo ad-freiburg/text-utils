@@ -13,7 +13,6 @@ from typing import Dict, Optional, Tuple, Any, List, Callable, Union
 
 import torch
 from torch.backends import cuda, cudnn
-# from torch.profiler import profile, schedule, tensorboard_trace_handler
 from torch import distributed as dist
 from torch import multiprocessing as mp
 from torch import nn
@@ -371,9 +370,7 @@ training will resume from latest checkpoint."
             )
 
             self.logger.info(f"Using model:\n{self.model}")
-            self.logger.info(
-                f"Model parameters: {api.num_parameters(self.model)}"
-            )
+            self.logger.info(f"Model parameters: {api.num_parameters(self.model)}")
             num_params = 0
             param_group_infos = []
             for i, param_group in enumerate(self.optimizer.param_groups):
@@ -437,7 +434,7 @@ training will resume from latest checkpoint."
                 )
         elif load_checkpoint is not None:
             checkpoint = io.load_checkpoint(load_checkpoint)
-            wrong_keys = self.model.load_state_dict(
+            wrong_keys = distributed.unwrap_model(self.model).load_state_dict(
                 checkpoint["model_state_dict"],
                 strict=False
             )
@@ -448,16 +445,6 @@ training will resume from latest checkpoint."
                 f"initializing model from checkpoint \"{load_checkpoint}\" "
                 f"(missing keys: {wrong_keys.missing_keys})"
             )
-
-        # self.profiler = profile(
-        #     schedule=schedule(wait=100, warmup=1, active=3, repeat=100),
-        #     on_trace_ready=tensorboard_trace_handler(
-        #         self.directories["tensorboard"],
-        #         f"rank {self.info.rank}"
-        #     ),
-        #     profile_memory=True
-        # )
-        # self.profiler.start()
 
         self.grad_scaler = ShardedGradScaler(
             enabled=precision != "fp32"
@@ -1114,7 +1101,6 @@ training will resume from latest checkpoint."
 
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
-            # self.profiler.step()
 
             self.total_step += 1
             self.epoch_step += 1
@@ -1293,8 +1279,7 @@ training will resume from latest checkpoint."
                 if self.info.is_main_process:
                     # evaluate and benchmark only on main process
                     self._evaluate_and_checkpoint()
-                    if "benchmark" in self.cfg["val"]:
-                        self._benchmark_and_checkpoint()
+                    self._benchmark_and_checkpoint()
 
                 if self.cooldown_items > 0:
                     if self.info.is_main_process:
@@ -1392,7 +1377,7 @@ training will resume from latest checkpoint."
         self.loss_fn = self.loss_fn.train()
 
     def _benchmark_and_checkpoint(self):
-        raise NotImplementedError
+        pass
 
     def _start_cooldown(self):
         # already started
@@ -1450,7 +1435,6 @@ training will resume from latest checkpoint."
                 )
 
         finally:
-            # self.profiler.stop()
             if self.info.is_main_process:
                 start = time.perf_counter()
                 ckpt_path = os.path.join(

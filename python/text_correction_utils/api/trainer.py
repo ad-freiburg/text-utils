@@ -19,6 +19,7 @@ from torch import multiprocessing as mp
 from torch import nn
 from torch.optim import lr_scheduler
 from torch.backends import cudnn, cuda  # noqa
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.api import (
     MixedPrecision,
@@ -203,66 +204,77 @@ training will resume from latest checkpoint."
                 f"must be fp32, fp16 or bfp16"
             )
 
-        dist_cfg = self.cfg["train"].get("distributed", {})
-        offload_params = dist_cfg.get("offload", False)
-        prefetch = dist_cfg.get("prefetch", True)
-        strategy = ShardingStrategy[dist_cfg.get("strategy", "NO_SHARD")]
-        if self.info.world_size <= 1 and strategy in {
-            ShardingStrategy.FULL_SHARD,
-            ShardingStrategy.HYBRID_SHARD
-        }:
-            strategy = ShardingStrategy.NO_SHARD
-        if strategy != ShardingStrategy.NO_SHARD:
-            shard_size = dist_cfg.get("shard_size", None)
-            if shard_size is not None:
-                if self.info.is_main_process:
-                    self.logger.info(
-                        f"sharding based on number of parameters with "
-                        f"a minimum of {shard_size:,}"
-                    )
-                sharding_policy = functools.partial(
-                    size_based_auto_wrap_policy,
-                    min_num_params=shard_size,
-                    force_leaf_modules=None,
-                    exclude_wrap_modules=None
-                )
-            elif sharding_policy is None:
-                if self.info.is_main_process:
-                    self.logger.info(
-                        f"sharding strategy is {strategy.name}, but got "
-                        f"no sharding policy, disabling sharding"
-                    )
-                strategy = ShardingStrategy.NO_SHARD
-            offload_state_dict = True
-        else:
-            sharding_policy = None
-            offload_params = False
-            offload_state_dict = False
-
         compile = self.cfg["train"].get("compile", False)
-        self.model: FSDP = FSDP(
-            model,
-            auto_wrap_policy=sharding_policy,
-            mixed_precision=MixedPrecision(
-                param_dtype=self.precision_dtype,
-                reduce_dtype=self.precision_dtype,
-                buffer_dtype=self.precision_dtype
-            ),
-            cpu_offload=CPUOffload(offload_params=offload_params),
-            sync_module_states=True,
-            sharding_strategy=strategy,
-            forward_prefetch=prefetch,
-            backward_prefetch=BackwardPrefetch.BACKWARD_PRE if prefetch else BackwardPrefetch.BACKWARD_POST,
-            device_id=self.info.device,
-            use_orig_params=compile or (peft is not None)
-        )
-        FSDP.set_state_dict_type(
-            self.model,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True),
-            FullOptimStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True)
-        )
-        self.model = torch.compile(self.model, disable=not compile)
+        dist_cfg = self.cfg["train"].get("distributed", {})
+        dist_type = dist_cfg["type"]
+        assert dist_type in {"DDP", "FSDP"}, \
+            f"distributed training type must be either DDP or FSDP, but got {dist_type}"
+
+        if dist_type == "DDP":
+            self.model = DDP(
+                model.to(self.info.device),
+                static_graph=compile
+            )
+        else:
+            offload_params = dist_cfg.get("offload", False)
+            prefetch = dist_cfg.get("prefetch", True)
+            strategy = ShardingStrategy[dist_cfg.get("strategy", "NO_SHARD")]
+            if self.info.world_size <= 1 and strategy in {
+                ShardingStrategy.FULL_SHARD,
+                ShardingStrategy.HYBRID_SHARD
+            }:
+                strategy = ShardingStrategy.NO_SHARD
+            if strategy != ShardingStrategy.NO_SHARD:
+                shard_size = dist_cfg.get("shard_size", None)
+                if shard_size is not None:
+                    if self.info.is_main_process:
+                        self.logger.info(
+                            f"sharding based on number of parameters with "
+                            f"a minimum of {shard_size:,}"
+                        )
+                    sharding_policy = functools.partial(
+                        size_based_auto_wrap_policy,
+                        min_num_params=shard_size,
+                        force_leaf_modules=None,
+                        exclude_wrap_modules=None
+                    )
+                elif sharding_policy is None:
+                    if self.info.is_main_process:
+                        self.logger.info(
+                            f"sharding strategy is {strategy.name}, but got "
+                            f"no sharding policy, disabling sharding"
+                        )
+                    strategy = ShardingStrategy.NO_SHARD
+                offload_state_dict = True
+            else:
+                sharding_policy = None
+                offload_params = False
+                offload_state_dict = False
+
+            self.model = FSDP(
+                model,
+                auto_wrap_policy=sharding_policy,
+                mixed_precision=MixedPrecision(
+                    param_dtype=self.precision_dtype,
+                    reduce_dtype=self.precision_dtype,
+                    buffer_dtype=self.precision_dtype
+                ),
+                cpu_offload=CPUOffload(offload_params=offload_params),
+                sync_module_states=True,
+                sharding_strategy=strategy,
+                forward_prefetch=prefetch,
+                backward_prefetch=BackwardPrefetch.BACKWARD_PRE if prefetch else BackwardPrefetch.BACKWARD_POST,
+                device_id=self.info.device,
+                use_orig_params=compile or (peft is not None)
+            )
+            FSDP.set_state_dict_type(
+                self.model,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True),
+                FullOptimStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True)
+            )
+
+        self.model: Union[DDP, FSDP] = torch.compile(self.model, disable=not compile)  # type: ignore
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (
@@ -287,23 +299,6 @@ training will resume from latest checkpoint."
             self.cfg["train"]["optimizer"],
             additional_optimizer_fn=self._additional_optimizer_fn()
         )
-        if self.info.is_main_process:
-            num_params = 0
-            param_group_infos = []
-            for i, param_group in enumerate(self.optimizer.param_groups):
-                group_num_params = sum(
-                    p.numel()
-                    for p in param_group["params"]
-                )
-                other = {k: v for k, v in param_group.items() if k != "params"}
-                param_group_infos.append(
-                    f"{i+1}. group: {group_num_params:,} params, other: {other}"
-                )
-                num_params += group_num_params
-            param_group_info = "\n".join(param_group_infos)
-            self.logger.info(
-                f"Optimizer parameter groups:\n{param_group_info}"
-            )
 
         self.clip_grad_norm: Optional[float] = self.cfg["train"].get("clip_grad_norm", None)
 
@@ -354,7 +349,7 @@ training will resume from latest checkpoint."
             self.lr_scheduler = lr_scheduler_from_config(
                 self.optimizer,
                 steps,
-                cfg["train"]["lr_scheduler"],
+                self.cfg["train"]["lr_scheduler"],
                 additional_lr_scheduler_fn=self._additional_lr_scheduler_fn()
             )
         else:
@@ -379,8 +374,24 @@ training will resume from latest checkpoint."
             self.logger.info(
                 f"Model parameters: {api.num_parameters(self.model)}"
             )
+            num_params = 0
+            param_group_infos = []
+            for i, param_group in enumerate(self.optimizer.param_groups):
+                group_num_params = sum(
+                    p.numel()
+                    for p in param_group["params"]
+                )
+                group_cfg = {k: v for k, v in param_group.items() if k != "params"}
+                param_group_infos.append(
+                    f"{i+1}. group: {group_num_params:,} params, other: {group_cfg}"
+                )
+                num_params += group_num_params
+            param_group_info = "\n".join(param_group_infos)
             self.logger.info(
-                f"Training with {precision} precision and {strategy.name} sharding strategy"
+                f"Optimizer parameter groups:\n{param_group_info}"
+            )
+            self.logger.info(
+                f"Training with {dist_type} and {precision} precision"
             )
             self.logger.info(
                 f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
@@ -413,7 +424,7 @@ training will resume from latest checkpoint."
             self.directories["checkpoints"],
             "checkpoint_last.pt"
         )
-        load_checkpoint = cfg["train"].get("load_checkpoint")
+        load_checkpoint = self.cfg["train"].get("load_checkpoint")
         if os.path.exists(last_checkpoint):
             self._load_checkpoint(last_checkpoint)
             if self.info.is_main_process:
@@ -462,7 +473,7 @@ training will resume from latest checkpoint."
         assert self.info.is_main_process, "only save on main process"
         save = {
             "checkpoint_path": path,
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": distributed.unwrap_model(self.model).state_dict(),
             "step": self.total_step,
             "epoch": self.epoch,
             "epoch_step": self.epoch_step,
@@ -472,11 +483,10 @@ training will resume from latest checkpoint."
             **kwargs
         }
         if full:
-            optimizer = FSDP.optim_state_dict(
+            save["optimizer_state_dict"] = distributed.get_optimizer_state_dict(
                 self.model,
-                self.optimizer,
+                self.optimizer
             )
-            save["optimizer_state_dict"] = optimizer
             save["loss_fn_state_dict"] = self.loss_fn.state_dict()
             if self.lr_scheduler is not None:
                 save["lr_scheduler_state_dict"] = self.lr_scheduler.state_dict()
@@ -484,12 +494,14 @@ training will resume from latest checkpoint."
 
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        optim_state_dict = FSDP.optim_state_dict_to_load(
-            checkpoint["optimizer_state_dict"],
-            self.model,
-            self.optimizer,
-        )
+        distributed.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
+        optim_state_dict = checkpoint["optimizer_state_dict"]
+        if isinstance(self.model, FSDP):
+            optim_state_dict = FSDP.optim_state_dict_to_load(
+                optim_state_dict,
+                self.model,
+                self.optimizer,
+            )
         self.optimizer.load_state_dict(optim_state_dict)
         if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
             self.lr_scheduler.load_state_dict(
@@ -1092,7 +1104,13 @@ training will resume from latest checkpoint."
 
             if self.clip_grad_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)
-                self.model.clip_grad_norm_(self.clip_grad_norm)
+                if isinstance(self.model, FSDP):
+                    self.model.clip_grad_norm_(self.clip_grad_norm)
+                else:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.clip_grad_norm
+                    )
 
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
@@ -1330,7 +1348,7 @@ training will resume from latest checkpoint."
                 "cuda",
                 dtype=self.precision_dtype,
                 enabled=self.precision_dtype != torch.float32
-            ):
+            ), torch.no_grad():
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
                 loss = loss + sum(loss_dict.values())

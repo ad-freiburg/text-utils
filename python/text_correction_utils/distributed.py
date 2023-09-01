@@ -1,4 +1,9 @@
+from typing import Any, Dict, Union
+
 import torch
+from torch import nn, optim
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 class DistributedInfo:
@@ -36,3 +41,19 @@ class DistributedInfo:
         return f"DistributedDevice(rank={self.rank}, local_rank={self.local_rank}, " \
             f"world_size={self.world_size}, local_world_size={self.local_world_size}, " \
             f"device={self.device})"
+
+
+def unwrap_model(model: Union[FSDP, DDP]) -> nn.Module:
+    while isinstance(model, DDP):
+        model = model.module  # type: ignore
+    return model
+
+
+def get_optimizer_state_dict(
+    model: Union[FSDP, DDP],
+    optimizer: optim.Optimizer
+) -> Dict[str, Any]:
+    if isinstance(model, FSDP):
+        return FSDP.optim_state_dict(model, optimizer)
+    else:
+        return optimizer.state_dict()

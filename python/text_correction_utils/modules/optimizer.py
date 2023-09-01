@@ -9,16 +9,14 @@ except ImportError:
     _8BIT_OPTIMIZERS = False
 
 
-def _select_params(
-    params: Iterator[Tuple[str, nn.Parameter]],
+def _select_params_and_modules(
+    modules: Iterator[Tuple[str, nn.Module]],
     prefixes: List[str],
-    include: bool
-) -> Iterator[nn.Parameter]:
-    for name, param in params:
-        if include and any(name.startswith(prefix) for prefix in prefixes):
-            yield param
-        elif not include and all(not name.startswith(prefix) for prefix in prefixes):
-            yield param
+) -> Iterator[Tuple[str, nn.Module, nn.Parameter]]:
+    for name, mod in modules:
+        for p_name, param in mod.named_parameters(prefix=name, recurse=False):
+            if any(p_name.startswith(prefix) for prefix in prefixes):
+                yield p_name, mod, param
 
 
 def optimizer_from_config(
@@ -31,28 +29,46 @@ def optimizer_from_config(
 ) -> optim.Optimizer:
     cfg = copy.deepcopy(cfg)
     opt_type = cfg.pop("type")
-    param_groups = cfg.pop("param_groups", None)
-    params = []
-    exclude_prefixes = []
-    if param_groups is not None:
-        params = []
-        for group in param_groups:
-            prefix = group.pop("prefix")
-            exclude_prefixes.append(prefix)
-            group_params = _select_params(model.named_parameters(), [prefix], True)
-            if group.pop("fix", False):
-                for param in group_params:
-                    param.requires_grad = False
-                continue
-            params.append({
-                "params": group_params,
-                **group
-            })
+    param_groups = cfg.pop("param_groups", [{"prefix": ""}])
 
-    params.append({
-        "params": _select_params(model.named_parameters(), exclude_prefixes, False),
-        **cfg
-    })
+    all = set(name for name, p in model.named_parameters() if p.requires_grad)
+    params = []
+    names = set()
+    for group in param_groups:
+        prefix = group.pop("prefix")
+        fix = group.pop("fix", False)
+        no_decay = set()
+        decay = set()
+        param_dict = {}
+        for name, mod, param in _select_params_and_modules(model.named_modules(), [prefix]):
+            if name not in all:
+                # this should only happen for shared parameters
+                continue
+            if fix:
+                param.requires_grad = False
+                continue
+            names.add(name)
+            param_dict[name] = param
+            if isinstance(mod, nn.Linear) and name.endswith("weight"):
+                decay.add(name)
+            else:
+                no_decay.add(name)
+
+        assert len(decay & no_decay) == 0
+        assert len(param_dict.keys() - (decay | no_decay)) == 0
+
+        params.append({
+            "params": [param_dict[name] for name in decay],
+            **(cfg | group)
+        })
+        params.append({
+            "params": [param_dict[name] for name in no_decay],
+            **(cfg | group | {"weight_decay": 0.0})
+        })
+
+    unused = all - names
+    assert len(unused) == 0, \
+        f"parameter groups dont match trainable model parameters: {unused}"
 
     optim_bits = int(cfg.get("optim_bits", 32))
     assert optim_bits in [32, 8], f"optim_bits must be 32 or 8, got {optim_bits}"

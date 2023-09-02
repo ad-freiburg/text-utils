@@ -10,11 +10,12 @@ class Beam:
     def __init__(
         self,
         token_ids: List[int],
-        log_probs: List[float]
+        log_probs: List[float],
+        info: Optional[Dict[str, Any]] = None
     ) -> None:
         self.token_ids: List[int] = token_ids
         self.log_probs: List[float] = log_probs
-        self.info: Dict[str, Any] = {}
+        self.info: Dict[str, Any] = info or {}
 
     @staticmethod
     def from_beam(
@@ -22,15 +23,20 @@ class Beam:
         log_p: float,
         token_id: int
     ) -> "Beam":
-        beam = Beam(other.token_ids + [token_id], other.log_probs + [log_p])
-        beam.info = copy.deepcopy(other.info)
-        return beam
+        return Beam(
+            other.token_ids + [token_id],
+            other.log_probs + [log_p],
+            copy.deepcopy(other.info)
+        )
 
     def truncate_prefix(
         self,
         length: int
     ) -> "Beam":
-        return Beam(self.token_ids[length:], self.log_probs[length:])
+        return Beam(
+            self.token_ids[length:],
+            self.log_probs[length:],
+        )
 
     @property
     def log_prob(self) -> float:
@@ -43,10 +49,7 @@ class Beam:
         return len(self.token_ids)
 
     def __repr__(self) -> str:
-        return f"""Beam(
-    token_ids={self.token_ids},
-    log_probs={self.log_probs}
-)"""
+        return f"Beam(token_ids={self.token_ids}, log_prob={self.log_prob:.4f})"
 
 
 # maps from token ids, length, and other kwargs to distribution over next token id and other info

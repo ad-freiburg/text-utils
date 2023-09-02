@@ -192,7 +192,6 @@ class TextCorrector:
     @torch.inference_mode()
     def _run_model(self, batch: data.InferenceBatch) -> Any:
         inputs = self._prepare_batch(batch)
-        # this is a slight hack for now, because fp32 on cpu throws an error even when enabled=False
         with autocast(
             device_type=self.device.type,
             dtype=self._precision_dtype,

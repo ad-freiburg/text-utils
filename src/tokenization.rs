@@ -28,10 +28,10 @@ use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 use tokenizers as hft;
 
-pub const UNK: &str = "(unk)";
-pub const BOS: &str = "(bos)";
-pub const EOS: &str = "(eos)";
-pub const PAD: &str = "(pad)";
+pub const UNK: &str = "<unk>";
+pub const BOS: &str = "<bos>";
+pub const EOS: &str = "<eos>";
+pub const PAD: &str = "<pad>";
 pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
 pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
 pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
@@ -52,7 +52,7 @@ impl SpecialTokens {
 }
 
 // language tokens
-pub const LANG_UNK: &str = "(lang:unk)";
+pub const LANG_UNK: &str = "<lang:unk>";
 
 #[pyclass]
 pub struct LanguageTokens {}

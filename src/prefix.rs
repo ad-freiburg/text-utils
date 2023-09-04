@@ -29,6 +29,7 @@ pub trait PrefixTreeSearch<V> {
 
 pub type Continuations = Vec<Vec<u8>>;
 pub type ContinuationTree = Node<Vec<usize>>;
+pub type Mask = Vec<Vec<bool>>;
 
 #[pyclass]
 #[pyo3(name = "Vec")]
@@ -150,33 +151,59 @@ impl PyPrefixVec {
             .collect()
     }
 
-    fn continuation_mask(&self, prefix: &[u8]) -> anyhow::Result<(Vec<bool>, bool)> {
+    fn continuation_mask(&self, prefix: &[u8]) -> anyhow::Result<(Vec<bool>, Vec<bool>, bool)> {
         let Some((continuations, cont_tree)) = self.cont.as_ref() else {
             return Err(anyhow!("no continuations set"));
         };
-        let data = match self.inner.find_range(prefix, 0, self.inner.size(), 0) {
-            FindResult::NotFound(..) => return Ok((vec![false; continuations.len()], false)),
-            FindResult::Found(left, right) => &self.inner.data[left..right],
+        let (data, left, right) = match self.inner.find_range(prefix, 0, self.inner.size(), 0) {
+            FindResult::NotFound(..) => {
+                return Ok((
+                    vec![false; continuations.len()],
+                    vec![false; continuations.len()],
+                    false,
+                ))
+            }
+            FindResult::Found(left, right) => (&self.inner.data[left..right], left, right),
         };
-        let mut mask = vec![false; continuations.len()];
-        for (cont, _) in data {
-            for cont_indices in cont_tree.get_path(&cont[prefix.len()..]) {
+        let mut cont_mask = vec![false; continuations.len()];
+        for (value, _) in data {
+            for cont_indices in cont_tree.get_path(&value[prefix.len()..]) {
                 for idx in cont_indices {
-                    mask[*idx] = true;
+                    cont_mask[*idx] = true;
                 }
             }
         }
-        Ok((mask, !data.is_empty() && data[0].0.len() == prefix.len()))
+        let value_mask = continuations
+            .iter()
+            .map(|cont| {
+                let found = self.inner.find_range(cont, left, right, prefix.len());
+                matches!(found, FindResult::Found(..))
+            })
+            .collect();
+        Ok((
+            cont_mask,
+            value_mask,
+            !data.is_empty() && data[0].0.len() == prefix.len(),
+        ))
     }
 
     fn batch_continuation_mask(
         &self,
         prefixes: Vec<Vec<u8>>,
-    ) -> anyhow::Result<(Vec<Vec<bool>>, Vec<bool>)> {
-        prefixes
+    ) -> anyhow::Result<(Mask, Mask, Vec<bool>)> {
+        let mut cont_masks = Vec::with_capacity(prefixes.len());
+        let mut val_masks = Vec::with_capacity(prefixes.len());
+        let mut has_values = Vec::with_capacity(prefixes.len());
+        for cont in prefixes
             .into_par_iter()
-            .map(|prefix| self.continuation_mask(&prefix))
-            .collect()
+            .map(|pfx| self.continuation_mask(&pfx))
+            .collect::<anyhow::Result<Vec<_>>>()?
+        {
+            cont_masks.push(cont.0);
+            val_masks.push(cont.1);
+            has_values.push(cont.2);
+        }
+        Ok((cont_masks, val_masks, has_values))
     }
 
     fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(Vec<u8>, &str)>> {

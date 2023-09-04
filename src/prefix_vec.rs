@@ -158,7 +158,7 @@ impl<V> PrefixVec<V> {
         d: usize,
         max_d: usize,
     ) -> Node<(usize, usize)> {
-        if d >= max_d {
+        if d > max_d {
             return memo;
         }
         let Some(&(left, right)) = memo.get(&pfx) else {
@@ -179,7 +179,7 @@ impl<V> PrefixVec<V> {
         self.range_memo.take();
         let mut memo = Node::default();
         memo.insert(&[], (0, self.size()));
-        let memo = self.get_memo(memo, vec![], 0, max_depth);
+        memo = self.get_memo(memo, vec![], 0, max_depth);
         self.range_memo = Some((memo, max_depth));
     }
 }

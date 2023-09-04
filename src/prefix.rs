@@ -151,19 +151,13 @@ impl PyPrefixVec {
             .collect()
     }
 
-    fn continuation_mask(&self, prefix: &[u8]) -> anyhow::Result<(Vec<bool>, Vec<bool>, bool)> {
+    fn continuation_mask(&self, prefix: &[u8]) -> anyhow::Result<(Vec<bool>, bool)> {
         let Some((continuations, cont_tree)) = self.cont.as_ref() else {
             return Err(anyhow!("no continuations set"));
         };
-        let (data, left, right) = match self.inner.find_range(prefix, 0, self.inner.size(), 0) {
-            FindResult::NotFound(..) => {
-                return Ok((
-                    vec![false; continuations.len()],
-                    vec![false; continuations.len()],
-                    false,
-                ))
-            }
-            FindResult::Found(left, right) => (&self.inner.data[left..right], left, right),
+        let data = match self.inner.find_range(prefix, 0, self.inner.size(), 0) {
+            FindResult::NotFound(..) => return Ok((vec![false; continuations.len()], false)),
+            FindResult::Found(left, right) => &self.inner.data[left..right],
         };
         let mut cont_mask = vec![false; continuations.len()];
         for (value, _) in data {
@@ -173,16 +167,8 @@ impl PyPrefixVec {
                 }
             }
         }
-        let value_mask = continuations
-            .iter()
-            .map(|cont| {
-                let found = self.inner.find_range(cont, left, right, prefix.len());
-                matches!(found, FindResult::Found(..))
-            })
-            .collect();
         Ok((
             cont_mask,
-            value_mask,
             !data.is_empty() && data[0].0.len() == prefix.len(),
         ))
     }
@@ -190,20 +176,11 @@ impl PyPrefixVec {
     fn batch_continuation_mask(
         &self,
         prefixes: Vec<Vec<u8>>,
-    ) -> anyhow::Result<(Mask, Mask, Vec<bool>)> {
-        let mut cont_masks = Vec::with_capacity(prefixes.len());
-        let mut val_masks = Vec::with_capacity(prefixes.len());
-        let mut has_values = Vec::with_capacity(prefixes.len());
-        for cont in prefixes
+    ) -> anyhow::Result<(Vec<Vec<bool>>, Vec<bool>)> {
+        prefixes
             .into_par_iter()
             .map(|pfx| self.continuation_mask(&pfx))
-            .collect::<anyhow::Result<Vec<_>>>()?
-        {
-            cont_masks.push(cont.0);
-            val_masks.push(cont.1);
-            has_values.push(cont.2);
-        }
-        Ok((cont_masks, val_masks, has_values))
+            .collect()
     }
 
     fn batch_get_continuations(&self, prefixes: Vec<Vec<u8>>) -> Vec<Vec<(Vec<u8>, &str)>> {

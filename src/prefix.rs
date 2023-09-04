@@ -76,21 +76,23 @@ impl PyPrefixVec {
         if d > max_d {
             return memo;
         }
-        let conts = (0..=255)
-            .collect::<Vec<_>>()
-            .into_par_iter()
-            .map(|k| {
-                let mut prefix_k = prefix.clone();
-                prefix_k.push(k);
-                (k, self.get_cont_mask(continuations, cont_tree, &prefix))
+        let conts = continuations
+            .par_iter()
+            .filter_map(|c| {
+                let mut prefix_cont = prefix.clone();
+                prefix_cont.extend(c);
+                if let Some((mask, value)) =
+                    self.get_cont_mask(continuations, cont_tree, &prefix_cont)
+                {
+                    Some((prefix_cont, (run_length_encode(&mask), value)))
+                } else {
+                    None
+                }
             })
-            .filter_map(|(key, cont)| cont.map(|cont| (key, cont)))
             .collect::<Vec<_>>();
-        for (k, (cont_mask, has_value)) in conts {
-            memo.insert(&prefix, (run_length_encode(&cont_mask), has_value));
-            let mut prefix_k = prefix.clone();
-            prefix_k.push(k);
-            memo = self.get_cont_memo(continuations, cont_tree, memo, prefix_k, d + 1, max_d);
+        for (prefix_cont, cont) in conts {
+            memo.insert(&prefix_cont, cont);
+            memo = self.get_cont_memo(continuations, cont_tree, memo, prefix_cont, d + 1, max_d);
         }
         memo
     }
@@ -152,7 +154,7 @@ impl PyPrefixVec {
             let (cont, has_value) = self.get_cont_mask(&continuations, &cont_tree, &[]).unwrap();
             cont_memo.insert(&[], (run_length_encode(&cont), has_value));
             cont_memo =
-                self.get_cont_memo(&continuations, &cont_tree, cont_memo, vec![], 0, max_depth);
+                self.get_cont_memo(&continuations, &cont_tree, cont_memo, vec![], 1, max_depth);
         }
         self.cont = Some((continuations, cont_tree, cont_memo));
     }

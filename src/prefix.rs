@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::File,
     io::{BufRead, BufReader},
 };
@@ -28,7 +29,7 @@ pub trait PrefixTreeSearch<V> {
 }
 
 pub type Continuations = Vec<Vec<u8>>;
-pub type ContinuationTree = Node<Vec<usize>>;
+pub type ContinuationTree = Node<HashSet<usize>>;
 pub type ContinuationMemo = Node<(Vec<(bool, usize)>, bool)>;
 
 #[pyclass]
@@ -151,21 +152,32 @@ impl PyPrefixVec {
         // are also not valid
 
         // build tree
-        let mut cont_tree: Node<Vec<usize>> = Node::default();
+        let mut cont_tree: ContinuationTree = Node::default();
         // cont_tree.set_value((None, vec![]));
         // now insert the index along path for each continuation
         for (i, cont) in continuations.iter().enumerate() {
-            let mut node = &mut cont_tree;
-            for key in cont {
-                if node.get_child(key).is_none() {
-                    node.set_child(key, Node::default());
-                }
-                node = node.get_child_mut(key).unwrap();
+            let mut conts = vec![cont.clone()];
+            if !with_leading_space {
+                conts.push(
+                    String::from_utf8_lossy(cont)
+                        .trim_start()
+                        .as_bytes()
+                        .to_vec(),
+                );
             }
-            if let Some(val) = node.get_value_mut() {
-                val.push(i);
-            } else {
-                node.set_value(vec![i]);
+            for cont in conts {
+                let mut node = &mut cont_tree;
+                for key in &cont {
+                    if node.get_child(key).is_none() {
+                        node.set_child(key, Node::default());
+                    }
+                    node = node.get_child_mut(key).unwrap();
+                }
+                if let Some(val) = node.get_value_mut() {
+                    val.insert(i);
+                } else {
+                    node.set_value(HashSet::from_iter([i]));
+                }
             }
         }
         // build memo

@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     fs::File,
     io::{BufRead, BufReader},
 };
@@ -29,7 +28,7 @@ pub trait PrefixTreeSearch<V> {
 }
 
 pub type Continuations = Vec<Vec<u8>>;
-pub type ContinuationTree = Node<HashSet<usize>>;
+pub type ContinuationTree = Node<Vec<usize>>;
 pub type ContinuationMemo = Node<(Vec<(bool, usize)>, bool)>;
 
 #[pyclass]
@@ -74,7 +73,6 @@ impl PyPrefixVec {
         prefix: Vec<u8>,
         d: usize,
         max_d: usize,
-        with_leading_space: bool,
     ) -> ContinuationMemo {
         if d > max_d {
             return memo;
@@ -83,12 +81,7 @@ impl PyPrefixVec {
             .par_iter()
             .filter_map(|c| {
                 let mut prefix_cont = prefix.clone();
-                if d == 1 && !with_leading_space {
-                    assert!(prefix_cont.is_empty());
-                    prefix_cont.extend(String::from_utf8_lossy(c).trim_start().as_bytes());
-                } else {
-                    prefix_cont.extend(c);
-                }
+                prefix_cont.extend(c);
                 if let Some((mask, value)) =
                     self.get_cont_mask(continuations.len(), cont_tree, &prefix_cont)
                 {
@@ -100,15 +93,7 @@ impl PyPrefixVec {
             .collect::<Vec<_>>();
         for (prefix_cont, cont) in conts {
             memo.insert(&prefix_cont, cont);
-            memo = self.get_cont_memo(
-                continuations,
-                cont_tree,
-                memo,
-                prefix_cont,
-                d + 1,
-                max_d,
-                with_leading_space,
-            );
+            memo = self.get_cont_memo(continuations, cont_tree, memo, prefix_cont, d + 1, max_d);
         }
         memo
     }
@@ -134,18 +119,13 @@ impl PyPrefixVec {
         Ok(Self { inner, cont: None })
     }
 
-    #[pyo3(signature = (max_depth=2))]
+    #[pyo3(signature = (max_depth=3))]
     fn compute_memo(&mut self, max_depth: usize) {
         self.inner.compute_memo(max_depth);
     }
 
-    #[pyo3(signature = (continuations, max_depth=2, with_leading_space=false))]
-    fn set_continuations(
-        &mut self,
-        continuations: Vec<Vec<u8>>,
-        max_depth: usize,
-        with_leading_space: bool,
-    ) {
+    #[pyo3(signature = (continuations, max_depth=1))]
+    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>, max_depth: usize) {
         // calculate interdependencies between continuations
         // e.g. if one continuation start with abc and is not
         // a valid one, then all continuations starting with abc
@@ -156,28 +136,17 @@ impl PyPrefixVec {
         // cont_tree.set_value((None, vec![]));
         // now insert the index along path for each continuation
         for (i, cont) in continuations.iter().enumerate() {
-            let mut conts = vec![cont.clone()];
-            if !with_leading_space {
-                conts.push(
-                    String::from_utf8_lossy(cont)
-                        .trim_start()
-                        .as_bytes()
-                        .to_vec(),
-                );
+            let mut node = &mut cont_tree;
+            for key in cont {
+                if node.get_child(key).is_none() {
+                    node.set_child(key, Node::default());
+                }
+                node = node.get_child_mut(key).unwrap();
             }
-            for cont in conts {
-                let mut node = &mut cont_tree;
-                for key in &cont {
-                    if node.get_child(key).is_none() {
-                        node.set_child(key, Node::default());
-                    }
-                    node = node.get_child_mut(key).unwrap();
-                }
-                if let Some(val) = node.get_value_mut() {
-                    val.insert(i);
-                } else {
-                    node.set_value(HashSet::from_iter([i]));
-                }
+            if let Some(val) = node.get_value_mut() {
+                val.push(i);
+            } else {
+                node.set_value(vec![i]);
             }
         }
         // build memo
@@ -187,15 +156,8 @@ impl PyPrefixVec {
                 .get_cont_mask(continuations.len(), &cont_tree, &[])
                 .unwrap();
             cont_memo.insert(&[], (run_length_encode(&cont), has_value));
-            cont_memo = self.get_cont_memo(
-                &continuations,
-                &cont_tree,
-                cont_memo,
-                vec![],
-                1,
-                max_depth,
-                with_leading_space,
-            );
+            cont_memo =
+                self.get_cont_memo(&continuations, &cont_tree, cont_memo, vec![], 1, max_depth);
         }
         self.cont = Some((continuations, cont_tree, cont_memo));
     }

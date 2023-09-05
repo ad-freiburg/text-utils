@@ -41,7 +41,7 @@ pub struct PyPrefixVec {
 impl PyPrefixVec {
     fn get_cont_mask(
         &self,
-        continuations: &Continuations,
+        num_continuations: usize,
         cont_tree: &ContinuationTree,
         prefix: &[u8],
     ) -> Option<(Vec<bool>, bool)> {
@@ -49,7 +49,7 @@ impl PyPrefixVec {
             FindResult::NotFound(..) => return None,
             FindResult::Found(left, right) => &self.inner.data[left..right],
         };
-        let mut cont_mask = vec![false; continuations.len()];
+        let mut cont_mask = vec![false; num_continuations];
         for (value, _) in data {
             let suffix = &value[prefix.len()..];
             for cont_indices in cont_tree.get_path(suffix) {
@@ -64,6 +64,7 @@ impl PyPrefixVec {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn get_cont_memo(
         &self,
         continuations: &Continuations,
@@ -72,6 +73,7 @@ impl PyPrefixVec {
         prefix: Vec<u8>,
         d: usize,
         max_d: usize,
+        with_leading_space: bool,
     ) -> ContinuationMemo {
         if d > max_d {
             return memo;
@@ -80,9 +82,14 @@ impl PyPrefixVec {
             .par_iter()
             .filter_map(|c| {
                 let mut prefix_cont = prefix.clone();
-                prefix_cont.extend(c);
+                if d == 1 && !with_leading_space {
+                    assert!(prefix_cont.is_empty());
+                    prefix_cont.extend(String::from_utf8_lossy(c).trim_start().as_bytes());
+                } else {
+                    prefix_cont.extend(c);
+                }
                 if let Some((mask, value)) =
-                    self.get_cont_mask(continuations, cont_tree, &prefix_cont)
+                    self.get_cont_mask(continuations.len(), cont_tree, &prefix_cont)
                 {
                     Some((prefix_cont, (run_length_encode(&mask), value)))
                 } else {
@@ -92,7 +99,15 @@ impl PyPrefixVec {
             .collect::<Vec<_>>();
         for (prefix_cont, cont) in conts {
             memo.insert(&prefix_cont, cont);
-            memo = self.get_cont_memo(continuations, cont_tree, memo, prefix_cont, d + 1, max_d);
+            memo = self.get_cont_memo(
+                continuations,
+                cont_tree,
+                memo,
+                prefix_cont,
+                d + 1,
+                max_d,
+                with_leading_space,
+            );
         }
         memo
     }
@@ -123,8 +138,13 @@ impl PyPrefixVec {
         self.inner.compute_memo(max_depth);
     }
 
-    #[pyo3(signature = (continuations, max_depth=2))]
-    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>, max_depth: usize) {
+    #[pyo3(signature = (continuations, max_depth=2, with_leading_space=false))]
+    fn set_continuations(
+        &mut self,
+        continuations: Vec<Vec<u8>>,
+        max_depth: usize,
+        with_leading_space: bool,
+    ) {
         // calculate interdependencies between continuations
         // e.g. if one continuation start with abc and is not
         // a valid one, then all continuations starting with abc
@@ -151,10 +171,19 @@ impl PyPrefixVec {
         // build memo
         let mut cont_memo = Node::default();
         if max_depth > 0 {
-            let (cont, has_value) = self.get_cont_mask(&continuations, &cont_tree, &[]).unwrap();
+            let (cont, has_value) = self
+                .get_cont_mask(continuations.len(), &cont_tree, &[])
+                .unwrap();
             cont_memo.insert(&[], (run_length_encode(&cont), has_value));
-            cont_memo =
-                self.get_cont_memo(&continuations, &cont_tree, cont_memo, vec![], 1, max_depth);
+            cont_memo = self.get_cont_memo(
+                &continuations,
+                &cont_tree,
+                cont_memo,
+                vec![],
+                1,
+                max_depth,
+                with_leading_space,
+            );
         }
         self.cont = Some((continuations, cont_tree, cont_memo));
     }
@@ -227,7 +256,7 @@ impl PyPrefixVec {
         let value = if let Some((cont_mask, has_value)) = cont_memo.get(prefix) {
             (run_length_decode(cont_mask), *has_value)
         } else {
-            self.get_cont_mask(continuations, cont_tree, prefix)
+            self.get_cont_mask(continuations.len(), cont_tree, prefix)
                 .unwrap_or_else(|| (vec![false; continuations.len()], false))
         };
         Ok(value)

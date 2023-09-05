@@ -165,7 +165,7 @@ impl<V> PrefixVec<V> {
             return memo;
         };
         for k in 0..=255 {
-            if let Some(range) = self.range_search(&k, d, left, right) {
+            if let Some(range) = self.range_search(&k, prefix.len(), left, right) {
                 let mut prefix_k = prefix.clone();
                 prefix_k.push(k);
                 memo.insert(&prefix_k, range);
@@ -177,12 +177,12 @@ impl<V> PrefixVec<V> {
 
     pub fn compute_memo(&mut self, max_depth: usize) {
         self.range_memo.take();
-        let mut memo = Node::default();
-        memo.insert(&[], (0, self.size()));
         if max_depth > 0 {
+            let mut memo = Node::default();
+            memo.insert(&[], (0, self.size()));
             memo = self.get_memo(memo, vec![], 1, max_depth);
+            self.range_memo = Some((memo, max_depth));
         }
-        self.range_memo = Some((memo, max_depth));
     }
 }
 

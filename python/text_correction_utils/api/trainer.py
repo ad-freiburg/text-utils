@@ -322,6 +322,7 @@ training will resume from latest checkpoint."
             self.lr_scheduler = lr_scheduler_from_config(
                 self.optimizer,
                 steps,
+                self.info.world_size,
                 self.cfg["train"]["lr_scheduler"],
                 additional_lr_scheduler_fn=self._additional_lr_scheduler_fn()
             )

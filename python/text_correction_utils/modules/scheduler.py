@@ -10,9 +10,19 @@ def _warmup(optimizer: optim.Optimizer, num_steps: int) -> optim.lr_scheduler.Li
     return optim.lr_scheduler.LinearLR(optimizer, 1e-4, 1, num_steps)
 
 
-def _check_warmup_steps(warmup_steps: Union[float, int], train_steps: int) -> int:
+def _check_warmup_steps(
+    warmup_steps: Union[float, int],
+    train_steps: int,
+    world_size: int,
+) -> int:
     if isinstance(warmup_steps, float):
         warmup_steps = round(train_steps * warmup_steps)
+    elif isinstance(warmup_steps, int):
+        warmup_steps //= world_size
+    else:
+        raise TypeError(
+            f"expected warmup steps to be either float or int, but got {type(warmup_steps)}"
+        )
     assert 0 <= warmup_steps <= train_steps, \
         f"warmup steps should be larger or equal zero and smaller or equal to training steps, " \
         f"but got {warmup_steps} and {train_steps} training steps"
@@ -22,6 +32,7 @@ def _check_warmup_steps(warmup_steps: Union[float, int], train_steps: int) -> in
 def linear_with_warmup(
     optimizer: optim.Optimizer,
     training_steps: int,
+    world_size: int,
     warmup_steps: Union[float, int]
 ) -> optim.lr_scheduler.SequentialLR:
     """
@@ -34,7 +45,7 @@ def linear_with_warmup(
     :param warmup_steps: number of warmup steps
     :return: lr scheduler
     """
-    warmup_steps = _check_warmup_steps(warmup_steps, training_steps)
+    warmup_steps = _check_warmup_steps(warmup_steps, training_steps, world_size)
     return optim.lr_scheduler.SequentialLR(
         optimizer,
         [
@@ -48,6 +59,7 @@ def linear_with_warmup(
 def cosine_with_warmup(
     optimizer: optim.Optimizer,
     training_steps: int,
+    world_size: int,
     warmup_steps: Union[float, int]
 ) -> optim.lr_scheduler.SequentialLR:
     """
@@ -60,7 +72,7 @@ def cosine_with_warmup(
     :param warmup_steps: number of warmup steps
     :return: lr scheduler
     """
-    warmup_steps = _check_warmup_steps(warmup_steps, training_steps)
+    warmup_steps = _check_warmup_steps(warmup_steps, training_steps, world_size)
 
     def _cosine(step: int) -> float:
         frac = (step - warmup_steps) / max(1.0, training_steps - warmup_steps)
@@ -79,6 +91,7 @@ def cosine_with_warmup(
 def multi_step_with_warmup(
     optimizer: optim.Optimizer,
     training_steps: int,
+    world_size: int,
     warmup_steps: Union[float, int],
     steps: List[Union[float, int]],
     factors: List[float]
@@ -95,7 +108,7 @@ def multi_step_with_warmup(
     :param factors: list of stepping factors
     :return: lr scheduler
     """
-    warmup_steps = _check_warmup_steps(warmup_steps, training_steps)
+    warmup_steps = _check_warmup_steps(warmup_steps, training_steps, world_size)
     assert len(steps) == len(factors), "expected a factor for every step"
     steps = [
         step if isinstance(step, int) else round((training_steps - warmup_steps) * step) + warmup_steps
@@ -126,6 +139,7 @@ def multi_step_with_warmup(
 def constant_with_warmup(
     optimizer: optim.Optimizer,
     training_steps: int,
+    world_size: int,
     warmup_steps: Union[float, int],
 ) -> optim.lr_scheduler.SequentialLR:
     """
@@ -137,11 +151,12 @@ def constant_with_warmup(
     :param warmup_steps: number of warmup steps
     :return: lr scheduler
     """
-    return multi_step_with_warmup(optimizer, training_steps, warmup_steps, [], [])
+    return multi_step_with_warmup(optimizer, training_steps, world_size, warmup_steps, [], [])
 
 
 def cont_sqrt_with_warmup(
     optimizer: optim.Optimizer,
+    world_size: int,
     warmup_steps: Union[float, int],
 ) -> optim.lr_scheduler.SequentialLR:
     """
@@ -156,7 +171,7 @@ def cont_sqrt_with_warmup(
     """
     assert isinstance(warmup_steps, int), \
         f"expected warmup steps to be an integer for this scheduler, but got {warmup_steps}"
-    warmup_steps = max(1, warmup_steps)
+    warmup_steps = max(1, warmup_steps // world_size)
 
     def _sqrt(step: int) -> float:
         step = max(1, step)
@@ -175,27 +190,28 @@ def cont_sqrt_with_warmup(
 def lr_scheduler_from_config(
     optimizer: optim.Optimizer,
     steps: int,
+    world_size: int,
     cfg: Dict[str, Any],
     additional_lr_scheduler_fn: Optional[Callable[
-        [optim.Optimizer, int, Dict[str, Any]],
+        [optim.Optimizer, int, int, Dict[str, Any]],
         optim.lr_scheduler.SequentialLR
     ]] = None
 ) -> optim.lr_scheduler.SequentialLR:
     cfg = copy.deepcopy(cfg)
     lr_type = cfg.pop("type")
     if lr_type == "linear_with_warmup":
-        return linear_with_warmup(optimizer, steps, **cfg)
+        return linear_with_warmup(optimizer, steps, world_size, **cfg)
     elif lr_type == "cosine_with_warmup":
-        return cosine_with_warmup(optimizer, steps, **cfg)
+        return cosine_with_warmup(optimizer, steps, world_size, **cfg)
     elif lr_type == "multi_step_with_warmup":
-        return multi_step_with_warmup(optimizer, steps, **cfg)
+        return multi_step_with_warmup(optimizer, steps, world_size, **cfg)
     elif lr_type == "constant_with_warmup":
-        return constant_with_warmup(optimizer, steps, **cfg)
+        return constant_with_warmup(optimizer, steps, world_size, **cfg)
     elif lr_type == "cont_sqrt_with_warmup":
-        return cont_sqrt_with_warmup(optimizer, **cfg)
+        return cont_sqrt_with_warmup(optimizer, world_size, **cfg)
     else:
         if additional_lr_scheduler_fn is not None:
-            return additional_lr_scheduler_fn(optimizer, steps, cfg)
+            return additional_lr_scheduler_fn(optimizer, steps, world_size, cfg)
         raise ValueError(f"unknown lr scheduler type {lr_type}")
 
 

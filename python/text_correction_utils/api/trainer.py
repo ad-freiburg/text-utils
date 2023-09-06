@@ -1375,6 +1375,7 @@ training will resume from latest checkpoint."
                 "cooldown_checkpoint.pt"
             )
             self._save_checkpoint(path, self.best_val_loss)
+        dist.barrier()
 
     def _stop_cooldown(self):
         # already stopped

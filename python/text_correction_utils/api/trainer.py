@@ -1375,6 +1375,7 @@ training will resume from latest checkpoint."
                 "cooldown_checkpoint.pt"
             )
             self._save_checkpoint(path, self.best_val_loss)
+        # wait until checkpoint is saved
         dist.barrier()
 
     def _stop_cooldown(self):
@@ -1391,7 +1392,10 @@ training will resume from latest checkpoint."
         val_loss = self.best_val_loss
         self._load_checkpoint(path)
         self.best_val_loss = val_loss
-        os.remove(path)
+        # wait until everyone loaded the checkpoint
+        dist.barrier()
+        if self.info.is_main_process:
+            os.remove(path)
 
     def run(self):
         try:

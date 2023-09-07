@@ -920,7 +920,11 @@ training will resume from latest checkpoint."
             cfg = configuration.load_config(config_path)
             if info.is_main_process:
                 cls._setup_experiment(
-                    work_dir, experiment_dir, config_path, cfg)
+                    work_dir,
+                    experiment_dir,
+                    config_path,
+                    cfg
+                )
                 logger.info(
                     f"Starting experiment at {experiment_dir} with config:\n{yaml.safe_dump(cfg)}"
                 )

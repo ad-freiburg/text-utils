@@ -75,7 +75,7 @@ def cosine_with_warmup(
     warmup_steps = _check_warmup_steps(warmup_steps, training_steps, world_size)
 
     def _cosine(step: int) -> float:
-        frac = (step - warmup_steps) / max(1.0, training_steps - warmup_steps)
+        frac = step / max(1.0, training_steps - warmup_steps)
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * frac)))
 
     return optim.lr_scheduler.SequentialLR(
@@ -110,17 +110,19 @@ def multi_step_with_warmup(
     """
     warmup_steps = _check_warmup_steps(warmup_steps, training_steps, world_size)
     assert len(steps) == len(factors), "expected a factor for every step"
-    steps = [
-        step if isinstance(step, int) else round((training_steps - warmup_steps) * step) + warmup_steps
-        for step in steps
-    ]
-    assert steps == sorted(steps), "steps must be given in sorted order"
-    assert all(warmup_steps <= step <= training_steps for step in steps), \
+    milestones = []
+    for step in steps:
+        if isinstance(step, int):
+            milestones.append(step - warmup_steps)
+        else:
+            milestones.append(training_steps * step - warmup_steps)
+    assert milestones == sorted(milestones), "steps must be given in sorted order"
+    assert all(warmup_steps <= step <= training_steps for step in milestones), \
         "each step must lie between the number of warmup steps and the number of total training steps"
 
     def _multi_step(step: int) -> float:
         idx = 0
-        for step_at in steps:
+        for step_at in milestones:
             if step >= step_at:
                 idx += 1
 
@@ -156,6 +158,7 @@ def constant_with_warmup(
 
 def cont_sqrt_with_warmup(
     optimizer: optim.Optimizer,
+    training_steps: int,
     world_size: int,
     warmup_steps: Union[float, int],
 ) -> optim.lr_scheduler.SequentialLR:
@@ -169,13 +172,10 @@ def cont_sqrt_with_warmup(
     :param warmup_steps: number of warmup steps
     :return: lr scheduler
     """
-    assert isinstance(warmup_steps, int), \
-        f"expected warmup steps to be an integer for this scheduler, but got {warmup_steps}"
-    warmup_steps = max(1, warmup_steps // world_size)
+    warmup_steps = _check_warmup_steps(warmup_steps, training_steps, world_size)
 
     def _sqrt(step: int) -> float:
-        step = max(1, step)
-        return math.sqrt(warmup_steps / step)
+        return math.sqrt(warmup_steps / max(1, step + warmup_steps))
 
     return optim.lr_scheduler.SequentialLR(
         optimizer,
@@ -208,7 +208,7 @@ def lr_scheduler_from_config(
     elif lr_type == "constant_with_warmup":
         return constant_with_warmup(optimizer, steps, world_size, **cfg)
     elif lr_type == "cont_sqrt_with_warmup":
-        return cont_sqrt_with_warmup(optimizer, world_size, **cfg)
+        return cont_sqrt_with_warmup(optimizer, steps, world_size, **cfg)
     else:
         if additional_lr_scheduler_fn is not None:
             return additional_lr_scheduler_fn(optimizer, steps, world_size, cfg)

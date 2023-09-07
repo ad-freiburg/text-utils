@@ -58,11 +58,11 @@ def optimizer_from_config(
         assert len(param_dict.keys() - (decay | no_decay)) == 0
 
         params.append({
-            "params": [param_dict[name] for name in decay],
+            "params": [param_dict[name] for name in sorted(list(decay))],
             **(cfg | group)
         })
         params.append({
-            "params": [param_dict[name] for name in no_decay],
+            "params": [param_dict[name] for name in sorted(list(no_decay))],
             **(cfg | group | {"weight_decay": 0.0})
         })
 

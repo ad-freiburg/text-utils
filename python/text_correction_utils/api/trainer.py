@@ -290,14 +290,14 @@ training will resume from latest checkpoint."
             lower,
             self.training_items
         )
-        cooldown = self.cfg["val"].get("cooldown", None)
-        if cooldown is not None:
-            if isinstance(cooldown, float):
-                cooldown_items = self.training_items * cooldown
-            elif isinstance(cooldown, int):
-                cooldown_items = cooldown
-            else:
-                raise ValueError(f"cooldown must be a float between 0 and 1, but got {cooldown}")
+        cooldown = self.cfg["val"].get("cooldown", 0)
+        if isinstance(cooldown, float):
+            cooldown_items = self.training_items * cooldown
+        elif isinstance(cooldown, int):
+            cooldown_items = cooldown
+        else:
+            raise ValueError(f"cooldown must be a float between 0 and 1, but got {cooldown}")
+        if cooldown_items > 0:
             self.cooldown_items = clamp(
                 cooldown_items,
                 lower,

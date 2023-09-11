@@ -129,8 +129,9 @@ class TextCorrector:
             "checkpoints",
             "checkpoint_best.pt"
         )
-        best_checkpoint = io.load_checkpoint(best_checkpoint_path)
-        model.load_state_dict(best_checkpoint["model_state_dict"])
+        if os.path.exists(best_checkpoint_path):
+            best_checkpoint = io.load_checkpoint(best_checkpoint_path)
+            model.load_state_dict(best_checkpoint["model_state_dict"])
         model = model.eval().requires_grad_(False).to(dev)
         return cls(model, cfg, dev)
 

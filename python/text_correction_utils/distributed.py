@@ -44,7 +44,7 @@ class DistributedInfo:
 
 
 def unwrap_model(model: Union[nn.Module, FSDP, DDP]) -> nn.Module:
-    while isinstance(model, (FSDP, DDP)):
+    while isinstance(model, DDP):
         model = model.module
     return model
 

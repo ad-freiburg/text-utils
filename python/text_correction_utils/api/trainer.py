@@ -192,11 +192,6 @@ training will resume from latest checkpoint."
             offload_params = dist_cfg.get("offload", False)
             prefetch = dist_cfg.get("prefetch", True)
             strategy = ShardingStrategy[dist_cfg.get("strategy", "NO_SHARD")]
-            if self.info.world_size <= 1 and strategy in {
-                ShardingStrategy.FULL_SHARD,
-                ShardingStrategy.HYBRID_SHARD
-            }:
-                strategy = ShardingStrategy.NO_SHARD
             if strategy != ShardingStrategy.NO_SHARD:
                 shard_size = dist_cfg.get("shard_size", None)
                 if shard_size is not None:
@@ -218,11 +213,11 @@ training will resume from latest checkpoint."
                             f"no sharding policy, disabling sharding"
                         )
                     strategy = ShardingStrategy.NO_SHARD
-                offload_state_dict = True
             else:
                 sharding_policy = None
                 offload_params = False
-                offload_state_dict = False
+
+            offload_state_dict = self.info.world_size > 1
 
             self.model = FSDP(
                 model,

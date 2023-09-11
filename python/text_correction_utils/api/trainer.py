@@ -1065,6 +1065,7 @@ training will resume from latest checkpoint."
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
                 loss = loss + sum(loss_dict.values())
+
             self.grad_scaler.scale(loss).backward()
             end_fwdbwd = time.perf_counter()
 
@@ -1087,10 +1088,9 @@ training will resume from latest checkpoint."
             self.total_items += len(batch)
 
             if self.total_items >= self.step_at:
-                if self.cooldown_scheduler is not None:
-                    self.cooldown_scheduler.step()
-                elif self.lr_scheduler is not None:
-                    self.lr_scheduler.step()
+                lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
                 self.step_at += self.step_interval
 
             if self.max_length_scheduler is not None:

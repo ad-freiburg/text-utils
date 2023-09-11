@@ -286,8 +286,8 @@ impl IntoPy<PyObject> for TokenizeConfig {
                 d.set_item("delay", delay.as_millis()).unwrap();
                 "dummy"
             }
-            TokenizeConfig::Huggingface(name) => {
-                d.set_item("name", name).unwrap();
+            TokenizeConfig::Huggingface(path) => {
+                d.set_item("path", path).unwrap();
                 "huggingface"
             }
         };
@@ -376,10 +376,10 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 TokenizeConfig::Dummy(Duration::from_millis(millis))
             }
             "huggingface" => {
-                let Some(name) = d.get_item("name") else {
-                    return Err(py_required_key_error("name", "huggingface tokenizer config"));
+                let Some(path) = d.get_item("path") else {
+                    return Err(py_required_key_error("path", "huggingface tokenizer config"));
                 };
-                TokenizeConfig::Huggingface(name.extract()?)
+                TokenizeConfig::Huggingface(path.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "tokenizer"));
@@ -1165,16 +1165,15 @@ pub struct HuggingfaceTokenizer {
 }
 
 impl HuggingfaceTokenizer {
-    pub fn new(name: impl AsRef<str>, special_config: SpecialConfig) -> anyhow::Result<Self> {
-        let name = name.as_ref().to_string();
-        let mut tok = if Path::new(&name).exists() {
-            hft::Tokenizer::from_file(&name)
-        } else {
-            hft::Tokenizer::from_pretrained(&name, None)
-        }
-        .map_err(|err| anyhow!("error loading huggingface tokenizer {}: {err}", name))?;
+    pub fn new(path: impl AsRef<str>, special_config: SpecialConfig) -> anyhow::Result<Self> {
+        let mut tok = hft::Tokenizer::from_file(path.as_ref()).map_err(|err| {
+            anyhow!(
+                "error loading huggingface tokenizer from path {}: {err}",
+                path.as_ref()
+            )
+        })?;
         let enc = tok.encode("this is a test", true).map_err(|err| {
-            anyhow!("error encoding test string with huggingface tokenizer {name}: {err}")
+            anyhow!("error encoding test string with huggingface tokenizer: {err}")
         })?;
         let mask = enc.get_special_tokens_mask();
         let ids = enc.get_ids();
@@ -1317,7 +1316,7 @@ impl Tokenize for HuggingfaceTokenizer {
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
         self.inner
-            .decode(token_ids.to_vec(), ignore_special_tokens)
+            .decode(token_ids, ignore_special_tokens)
             .unwrap_or_else(|e| {
                 panic!(
                     "error decoding token ids {:?} with huggingface tokenizer: {:?}",
@@ -2202,8 +2201,8 @@ pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
             Box::new(BPETokenizer::new(bpe_cfg, cfg.special, cfg.language)?)
         }
         TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
-        TokenizeConfig::Huggingface(name) => {
-            Box::new(HuggingfaceTokenizer::new(name, cfg.special)?)
+        TokenizeConfig::Huggingface(path) => {
+            Box::new(HuggingfaceTokenizer::new(path, cfg.special)?)
         }
     })
 }

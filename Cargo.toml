@@ -30,7 +30,7 @@ num_cpus = "1.14"
 bitvec = "1"
 numpy = "0.19"
 clap = { version = "4", features = ["derive"] }
-tokenizers = "0.13"
+tokenizers = "0.14"
 
 [dev-dependencies]
 criterion = "0.5"

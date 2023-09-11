@@ -116,13 +116,7 @@ class TextCorrector:
         if device != "cpu" and not torch.cuda.is_available():
             device = "cpu"
         dev = torch.device(device)
-        info = configuration.load_config(
-            os.path.join(experiment_dir, "info.yaml")
-        )
-        cfg = configuration.load_config(os.path.join(
-            experiment_dir,
-            info["config_name"]
-        ))
+        cfg = configuration.load_config_from_experiment(experiment_dir)
         model = cls._model_from_config(cfg)
         best_checkpoint_path = os.path.join(
             experiment_dir,

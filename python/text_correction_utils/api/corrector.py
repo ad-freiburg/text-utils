@@ -111,11 +111,10 @@ class TextCorrector:
     def from_experiment(
         cls,
         experiment_dir: str,
-        device: Union[str, int, torch.device] = "cuda"
+        device: Union[str, int] = "cuda"
     ):
         if device != "cpu" and not torch.cuda.is_available():
             device = "cpu"
-        dev = torch.device(device)
         cfg = configuration.load_config_from_experiment(experiment_dir)
         model = cls._model_from_config(cfg, device)
         best_checkpoint_path = os.path.join(
@@ -126,7 +125,8 @@ class TextCorrector:
         if os.path.exists(best_checkpoint_path):
             best_checkpoint = io.load_checkpoint(best_checkpoint_path)
             model.load_state_dict(best_checkpoint["model_state_dict"])
-        model = model.eval().requires_grad_(False)
+        dev = torch.device(device)
+        model = model.eval().requires_grad_(False).to(dev)
         return cls(model, cfg, dev)
 
     @property

@@ -228,13 +228,12 @@ training will resume from latest checkpoint."
                     buffer_dtype=self.precision_dtype
                 ),
                 cpu_offload=CPUOffload(offload_params=offload_params),
-                sync_module_states=True,
+                limit_all_gathers=True,
                 sharding_strategy=strategy,
                 forward_prefetch=prefetch,
                 backward_prefetch=BackwardPrefetch.BACKWARD_PRE if prefetch else BackwardPrefetch.BACKWARD_POST,
                 device_id=self.info.device,
                 use_orig_params=compile or (peft is not None),
-                limit_all_gathers=True
             )
             FSDP.set_state_dict_type(
                 self.model,

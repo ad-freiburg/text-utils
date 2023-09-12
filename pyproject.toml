@@ -34,7 +34,6 @@ dependencies = [
 ]
 
 [project.scripts]
-"tcu.zip_experiment" = "text_correction_utils.cli.zip_experiment:main"
 "tcu.create_dictionary" = "text_correction_utils.cli.create_dictionary:main"
 "tcu.train_bpe" = "text_correction_utils.cli.train_bpe:main"
 
@@ -44,9 +43,6 @@ test = [
 ]
 8bit = [
     "bitsandbytes>=0.37",
-]
-optimizers = [
-    "Sophia-Optimizer>=0.2.0"
 ]
 
 [project.urls]

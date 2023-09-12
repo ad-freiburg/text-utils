@@ -117,7 +117,7 @@ class TextCorrector:
             device = "cpu"
         dev = torch.device(device)
         cfg = configuration.load_config_from_experiment(experiment_dir)
-        model = cls._model_from_config(cfg)
+        model = cls._model_from_config(cfg, device)
         best_checkpoint_path = os.path.join(
             experiment_dir,
             "checkpoints",
@@ -126,7 +126,7 @@ class TextCorrector:
         if os.path.exists(best_checkpoint_path):
             best_checkpoint = io.load_checkpoint(best_checkpoint_path)
             model.load_state_dict(best_checkpoint["model_state_dict"])
-        model = model.eval().requires_grad_(False).to(dev)
+        model = model.eval().requires_grad_(False)
         return cls(model, cfg, dev)
 
     @property
@@ -134,7 +134,11 @@ class TextCorrector:
         raise NotImplementedError
 
     @classmethod
-    def _model_from_config(cls, cfg: Dict[str, Any]) -> nn.Module:
+    def _model_from_config(
+        cls,
+        cfg: Dict[str, Any],
+        device: str | int | torch.device
+    ) -> nn.Module:
         raise NotImplementedError
 
     @property

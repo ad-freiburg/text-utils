@@ -111,7 +111,7 @@ class TextCorrector:
     def from_experiment(
         cls,
         experiment_dir: str,
-        device: Union[str, int] = "cuda"
+        device: str | int = "cuda"
     ):
         if device != "cpu" and not torch.cuda.is_available():
             device = "cpu"

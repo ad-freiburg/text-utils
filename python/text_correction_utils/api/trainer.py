@@ -1134,96 +1134,105 @@ training will resume from latest checkpoint."
             )
             mean_seq_length_ratio.add(max_length / max(1, min_length))
 
-            if self.info.is_main_process and self.total_items >= self.log_at:
-                assert self.summary_writer is not None
+            if self.total_items >= self.log_at:
+                mean_loss.sync()
+                mean_bsz.sync()
+                mean_step_time.sync()
+                mean_fwdbwd_pass.sync()
+                mean_batch_load.sync()
+                mean_seq_length.sync()
+                mean_seq_length_ratio.sync()
+                mean_batch_preparation.sync()
+                end = time.perf_counter()
 
-                # log training progress only on main process
-                progress = 100 * self.total_items / self.training_items
-                self.summary_writer.add_scalar(
-                    "train_progress",
-                    progress,
-                    self.total_step
-                )
-                self.logger.info(
-                    f"[step {self.total_step}] "
-                    f"train_progress: {progress:.2f}%, "
-                    f"{self.total_items:,} / {self.training_items:,} items on this rank"
-                )
+                if self.info.is_main_process:
+                    # log training progress only on main process
+                    assert self.summary_writer is not None
 
-                lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
-                if lr_scheduler is not None:
-                    for i, lr in enumerate(lr_scheduler.get_last_lr()):
-                        self.summary_writer.add_scalar(
-                            f"train_lr_{i}", lr, self.total_step
-                        )
-                        self.logger.info(
-                            f"[step {self.total_step}] train_lr_{i}: {lr:.8f}"
-                        )
-
-                mean_loss.log_tensorboard(self.summary_writer, self.total_step)
-                mean_loss.log_info(self.logger, self.total_step)
-
-                mean_bsz.log_tensorboard(self.summary_writer, self.total_step)
-                mean_bsz.log_info(self.logger, self.total_step)
-
-                mean_fwdbwd_pass.log_tensorboard(
-                    self.summary_writer, self.total_step
-                )
-                mean_fwdbwd_pass.log_info(self.logger, self.total_step)
-
-                mean_batch_load.log_tensorboard(
-                    self.summary_writer, self.total_step)
-                mean_batch_load.log_info(self.logger, self.total_step)
-
-                mean_step_time.log_tensorboard(
-                    self.summary_writer, self.total_step)
-                mean_step_time.log_info(self.logger, self.total_step)
-
-                mean_batch_preparation.log_tensorboard(
-                    self.summary_writer, self.total_step
-                )
-                mean_batch_preparation.log_info(self.logger, self.total_step)
-
-                mean_seq_length.log_tensorboard(
-                    self.summary_writer, self.total_step)
-                mean_seq_length.log_info(self.logger, self.total_step)
-
-                mean_seq_length_ratio.log_tensorboard(
-                    self.summary_writer, self.total_step
-                )
-                mean_seq_length_ratio.log_info(self.logger, self.total_step)
-
-                items = batch.items
-                for metric in metrics:
-                    metric.set_values(items, outputs)
-                    metric.log_tensorboard(
-                        self.summary_writer,
+                    progress = 100 * self.total_items / self.training_items
+                    self.summary_writer.add_scalar(
+                        "train_progress",
+                        progress,
                         self.total_step
                     )
-                    metric.log_info(self.logger, self.total_step)
+                    self.logger.info(
+                        f"[step {self.total_step}] "
+                        f"train_progress: {progress:.2f}%, "
+                        f"{self.total_items:,} / {self.training_items:,} items on this rank"
+                    )
 
-                end = time.perf_counter()
-                self.logger.info(
-                    f"[step {self.total_step}] train_time for ~{self.log_interval:,} items: "
-                    f"{(end - start) / 60:.2f} minutes"
-                )
-                eta_msg = logging.eta_minutes_message(
-                    (end - begin_of_epoch) / 60,
-                    self.epoch_items - start_items,
-                    self.training_items_per_epoch - start_items
-                )
-                self.logger.info(
-                    f"[step {self.total_step}] [epoch {self.epoch + 1}] {eta_msg}"
-                )
+                    lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
+                    if lr_scheduler is not None:
+                        for i, lr in enumerate(lr_scheduler.get_last_lr()):
+                            self.summary_writer.add_scalar(
+                                f"train_lr_{i}", lr, self.total_step
+                            )
+                            self.logger.info(
+                                f"[step {self.total_step}] train_lr_{i}: {lr:.8f}"
+                            )
+
+                    mean_loss.log_tensorboard(self.summary_writer, self.total_step)
+                    mean_loss.log_info(self.logger, self.total_step)
+
+                    mean_bsz.log_tensorboard(self.summary_writer, self.total_step)
+                    mean_bsz.log_info(self.logger, self.total_step)
+
+                    mean_fwdbwd_pass.log_tensorboard(
+                        self.summary_writer, self.total_step
+                    )
+                    mean_fwdbwd_pass.log_info(self.logger, self.total_step)
+
+                    mean_batch_load.log_tensorboard(
+                        self.summary_writer, self.total_step)
+                    mean_batch_load.log_info(self.logger, self.total_step)
+
+                    mean_step_time.log_tensorboard(
+                        self.summary_writer, self.total_step)
+                    mean_step_time.log_info(self.logger, self.total_step)
+
+                    mean_batch_preparation.log_tensorboard(
+                        self.summary_writer, self.total_step
+                    )
+                    mean_batch_preparation.log_info(self.logger, self.total_step)
+
+                    mean_seq_length.log_tensorboard(
+                        self.summary_writer, self.total_step)
+                    mean_seq_length.log_info(self.logger, self.total_step)
+
+                    mean_seq_length_ratio.log_tensorboard(
+                        self.summary_writer, self.total_step
+                    )
+                    mean_seq_length_ratio.log_info(self.logger, self.total_step)
+
+                    items = batch.items
+                    for metric in metrics:
+                        metric.set_values(items, outputs)
+                        metric.log_tensorboard(
+                            self.summary_writer,
+                            self.total_step
+                        )
+                        metric.log_info(self.logger, self.total_step)
+
+                    self.logger.info(
+                        f"[step {self.total_step}] train_time for ~{self.log_interval:,} items: "
+                        f"{(end - start) / 60:.2f} minutes"
+                    )
+                    eta_msg = logging.eta_minutes_message(
+                        (end - begin_of_epoch) / 60,
+                        self.epoch_items - start_items,
+                        self.training_items_per_epoch - start_items
+                    )
+                    self.logger.info(
+                        f"[step {self.total_step}] [epoch {self.epoch + 1}] {eta_msg}"
+                    )
+
+                if self.info.is_local_main_process:
+                    self.logger.info(
+                        f"[step {self.total_step}] [rank {self.info.rank}] nvidia-smi:\n"
+                        f"{api.nvidia_smi()}"
+                    )
+
                 start = end
-
-            if self.total_items >= self.log_at and self.info.is_local_main_process:
-                self.logger.info(
-                    f"[step {self.total_step}] [rank {self.info.rank}] nvidia-smi:\n"
-                    f"{api.nvidia_smi()}"
-                )
-
-            if self.total_items >= self.log_at:
                 mean_loss.reset()
                 mean_bsz.reset()
                 mean_step_time.reset()
@@ -1316,6 +1325,7 @@ training will resume from latest checkpoint."
                     metric.log_info(self.logger, self.total_step)
 
         end = time.perf_counter()
+        mean_loss.sync()
 
         if self.info.is_main_process:
             assert self.summary_writer is not None

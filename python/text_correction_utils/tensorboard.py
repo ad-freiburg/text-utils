@@ -25,9 +25,11 @@ class DistAverageTracker(TensorboardLogger):
         self.dist_tensor[0] += v
         self.dist_tensor[1] += count
 
+    def sync(self):
+        dist.all_reduce(self.dist_tensor)
+
     @property
     def value(self) -> float:
-        dist.all_reduce(self.dist_tensor)
         return self.dist_tensor[0].item() / max(1, self.dist_tensor[1].item())
 
     def log_tensorboard(self, writer: SummaryWriter, step: int):

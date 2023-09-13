@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Union, Dict, Any, List, Tuple
 
 import torch
+from torch import distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 from text_correction_utils import data, whitespace, tokenization
 
@@ -14,18 +15,20 @@ class TensorboardLogger:
         raise NotImplementedError
 
 
-class AverageTracker(TensorboardLogger):
-    def __init__(self, name: str, fmt: str = ".2f"):
+class DistAverageTracker(TensorboardLogger):
+    def __init__(self, name: str, device: torch.device, fmt: str = ".2f"):
         self.name = name
-        self.values = []
+        self.dist_tensor = torch.zeros(2, dtype=torch.float, device=device)
         self.fmt = fmt
 
-    def add(self, v: Union[float, int]):
-        self.values.append(v)
+    def add(self, v: Union[float, int], count: int = 1):
+        self.dist_tensor[0] += v
+        self.dist_tensor[1] += count
 
     @property
     def value(self) -> float:
-        return sum(self.values) / max(len(self.values), 1)
+        dist.all_reduce(self.dist_tensor)
+        return self.dist_tensor[0].item() / max(1, self.dist_tensor[1].item())
 
     def log_tensorboard(self, writer: SummaryWriter, step: int):
         writer.add_scalar(
@@ -38,7 +41,7 @@ class AverageTracker(TensorboardLogger):
         logger.info(f"[step {step}] {self.name} = {self.value:{self.fmt}}")
 
     def reset(self):
-        self.values.clear()
+        self.dist_tensor[:] = 0
 
 
 class TensorboardMetric(TensorboardLogger):

@@ -723,7 +723,7 @@ training will resume from latest checkpoint."
                 *training,
                 limit=val_cfg,
                 max_length=max_length,
-                distributed=None,
+                distributed=(info.rank, info.world_size),
                 shuffle=False,
                 sort=True
             )
@@ -752,7 +752,7 @@ training will resume from latest checkpoint."
                 pipeline_cfg,
                 *validation,
                 max_length=max_length,
-                distributed=None,
+                distributed=(info.rank, info.world_size),
                 shuffle=False,
                 sort=True
             )
@@ -1003,17 +1003,38 @@ training will resume from latest checkpoint."
         begin_of_epoch = time.perf_counter()
         start = time.perf_counter()
 
-        mean_loss = tensorboard.AverageTracker("train_loss", fmt=".2e")
-        mean_fwdbwd_pass = tensorboard.AverageTracker("train_forward_backward_pass")
-        mean_batch_load = tensorboard.AverageTracker("train_batch_load")
-        mean_step_time = tensorboard.AverageTracker("train_step_time")
-        mean_batch_preparation = tensorboard.AverageTracker(
-            "train_batch_preparation"
+        mean_loss = tensorboard.DistAverageTracker(
+            "train_loss",
+            self.info.device,
+            fmt=".2e"
         )
-        mean_bsz = tensorboard.AverageTracker("train_batch_size")
-        mean_seq_length = tensorboard.AverageTracker("train_sequence_length")
-        mean_seq_length_ratio = tensorboard.AverageTracker(
-            "train_sequence_length_ratio"
+        mean_fwdbwd_pass = tensorboard.DistAverageTracker(
+            "train_forward_backward_pass",
+            self.info.device
+        )
+        mean_batch_load = tensorboard.DistAverageTracker(
+            "train_batch_load",
+            self.info.device
+        )
+        mean_step_time = tensorboard.DistAverageTracker(
+            "train_step_time",
+            self.info.device
+        )
+        mean_batch_preparation = tensorboard.DistAverageTracker(
+            "train_batch_preparation",
+            self.info.device
+        )
+        mean_bsz = tensorboard.DistAverageTracker(
+            "train_batch_size",
+            self.info.device
+        )
+        mean_seq_length = tensorboard.DistAverageTracker(
+            "train_sequence_length",
+            self.info.device
+        )
+        mean_seq_length_ratio = tensorboard.DistAverageTracker(
+            "train_sequence_length_ratio",
+            self.info.device
         )
 
         metric_cfg = self.cfg["train"].get("metrics")
@@ -1061,6 +1082,7 @@ training will resume from latest checkpoint."
                 loss = self.loss_fn(outputs, labels)
                 loss = loss + sum(loss_dict.values())
 
+            mean_loss.add(loss.item())
             self.grad_scaler.scale(loss).backward()
             end_fwdbwd = time.perf_counter()
 
@@ -1095,27 +1117,22 @@ training will resume from latest checkpoint."
                     self.train_loader.set_max_length(max_length)
                     self.val_loader.set_max_length(max_length)
 
-            if self.info.is_main_process:
-                mean_step_time.add((time.perf_counter() - start_batch) * 1000)
-                mean_loss.add(loss.detach())
-                mean_fwdbwd_pass.add((end_fwdbwd - start_fwdbwd) * 1000)
-                # approximation since we expect every rank to roughly
-                # have the same batch size
-                batch_size = len(batch) * self.info.world_size
-                mean_bsz.add(batch_size)
-                min_length = sys.maxsize
-                max_length = 0
-                for length in inputs["lengths"]:
-                    mean_seq_length.add(length)
-                    if length < min_length:
-                        min_length = length
-                    if length > max_length:
-                        max_length = length
-                mean_batch_load.add((end_batch - start_batch) * 1000)
-                mean_batch_preparation.add(
-                    (end_preparation - start_preparation) * 1000
-                )
-                mean_seq_length_ratio.add(max_length / max(1, min_length))
+            mean_step_time.add((time.perf_counter() - start_batch) * 1000)
+            mean_fwdbwd_pass.add((end_fwdbwd - start_fwdbwd) * 1000)
+            mean_bsz.add(len(batch))
+            min_length = sys.maxsize
+            max_length = 0
+            for length in inputs["lengths"]:
+                mean_seq_length.add(length)
+                if length < min_length:
+                    min_length = length
+                if length > max_length:
+                    max_length = length
+            mean_batch_load.add((end_batch - start_batch) * 1000)
+            mean_batch_preparation.add(
+                (end_preparation - start_preparation) * 1000
+            )
+            mean_seq_length_ratio.add(max_length / max(1, min_length))
 
             if self.info.is_main_process and self.total_items >= self.log_at:
                 assert self.summary_writer is not None
@@ -1130,7 +1147,7 @@ training will resume from latest checkpoint."
                 self.logger.info(
                     f"[step {self.total_step}] "
                     f"train_progress: {progress:.2f}%, "
-                    f"{self.total_items:,} / {self.training_items:,} items"
+                    f"{self.total_items:,} / {self.training_items:,} items on this rank"
                 )
 
                 lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
@@ -1185,36 +1202,6 @@ training will resume from latest checkpoint."
                     )
                     metric.log_info(self.logger, self.total_step)
 
-                self.summary_writer.add_histogram(
-                    "train_batch_size_hist",
-                    torch.as_tensor(mean_bsz.values),
-                    self.total_step
-                )
-
-                self.summary_writer.add_histogram(
-                    "train_batch_load_hist",
-                    torch.as_tensor(mean_batch_load.values),
-                    self.total_step
-                )
-
-                self.summary_writer.add_histogram(
-                    "train_step_hist",
-                    torch.as_tensor(mean_step_time.values),
-                    self.total_step
-                )
-
-                self.summary_writer.add_histogram(
-                    "train_batch_sequence_length_hist",
-                    torch.as_tensor(mean_seq_length.values),
-                    self.total_step
-                )
-
-                self.summary_writer.add_histogram(
-                    "train_sequence_length_ratio_hist",
-                    torch.as_tensor(mean_seq_length_ratio.values),
-                    self.total_step
-                )
-
                 end = time.perf_counter()
                 self.logger.info(
                     f"[step {self.total_step}] train_time for ~{self.log_interval:,} items: "
@@ -1228,7 +1215,15 @@ training will resume from latest checkpoint."
                 self.logger.info(
                     f"[step {self.total_step}] [epoch {self.epoch + 1}] {eta_msg}"
                 )
+                start = end
 
+            if self.total_items >= self.log_at and self.info.is_local_main_process:
+                self.logger.info(
+                    f"[step {self.total_step}] [rank {self.info.rank}] nvidia-smi:\n"
+                    f"{api.nvidia_smi()}"
+                )
+
+            if self.total_items >= self.log_at:
                 mean_loss.reset()
                 mean_bsz.reset()
                 mean_step_time.reset()
@@ -1237,22 +1232,16 @@ training will resume from latest checkpoint."
                 mean_seq_length.reset()
                 mean_seq_length_ratio.reset()
                 mean_batch_preparation.reset()
-                start = end
-
-            if self.total_items >= self.log_at and self.info.is_local_main_process:
-                self.logger.info(
-                    f"[step {self.total_step}] [rank {self.info.rank}] nvidia-smi:\n"
-                    f"{api.nvidia_smi()}"
-                )
                 self.log_at += self.log_interval
 
             if self.cooldown_items > 0 and self.total_items >= self.eval_at - self.cooldown_items:
                 self._start_cooldown()
 
             if self.total_items >= self.eval_at:
+                # evaluation is done distributed
+                self._evaluate_and_checkpoint()
                 if self.info.is_main_process:
-                    # evaluate and benchmark only on main process
-                    self._evaluate_and_checkpoint()
+                    # benchmarking only on main process
                     self._benchmark_and_checkpoint()
 
                 if self.cooldown_items > 0:
@@ -1281,13 +1270,15 @@ training will resume from latest checkpoint."
                 self.eval_at += self.eval_interval
 
     def _evaluate_and_checkpoint(self):
-        assert self.info.is_main_process, "evaluation should be only done on main process"
-        assert self.summary_writer is not None
-
-        mean_loss = tensorboard.AverageTracker("val_loss", fmt=".2e")
+        mean_loss = tensorboard.DistAverageTracker(
+            "val_loss",
+            self.info.device,
+            fmt=".2e"
+        )
 
         self.model = self.model.eval()
         self.loss_fn = self.loss_fn.eval()
+
         metric_cfg = self.cfg["val"].get("metrics")
         if metric_cfg is not None:
             metrics = tensorboard.metrics_from_config(
@@ -1314,7 +1305,7 @@ training will resume from latest checkpoint."
 
             mean_loss.add(loss.item())
 
-            if batch_num == 0:
+            if batch_num == 0 and self.info.is_main_process:
                 items = batch.items
                 for metric in metrics:
                     metric.set_values(items, outputs)
@@ -1326,26 +1317,29 @@ training will resume from latest checkpoint."
 
         end = time.perf_counter()
 
-        mean_loss.log_tensorboard(self.summary_writer, self.total_step)
-        mean_loss.log_info(self.logger, self.total_step)
+        if self.info.is_main_process:
+            assert self.summary_writer is not None
 
-        self.logger.info(
-            f"[step {self.total_step}] validation took {(end - start) / 60:.2f} minutes"
-        )
-        val_loss = mean_loss.value
-        ckpt_path = os.path.join(
-            self.directories["checkpoints"],
-            "checkpoint_last.pt"
-        )
-        self._save_checkpoint(ckpt_path, val_loss)
+            mean_loss.log_tensorboard(self.summary_writer, self.total_step)
+            mean_loss.log_info(self.logger, self.total_step)
 
-        if val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
-            best_ckpt_path = os.path.join(
-                self.directories["checkpoints"],
-                "checkpoint_best.pt"
+            self.logger.info(
+                f"[step {self.total_step}] validation took {(end - start) / 60:.2f} minutes"
             )
-            self._save_checkpoint(best_ckpt_path, val_loss, full=False)
+            ckpt_path = os.path.join(
+                self.directories["checkpoints"],
+                "checkpoint_last.pt"
+            )
+            val_loss = mean_loss.value
+            self._save_checkpoint(ckpt_path, val_loss)
+
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                best_ckpt_path = os.path.join(
+                    self.directories["checkpoints"],
+                    "checkpoint_best.pt"
+                )
+                self._save_checkpoint(best_ckpt_path, val_loss, full=False)
 
         self.model = self.model.train()
         self.loss_fn = self.loss_fn.train()

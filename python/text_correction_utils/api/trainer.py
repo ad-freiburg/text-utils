@@ -1034,7 +1034,8 @@ training will resume from latest checkpoint."
         )
         mean_bsz = tensorboard.DistAverageTracker(
             "train_batch_size",
-            self.info.device
+            self.info.device,
+            count_reduce_op=dist.ReduceOp.MAX
         )
         mean_seq_length = tensorboard.DistAverageTracker(
             "train_sequence_length",

@@ -16,21 +16,35 @@ class TensorboardLogger:
 
 
 class DistAverageTracker(TensorboardLogger):
-    def __init__(self, name: str, device: torch.device, fmt: str = ".2f"):
+    def __init__(
+        self,
+        name: str,
+        device: torch.device,
+        fmt: str = ".2f",
+        val_reduce_op: dist.ReduceOp = dist.ReduceOp.SUM,
+        count_reduce_op: dist.ReduceOp = dist.ReduceOp.SUM,
+    ):
         self.name = name
-        self.dist_tensor = torch.zeros(2, dtype=torch.float, device=device)
+        self.val_tensor = torch.zeros(1, dtype=torch.float, device=device)
+        self.count_tensor = torch.zeros(1, dtype=torch.float, device=device)
         self.fmt = fmt
+        self.val_reduce_op = val_reduce_op
+        self.count_reduce_op = count_reduce_op
+        self.synced = False
 
     def add(self, v: Union[float, int], count: int = 1):
-        self.dist_tensor[0] += v
-        self.dist_tensor[1] += count
+        self.val_tensor[0] += v
+        self.count_tensor[0] += count
 
     def sync(self):
-        dist.all_reduce(self.dist_tensor)
+        dist.all_reduce(self.val_tensor, op=self.val_reduce_op)
+        dist.all_reduce(self.count_tensor, op=self.count_reduce_op)
+        self._synced = True
 
     @property
     def value(self) -> float:
-        return self.dist_tensor[0].item() / max(1, self.dist_tensor[1].item())
+        assert self._synced
+        return self.val_tensor.item() / max(1, self.count_tensor.item())
 
     def log_tensorboard(self, writer: SummaryWriter, step: int):
         writer.add_scalar(
@@ -43,7 +57,9 @@ class DistAverageTracker(TensorboardLogger):
         logger.info(f"[step {step}] {self.name} = {self.value:{self.fmt}}")
 
     def reset(self):
-        self.dist_tensor[:] = 0
+        self.val_tensor[0] = 0
+        self.count_tensor[0] = 0
+        self._synced = False
 
 
 class TensorboardMetric(TensorboardLogger):

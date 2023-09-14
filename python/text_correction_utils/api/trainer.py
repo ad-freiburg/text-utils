@@ -427,7 +427,6 @@ training will resume from latest checkpoint."
         full: bool = True,
         **kwargs: Any
     ):
-        assert self.info.is_main_process, "only save on main process"
         save = {
             "checkpoint_path": path,
             "model_state_dict": distributed.unwrap_model(self.model).state_dict(),
@@ -447,7 +446,13 @@ training will resume from latest checkpoint."
             save["loss_fn_state_dict"] = self.loss_fn.state_dict()
             if self.lr_scheduler is not None:
                 save["lr_scheduler_state_dict"] = self.lr_scheduler.state_dict()
-        io.save_checkpoint(**save)
+
+        # only save on main process
+        if self.info.is_main_process:
+            io.save_checkpoint(**save)
+
+        # wait until checkpoint is saved
+        dist.barrier()
 
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
@@ -487,6 +492,9 @@ training will resume from latest checkpoint."
         self.log_at = math.ceil(self.total_items / self.log_interval) * self.log_interval
         self.eval_at = math.ceil(self.total_items / self.eval_interval) * self.eval_interval
         self.step_at = math.ceil(self.total_items / self.step_interval) * self.step_interval
+
+        # wait until everyone loaded the checkpoint
+        dist.barrier()
 
     @classmethod
     def _prepare_peft(
@@ -1327,6 +1335,7 @@ training will resume from latest checkpoint."
         end = time.perf_counter()
         mean_loss.sync()
 
+        # only log on main process
         if self.info.is_main_process:
             assert self.summary_writer is not None
 
@@ -1336,20 +1345,21 @@ training will resume from latest checkpoint."
             self.logger.info(
                 f"[step {self.total_step}] validation took {(end - start) / 60:.2f} minutes"
             )
-            ckpt_path = os.path.join(
-                self.directories["checkpoints"],
-                "checkpoint_last.pt"
-            )
-            val_loss = mean_loss.value
-            self._save_checkpoint(ckpt_path, val_loss)
 
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                best_ckpt_path = os.path.join(
-                    self.directories["checkpoints"],
-                    "checkpoint_best.pt"
-                )
-                self._save_checkpoint(best_ckpt_path, val_loss, full=False)
+        ckpt_path = os.path.join(
+            self.directories["checkpoints"],
+            "checkpoint_last.pt"
+        )
+        val_loss = mean_loss.value
+        self._save_checkpoint(ckpt_path, val_loss)
+
+        if val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+            best_ckpt_path = os.path.join(
+                self.directories["checkpoints"],
+                "checkpoint_best.pt"
+            )
+            self._save_checkpoint(best_ckpt_path, val_loss, full=False)
 
         self.model = self.model.train()
         self.loss_fn = self.loss_fn.train()
@@ -1372,14 +1382,11 @@ training will resume from latest checkpoint."
             self.optimizer,
             lambda step: (1 - (min(step, steps) / steps)) * factor
         )
-        if self.info.is_main_process:
-            path = os.path.join(
-                self.directories["checkpoints"],
-                "cooldown_checkpoint.pt"
-            )
-            self._save_checkpoint(path, self.best_val_loss)
-        # wait until checkpoint is saved
-        dist.barrier()
+        path = os.path.join(
+            self.directories["checkpoints"],
+            "cooldown_checkpoint.pt"
+        )
+        self._save_checkpoint(path, self.best_val_loss)
 
     def _stop_cooldown(self):
         # already stopped
@@ -1395,8 +1402,7 @@ training will resume from latest checkpoint."
         val_loss = self.best_val_loss
         self._load_checkpoint(path)
         self.best_val_loss = val_loss
-        # wait until everyone loaded the checkpoint
-        dist.barrier()
+
         if self.info.is_main_process:
             os.remove(path)
 
@@ -1419,20 +1425,20 @@ training will resume from latest checkpoint."
                 )
 
         finally:
+            start = time.perf_counter()
+            ckpt_path = os.path.join(
+                self.directories["checkpoints"],
+                "checkpoint_last.pt"
+            )
+            self._save_checkpoint(ckpt_path, self.best_val_loss)
+            end = time.perf_counter()
             if self.info.is_main_process:
-                start = time.perf_counter()
-                ckpt_path = os.path.join(
-                    self.directories["checkpoints"],
-                    "checkpoint_last.pt"
-                )
-                self._save_checkpoint(ckpt_path, self.best_val_loss)
-                end = time.perf_counter()
                 self.logger.info(
                     f"final checkpointing took {end - start:.2f}s"
                 )
-            if len(self.cleanup) > 0 and self.info.is_local_main_process:
-                self.logger.info(
-                    f"deleting temporary data sources on local main process with rank {self.info.rank}"
-                )
-                for path in self.cleanup:
-                    os.remove(path)
+                if len(self.cleanup) > 0:
+                    self.logger.info(
+                        f"deleting temporary data sources on local main process with rank {self.info.rank}"
+                    )
+                    for path in self.cleanup:
+                        os.remove(path)

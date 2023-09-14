@@ -272,6 +272,7 @@ class TextCorrectionCli:
     def run(self) -> None:
         # ignore warnings in CLI, so the user doesn't get confused
         warnings.filterwarnings("ignore")
+
         if self.args.profile is not None:
             file = self.args.profile
             self.args.profile = None

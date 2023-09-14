@@ -21,7 +21,9 @@ from text_correction_utils import (
 __all__ = ["ModelInfo"]
 
 ModelInfo = collections.namedtuple(
-    "ModelInfo", ["name", "description", "tags"])
+    "ModelInfo",
+    ["name", "description", "tags"]
+)
 
 
 class TextCorrector:

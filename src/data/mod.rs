@@ -1209,8 +1209,7 @@ impl DataLoader {
             text_iter
                 .min_len()
                 .min(self.limit)
-                .saturating_sub(self.skip)
-                / self.world_size,
+                .saturating_sub(self.skip),
         );
         let batch_iter = text_iter
             .enumerate()

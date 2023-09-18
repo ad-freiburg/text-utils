@@ -109,10 +109,10 @@ training will resume from latest checkpoint."
         self.info = info
 
         # globals used throughout training
-        self.total_step = 0
-        self.epoch_step = 0
         self.epoch_items = 0
         self.total_items = 0
+        self.total_step = 0
+        self.epoch_step = 0
         self.epoch = 0
         self.best_val_loss = float("inf")
         self.best_benchmark: Optional[float] = None
@@ -238,8 +238,14 @@ training will resume from latest checkpoint."
             FSDP.set_state_dict_type(
                 self.model,
                 StateDictType.FULL_STATE_DICT,
-                FullStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True),
-                FullOptimStateDictConfig(offload_to_cpu=offload_state_dict, rank0_only=True)
+                FullStateDictConfig(
+                    offload_to_cpu=offload_state_dict,
+                    rank0_only=offload_state_dict
+                ),
+                FullOptimStateDictConfig(
+                    offload_to_cpu=offload_state_dict,
+                    rank0_only=offload_state_dict
+                )
             )
 
         self.model: Union[DDP, FSDP] = torch.compile(self.model, disable=not compile)  # type: ignore
@@ -474,10 +480,10 @@ training will resume from latest checkpoint."
                 checkpoint["loss_fn_state_dict"]
             )
 
-        self.total_step = checkpoint["step"]
         self.epoch = checkpoint["epoch"]
-        self.best_val_loss = checkpoint["val_loss"]
         self.epoch_step = checkpoint["epoch_step"]
+        self.total_step = checkpoint["step"]
+        self.best_val_loss = checkpoint["val_loss"]
         self.epoch_items = checkpoint["epoch_items"]
         self.total_items = checkpoint["total_items"]
 
@@ -1035,7 +1041,6 @@ training will resume from latest checkpoint."
         mean_bsz = tensorboard.DistAverageTracker(
             "train_batch_size",
             self.info.device,
-            count_reduce_op=dist.ReduceOp.MAX
         )
         mean_seq_length = tensorboard.DistAverageTracker(
             "train_sequence_length",
@@ -1057,6 +1062,7 @@ training will resume from latest checkpoint."
         else:
             metrics = []
 
+        dist_items = torch.zeros(1, dtype=torch.long, device=self.info.device)
         start_items = self.epoch_items
         self.model = self.model.train()
 
@@ -1110,8 +1116,12 @@ training will resume from latest checkpoint."
 
             self.total_step += 1
             self.epoch_step += 1
-            self.epoch_items += len(batch)
-            self.total_items += len(batch)
+            dist_items[0] += len(batch)
+            dist.all_reduce(dist_items, dist.ReduceOp.SUM)
+            batch_items = dist_items[0].item()
+            self.epoch_items += batch_items
+            self.total_items += batch_items
+            dist_items[0] = 0
 
             if self.total_items >= self.step_at:
                 lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
@@ -1128,7 +1138,7 @@ training will resume from latest checkpoint."
 
             mean_step_time.add((time.perf_counter() - start_batch) * 1000)
             mean_fwdbwd_pass.add((end_fwdbwd - start_fwdbwd) * 1000)
-            mean_bsz.add(len(batch))
+            mean_bsz.add(batch_items)
             min_length = sys.maxsize
             max_length = 0
             for length in inputs["lengths"]:

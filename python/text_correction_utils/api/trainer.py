@@ -149,6 +149,24 @@ training will resume from latest checkpoint."
         else:
             self.output_tokenizer = None
 
+        num_epochs = self.cfg["train"]["num_epochs"]
+        (
+            self.train_loader,
+            self.val_loader,
+            self.training_items_per_epoch,
+            self.training_items,
+            self.max_length,
+            self.max_length_scheduler,
+            self.cleanup
+        ) = self._data_from_config(
+            self.cfg["train"]["data"],
+            self.cfg["val"]["data"],
+            self.cfg["input_tokenizer"],
+            num_epochs=num_epochs,
+            seed=self.cfg["seed"],
+            info=self.info
+        )
+
         model, sharding_policy = self._model_from_config(self.cfg)
 
         peft = self.cfg["train"].get("peft", None)
@@ -254,24 +272,6 @@ training will resume from latest checkpoint."
             )
 
         self.model: Union[DDP, FSDP] = torch.compile(self.model, disable=not compile)  # type: ignore
-
-        num_epochs = self.cfg["train"]["num_epochs"]
-        (
-            self.train_loader,
-            self.val_loader,
-            self.training_items_per_epoch,
-            self.training_items,
-            self.max_length,
-            self.max_length_scheduler,
-            self.cleanup
-        ) = self._data_from_config(
-            self.cfg["train"]["data"],
-            self.cfg["val"]["data"],
-            self.cfg["input_tokenizer"],
-            num_epochs=num_epochs,
-            seed=self.cfg["seed"],
-            info=self.info
-        )
 
         self.optimizer = optimizer_from_config(
             self.model,

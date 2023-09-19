@@ -1272,9 +1272,8 @@ training will resume from latest checkpoint."
             if self.total_items >= self.eval_at:
                 # evaluation is done distributed
                 self._evaluate_and_checkpoint()
-                if self.info.is_main_process:
-                    # benchmarking only on main process
-                    self._benchmark_and_checkpoint()
+                # benchmarking needs to be properly implemented by subclasses
+                self._benchmark_and_checkpoint()
 
                 if self.cooldown_items > 0:
                     if self.info.is_main_process:

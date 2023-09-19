@@ -149,24 +149,6 @@ training will resume from latest checkpoint."
         else:
             self.output_tokenizer = None
 
-        num_epochs = self.cfg["train"]["num_epochs"]
-        (
-            self.train_loader,
-            self.val_loader,
-            self.training_items_per_epoch,
-            self.training_items,
-            self.max_length,
-            self.max_length_scheduler,
-            self.cleanup
-        ) = self._data_from_config(
-            self.cfg["train"]["data"],
-            self.cfg["val"]["data"],
-            self.cfg["input_tokenizer"],
-            num_epochs=num_epochs,
-            seed=self.cfg["seed"],
-            info=self.info
-        )
-
         model, sharding_policy = self._model_from_config(self.cfg)
 
         peft = self.cfg["train"].get("peft", None)
@@ -237,10 +219,6 @@ training will resume from latest checkpoint."
 
             offload_state_dict = self.info.world_size > 1
 
-            example_batch = next(self.train_loader, None)
-            assert example_batch is not None
-            example_inputs, _ = self._prepare_batch(example_batch)
-
             self.model = FSDP(
                 model,
                 auto_wrap_policy=sharding_policy,
@@ -257,7 +235,6 @@ training will resume from latest checkpoint."
                 device_id=self.info.device,
                 use_orig_params=compile or (peft is not None),
             )
-            _ = self.model(**example_inputs)
             FSDP.set_state_dict_type(
                 self.model,
                 StateDictType.FULL_STATE_DICT,
@@ -280,6 +257,24 @@ training will resume from latest checkpoint."
         )
 
         self.clip_grad_norm: Optional[float] = self.cfg["train"].get("clip_grad_norm", None)
+
+        num_epochs = self.cfg["train"]["num_epochs"]
+        (
+            self.train_loader,
+            self.val_loader,
+            self.training_items_per_epoch,
+            self.training_items,
+            self.max_length,
+            self.max_length_scheduler,
+            self.cleanup
+        ) = self._data_from_config(
+            self.cfg["train"]["data"],
+            self.cfg["val"]["data"],
+            self.cfg["input_tokenizer"],
+            num_epochs=num_epochs,
+            seed=self.cfg["seed"],
+            info=self.info
+        )
 
         lower = self.cfg["train"]["data"]["batch_limit"]
         if self.cfg["train"]["data"]["batch_limit_type"] != "batch_size":

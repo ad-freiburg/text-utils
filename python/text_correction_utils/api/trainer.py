@@ -1116,12 +1116,11 @@ training will resume from latest checkpoint."
 
             self.total_step += 1
             self.epoch_step += 1
-            dist_items[0] += len(batch)
+            dist_items[0] = len(batch)
             dist.all_reduce(dist_items, dist.ReduceOp.SUM)
             batch_items = dist_items[0].item()
             self.epoch_items += batch_items
             self.total_items += batch_items
-            dist_items[0] = 0
 
             if self.total_items >= self.step_at:
                 lr_scheduler = self.cooldown_scheduler or self.lr_scheduler

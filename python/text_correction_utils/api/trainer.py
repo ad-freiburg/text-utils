@@ -219,6 +219,10 @@ training will resume from latest checkpoint."
 
             offload_state_dict = self.info.world_size > 1
 
+            example_batch = next(self.train_loader, None)
+            assert example_batch is not None
+            example_inputs, _ = self._prepare_batch(example_batch)
+
             self.model = FSDP(
                 model,
                 auto_wrap_policy=sharding_policy,
@@ -235,6 +239,7 @@ training will resume from latest checkpoint."
                 device_id=self.info.device,
                 use_orig_params=compile or (peft is not None),
             )
+            _ = self.model(**example_inputs)
             FSDP.set_state_dict_type(
                 self.model,
                 StateDictType.FULL_STATE_DICT,

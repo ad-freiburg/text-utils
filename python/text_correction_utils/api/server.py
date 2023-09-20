@@ -86,12 +86,14 @@ class TextCorrectionServer:
         model_duplicates = {}
         model_infos = []
         for cfg in config["models"]:
-            if self.num_gpus > 0:
+            if "device" in cfg:
+                device = cfg["device"]
+            elif self.num_gpus > 0:
                 device = f"cuda:{len(self.text_correctors) % self.num_gpus}"
-                stream: Optional[Stream] = Stream(device)
             else:
                 device = "cpu"
-                stream = None
+
+            stream = None if device == "cpu" else Stream(device)
 
             if "name" in cfg:
                 model_name = cfg["name"]

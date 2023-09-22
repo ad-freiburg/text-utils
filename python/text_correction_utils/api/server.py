@@ -2,11 +2,10 @@ import os
 from contextlib import contextmanager
 import logging
 from threading import Lock
-from typing import Dict, Any, Optional, Tuple, Type, Union, Generator
+from typing import Dict, Any, Type, Union, Generator
 
 import yaml
 import torch
-from torch.cuda import Stream
 from flask import Flask, Response, cli, jsonify
 
 from text_correction_utils.api.corrector import TextCorrector
@@ -76,10 +75,7 @@ class TextCorrectionServer:
             })
             return response
 
-        self.text_correctors: Dict[
-            str,
-            Tuple[TextCorrector, Optional[Stream]]
-        ] = {}
+        self.text_correctors: Dict[str, TextCorrector] = {}
         self.name_to_text_corrector: Dict[str, str] = {}
         self.lock = Lock()
 
@@ -92,8 +88,6 @@ class TextCorrectionServer:
                 device = f"cuda:{len(self.text_correctors) % self.num_gpus}"
             else:
                 device = "cpu"
-
-            stream = None if device == "cpu" else Stream(device)
 
             if "name" in cfg:
                 model_name = cfg["name"]
@@ -153,7 +147,7 @@ class TextCorrectionServer:
 
             model_infos.append((model_name, model_description, model_tags))
 
-            self.text_correctors[model_name] = (text_corrector, stream)
+            self.text_correctors[model_name] = text_corrector
             self.name_to_text_corrector[org_model_name] = model_name
 
         @self.server.route(f"{self.base_url}/models")
@@ -176,13 +170,8 @@ class TextCorrectionServer:
         if not acquired:
             yield Error(f"failed to reserve model within {self.timeout}s", 503)
             return
-        cor, stream = self.text_correctors[model_name]
         try:
-            if stream is not None:
-                with torch.cuda.stream(stream):
-                    yield cor
-            else:
-                yield cor
+            yield self.text_correctors[model_name]
         finally:
             self.lock.release()
 

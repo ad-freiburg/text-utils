@@ -176,7 +176,7 @@ class TextCorrector:
         self.cfg = cfg
         self.logger.debug(f"got config:\n{self.cfg}")
 
-        self._precision_dtype = torch.float32
+        self._precision_dtype: torch.dtype | None = torch.float32
         self.set_precision(self.cfg["train"].get("precision", "fp32"))
 
         self._inference_loader_cfg = self._build_inference_loader_config()
@@ -196,6 +196,7 @@ class TextCorrector:
         with autocast(
             device_type=self.devices[0].type,
             dtype=self._precision_dtype,
+            enabled=self._precision_dtype is not None
         ):
             outputs = self._inference(inputs)
         return outputs
@@ -361,6 +362,12 @@ class TextCorrector:
 
     def set_precision(self, precision: str) -> "TextCorrector":
         assert precision in {"fp32", "fp16", "bfp16"}
+        if not all(d.type == self.devices[0].type for d in self.devices):
+            self.logger.info(
+                "autocasting only supported if all devices are of the same type"
+            )
+            self._precision_dtype = None
+            return self
 
         if precision == "fp32":
             precision_dtype = torch.float32

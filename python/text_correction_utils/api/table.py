@@ -134,18 +134,18 @@ def _table_horizontal_line(widths: List[int]) -> str:
 
 
 def generate_report(
-        task: str,
-        model_name: str,
-        model: nn.Module,
-        input_size: int,
-        input_size_bytes: int,
-        runtime: float,
-        precision: torch.dtype,
-        batch_size: int,
-        sort_by_length: bool,
-        device: torch.device,
-        batch_max_tokens: Optional[int] = None,
-        file_path: Optional[str] = None
+    task: str,
+    model_name: str,
+    model: nn.Module,
+    input_size: int,
+    input_size_bytes: int,
+    runtime: float,
+    precision: torch.dtype,
+    batch_size: int,
+    sort_by_length: bool,
+    devices: list[torch.device],
+    batch_max_tokens: Optional[int] = None,
+    file_path: Optional[str] = None
 ) -> Optional[str]:
     if precision == torch.float16:
         precision_str = "fp16"
@@ -156,6 +156,8 @@ def generate_report(
     else:
         raise ValueError("expected precision to be one of torch.float16, torch.bfloat16 or torch.float32")
 
+    devices = [d for d in devices if d.type == "cuda"]
+    devices.append(torch.device("cpu"))
     report = generate_table(
         headers=[["REPORT", task]],
         data=[
@@ -165,13 +167,20 @@ def generate_report(
             ["Runtime", f"{runtime:,.1f} s"],
             ["Throughput 1", f"{input_size / runtime:,.1f} Seq/s"],
             ["Throughput 2", f"{input_size_bytes / runtime / 1000:,.1f} kB/s"],
-            ["GPU memory", f"{torch.cuda.max_memory_reserved(device) // 1024 ** 2:,} MiB"],
+            ["GPU memory", ", ".join(
+                f"{torch.cuda.max_memory_reserved(d) // 1024 ** 2:,} MiB"
+                for d in devices
+                if d.type == "cuda"
+            )],
             ["Parameters", f"{utils.num_parameters(model)['total'] / 1000 ** 2:,.1f} M"],
             ["Precision", precision_str],
             ["Batch size", f"{batch_size:,}"] if batch_max_tokens is None else
             ["Batch max tokens", f"{batch_max_tokens:,}"],
             ["Sorted", "yes" if sort_by_length else "no"],
-            ["Device",  f"{utils.cpu_info()}{', ' + utils.device_info(device) if device.type == 'cuda' else ''}"],
+            [
+                "Device",
+                ", ".join(utils.device_info(d) for d in devices)
+            ],
         ],
     )
     if file_path is not None:

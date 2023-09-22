@@ -17,6 +17,7 @@ from text_correction_utils import (
     io,
     data,
 )
+from text_correction_utils.api.utils import Device, get_devices
 
 __all__ = ["ModelInfo"]
 
@@ -75,7 +76,7 @@ class TextCorrector:
     def from_pretrained(
         cls,
         model: Optional[str] = None,
-        device: Union[str, int] = "cuda",
+        device: Device = "cuda",
         download_dir: Optional[str] = None,
         cache_dir: Optional[str] = None,
         force_download: bool = False
@@ -113,10 +114,8 @@ class TextCorrector:
     def from_experiment(
         cls,
         experiment_dir: str,
-        device: str | int = "cuda"
+        device: Device = "cuda"
     ):
-        if device != "cpu" and not torch.cuda.is_available():
-            device = "cpu"
         cfg = configuration.load_config_from_experiment(experiment_dir)
         model = cls._model_from_config(cfg, device)
         best_checkpoint_path = os.path.join(
@@ -127,9 +126,8 @@ class TextCorrector:
         if os.path.exists(best_checkpoint_path):
             best_checkpoint = io.load_checkpoint(best_checkpoint_path)
             model.load_state_dict(best_checkpoint["model_state_dict"])
-        dev = torch.device(device)
-        model = model.eval().requires_grad_(False).to(dev)
-        return cls(model, cfg, dev)
+        model = model.eval().requires_grad_(False)
+        return cls(model, cfg, device)
 
     @property
     def name(self) -> str:
@@ -139,7 +137,7 @@ class TextCorrector:
     def _model_from_config(
         cls,
         cfg: Dict[str, Any],
-        device: str | int | torch.device
+        device: Device
     ) -> nn.Module:
         raise NotImplementedError
 
@@ -162,7 +160,7 @@ class TextCorrector:
         self,
         model: nn.Module,
         cfg: Dict[str, Any],
-        device: torch.device
+        device: Device = "cuda"
     ) -> None:
         self.logger = logging.get_logger(self._task_upper())
 
@@ -171,8 +169,10 @@ class TextCorrector:
         cudnn.benchmark = True
         cuda.matmul.allow_tf32 = True
 
-        self.device = device
+        self.devices = get_devices(device)
         self.model = model
+        self.to(device)
+
         self.cfg = cfg
         self.logger.debug(f"got config:\n{self.cfg}")
 
@@ -194,7 +194,7 @@ class TextCorrector:
     def _run_model(self, batch: data.InferenceBatch) -> Any:
         inputs = self._prepare_batch(batch)
         with autocast(
-            device_type=self.device.type,
+            device_type=self.devices[0].type,
             dtype=self._precision_dtype,
         ):
             outputs = self._inference(inputs)
@@ -290,8 +290,12 @@ class TextCorrector:
         show_progress: bool = False,
     ) -> List[data.InferenceData]:
         results = {}
-        pbar = self._pbar(progress_desc, progress_total,
-                          progress_unit, show_progress)
+        pbar = self._pbar(
+            progress_desc,
+            progress_total,
+            progress_unit,
+            show_progress
+        )
         for batch in loader:
             outputs = self._run_model(batch)
             for item, output in zip(batch.items, outputs):
@@ -347,12 +351,15 @@ class TextCorrector:
         # dont forget to yield final item
         yield self._process_results(window_items, window_outputs)
 
-    def to(self, device: Union[str, int]) -> "TextCorrector":
-        self.device = torch.device(device)
-        self.model = self.model.to(self.device)
+    def to(self, device: Device) -> "TextCorrector":
+        self.devices = get_devices(device)
+        assert len(self.devices) == 1, \
+            "only a single device supported by default, implement custom to() if you need " \
+            "multi-device support"
+        self.model = self.model.to(self.devices[0])
         return self
 
-    def set_precision(self, precision: str) -> None:
+    def set_precision(self, precision: str) -> "TextCorrector":
         assert precision in {"fp32", "fp16", "bfp16"}
 
         if precision == "fp32":
@@ -362,7 +369,7 @@ class TextCorrector:
         else:
             precision_dtype = torch.bfloat16
 
-        if self.device.type == "cpu" and precision == "fp16":
+        if any(device.type == "cpu" for device in self.devices) and precision != "bfp16":
             self.logger.info(
                 "setting precision to bfp16 instead of fp16, "
                 "because fp16 is not supported on CPU yet"
@@ -370,3 +377,4 @@ class TextCorrector:
             precision_dtype = torch.bfloat16
 
         self._precision_dtype = precision_dtype
+        return self

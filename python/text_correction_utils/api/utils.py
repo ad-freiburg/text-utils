@@ -15,6 +15,16 @@ import torch
 from torch import nn
 from tqdm import tqdm
 
+Device = str | int | list[str] | list[int]
+
+
+def get_devices(device: Device) -> list[torch.device]:
+    if isinstance(device, list):
+        devices = [torch.device(device) for device in device]
+    else:
+        devices = [torch.device(device)]
+    return devices
+
 
 def _unpack_zip(
     zip_file_path: str,

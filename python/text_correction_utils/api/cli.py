@@ -90,9 +90,11 @@ class TextCorrectionCli:
             help="Path where corrected text should be saved to"
         )
         parser.add_argument(
-            "--cpu",
-            action="store_true",
-            help="Force to run the model on CPU, by default a GPU is used if available"
+            "-d",
+            "--device",
+            type=str,
+            nargs="+",
+            help="Specify one or more devices to use for inference, by default a single GPU is used if available"
         )
         parser.add_argument(
             "--num-threads",
@@ -236,7 +238,7 @@ class TextCorrectionCli:
         cProfile.runctx("self.run()", globals(), locals(), file)
 
     def setup_corrector(self) -> TextCorrector:
-        device = "cpu" if self.args.cpu else "cuda"
+        device = self.args.device or ("cuda" if torch.cuda.is_available() else "cpu")
         if self.args.experiment:
             cor = self.text_corrector_cls.from_experiment(
                 experiment_dir=self.args.experiment,
@@ -305,10 +307,11 @@ class TextCorrectionCli:
             logging.disable(logging.CRITICAL)
 
         self.cor = self.setup_corrector()
-        is_cuda = self.cor.device.type == "cuda"
+        is_cuda = any(d.type == "cuda" for d in self.cor.devices)
 
-        if is_cuda:
-            torch.cuda.reset_peak_memory_stats(self.cor.device)
+        for d in self.cor.devices:
+            if d.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(d)
 
         start = time.perf_counter()
         if self.args.correct is not None:
@@ -329,8 +332,9 @@ class TextCorrectionCli:
             self.correct_file(self.cor, self.args.file, self.args.lang, out)
 
             if self.args.report:
-                if is_cuda:
-                    torch.cuda.synchronize(self.cor.device)
+                for d in self.cor.devices:
+                    if d.type == "cuda":
+                        torch.cuda.synchronize(d)
                 end = time.perf_counter()
 
                 num_lines, num_bytes = text.file_size(self.args.file)
@@ -393,8 +397,9 @@ class TextCorrectionCli:
                             print(line)
 
                 if self.args.report:
-                    if is_cuda:
-                        torch.cuda.synchronize(self.cor.device)
+                    for d in self.cor.devices:
+                        if d.type == "cuda":
+                            torch.cuda.synchronize(d)
 
                     report = generate_report(
                         self.cor.task,
@@ -406,7 +411,7 @@ class TextCorrectionCli:
                         self.cor._precision_dtype,
                         self.args.batch_size,
                         not self.args.unsorted,
-                        self.cor.device,
+                        self.cor.devices,
                         batch_max_tokens=self.args.batch_max_tokens,
                     )
                     print(report)

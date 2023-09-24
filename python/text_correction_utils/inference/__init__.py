@@ -276,7 +276,7 @@ def search(
         else:
             decoder_outputs = decoder_outputs[
                 torch.arange(b, device=decoder_outputs.device),
-                decoder_lengths - 1
+                decoder_lengths.to(decoder_outputs.device) - 1
             ]
 
         log_softmax_scores = torch.log_softmax(
@@ -422,7 +422,7 @@ def beam_search(
         else:
             decoder_outputs = decoder_outputs[
                 torch.arange(b, device=decoder_outputs.device),
-                decoder_lengths_tensor - 1
+                decoder_lengths_tensor.to(decoder_outputs.device) - 1
             ]
 
         log_softmax_scores = torch.log_softmax(decoder_outputs, dim=1)

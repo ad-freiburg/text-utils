@@ -286,8 +286,10 @@ def search(
 
         batch_indices = indices_mask.tolist()
         sel_ids, sel_lps = select_fn(log_softmax_scores, batch_indices)
-        token_ids[mask, decoder_lengths] = sel_ids.to(token_ids.device)
-        log_prob[mask, decoder_lengths] = sel_lps.to(log_prob.device)
+        sel_ids = sel_ids.to(token_ids.device)
+        sel_lps = sel_lps.to(log_prob.device)
+        token_ids[mask, decoder_lengths] = sel_ids
+        log_prob[mask, decoder_lengths] = sel_lps
 
         lengths[mask] += 1
 

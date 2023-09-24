@@ -275,7 +275,7 @@ def search(
             decoder_outputs = decoder_outputs[:, 0]
         else:
             decoder_outputs = decoder_outputs[
-                torch.arange(b, device=device),
+                torch.arange(b, device=decoder_outputs.device),
                 decoder_lengths - 1
             ]
 
@@ -286,8 +286,8 @@ def search(
 
         batch_indices = indices_mask.tolist()
         sel_ids, sel_lps = select_fn(log_softmax_scores, batch_indices)
-        token_ids[mask, decoder_lengths] = sel_ids
-        log_prob[mask, decoder_lengths] = sel_lps
+        token_ids[mask, decoder_lengths] = sel_ids.to(token_ids.device)
+        log_prob[mask, decoder_lengths] = sel_lps.to(log_prob.device)
 
         lengths[mask] += 1
 
@@ -421,7 +421,7 @@ def beam_search(
             decoder_outputs = decoder_outputs[:, 0]
         else:
             decoder_outputs = decoder_outputs[
-                torch.arange(b, device=device),
+                torch.arange(b, device=decoder_outputs.device),
                 decoder_lengths_tensor - 1
             ]
 

@@ -20,8 +20,6 @@ pub trait PrefixTreeSearch<V> {
 
     fn get(&self, prefix: &[u8]) -> Option<&V>;
 
-    fn get_mut(&mut self, prefix: &[u8]) -> Option<&mut V>;
-
     fn contains(&self, prefix: &[u8]) -> bool;
 
     fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_>;
@@ -35,7 +33,7 @@ pub type ContinuationMemo = Node<(Vec<(bool, usize)>, bool)>;
 #[pyo3(name = "Vec")]
 pub struct PyPrefixVec {
     inner: PrefixVec<String>,
-    cont: Option<(Continuations, ContinuationTree, ContinuationMemo)>,
+    cont: Option<(Continuations, usize, ContinuationTree, ContinuationMemo)>,
 }
 
 impl PyPrefixVec {
@@ -159,7 +157,7 @@ impl PyPrefixVec {
             cont_memo =
                 self.get_cont_memo(&continuations, &cont_tree, cont_memo, vec![], 1, max_depth);
         }
-        self.cont = Some((continuations, cont_tree, cont_memo));
+        self.cont = Some((continuations, max_depth, cont_tree, cont_memo));
     }
 
     fn save(&mut self, path: &str) -> anyhow::Result<()> {
@@ -224,7 +222,7 @@ impl PyPrefixVec {
     }
 
     fn continuation_mask(&self, prefix: &[u8]) -> anyhow::Result<(Vec<bool>, bool)> {
-        let Some((continuations, cont_tree, cont_memo)) = self.cont.as_ref() else {
+        let Some((continuations, _, cont_tree, cont_memo)) = self.cont.as_ref() else {
             return Err(anyhow!("no continuations set"));
         };
         let value = if let Some((cont_mask, has_value)) = cont_memo.get(prefix) {
@@ -234,6 +232,26 @@ impl PyPrefixVec {
                 .unwrap_or_else(|| (vec![false; continuations.len()], false))
         };
         Ok(value)
+    }
+
+    fn get_sub_index_by_values(&self, values: Vec<String>) -> anyhow::Result<Self> {
+        let prefix_vec = values
+            .into_iter()
+            .filter_map(|v| self.inner.reverse.get(&v).map(|indices| (v, indices)))
+            .flat_map(|(v, indices)| {
+                indices
+                    .iter()
+                    .map(move |&i| (self.inner.data[i].0.clone(), v.clone()))
+            })
+            .collect();
+        let mut index = Self {
+            inner: prefix_vec,
+            cont: None,
+        };
+        if let Some((conts, max_depth, _, _)) = &self.cont {
+            index.set_continuations(conts.clone(), *max_depth);
+        }
+        Ok(index)
     }
 
     fn batch_continuation_mask(
@@ -262,7 +280,16 @@ impl PyPrefixVec {
         self.inner
             .data
             .get(idx)
-            .map(|(s, v)| (s.to_vec(), v.as_ref()))
+            .map(|(s, v)| (s.to_vec(), v.as_str()))
+    }
+
+    fn get_prefixes_for_value(&self, value: String) -> Option<Vec<Vec<u8>>> {
+        self.inner.reverse.get(&value).map(|indices| {
+            indices
+                .iter()
+                .map(|&i| self.inner.data[i].0.clone())
+                .collect()
+        })
     }
 }
 

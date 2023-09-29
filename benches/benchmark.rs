@@ -267,6 +267,13 @@ fn bench_prefix(c: &mut Criterion) {
             let _vec: PrefixVec<_> = input.iter().cloned().zip(0..input.len()).collect();
         });
     });
+    for size in vec![128, 256, 512, 1024, 2048, 4096, 8192] {
+        group.bench_with_input(format!("vec_build_{size}"), &words[..size], |b, input| {
+            b.iter(|| {
+                let _vec: PrefixVec<_> = input.iter().cloned().zip(0..input.len()).collect();
+            });
+        });
+    }
     group.bench_with_input("vec_insert", word, |b, input| {
         b.iter(|| vec.insert(input, 1));
     });

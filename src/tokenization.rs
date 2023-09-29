@@ -2322,8 +2322,8 @@ mod tests {
         assert_eq!(token_ids.len(), 6);
         assert_eq!(token_ids[3], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
-        assert_eq!(tok.de_tokenize(&token_ids, false), "a t(unk)st".to_string());
-        let text = "a (pad)täst";
+        assert_eq!(tok.de_tokenize(&token_ids, false), "a t<unk>st".to_string());
+        let text = "a <pad>täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, false).unwrap();
         assert_eq!(token_ids.len(), 7);
         assert_eq!(token_ids[2], tok.pad_token_id);
@@ -2331,15 +2331,15 @@ mod tests {
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(
             tok.de_tokenize(&token_ids, false),
-            "a (pad)t(unk)st".to_string()
+            "a <pad>t<unk>st".to_string()
         );
-        let text = "a (pad)täst";
+        let text = "a <pad>täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(token_ids.len(), 11);
-        assert_eq!(tok.de_tokenize(&token_ids, true), "a (pad)tst".to_string());
+        assert_eq!(tok.de_tokenize(&token_ids, true), "a <pad>tst".to_string());
         assert_eq!(
             tok.de_tokenize(&token_ids, false),
-            "a (pad)t(unk)st".to_string()
+            "a <pad>t<unk>st".to_string()
         );
     }
 

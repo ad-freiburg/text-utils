@@ -125,14 +125,6 @@ where
         }
     }
 
-    #[inline]
-    fn get_mut(&mut self, prefix: &[u8]) -> Option<&mut V> {
-        match self.find_mut(prefix) {
-            Some(node) => node.get_value_mut(),
-            None => None,
-        }
-    }
-
     fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(node) = self.find(prefix) else {
             return Box::new(std::iter::empty());

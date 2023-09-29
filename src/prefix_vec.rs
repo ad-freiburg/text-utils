@@ -1,11 +1,16 @@
-use core::cmp::Ordering;
+use core::{
+    cmp::{Eq, Ordering},
+    hash::Hash,
+};
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{prefix::PrefixTreeSearch, prefix_tree::Node};
 
 #[derive(Serialize, Deserialize)]
-pub struct PrefixVec<V> {
-    pub data: Vec<(Vec<u8>, V)>,
+pub struct PrefixVec<V: Hash + Eq> {
+    pub(crate) data: Vec<(Vec<u8>, Arc<V>)>,
+    pub(crate) reverse: HashMap<Arc<V>, Vec<usize>>,
     range_memo: Option<(Node<(usize, usize)>, usize)>,
 }
 
@@ -14,16 +19,17 @@ pub(crate) enum FindResult {
     NotFound(usize),
 }
 
-impl<V> Default for PrefixVec<V> {
+impl<V: Hash + Eq> Default for PrefixVec<V> {
     fn default() -> Self {
         Self {
             data: Vec::new(),
+            reverse: HashMap::new(),
             range_memo: None,
         }
     }
 }
 
-impl<V> PrefixVec<V> {
+impl<V: Hash + Eq> PrefixVec<V> {
     #[inline]
     fn binary_search(
         &self,
@@ -186,7 +192,7 @@ impl<V> PrefixVec<V> {
     }
 }
 
-impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
+impl<V: Hash + Eq> PrefixTreeSearch<V> for PrefixVec<V> {
     fn size(&self) -> usize {
         self.data.len()
     }
@@ -196,8 +202,8 @@ impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
             .data
             .binary_search_by(|(prefix, _)| prefix.as_slice().cmp(key))
         {
-            Ok(idx) => self.data[idx].1 = value,
-            Err(idx) => self.data.insert(idx, (key.to_vec(), value)),
+            Ok(idx) => self.data[idx].1 = Arc::new(value),
+            Err(idx) => self.data.insert(idx, (key.to_vec(), Arc::new(value))),
         };
     }
 
@@ -214,19 +220,6 @@ impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
         }
     }
 
-    fn get_mut(&mut self, prefix: &[u8]) -> Option<&mut V> {
-        match self.find_range(prefix, 0, self.size(), 0) {
-            FindResult::Found(left, _) => {
-                if self.data[left].0.len() != prefix.len() {
-                    None
-                } else {
-                    Some(&mut self.data[left].1)
-                }
-            }
-            _ => None,
-        }
-    }
-
     fn contains(&self, prefix: &[u8]) -> bool {
         matches!(
             self.find_range(prefix, 0, self.size(), 0),
@@ -237,44 +230,57 @@ impl<V> PrefixTreeSearch<V> for PrefixVec<V> {
     fn get_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         match self.find_range(prefix, 0, self.size(), 0) {
             FindResult::NotFound(..) => Box::new(std::iter::empty()),
-            FindResult::Found(left, right) => {
-                Box::new(self.data[left..right].iter().map(|(k, v)| (k.clone(), v)))
-            }
+            FindResult::Found(left, right) => Box::new(
+                self.data[left..right]
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.as_ref())),
+            ),
         }
     }
 }
 
-impl<V> FromIterator<(Vec<u8>, V)> for PrefixVec<V> {
+impl<V: Hash + Eq> FromIterator<(Vec<u8>, V)> for PrefixVec<V> {
     fn from_iter<T: IntoIterator<Item = (Vec<u8>, V)>>(iter: T) -> Self {
         let mut pfx = Self::default();
-        for (key, value) in iter {
-            if key.is_empty() {
-                continue;
-            }
-            pfx.data.push((key, value));
+        let mut data = Vec::new();
+        for (key, value) in iter.into_iter().filter(|(k, _)| !k.is_empty()) {
+            data.push((key, value));
         }
         // sort by prefix
-        pfx.data.sort_by(|(a, _), (b, _)| a.cmp(b));
+        data.sort_by(|(a, _), (b, _)| a.cmp(b));
+
         // mark duplicate prefixes
-        let mark: Vec<_> = pfx
+        let dup: Vec<_> = data
+            .iter()
+            .enumerate()
+            .map(
+                |(i, (key, _))| {
+                    if i == 0 {
+                        false
+                    } else {
+                        key == &data[i - 1].0
+                    }
+                },
+            )
+            .collect();
+        // filter out duplicate prefixes
+        pfx.data = data
+            .into_iter()
+            .zip(dup)
+            .filter_map(|((k, v), dup)| if dup { None } else { Some((k, Arc::new(v))) })
+            .collect();
+        pfx.reverse = pfx
             .data
             .iter()
             .enumerate()
-            .map(|(i, (key, _))| {
-                if i == 0 {
-                    false
+            .fold(HashMap::new(), |mut acc, (i, (_, v))| {
+                if let Some(indices) = acc.get_mut(v) {
+                    indices.push(i);
                 } else {
-                    key == &pfx.data[i - 1].0
+                    acc.insert(v.clone(), vec![i]);
                 }
-            })
-            .collect();
-        // filter out duplicate prefixes
-        pfx.data = pfx
-            .data
-            .into_iter()
-            .zip(mark)
-            .filter_map(|((k, v), mark)| if mark { None } else { Some((k, v)) })
-            .collect();
+                acc
+            });
         pfx
     }
 }
@@ -298,6 +304,8 @@ mod tests {
         ]
         .into_iter()
         .collect();
+
+        println!("{:?}", pfx.data);
 
         assert_eq!(pfx.get(b"a"), Some(&1));
         assert!(pfx.contains(b"a"));

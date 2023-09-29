@@ -51,13 +51,6 @@ fn main() -> anyhow::Result<()> {
         .collect();
 
     println!("num elements: {}", pfx.size());
-    println!(
-        "example: {:#?}",
-        &pfx.data[pfx.size() / 2..pfx.size() / 2 + 10]
-            .iter()
-            .map(|(k, v)| (String::from_utf8_lossy(k), v))
-            .collect::<Vec<_>>()
-    );
 
     Ok(())
 }

@@ -29,11 +29,38 @@ pub type Continuations = Vec<Vec<u8>>;
 pub type ContinuationTree = Node<Vec<usize>>;
 pub type ContinuationMemo = Node<(Vec<(bool, usize)>, bool)>;
 
+fn get_cont_tree<S: AsRef<[u8]>>(continuations: impl IntoIterator<Item = S>) -> ContinuationTree {
+    // empty tree
+    let mut cont_tree: ContinuationTree = Node::default();
+    // now insert the index along path for each continuation
+    for (i, cont) in continuations.into_iter().enumerate() {
+        let mut node = &mut cont_tree;
+        for key in cont.as_ref() {
+            if node.get_child(key).is_none() {
+                node.set_child(key, Node::default());
+            }
+            node = node.get_child_mut(key).unwrap();
+        }
+        if let Some(val) = node.get_value_mut() {
+            val.push(i);
+        } else {
+            node.set_value(vec![i]);
+        }
+    }
+    cont_tree
+}
+
 #[pyclass]
 #[pyo3(name = "Vec")]
 pub struct PyPrefixVec {
     inner: PrefixVec<String>,
-    cont: Option<(Continuations, usize, ContinuationTree, ContinuationMemo)>,
+    cont: Option<(
+        Continuations,
+        usize,
+        bool,
+        ContinuationTree,
+        ContinuationMemo,
+    )>,
 }
 
 impl PyPrefixVec {
@@ -75,7 +102,7 @@ impl PyPrefixVec {
         if d > max_d {
             return memo;
         }
-        let conts = continuations
+        let conts: Vec<_> = continuations
             .par_iter()
             .filter_map(|c| {
                 let mut prefix_cont = prefix.clone();
@@ -88,7 +115,7 @@ impl PyPrefixVec {
                     None
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
         for (prefix_cont, cont) in conts {
             memo.insert(&prefix_cont, cont);
             memo = self.get_cont_memo(continuations, cont_tree, memo, prefix_cont, d + 1, max_d);
@@ -122,42 +149,45 @@ impl PyPrefixVec {
         self.inner.compute_memo(max_depth);
     }
 
-    #[pyo3(signature = (continuations, max_depth=1))]
-    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>, max_depth: usize) {
+    #[pyo3(signature = (continuations, max_depth=1, ignore_initial_space=true))]
+    fn set_continuations(
+        &mut self,
+        continuations: Vec<Vec<u8>>,
+        max_depth: usize,
+        ignore_initial_space: bool,
+    ) {
         // calculate interdependencies between continuations
         // e.g. if one continuation start with abc and is not
         // a valid one, then all continuations starting with abc
         // are also not valid
-
-        // build tree
-        let mut cont_tree: ContinuationTree = Node::default();
-        // cont_tree.set_value((None, vec![]));
-        // now insert the index along path for each continuation
-        for (i, cont) in continuations.iter().enumerate() {
-            let mut node = &mut cont_tree;
-            for key in cont {
-                if node.get_child(key).is_none() {
-                    node.set_child(key, Node::default());
-                }
-                node = node.get_child_mut(key).unwrap();
-            }
-            if let Some(val) = node.get_value_mut() {
-                val.push(i);
-            } else {
-                node.set_value(vec![i]);
-            }
-        }
+        let cont_tree = get_cont_tree(&continuations);
         // build memo
         let mut cont_memo = Node::default();
+        // always compute and chache the empty prefix
+        let (cont, has_value) = if ignore_initial_space {
+            let initial_cont_tree = get_cont_tree(
+                continuations
+                    .iter()
+                    .map(|c| String::from_utf8_lossy(c).trim_start().as_bytes().to_vec()),
+            );
+            self.get_cont_mask(continuations.len(), &initial_cont_tree, &[])
+                .unwrap()
+        } else {
+            self.get_cont_mask(continuations.len(), &cont_tree, &[])
+                .unwrap()
+        };
+        cont_memo.insert(&[], (run_length_encode(&cont), has_value));
         if max_depth > 0 {
-            let (cont, has_value) = self
-                .get_cont_mask(continuations.len(), &cont_tree, &[])
-                .unwrap();
-            cont_memo.insert(&[], (run_length_encode(&cont), has_value));
             cont_memo =
                 self.get_cont_memo(&continuations, &cont_tree, cont_memo, vec![], 1, max_depth);
         }
-        self.cont = Some((continuations, max_depth, cont_tree, cont_memo));
+        self.cont = Some((
+            continuations,
+            max_depth,
+            ignore_initial_space,
+            cont_tree,
+            cont_memo,
+        ));
     }
 
     fn save(&mut self, path: &str) -> anyhow::Result<()> {
@@ -222,7 +252,7 @@ impl PyPrefixVec {
     }
 
     fn continuation_mask(&self, prefix: &[u8]) -> anyhow::Result<(Vec<bool>, bool)> {
-        let Some((continuations, _, cont_tree, cont_memo)) = self.cont.as_ref() else {
+        let Some((continuations, .., cont_tree, cont_memo)) = self.cont.as_ref() else {
             return Err(anyhow!("no continuations set"));
         };
         let value = if let Some((cont_mask, has_value)) = cont_memo.get(prefix) {
@@ -248,8 +278,8 @@ impl PyPrefixVec {
             inner: prefix_vec,
             cont: None,
         };
-        if let Some((conts, max_depth, _, _)) = &self.cont {
-            index.set_continuations(conts.clone(), *max_depth);
+        if let Some((conts, max_depth, ignore_initial_space, ..)) = &self.cont {
+            index.set_continuations(conts.clone(), *max_depth, *ignore_initial_space);
         }
         Ok(index)
     }

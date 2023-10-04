@@ -420,7 +420,6 @@ impl DataBatch {
         self.len
     }
 
-    #[getter]
     fn items(&mut self) -> anyhow::Result<Batch<Item>> {
         if self.batch.is_none() {
             return Err(anyhow!(
@@ -652,7 +651,6 @@ impl InferenceBatch {
         self.len
     }
 
-    #[getter]
     fn items(&mut self) -> anyhow::Result<Batch<InferenceItem>> {
         if self.batch.is_none() {
             return Err(anyhow!(

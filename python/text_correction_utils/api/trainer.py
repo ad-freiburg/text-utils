@@ -1222,7 +1222,7 @@ training will resume from latest checkpoint."
                     )
                     mean_seq_length_ratio.log_info(self.logger, self.total_step)
 
-                    items = batch.items
+                    items = batch.items()
                     for metric in metrics:
                         metric.set_values(items, outputs)
                         metric.log_tensorboard(
@@ -1332,7 +1332,7 @@ training will resume from latest checkpoint."
             mean_loss.add(loss.item())
 
             if batch_num == 0 and self.info.is_main_process:
-                items = batch.items
+                items = batch.items()
                 for metric in metrics:
                     metric.set_values(items, outputs)
                     metric.log_tensorboard(

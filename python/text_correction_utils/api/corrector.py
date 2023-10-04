@@ -187,11 +187,11 @@ class TextCorrector:
     def _prepare_batch(self, batch: data.InferenceBatch) -> Dict[str, Any]:
         raise NotImplementedError
 
-    def _inference(self, inputs: Dict[str, Any]) -> Any:
+    def _inference(self, inputs: Dict[str, Any]) -> list[Any]:
         raise NotImplementedError
 
     @torch.inference_mode()
-    def _run_model(self, batch: data.InferenceBatch) -> Any:
+    def _run_model(self, batch: data.InferenceBatch) -> list[Any]:
         inputs = self._prepare_batch(batch)
         with autocast(
             device_type=self.devices[0].type,
@@ -299,7 +299,7 @@ class TextCorrector:
         )
         for batch in loader:
             outputs = self._run_model(batch)
-            for item, output in zip(batch.items, outputs):
+            for item, output in zip(batch.items(), outputs):
                 if item.item_idx not in results:
                     results[item.item_idx] = {}
                     if progress_unit == "seq":
@@ -329,11 +329,15 @@ class TextCorrector:
         prev_item_idx = 0
         window_items = []
         window_outputs = []
-        pbar = self._pbar(progress_desc, progress_total,
-                          progress_unit, show_progress)
+        pbar = self._pbar(
+            progress_desc,
+            progress_total,
+            progress_unit,
+            show_progress
+        )
         for batch in loader:
             outputs = self._run_model(batch)
-            for item, output in zip(batch.items, outputs):
+            for item, output in zip(batch.items(), outputs):
                 if item.item_idx == prev_item_idx:
                     window_items.append(item)
                     window_outputs.append(output)

@@ -50,7 +50,6 @@ class TextCorrectionServer:
         self.base_url = config.get("base_url", "")
         self.allow_origin = config.get("allow_origin", "*")
         self.timeout = float(config.get("timeout", 10.0))
-        self.precision = config.get("precision", "fp32")
         logging.getLogger("werkzeug").disabled = True
         self.num_gpus = torch.cuda.device_count()
 

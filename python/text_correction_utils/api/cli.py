@@ -349,7 +349,7 @@ class TextCorrectionCli:
                     self.cor._precision_dtype,
                     self.args.batch_size,
                     not self.args.unsorted,
-                    self.cor.device,
+                    self.cor.devices,
                     batch_max_tokens=self.args.batch_max_tokens,
                 )
                 print(report)

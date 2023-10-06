@@ -15,7 +15,7 @@ import torch
 from torch import nn
 from tqdm import tqdm
 
-Device = str | int | list[str] | list[int]
+Device = str | int | list[str] | list[int] | torch.device | list[torch.device]
 
 
 def get_devices(device: Device) -> list[torch.device]:
@@ -98,7 +98,8 @@ def download_zip(
         directory = os.path.dirname(zip_file_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        logger.info(f"downloading {name} from {url} to download directory {download_dir}")
+        logger.info(
+            f"downloading {name} from {url} to download directory {download_dir}")
         response = requests.get(url, stream=True)
         if not response.ok:
             raise RuntimeError(f"error downloading {name} from {url}: "
@@ -120,7 +121,8 @@ def download_zip(
                 os.remove(zip_file_path)
             raise e
     else:
-        logger.info(f"{name} is already downloaded to download directory {download_dir}")
+        logger.info(
+            f"{name} is already downloaded to download directory {download_dir}")
 
     zip_dir = os.path.join(cache_dir, sub_cache_dir)
     not_extracted = not os.path.exists(zip_dir)

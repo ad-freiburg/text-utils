@@ -232,17 +232,16 @@ def search(
         dtype=torch.long,
         device=device
     )
-    lengths = torch.as_tensor(lengths, dtype=torch.long, device=device)
+    lengths = torch.as_tensor(lengths, dtype=torch.long)
 
     smaller_max_length_mask = torch.ones(
         batch_size,
         dtype=torch.bool,
-        device=device
     )
     smaller_max_length_mask[lengths >= max_length] = False
-    non_stop_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
-    indices = torch.arange(batch_size, dtype=torch.long, device=device)
+    non_stop_mask = torch.ones(batch_size, dtype=torch.bool)
     mask = non_stop_mask & smaller_max_length_mask
+    indices = torch.arange(batch_size, dtype=torch.long)
 
     # all sequences are at max length or stopped by stop_fn
     while torch.sum(mask) > 0:
@@ -296,14 +295,14 @@ def search(
         max_length_indices = torch.where(lengths >= max_length)[0]
         smaller_max_length_mask[max_length_indices] = False
 
-        stop_mask = stop_fn(sel_ids, batch_indices)
+        stop_mask = stop_fn(sel_ids.to("cpu"), batch_indices)
         new_stop_indices = indices[mask][stop_mask]
         non_stop_mask[new_stop_indices] = False
 
         mask = non_stop_mask & smaller_max_length_mask
 
         if kwargs_update_fn is not None:
-            update_mask = torch.arange(b, device=device)[mask[indices_mask]]
+            update_mask = torch.arange(b)[mask[indices_mask]]
             kwargs_update_fn(kwargs, decoder_info, update_mask)
 
     token_ids = token_ids.tolist()
@@ -396,12 +395,8 @@ def beam_search(
             batch_first=True,
             padding_value=pad_token_id
         ).to(non_blocking=True, dtype=torch.long, device=device)
-        decoder_mask = torch.tensor(
-            decoder_mask, dtype=torch.long, device=device
-        )
-        decoder_lengths_tensor = torch.tensor(
-            decoder_lengths, dtype=torch.long, device=device
-        )
+        decoder_mask = torch.tensor(decoder_mask, dtype=torch.long)
+        decoder_lengths_tensor = torch.tensor(decoder_lengths, dtype=torch.long)
 
         decoder_kwargs = kwargs_select_fn(
             kwargs,
@@ -423,8 +418,8 @@ def beam_search(
             decoder_outputs = decoder_outputs[:, 0]
         else:
             decoder_outputs = decoder_outputs[
-                torch.arange(b, device=decoder_outputs.device),
-                decoder_lengths_tensor.to(decoder_outputs.device) - 1
+                torch.arange(b),
+                decoder_lengths_tensor - 1
             ]
 
         log_softmax_scores = torch.log_softmax(decoder_outputs, dim=1)
@@ -467,7 +462,7 @@ def beam_search(
             kwargs_update_fn(
                 kwargs,
                 decoder_info,
-                torch.tensor(update_mask, device=device, dtype=torch.long)
+                torch.tensor(update_mask, dtype=torch.long)
             )
 
     out_beams = []

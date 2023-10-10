@@ -307,7 +307,6 @@ class TextCorrectionCli:
             logging.disable(logging.CRITICAL)
 
         self.cor = self.setup_corrector()
-        is_cuda = any(d.type == "cuda" for d in self.cor.devices)
 
         for d in self.cor.devices:
             if d.type == "cuda":

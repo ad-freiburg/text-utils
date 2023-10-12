@@ -97,6 +97,7 @@ class TextCorrectionCli:
             help="Specify one or more devices to use for inference, by default a single GPU is used if available"
         )
         parser.add_argument(
+            "-n",
             "--num-threads",
             type=int,
             default=None,
@@ -108,24 +109,24 @@ class TextCorrectionCli:
             "--batch-size",
             type=int,
             default=16,
-            help="Determines how many inputs will be corrected at the same time, larger values should usually result in "
-                 "faster correcting but require more memory"
+            help="Determines how many inputs will be corrected at the same time, larger values should usually result "
+            "in faster correcting but require more memory"
         )
         batch_limit_group.add_argument(
             "-t",
             "--batch-max-tokens",
             type=int,
             default=None,
-            help="Determines the maximum number of tokens corrected at the same time, larger values should usually result in "
-                 "faster correcting but require more memory"
+            help="Determines the maximum number of tokens corrected at the same time, larger values should usually "
+            "result in faster correcting but require more memory"
         )
         parser.add_argument(
             "-u",
             "--unsorted",
             action="store_true",
             help="Disable sorting of the inputs before correcting (for a large number of inputs or large text files "
-                 "sorting the sequences beforehand leads to speed ups because it minimizes the amount of padding needed "
-                 "within a batch of sequences)"
+            "sorting the sequences beforehand leads to speed ups because it minimizes the amount of padding "
+            "needed within a batch of sequences)"
         )
         parser.add_argument(
             "-l",
@@ -138,8 +139,8 @@ class TextCorrectionCli:
             choices=["auto", "fp32", "fp16", "bfp16"],
             default="auto",
             help="Choose the precision for inference, fp16 or bfp16 can result in faster runtimes when running on a "
-                 "new GPU that supports lower precision, but it can be slower on older GPUs. Auto will set the precision to "
-                 "the precision used for training if it is available, otherwise it will use fp32."
+            "new GPU that supports lower precision, but it can be slower on older GPUs. Auto will set the precision to "
+            "the precision used for training if it is available, otherwise it will use fp32."
         )
         parser.add_argument(
             "-v",
@@ -191,8 +192,8 @@ class TextCorrectionCli:
             "--lang",
             type=str,
             default=None,
-            help="Specify the language of the input, only allowed if the chosen model supports multiple languages. \
-            This language setting is ignored if the input format already specifies a language for each input."
+            help="Specify the language of the input, only allowed if the chosen model supports multiple languages. "
+            "This language setting is ignored if the input format already specifies a language for each input."
         )
         parser.add_argument(
             "--profile",

@@ -140,18 +140,18 @@ def generate_report(
     input_size: int,
     input_size_bytes: int,
     runtime: float,
-    precision: torch.dtype,
+    precision: torch.dtype | None,
     batch_size: int,
     sort_by_length: bool,
     devices: list[torch.device],
-    batch_max_tokens: Optional[int] = None,
-    file_path: Optional[str] = None
-) -> Optional[str]:
+    batch_max_tokens: int | None = None,
+    file_path: str | None = None
+) -> str | None:
     if precision == torch.float16:
         precision_str = "fp16"
     elif precision == torch.bfloat16:
         precision_str = "bfp16"
-    elif precision == torch.float32:
+    elif precision == torch.float32 or precision is None:
         precision_str = "fp32"
     else:
         raise ValueError("expected precision to be one of torch.float16, torch.bfloat16 or torch.float32")

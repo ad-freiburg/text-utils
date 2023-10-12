@@ -19,6 +19,12 @@ Device = str | int | list[str] | list[int] | torch.device | list[torch.device]
 
 
 def get_devices(device: Device) -> list[torch.device]:
+    if device == "auto" or device == ["auto"]:
+        num_gpus = torch.cuda.device_count()
+        if num_gpus > 0:
+            device = [f"cuda:{i}" for i in range(num_gpus)]
+        else:
+            device = "cpu"
     if isinstance(device, list):
         devices = [torch.device(device) for device in device]
     else:

@@ -1711,7 +1711,7 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
                     first: old_word[i - 1].to_vec(),
                     second: old_word[i].to_vec(),
                 };
-                let mut stat = stats.get_mut(&prev_pair).unwrap();
+                let stat = stats.get_mut(&prev_pair).unwrap();
                 stat.freq = stat.freq.saturating_sub(*freq);
                 let occ = stat.words.get_mut(idx).unwrap();
                 *occ = occ.saturating_sub(1);
@@ -1725,7 +1725,7 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
                     first: old_word[i + 1].to_vec(),
                     second: old_word[i + 2].to_vec(),
                 };
-                let mut stat = stats.get_mut(&next_pair).unwrap();
+                let stat = stats.get_mut(&next_pair).unwrap();
                 stat.freq = stat.freq.saturating_sub(*freq);
                 let occ = stat.words.get_mut(idx).unwrap();
                 *occ = occ.saturating_sub(1);

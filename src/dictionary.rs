@@ -323,7 +323,7 @@ impl Dictionary {
         }
         if let Some((term, freq)) = terms
             .into_iter()
-            .zip(freqs.into_iter())
+            .zip(freqs)
             .max_by(|(_, a), (_, b)| a.cmp(b))
         {
             Some((term.to_string(), freq, freq as f64 / self.freq_sum as f64))

@@ -77,12 +77,7 @@ pub trait PrefixTreeNode {
                     value
                         .into_iter()
                         .chain(child.find_continuations())
-                        .map(|(cont, val)| {
-                            (
-                                vec![*byte].into_iter().chain(cont.into_iter()).collect(),
-                                val,
-                            )
-                        }),
+                        .map(|(cont, val)| (vec![*byte].into_iter().chain(cont).collect(), val)),
                 )
             },
         ))

@@ -96,7 +96,7 @@ pub fn match_words_with(
             let j = b_idx + 1;
 
             let matching = word_match_fn(a_word, b_word);
-            let values = vec![
+            let values = [
                 (d[i - 1][j], MatchOp::Delete),
                 (d[i][j - 1], MatchOp::Insert),
                 (

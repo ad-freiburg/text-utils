@@ -4,7 +4,7 @@ import argparse
 import os
 
 
-from text_correction_utils import prefix, tokenization, configuration
+from text_utils import prefix, tokenization, configuration
 
 
 def parse_args() -> argparse.Namespace:

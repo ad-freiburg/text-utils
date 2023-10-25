@@ -6,17 +6,17 @@ use rand::distributions::WeightedIndex;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use text_correction_utils::edit::{distance, operations};
-use text_correction_utils::prefix::PrefixTreeSearch;
-use text_correction_utils::prefix_tree::Node;
-use text_correction_utils::prefix_vec::PrefixVec;
-use text_correction_utils::text::{clean, match_words, word_boundaries};
-use text_correction_utils::tokenization::{
+use text_utils::edit::{distance, operations};
+use text_utils::prefix::PrefixTreeSearch;
+use text_utils::prefix_tree::Node;
+use text_utils::prefix_vec::PrefixVec;
+use text_utils::text::{clean, match_words, word_boundaries};
+use text_utils::tokenization::{
     token_groups_to_sparse_coo_matrix, BPETokenizer, BPETokenizerConfig, ByteGroups, ByteTokenizer,
     ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig, GroupAggregation, Grouping,
     SpecialConfig, TokenGroup, Tokenize,
 };
-use text_correction_utils::utils::{
+use text_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
 };
 

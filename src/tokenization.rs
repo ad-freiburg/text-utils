@@ -128,21 +128,21 @@ impl Default for SpecialConfig {
 impl<'a> FromPyObject<'a> for SpecialConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(pad) = d.get_item("pad") else {
+        let Some(pad) = d.get_item("pad")? else {
             return Err(py_required_key_error("pad", "special config"));
         };
-        let Some(tokens) = d.get_item("tokens") else {
+        let Some(tokens) = d.get_item("tokens")? else {
             return Err(py_required_key_error("tokens", "special config"));
         };
         Ok(Self {
             pad: pad.extract()?,
             tokens: tokens.extract()?,
-            prefix: if let Some(value) = d.get_item("prefix") {
+            prefix: if let Some(value) = d.get_item("prefix")? {
                 value.extract()?
             } else {
                 vec![]
             },
-            suffix: if let Some(value) = d.get_item("suffix") {
+            suffix: if let Some(value) = d.get_item("suffix")? {
                 value.extract()?
             } else {
                 vec![]
@@ -165,14 +165,14 @@ impl<'a> FromPyObject<'a> for TokenizerConfig {
         let d: &PyDict = ob.extract()?;
         Ok(Self {
             tokenize: d
-                .get_item("tokenize")
+                .get_item("tokenize")?
                 .ok_or_else(|| py_required_key_error("tokenize", "tokenizer config"))?
                 .extract()?,
             special: d
-                .get_item("special")
+                .get_item("special")?
                 .ok_or_else(|| py_required_key_error("special", "tokenizer config"))?
                 .extract()?,
-            language: if let Some(value) = d.get_item("language") {
+            language: if let Some(value) = d.get_item("language")? {
                 Some(value.extract()?)
             } else {
                 None
@@ -209,24 +209,24 @@ impl LanguageConfig {
 impl<'a> FromPyObject<'a> for LanguageConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(languages) = d.get_item("languages") else {
+        let Some(languages) = d.get_item("languages")? else {
             return Err(py_required_key_error("languages", "language config"));
         };
         let languages = languages.extract()?;
-        let Some(default_language) = d.get_item("default_language") else {
+        let Some(default_language) = d.get_item("default_language")? else {
             return Err(py_required_key_error("default_language", "language config"));
         };
         let default_language = default_language.extract()?;
         Ok(Self {
             add_language_token_to_prefix: if let Some(value) =
-                d.get_item("add_language_token_to_prefix")
+                d.get_item("add_language_token_to_prefix")?
             {
                 value.extract()?
             } else {
                 true
             },
             add_language_token_to_suffix: if let Some(value) =
-                d.get_item("add_language_token_to_suffix")
+                d.get_item("add_language_token_to_suffix")?
             {
                 value.extract()?
             } else {
@@ -296,13 +296,13 @@ impl IntoPy<PyObject> for TokenizeConfig {
 impl<'a> FromPyObject<'a> for TokenizeConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(tokenizer_type) = d.get_item("type") else {
+        let Some(tokenizer_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "tokenizer config"));
         };
         let tokenizer_type: String = tokenizer_type.extract()?;
         let tokenizer_config = match tokenizer_type.as_str() {
             "character" => {
-                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
@@ -310,23 +310,23 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 TokenizeConfig::Character(CharTokenizerConfig { use_graphemes })
             }
             name @ ("byte" | "byt5") => {
-                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
-                let Some(groups) = d.get_item("groups") else {
+                let Some(groups) = d.get_item("groups")? else {
                     return Err(py_required_key_error(
                         "groups",
                         format!("{name} tokenizer config"),
                     ));
                 };
-                let agg: GroupAggregation = if let Some(value) = d.get_item("aggregation") {
+                let agg: GroupAggregation = if let Some(value) = d.get_item("aggregation")? {
                     value.extract()?
                 } else {
                     GroupAggregation::Mean
                 };
-                let pad_to_multiple_of = if let Some(value) = d.get_item("pad_to_multiple_of") {
+                let pad_to_multiple_of = if let Some(value) = d.get_item("pad_to_multiple_of")? {
                     Some(value.extract()?)
                 } else {
                     None
@@ -347,16 +347,16 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 }
             }
             "bpe" => {
-                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
-                let Some(merge_file) = d.get_item("merge_file") else {
+                let Some(merge_file) = d.get_item("merge_file")? else {
                     return Err(py_required_key_error("merge_file", "bpe tokenizer config"));
                 };
                 let max_vocab_size: Option<usize> =
-                    if let Some(value) = d.get_item("max_vocab_size") {
+                    if let Some(value) = d.get_item("max_vocab_size")? {
                         Some(value.extract()?)
                     } else {
                         None
@@ -368,7 +368,7 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 })
             }
             "dummy" => {
-                let millis: u64 = if let Some(value) = d.get_item("delay") {
+                let millis: u64 = if let Some(value) = d.get_item("delay")? {
                     value.extract()?
                 } else {
                     0
@@ -376,7 +376,7 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 TokenizeConfig::Dummy(Duration::from_millis(millis))
             }
             "huggingface" => {
-                let Some(path) = d.get_item("path") else {
+                let Some(path) = d.get_item("path")? else {
                     return Err(py_required_key_error(
                         "path",
                         "huggingface tokenizer config",

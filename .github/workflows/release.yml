@@ -29,7 +29,7 @@ jobs:
         run: |
           pip install patchelf
           pip install dist/*.whl --force-reinstall
-          python -c "import text_correction_utils"
+          python -c "import text_utils"
           # pip install pytest
           # python -m pytest -W ignore -v
       - name: Upload wheels

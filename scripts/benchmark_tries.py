@@ -3,7 +3,7 @@ import argparse
 import random
 
 from tqdm import tqdm
-from text_correction_utils import prefix
+from text_utils import prefix
 import marisa_trie
 
 

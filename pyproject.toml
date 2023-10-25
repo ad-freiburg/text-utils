@@ -1,7 +1,7 @@
 [project]
-name = "text_correction_utils"
-description = "Utilities for text correction tasks using Deep NLP"
-version = "0.1.4"
+name = "text_utils"
+description = "Utilities for text processing tasks with Deep NLP"
+version = "0.2.0"
 authors = [
     { name = "Sebastian Walter", email = "swalter@cs.uni-freiburg.de" }
 ]
@@ -9,7 +9,7 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.8"
 
-keywords = ["nlp", "utilities", "text", "correction"]
+keywords = ["nlp", "utilities", "text", "processing"]
 
 classifiers = [
     "Programming Language :: Rust",
@@ -34,8 +34,8 @@ dependencies = [
 ]
 
 [project.scripts]
-"tcu.create_dictionary" = "text_correction_utils.cli.create_dictionary:main"
-"tcu.train_bpe" = "text_correction_utils.cli.train_bpe:main"
+"tu.create_dictionary" = "text_utils.cli.create_dictionary:main"
+"tu.train_bpe" = "text_utils.cli.train_bpe:main"
 
 [project.optional-dependencies]
 test = [
@@ -46,7 +46,7 @@ test = [
 ]
 
 [project.urls]
-Github = "https://github.com/ad-freiburg/text-correction-utils"
+Github = "https://github.com/ad-freiburg/text-utils"
 
 [build-system]
 requires = ["maturin>=1"]
@@ -54,4 +54,4 @@ build-backend = "maturin"
 
 [tool.maturin]
 python-source = "python"
-module-name = "text_correction_utils._internal"
+module-name = "text_utils._internal"

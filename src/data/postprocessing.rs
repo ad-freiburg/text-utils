@@ -30,47 +30,47 @@ pub enum PostprocessingFnConfig {
 impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(postprocessing_type) = d.get_item("type") else {
+        let Some(postprocessing_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "postprocessing config"));
         };
         let postprocessing_type: String = postprocessing_type.extract()?;
         let postprocessing_config = match postprocessing_type.as_str() {
             "none" => PostprocessingFnConfig::None,
             "chain" => {
-                let Some(cfgs) = d.get_item("configs") else {
+                let Some(cfgs) = d.get_item("configs")? else {
                     return Err(py_required_key_error("configs", "chain config"));
                 };
                 PostprocessingFnConfig::Chain(cfgs.extract()?)
             }
             "switch" => {
-                let Some(configs) = d.get_item("configs") else {
+                let Some(configs) = d.get_item("configs")? else {
                     return Err(py_required_key_error("configs", "switch config"));
                 };
-                let Some(probs) = d.get_item("probabilities") else {
+                let Some(probs) = d.get_item("probabilities")? else {
                     return Err(py_required_key_error("probabilities", "switch config"));
                 };
                 PostprocessingFnConfig::Switch(configs.extract()?, probs.extract()?)
             }
             "on_mark" => {
-                let Some(key) = d.get_item("key") else {
+                let Some(key) = d.get_item("key")? else {
                     return Err(py_required_key_error("key", "on mark config"));
                 };
-                let Some(value) = d.get_item("value") else {
+                let Some(value) = d.get_item("value")? else {
                     return Err(py_required_key_error("value", "on mark config"));
                 };
-                let Some(cfgs) = d.get_item("configs") else {
+                let Some(cfgs) = d.get_item("configs")? else {
                     return Err(py_required_key_error("configs", "on mark config"));
                 };
                 PostprocessingFnConfig::OnMark(key.extract()?, value.extract()?, cfgs.extract()?)
             }
             "switch_on_mark" => {
-                let Some(key) = d.get_item("key") else {
+                let Some(key) = d.get_item("key")? else {
                     return Err(py_required_key_error("key", "switch on mark config"));
                 };
-                let Some(values) = d.get_item("values") else {
+                let Some(values) = d.get_item("values")? else {
                     return Err(py_required_key_error("values", "switch on mark config"));
                 };
-                let Some(configs) = d.get_item("configs") else {
+                let Some(configs) = d.get_item("configs")? else {
                     return Err(py_required_key_error("configs", "switch on mark config"));
                 };
                 PostprocessingFnConfig::SwitchOnMark(
@@ -80,19 +80,19 @@ impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
                 )
             }
             "token_masking" => {
-                let Some(p) = d.get_item("prob") else {
+                let Some(p) = d.get_item("prob")? else {
                     return Err(py_required_key_error("prob", "token masking config"));
                 };
-                let Some(min_tokens) = d.get_item("min_tokens") else {
+                let Some(min_tokens) = d.get_item("min_tokens")? else {
                     return Err(py_required_key_error("min_tokens", "token masking config"));
                 };
-                let Some(num_p) = d.get_item("num_tokens_prob") else {
+                let Some(num_p) = d.get_item("num_tokens_prob")? else {
                     return Err(py_required_key_error(
                         "num_tokens_prob",
                         "token masking config",
                     ));
                 };
-                let Some(mask_token) = d.get_item("mask_token") else {
+                let Some(mask_token) = d.get_item("mask_token")? else {
                     return Err(py_required_key_error("mask_token", "token masking config"));
                 };
                 PostprocessingFnConfig::TokenMasking(

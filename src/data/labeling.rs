@@ -20,13 +20,13 @@ pub enum GenerationConfig {
 impl<'a> FromPyObject<'a> for GenerationConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(generation_type) = d.get_item("type") else {
+        let Some(generation_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "generation config"));
         };
         let generation_type: String = generation_type.extract()?;
         let generation_config = match generation_type.as_str() {
             "input_and_target" => {
-                let Some(separator) = d.get_item("separator") else {
+                let Some(separator) = d.get_item("separator")? else {
                     return Err(py_required_key_error(
                         "separator",
                         "input and target generation config",
@@ -56,18 +56,18 @@ pub enum LabelingConfig {
 impl<'a> FromPyObject<'a> for LabelingConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(labeling_type) = d.get_item("type") else {
+        let Some(labeling_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "labeling config"));
         };
         let labeling_type: String = labeling_type.extract()?;
         let labeling_config = match labeling_type.as_str() {
             "whitespace_correction" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
-                let Some(tokenizer_config) = d.get_item("tokenizer") else {
+                let Some(tokenizer_config) = d.get_item("tokenizer")? else {
                     return Err(py_required_key_error(
                         "tokenizer",
                         "whitespace correction config",
@@ -76,10 +76,10 @@ impl<'a> FromPyObject<'a> for LabelingConfig {
                 LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer_config.extract()?)
             }
             "generation" => {
-                let Some(tokenizer_config) = d.get_item("tokenizer") else {
+                let Some(tokenizer_config) = d.get_item("tokenizer")? else {
                     return Err(py_required_key_error("tokenizer", "generation config"));
                 };
-                let Some(generation_config) = d.get_item("generation") else {
+                let Some(generation_config) = d.get_item("generation")? else {
                     return Err(py_required_key_error("generation", "generation config"));
                 };
                 LabelingConfig::Generation(

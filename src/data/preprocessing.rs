@@ -67,21 +67,21 @@ pub enum PreprocessingFnConfig {
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(preprocessing_type) = d.get_item("type") else {
+        let Some(preprocessing_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "preprocessing config"));
         };
         let preprocessing_type: String = preprocessing_type.extract()?;
         let preprocessing_config = match preprocessing_type.as_str() {
             "none" => PreprocessingFnConfig::None,
             "chain" => {
-                let Some(configs) = d.get_item("configs") else {
+                let Some(configs) = d.get_item("configs")? else {
                     return Err(py_required_key_error("configs", "chain config"));
                 };
                 let configs: Vec<PreprocessingFnConfig> = configs.extract()?;
                 PreprocessingFnConfig::Chain(configs)
             }
             "clean" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
@@ -90,20 +90,20 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 PreprocessingFnConfig::Clean(use_graphemes)
             }
             "normalize" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
 
-                let Some(scheme) = d.get_item("scheme") else {
+                let Some(scheme) = d.get_item("scheme")? else {
                     return Err(py_required_key_error("scheme", "normalization config"));
                 };
                 PreprocessingFnConfig::Normalize(scheme.extract()?, use_graphemes)
             }
             "overwrite" => PreprocessingFnConfig::Overwrite,
             "no_whitespaces" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
@@ -111,7 +111,7 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 PreprocessingFnConfig::NoWhitespaces(use_graphemes)
             }
             "full_whitespaces" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
@@ -119,18 +119,18 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 PreprocessingFnConfig::FullWhitespaces(use_graphemes)
             }
             "whitespace_corruption" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
 
-                let iw_p = if let Some(value) = d.get_item("insert_whitespace_prob") {
+                let iw_p = if let Some(value) = d.get_item("insert_whitespace_prob")? {
                     value.extract()?
                 } else {
                     0.
                 };
-                let dw_p = if let Some(value) = d.get_item("delete_whitespace_prob") {
+                let dw_p = if let Some(value) = d.get_item("delete_whitespace_prob")? {
                     value.extract()?
                 } else {
                     0.
@@ -138,52 +138,52 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 PreprocessingFnConfig::WhitespaceCorruption(iw_p, dw_p, use_graphemes)
             }
             "switch" => {
-                let Some(configs) = d.get_item("configs") else {
+                let Some(configs) = d.get_item("configs")? else {
                     return Err(py_required_key_error("configs", "switch config"));
                 };
-                let Some(probs) = d.get_item("probabilities") else {
+                let Some(probs) = d.get_item("probabilities")? else {
                     return Err(py_required_key_error("probabilities", "switch config"));
                 };
                 PreprocessingFnConfig::Switch(configs.extract()?, probs.extract()?)
             }
             "char_substring" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
-                let Some(max_chars) = d.get_item("max_chars") else {
+                let Some(max_chars) = d.get_item("max_chars")? else {
                     return Err(py_required_key_error("max_chars", "char substring config"));
                 };
                 PreprocessingFnConfig::CharSubstring(max_chars.extract()?, use_graphemes)
             }
             "byte_substring" => {
-                let use_graphemes = if let Some(value) = d.get_item("use_graphemes") {
+                let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
-                let Some(max_bytes) = d.get_item("max_bytes") else {
+                let Some(max_bytes) = d.get_item("max_bytes")? else {
                     return Err(py_required_key_error("max_bytes", "byte substring config"));
                 };
                 PreprocessingFnConfig::ByteSubstring(max_bytes.extract()?, use_graphemes)
             }
             "language_dropout" => {
-                let Some(p) = d.get_item("prob") else {
+                let Some(p) = d.get_item("prob")? else {
                     return Err(py_required_key_error("prob", "language dropout config"));
                 };
                 PreprocessingFnConfig::LanguageDropout(p.extract()?)
             }
             "spelling_corruption" => {
-                let Some(p) = d.get_item("prob") else {
+                let Some(p) = d.get_item("prob")? else {
                     return Err(py_required_key_error("prob", "spelling corruption config"));
                 };
-                let full_delete = if let Some(value) = d.get_item("allow_full_delete") {
+                let full_delete = if let Some(value) = d.get_item("allow_full_delete")? {
                     value.extract()?
                 } else {
                     true
                 };
-                let Some(mode) = d.get_item("mode") else {
+                let Some(mode) = d.get_item("mode")? else {
                     return Err(py_required_key_error("mode", "spelling corruption config"));
                 };
                 PreprocessingFnConfig::SpellingCorruption(
@@ -193,22 +193,22 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 )
             }
             "mark" => {
-                let Some(key) = d.get_item("key") else {
+                let Some(key) = d.get_item("key")? else {
                     return Err(py_required_key_error("key", "mark config"));
                 };
-                let Some(value) = d.get_item("value") else {
+                let Some(value) = d.get_item("value")? else {
                     return Err(py_required_key_error("value", "mark config"));
                 };
                 PreprocessingFnConfig::Mark(key.extract()?, value.extract()?)
             }
             "prefix" => {
-                let Some(prefix) = d.get_item("prefix") else {
+                let Some(prefix) = d.get_item("prefix")? else {
                     return Err(py_required_key_error("prefix", "prefix config"));
                 };
                 PreprocessingFnConfig::Prefix(prefix.extract()?)
             }
             "concatenate" => {
-                let separator = if let Some(sep) = d.get_item("separator") {
+                let separator = if let Some(sep) = d.get_item("separator")? {
                     sep.extract()?
                 } else {
                     "".to_string()
@@ -364,13 +364,13 @@ impl IntoPy<PyObject> for SpellingCorruptionMode {
 impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
-        let Some(corruption_type) = d.get_item("type") else {
+        let Some(corruption_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "spelling corruption mode"));
         };
         let corruption_type: String = corruption_type.extract()?;
         let corruption_mode = match corruption_type.as_str() {
             "artificial" => {
-                let Some(prob) = d.get_item("char_edit_prob") else {
+                let Some(prob) = d.get_item("char_edit_prob")? else {
                     return Err(py_required_key_error(
                         "char_edit_prob",
                         "artificial spelling corruption mode",
@@ -378,16 +378,16 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                 };
                 let prob: f64 = prob.extract()?;
                 let path = d
-                    .get_item("characters_file")
+                    .get_item("characters_file")?
                     .map(|path| path.extract().expect("characters_file must be a string"));
                 let temp = d
-                    .get_item("temperature")
+                    .get_item("temperature")?
                     .map(|temp| temp.extract().expect("temperature must be a float"))
                     .unwrap_or(2.0);
                 SpellingCorruptionMode::Artificial(prob, temp, path)
             }
             "realistic" => {
-                let Some(path) = d.get_item("misspellings_file") else {
+                let Some(path) = d.get_item("misspellings_file")? else {
                     return Err(py_required_key_error(
                         "misspellings_file",
                         "realistic spelling corruption mode",
@@ -396,14 +396,14 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                 SpellingCorruptionMode::Realistic(path.extract()?)
             }
             "mixed" => {
-                let Some(prob) = d.get_item("char_edit_prob") else {
+                let Some(prob) = d.get_item("char_edit_prob")? else {
                     return Err(py_required_key_error(
                         "char_edit_prob",
                         "mixed spelling corruption mode",
                     ));
                 };
                 let prob: f64 = prob.extract()?;
-                let Some(art_prob) = d.get_item("artificial_prob") else {
+                let Some(art_prob) = d.get_item("artificial_prob")? else {
                     return Err(py_required_key_error(
                         "artificial_prob",
                         "mixed spelling corruption mode",
@@ -411,13 +411,13 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                 };
                 let art_prob: f64 = art_prob.extract()?;
                 let art_temp = d
-                    .get_item("artificial_temperature")
+                    .get_item("artificial_temperature")?
                     .map(|temp| temp.extract().expect("temperature must be a float"))
                     .unwrap_or(2.0);
                 let char_path = d
-                    .get_item("characters_file")
+                    .get_item("characters_file")?
                     .map(|path| path.extract().expect("characters_file must be a string"));
-                let Some(missp_path) = d.get_item("misspellings_file") else {
+                let Some(missp_path) = d.get_item("misspellings_file")? else {
                     return Err(py_required_key_error(
                         "misspellings_file",
                         "mixed spelling corruption mode",

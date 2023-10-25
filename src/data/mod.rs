@@ -745,13 +745,22 @@ impl<'a> FromPyObject<'a> for TextDataPipelineConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = obj.extract()?;
         let Some(preprocessing) = d.get_item("preprocessing") else {
-            return Err(py_required_key_error("preprocessing", "preprocessing pipeline config"));
+            return Err(py_required_key_error(
+                "preprocessing",
+                "preprocessing pipeline config",
+            ));
         };
         let Some(labeling) = d.get_item("labeling") else {
-            return Err(py_required_key_error("labeling", "preprocessing pipeline config"));
+            return Err(py_required_key_error(
+                "labeling",
+                "preprocessing pipeline config",
+            ));
         };
         let Some(postprocessing) = d.get_item("postprocessing") else {
-            return Err(py_required_key_error("postprocessing", "preprocessing pipeline config"));
+            return Err(py_required_key_error(
+                "postprocessing",
+                "preprocessing pipeline config",
+            ));
         };
         Ok(TextDataPipelineConfig {
             preprocessing: preprocessing.extract()?,

@@ -450,9 +450,10 @@ where
                     loop {
                         let start = Instant::now();
                         let Some((idx, data)) =
-                            inner_clone.lock().expect("failed to lock receiver").next() else {
-                                return;
-                            };
+                            inner_clone.lock().expect("failed to lock receiver").next()
+                        else {
+                            return;
+                        };
                         debug!(
                             "thread {thread}: loading item {idx} took {:.2}ms",
                             start.elapsed().as_secs_f32() * 1000.0
@@ -701,7 +702,9 @@ where
             let Some(item) = f() else {
                 return if items.is_empty() {
                     (None, None)
-                } else {(Some(items), None)};
+                } else {
+                    (Some(items), None)
+                };
             };
             batch_limit = batch_limit.update(&item);
             if batch_limit.limit() > limit && !items.is_empty() {

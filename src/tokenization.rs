@@ -214,10 +214,7 @@ impl<'a> FromPyObject<'a> for LanguageConfig {
         };
         let languages = languages.extract()?;
         let Some(default_language) = d.get_item("default_language") else {
-            return Err(py_required_key_error(
-                "default_language",
-                "language config",
-            ));
+            return Err(py_required_key_error("default_language", "language config"));
         };
         let default_language = default_language.extract()?;
         Ok(Self {
@@ -319,7 +316,10 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                     true
                 };
                 let Some(groups) = d.get_item("groups") else {
-                    return Err(py_required_key_error("groups", format!("{name} tokenizer config")));
+                    return Err(py_required_key_error(
+                        "groups",
+                        format!("{name} tokenizer config"),
+                    ));
                 };
                 let agg: GroupAggregation = if let Some(value) = d.get_item("aggregation") {
                     value.extract()?
@@ -377,7 +377,10 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
             }
             "huggingface" => {
                 let Some(path) = d.get_item("path") else {
-                    return Err(py_required_key_error("path", "huggingface tokenizer config"));
+                    return Err(py_required_key_error(
+                        "path",
+                        "huggingface tokenizer config",
+                    ));
                 };
                 TokenizeConfig::Huggingface(path.extract()?)
             }
@@ -870,9 +873,7 @@ where
         if let Some(add_prefix) = prefix {
             for &token in add_prefix {
                 let Some(token_id) = self.special_token_to_id(token) else {
-                    return Err(anyhow!(
-                        "prefix token {token} is not a valid special token"
-                    ));
+                    return Err(anyhow!("prefix token {token} is not a valid special token"));
                 };
                 pfx.push(token_id);
             }
@@ -881,9 +882,7 @@ where
         if let Some(add_suffix) = suffix {
             for &token in add_suffix {
                 let Some(token_id) = self.special_token_to_id(token) else {
-                    return Err(anyhow!(
-                        "prefix token {token} is not a valid special token"
-                    ));
+                    return Err(anyhow!("prefix token {token} is not a valid special token"));
                 };
                 sfx.push(token_id);
             }
@@ -1219,7 +1218,10 @@ impl HuggingfaceTokenizer {
             }));
         }
         let Some(pad_token_id) = tok.token_to_id(&special_config.pad) else {
-            return Err(anyhow!("pad token {} not found in huggingface tokenizer", special_config.pad));
+            return Err(anyhow!(
+                "pad token {} not found in huggingface tokenizer",
+                special_config.pad
+            ));
         };
         Ok(Self {
             inner: tok,
@@ -1697,8 +1699,9 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
         let mut i = 0;
         while i < old_word.len() {
             let Some((start, _)) = old_word[i..]
-            .iter()
-            .find_position(|&subword| subword == &pair.first) else {
+                .iter()
+                .find_position(|&subword| subword == &pair.first)
+            else {
                 break;
             };
             i += start;
@@ -1736,8 +1739,9 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
         i = 0;
         while i < new_word.len() {
             let Some((start, _)) = new_word[i..]
-            .iter()
-            .find_position(|&subword| subword == &merged) else {
+                .iter()
+                .find_position(|&subword| subword == &merged)
+            else {
                 break;
             };
             i += start;
@@ -1863,8 +1867,11 @@ pub fn train_bpe(
             .name(format!("bpe worker thread {idx}"))
             .spawn(move || {
                 loop {
-                    let Some(mut line) =
-                        line_iter_clone.lock().expect("failed to lock line iter").next() else  {
+                    let Some(mut line) = line_iter_clone
+                        .lock()
+                        .expect("failed to lock line iter")
+                        .next()
+                    else {
                         return;
                     };
                     line = clean(&line, true);
@@ -2357,7 +2364,7 @@ mod tests {
         let Tokenization { token_ids, info } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(
             token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
-            text.as_bytes().clone()
+            text.as_bytes()
         );
         match info {
             TokenizationInfo::TokenGroups(groups) => {
@@ -2388,7 +2395,7 @@ mod tests {
         let Tokenization { token_ids, info } = tok.tokenize(text, None, None, None, true).unwrap();
         assert_eq!(
             token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
-            text.as_bytes().clone()
+            text.as_bytes()
         );
         match info {
             TokenizationInfo::TokenGroups(groups) => {

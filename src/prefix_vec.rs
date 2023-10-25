@@ -148,7 +148,9 @@ impl<V: Hash + Eq> PrefixVec<V> {
             0
         };
         for (depth, k) in key.iter().enumerate().skip(skip) {
-            let Some((new_left, new_right)) = self.range_search(k, start_depth + depth, left, right) else {
+            let Some((new_left, new_right)) =
+                self.range_search(k, start_depth + depth, left, right)
+            else {
                 return FindResult::NotFound(depth);
             };
             left = new_left;

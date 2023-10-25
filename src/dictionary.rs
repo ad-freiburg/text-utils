@@ -90,7 +90,11 @@ impl Dictionary {
             let line_iter_clone = line_iter.clone();
             let count_tx_clone = count_tx.clone();
             let t_handle = thread::spawn(move || loop {
-                let Some(mut line) = line_iter_clone.lock().expect("failed to lock line iter").next() else {
+                let Some(mut line) = line_iter_clone
+                    .lock()
+                    .expect("failed to lock line iter")
+                    .next()
+                else {
                     return;
                 };
                 line = normalize(&clean(&line, true), Normalization::NFKC, true);

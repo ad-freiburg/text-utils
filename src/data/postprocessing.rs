@@ -87,7 +87,10 @@ impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
                     return Err(py_required_key_error("min_tokens", "token masking config"));
                 };
                 let Some(num_p) = d.get_item("num_tokens_prob") else {
-                    return Err(py_required_key_error("num_tokens_prob", "token masking config"));
+                    return Err(py_required_key_error(
+                        "num_tokens_prob",
+                        "token masking config",
+                    ));
                 };
                 let Some(mask_token) = d.get_item("mask_token") else {
                     return Err(py_required_key_error("mask_token", "token masking config"));

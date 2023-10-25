@@ -371,7 +371,10 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
         let corruption_mode = match corruption_type.as_str() {
             "artificial" => {
                 let Some(prob) = d.get_item("char_edit_prob") else {
-                    return Err(py_required_key_error("char_edit_prob", "artificial spelling corruption mode"));
+                    return Err(py_required_key_error(
+                        "char_edit_prob",
+                        "artificial spelling corruption mode",
+                    ));
                 };
                 let prob: f64 = prob.extract()?;
                 let path = d
@@ -385,17 +388,26 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
             }
             "realistic" => {
                 let Some(path) = d.get_item("misspellings_file") else {
-                    return Err(py_required_key_error("misspellings_file", "realistic spelling corruption mode"));
+                    return Err(py_required_key_error(
+                        "misspellings_file",
+                        "realistic spelling corruption mode",
+                    ));
                 };
                 SpellingCorruptionMode::Realistic(path.extract()?)
             }
             "mixed" => {
                 let Some(prob) = d.get_item("char_edit_prob") else {
-                    return Err(py_required_key_error("char_edit_prob", "mixed spelling corruption mode"));
+                    return Err(py_required_key_error(
+                        "char_edit_prob",
+                        "mixed spelling corruption mode",
+                    ));
                 };
                 let prob: f64 = prob.extract()?;
                 let Some(art_prob) = d.get_item("artificial_prob") else {
-                    return Err(py_required_key_error("artificial_prob", "mixed spelling corruption mode"));
+                    return Err(py_required_key_error(
+                        "artificial_prob",
+                        "mixed spelling corruption mode",
+                    ));
                 };
                 let art_prob: f64 = art_prob.extract()?;
                 let art_temp = d
@@ -406,7 +418,10 @@ impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
                     .get_item("characters_file")
                     .map(|path| path.extract().expect("characters_file must be a string"));
                 let Some(missp_path) = d.get_item("misspellings_file") else {
-                    return Err(py_required_key_error("misspellings_file", "mixed spelling corruption mode"));
+                    return Err(py_required_key_error(
+                        "misspellings_file",
+                        "mixed spelling corruption mode",
+                    ));
                 };
                 SpellingCorruptionMode::Mixed(
                     art_prob,

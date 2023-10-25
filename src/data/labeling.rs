@@ -27,7 +27,10 @@ impl<'a> FromPyObject<'a> for GenerationConfig {
         let generation_config = match generation_type.as_str() {
             "input_and_target" => {
                 let Some(separator) = d.get_item("separator") else {
-                    return Err(py_required_key_error("separator", "input and target generation config"));
+                    return Err(py_required_key_error(
+                        "separator",
+                        "input and target generation config",
+                    ));
                 };
                 GenerationConfig::InputAndTarget(separator.extract()?)
             }
@@ -65,7 +68,10 @@ impl<'a> FromPyObject<'a> for LabelingConfig {
                     true
                 };
                 let Some(tokenizer_config) = d.get_item("tokenizer") else {
-                    return Err(py_required_key_error("tokenizer", "whitespace correction config"));
+                    return Err(py_required_key_error(
+                        "tokenizer",
+                        "whitespace correction config",
+                    ));
                 };
                 LabelingConfig::WhitespaceCorrection(use_graphemes, tokenizer_config.extract()?)
             }

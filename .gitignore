@@ -139,5 +139,5 @@ dmypy.json
 
 # Custom
 
-/python/text_correction_utils/_internal*.so
+/python/text_utils/_internal*.so
 /third_party

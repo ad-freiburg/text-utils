@@ -52,23 +52,25 @@ class TextProcessor:
 
     @classmethod
     def download_dir(cls) -> str:
+        task_name = cls._task_upper().replace(" ", "_")
         return os.environ.get(
-            f"{cls._task_upper()}_DOWNLOAD_DIR",
+            f"{task_name}_DOWNLOAD_DIR",
             os.path.join(
                 os.path.dirname(__file__),
                 ".download",
-                cls._task_upper()
+                task_name
             )
         )
 
     @classmethod
     def cache_dir(cls) -> str:
+        task_name = cls._task_upper().replace(" ", "_")
         return os.environ.get(
-            f"{cls._task_upper()}_CACHE_DIR",
+            f"{task_name}_CACHE_DIR",
             os.path.join(
                 os.path.dirname(__file__),
                 ".cache",
-                cls._task_upper()
+                task_name
             )
         )
 
@@ -88,7 +90,7 @@ class TextProcessor:
             f"model {model} does not match any of the available models:\n" \
             f"{pprint.pformat(cls.available_models())}"
 
-        logger = logging.get_logger(f"{cls._task_upper()}_DOWNLOAD")
+        logger = logging.get_logger(f"{cls._task_upper()} DOWNLOAD")
         model_url = cls._model_url(model)
         if download_dir is None:
             download_dir = cls.download_dir()

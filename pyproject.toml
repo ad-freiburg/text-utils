@@ -1,5 +1,5 @@
 [project]
-name = "text_utils"
+name = "dtpu"
 description = "Utilities for text processing tasks with Deep NLP"
 version = "0.2.0"
 authors = [

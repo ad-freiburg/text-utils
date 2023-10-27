@@ -254,7 +254,7 @@ impl<V: Hash + Eq + Send> FromParallelIterator<(Vec<u8>, V)> for PrefixVec<V> {
         par_iter.into_par_iter().for_each(|value| {
             let _ = sender.send(value);
         });
-        Self::from_iter(receiver.into_iter())
+        Self::from_iter(receiver)
     }
 }
 

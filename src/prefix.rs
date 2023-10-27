@@ -10,6 +10,7 @@ use rayon::prelude::*;
 use crate::{
     prefix_tree::{Node, PrefixTreeNode},
     prefix_vec::{FindResult, PrefixVec},
+    tokenization::{tokenizer, TokenizerConfig},
     utils::{run_length_decode, run_length_encode, SerializeMsgPack},
 };
 
@@ -201,20 +202,41 @@ impl PyPrefixVec {
     }
 
     #[staticmethod]
-    fn from_file(path: &str) -> anyhow::Result<Self> {
+    #[pyo3(signature=(path, tokenizer_cfg=None))]
+    fn from_file(path: &str, tokenizer_cfg: Option<TokenizerConfig>) -> anyhow::Result<Self> {
         let file = File::open(path)?;
+        let tok = if let Some(cfg) = tokenizer_cfg {
+            Some(tokenizer(cfg)?)
+        } else {
+            None
+        };
         let inner = BufReader::new(file)
             .lines()
             .filter_map(|line| match line {
                 Err(_) => None,
                 Ok(s) => {
                     let splits: Vec<_> = s.split('\t').collect();
-                    assert!(splits.len() >= 3, "invalid line: {}", s);
+                    assert!(splits.len() >= 2, "invalid line: {}", s);
                     let value = splits[0].trim();
                     Some(
-                        splits[2..]
+                        splits[1..]
                             .iter()
-                            .map(|&s| (s.trim().as_bytes().to_vec(), value.to_string()))
+                            .map(|&s| {
+                                let s = s.trim();
+                                let bytes = if let Some(tok) = tok.as_ref() {
+                                    let tokenization =
+                                        tok.tokenize(s, None, None, None, true).unwrap();
+                                    let token_ids = &tokenization.token_ids;
+                                    let pfx = tok.num_prefix_tokens();
+                                    let sfx = tok.num_suffix_tokens();
+                                    tok.de_tokenize(&token_ids[pfx..token_ids.len() - sfx], false)
+                                        .as_bytes()
+                                        .to_vec()
+                                } else {
+                                    s.as_bytes().to_vec()
+                                };
+                                (bytes, value.to_string())
+                            })
                             .collect::<Vec<_>>(),
                     )
                 }

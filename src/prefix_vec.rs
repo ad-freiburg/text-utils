@@ -2,8 +2,12 @@ use core::{
     cmp::{Eq, Ordering},
     hash::Hash,
 };
+use rayon::prelude::{FromParallelIterator, IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{mpsc, Arc},
+};
 
 use crate::{prefix::PrefixTreeSearch, prefix_tree::Node};
 
@@ -238,6 +242,19 @@ impl<V: Hash + Eq> PrefixTreeSearch<V> for PrefixVec<V> {
                     .map(|(k, v)| (k.clone(), v.as_ref())),
             ),
         }
+    }
+}
+
+impl<V: Hash + Eq + Send> FromParallelIterator<(Vec<u8>, V)> for PrefixVec<V> {
+    fn from_par_iter<I>(par_iter: I) -> Self
+    where
+        I: IntoParallelIterator<Item = (Vec<u8>, V)>,
+    {
+        let (sender, receiver) = mpsc::sync_channel(1024);
+        par_iter.into_par_iter().for_each(|value| {
+            let _ = sender.send(value);
+        });
+        Self::from_iter(receiver.into_iter())
     }
 }
 

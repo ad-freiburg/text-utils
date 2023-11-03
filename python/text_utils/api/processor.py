@@ -29,6 +29,7 @@ ModelInfo = collections.namedtuple(
 
 class TextProcessor:
     task: str
+    pretrained: bool = False
 
     @classmethod
     def _task_upper(cls) -> str:
@@ -110,6 +111,8 @@ class TextProcessor:
         assert len(sub_dirs) == 1, \
             f"expected extracted zip for model {model} to contain " \
             f"one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
+        # mark processor as pretrained
+        cls.pretrained = True
         return cls.from_experiment(os.path.join(zip_dir, sub_dirs[0]), device)
 
     @classmethod
@@ -179,7 +182,7 @@ class TextProcessor:
         self.logger.debug(f"got config:\n{self.cfg}")
 
         self._precision_dtype: torch.dtype | None = torch.float32
-        self.set_precision(self.cfg["train"].get("precision", "fp32"))
+        self.set_precision(cfg["train"].get("precision", "fp32"))
 
         self._inference_loader_cfg = self._build_inference_loader_config()
 
@@ -195,13 +198,17 @@ class TextProcessor:
     @torch.inference_mode()
     def _run_model(self, batch: data.InferenceBatch) -> list[Any]:
         inputs = self._prepare_batch(batch)
+
+        # handle special case here, because autocasting is not supported on CPU
+        # for any other dtype than bfp16 yet
+        if self.devices[0].type == "cpu" and self._precision_dtype != torch.bfloat16:
+            return self._inference(inputs)
+
         with autocast(
             device_type=self.devices[0].type,
-            dtype=self._precision_dtype,
-            enabled=self._precision_dtype is not None
+            dtype=self._precision_dtype
         ):
-            outputs = self._inference(inputs)
-        return outputs
+            return self._inference(inputs)
 
     def _process_results(
         self,
@@ -382,7 +389,7 @@ class TextProcessor:
         else:
             precision_dtype = torch.bfloat16
 
-        if any(device.type == "cpu" for device in self.devices) and precision != "bfp16":
+        if any(device.type == "cpu" for device in self.devices) and precision == "fp16":
             self.logger.info(
                 "setting precision to bfp16 instead of fp16, "
                 "because fp16 is not supported on CPU yet"

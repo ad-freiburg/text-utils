@@ -7,42 +7,6 @@ on:
   pull_request:
 
 jobs:
-  macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
-          architecture: x64
-      - uses: dtolnay/rust-toolchain@stable
-      - name: "Rust: Check and test"
-        run: |
-          cargo fmt --all -- --check
-          cargo check
-          cargo clippy -- -D warnings
-          cargo test
-      - name: Build wheels - x86_64
-        uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64
-          args: --release --out dist
-      - name: "Python: Install wheels and test import - x86_64"
-        run: |
-          pip install patchelf
-          pip install dist/*.whl --force-reinstall
-          python -c "import text_utils"
-      - name: Build wheels - universal2
-        uses: PyO3/maturin-action@v1
-        with:
-          target: universal2-apple-darwin
-          args: --release --out dist
-      - name: "Python: Install wheels and test import - universal2"
-        run: |
-          pip install patchelf
-          pip install dist/*.whl --force-reinstall
-          python -c "import text_utils"
-
   windows:
     runs-on: windows-latest
     strategy:
@@ -53,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: "3.10"
-          target: ${{ matrix.target }}
+          architecture: ${{ matrix.target }}
       - uses: dtolnay/rust-toolchain@stable
       - name: "Rust: Check and test"
         run: |

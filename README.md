@@ -10,3 +10,4 @@ You can install the Python package from PyPI via
 
 > pip install dtpu
 
+Windows (x64) and Linux are currently supported when installing from PyPI.

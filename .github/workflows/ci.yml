@@ -27,7 +27,6 @@ jobs:
           args: --release --out dist
       - name: "Python: Install wheels and test import"
         run: |
-          pip install patchelf
           pip install dist/*.whl --force-reinstall
           python -c "import text_utils"
 
@@ -52,6 +51,5 @@ jobs:
           args: --release --out dist
       - name: "Python: Install wheels and test import"
         run: |
-          pip install patchelf
           pip install dist/*.whl --force-reinstall
           python -c "import text_utils"

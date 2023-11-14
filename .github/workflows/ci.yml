@@ -27,7 +27,7 @@ jobs:
           args: --release --out dist
       - name: "Python: Install wheels and test import"
         run: |
-          pip install dist/*.whl --force-reinstall
+          pip install dtpu --find-links dist --force-reinstall
           python -c "import text_utils"
 
   linux:

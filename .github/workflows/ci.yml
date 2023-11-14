@@ -24,10 +24,10 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist --sdist
+          args: --release --out dist
       - name: "Python: Install wheels and test import"
         run: |
-          pip install dtpu --no-index --find-links dist --force-reinstall
+          pip install dist/*.whl --force-reinstall
           python -c "import text_utils"
 
   linux:
@@ -48,8 +48,8 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           manylinux: auto
-          args: --release --out dist --sdist
+          args: --release --out dist
       - name: "Python: Install wheels and test import"
         run: |
-          pip install dtpu --no-index --find-links dist --force-reinstall
+          pip install dist/*.whl --force-reinstall
           python -c "import text_utils"

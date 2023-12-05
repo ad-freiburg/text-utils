@@ -42,13 +42,13 @@ pub struct SpecialTokens {}
 #[pymethods]
 impl SpecialTokens {
     #[classattr]
-    const UNK: &str = UNK;
+    const UNK: &'static str = UNK;
     #[classattr]
-    const BOS: &str = BOS;
+    const BOS: &'static str = BOS;
     #[classattr]
-    const EOS: &str = EOS;
+    const EOS: &'static str = EOS;
     #[classattr]
-    const PAD: &str = PAD;
+    const PAD: &'static str = PAD;
 }
 
 // language tokens
@@ -60,7 +60,7 @@ pub struct LanguageTokens {}
 #[pymethods]
 impl LanguageTokens {
     #[classattr]
-    const UNK: &str = LANG_UNK;
+    const UNK: &'static str = LANG_UNK;
 }
 
 /// Config for special tokens and options regarding special tokens

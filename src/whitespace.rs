@@ -72,8 +72,7 @@ pub fn operations(
     let to_cs = CS::new(to, use_graphemes);
     let from_chars: Vec<Character> = from_cs.chars().collect();
     let to_chars: Vec<Character> = to_cs.chars().collect();
-    let mut operations = vec![];
-    operations.reserve(from_chars.len().max(to_chars.len()));
+    let mut operations = Vec::with_capacity(from_chars.len().max(to_chars.len()));
     let mut from_ptr = 0;
     let mut to_ptr = 0;
     while from_ptr < from_chars.len() {

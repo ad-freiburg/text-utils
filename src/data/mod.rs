@@ -1055,11 +1055,7 @@ impl InferenceLoader {
         }
         let mut generators = vec![];
         for (idx, file) in files.iter().enumerate() {
-            let lang = if languages.is_some() {
-                Some(languages.as_ref().unwrap()[idx].clone())
-            } else {
-                None
-            };
+            let lang = languages.as_ref().map(|l| l[idx].clone());
             let generator = inference_data_generator_from_file(Path::new(file), file_format, lang)?;
             generators.push(generator);
         }

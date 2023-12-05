@@ -1,7 +1,7 @@
 [project]
 name = "dtpu"
 description = "Utilities for text processing tasks with Deep NLP"
-version = "0.2.2"
+version = "0.2.3"
 authors = [
     { name = "Sebastian Walter", email = "swalter@cs.uni-freiburg.de" }
 ]
@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
     "torch>=2.0",
     "einops>=0.6.0",
-    "numpy>=1.19.0,<1.23.0",
+    "numpy>=1.21.0",
     "peft>=0.5.0",
     "pyyaml>=6.0",
     "tqdm>=4.60.0",

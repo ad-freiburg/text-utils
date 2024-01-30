@@ -5,6 +5,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use text_utils_prefix::adaptive_radix_trie::AdaptiveRadixTrie;
 use text_utils_prefix::{optimized_continuations, ContinuationSearch, PrefixSearch};
 use text_utils_prefix::{patricia_trie::PatriciaTrie, trie::Trie};
 
@@ -123,12 +124,80 @@ fn bench_prefix(c: &mut Criterion) {
         .collect();
     group.bench_with_input(
         "patricia_trie_continuations_batch_optimized_parallel",
-        &(inputs, continuations),
+        &(&inputs, &continuations),
         |b, input| {
             let (words, continuations) = input;
             b.iter(|| {
                 trie.batch_contains_continuations_optimized_parallel(
+                    *words,
+                    continuations,
+                    &permutation,
+                    &skips,
+                )
+            });
+        },
+    );
+
+    // benchmark adaptive radix tree
+    let mut trie: AdaptiveRadixTrie<_> = words.iter().zip(0..words.len()).collect();
+    group.bench_with_input("adaptive_radix_trie_insert", word, |b, input| {
+        b.iter(|| trie.insert(input, 1));
+    });
+    group.bench_with_input("adaptive_radix_trie_get", word, |b, input| {
+        b.iter(|| trie.get(input));
+    });
+    group.bench_with_input("adaptive_radix_trie_contains", word, |b, input| {
+        b.iter(|| trie.contains_prefix(&input[..input.len().saturating_sub(3)]));
+    });
+    group.bench_with_input(
+        "adaptive_radix_trie_continuations",
+        &("Albert", &continuations),
+        |b, input| {
+            let (word, continuations) = input;
+            b.iter(|| trie.contains_continuations(&word, &continuations));
+        },
+    );
+    group.bench_with_input(
+        "adaptive_radix_trie_continuations_optimized",
+        &("Albert", &continuations),
+        |b, input| {
+            let (word, continuations) = input;
+            b.iter(|| {
+                trie.contains_continuations_optimized(&word, &continuations, &permutation, &skips)
+            });
+        },
+    );
+    group.bench_with_input(
+        "adaptive_radix_trie_continuations_batch",
+        &(["Albert"; 64], &continuations),
+        |b, input| {
+            let (words, continuations) = input;
+            b.iter(|| trie.batch_contains_continuations(words, &continuations));
+        },
+    );
+    group.bench_with_input(
+        "adaptive_radix_trie_continuations_batch_optimized",
+        &(["Albert"; 64], &continuations),
+        |b, input| {
+            let (words, continuations) = input;
+            b.iter(|| {
+                trie.batch_contains_continuations_optimized(
                     words,
+                    &continuations,
+                    &permutation,
+                    &skips,
+                )
+            });
+        },
+    );
+    group.bench_with_input(
+        "adaptive_radix_trie_continuations_batch_optimized_parallel",
+        &(&inputs, &continuations),
+        |b, input| {
+            let (words, continuations) = input;
+            b.iter(|| {
+                trie.batch_contains_continuations_optimized_parallel(
+                    *words,
                     continuations,
                     &permutation,
                     &skips,

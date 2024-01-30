@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::PrefixSearch;
 
 #[derive(Debug)]
@@ -18,21 +20,46 @@ impl<V> Default for Node<V> {
 #[derive(Debug)]
 pub struct Trie<V> {
     root: Option<Node<V>>,
-    num_keys: usize,
+}
+
+#[derive(Debug)]
+pub struct TrieStats {
+    pub depth: usize,
+    pub num_nodes: usize,
+    pub num_keys: usize,
 }
 
 impl<V> Trie<V> {
-    pub fn size(&self) -> usize {
-        self.num_keys
+    pub fn stats(&self) -> TrieStats {
+        let Some(root) = &self.root else {
+            return TrieStats {
+                depth: 0,
+                num_nodes: 0,
+                num_keys: 0,
+            };
+        };
+        let mut stack = vec![(root, 0)];
+        let mut max_depth = 0;
+        let mut num_keys = 0;
+        let mut num_nodes = 0;
+        while let Some((node, depth)) = stack.pop() {
+            max_depth = max_depth.max(depth);
+            num_keys += node.value.is_some() as usize;
+            let stack_size = stack.len();
+            stack.extend(node.children().map(|child| (child, depth + 1)));
+            num_nodes += stack.len() - stack_size;
+        }
+        TrieStats {
+            depth: max_depth,
+            num_nodes,
+            num_keys,
+        }
     }
 }
 
 impl<V> Default for Trie<V> {
     fn default() -> Self {
-        Self {
-            root: None,
-            num_keys: 0,
-        }
+        Self { root: None }
     }
 }
 
@@ -66,6 +93,10 @@ impl<V> Node<V> {
         }
         Some(node)
     }
+
+    fn children(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
+        Box::new(self.children.iter().filter_map(|child| child.as_deref()))
+    }
 }
 
 impl<V> PrefixSearch for Trie<V> {
@@ -87,9 +118,6 @@ impl<V> PrefixSearch for Trie<V> {
                 *child = Some(Default::default());
             }
             node = unsafe { child.as_mut().unwrap_unchecked() };
-        }
-        if node.value.is_none() {
-            self.num_keys += 1;
         }
         node.value = Some(value);
     }
@@ -119,7 +147,6 @@ impl<V> PrefixSearch for Trie<V> {
         let Some(child) = &mut node.children[last] else {
             return None;
         };
-        self.num_keys -= 1;
         if child.is_leaf() {
             node.children[last].take().and_then(|node| node.value)
         } else {
@@ -176,7 +203,8 @@ mod test {
         assert_eq!(trie.contains_prefix(b"test"), false);
         assert_eq!(trie.delete(b"hello"), Some(1));
         assert_eq!(trie.get(b"hello"), None);
-        assert_eq!(trie.size(), 2);
+        let stats = trie.stats();
+        assert_eq!(stats.num_keys, 2);
 
         let dir = env!("CARGO_MANIFEST_DIR");
         let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
@@ -185,7 +213,9 @@ mod test {
         let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(n).collect();
 
         let mut trie: Trie<_> = words.iter().enumerate().map(|(i, w)| (w, i)).collect();
-        assert_eq!(trie.size(), n);
+        let stats = trie.stats();
+        println!("{:#?}", stats);
+        assert_eq!(stats.num_keys, n);
         for (i, word) in words.iter().enumerate() {
             assert_eq!(trie.get(word), Some(&i));
             for j in 0..word.len() {
@@ -201,6 +231,7 @@ mod test {
                 assert_eq!(trie.get(word), Some(&i));
             }
         }
-        assert_eq!(trie.size(), n / 2);
+        let stats = trie.stats();
+        assert_eq!(stats.num_keys, n / 2);
     }
 }

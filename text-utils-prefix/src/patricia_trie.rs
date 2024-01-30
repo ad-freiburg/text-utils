@@ -1,4 +1,7 @@
-use std::iter::{empty, once};
+use std::{
+    collections::HashMap,
+    iter::{empty, once},
+};
 
 use crate::{ContinuationSearch, PrefixSearch};
 
@@ -19,21 +22,55 @@ struct Node<V> {
 #[derive(Debug)]
 pub struct PatriciaTrie<V> {
     root: Option<Node<V>>,
-    num_keys: usize,
+}
+
+#[derive(Debug)]
+pub struct PatriciaTrieStats {
+    pub depth: usize,
+    pub num_nodes: usize,
+    pub num_keys: usize,
+    pub node_info: HashMap<String, (usize, f32)>,
 }
 
 impl<V> PatriciaTrie<V> {
-    pub fn size(&self) -> usize {
-        self.num_keys
+    pub fn stats(&self) -> PatriciaTrieStats {
+        let mut dist =
+            HashMap::from_iter(["leaf", "inner"].iter().map(|&s| (s.to_string(), (0, 0.0))));
+        let Some(root) = &self.root else {
+            return PatriciaTrieStats {
+                depth: 0,
+                num_nodes: 0,
+                num_keys: 0,
+                node_info: dist,
+            };
+        };
+        let mut stack = vec![(root, 0)];
+        let mut max_depth = 0;
+        while let Some((node, depth)) = stack.pop() {
+            max_depth = max_depth.max(depth);
+            let name = match &node.inner {
+                NodeType::Empty => unreachable!("should not happen"),
+                NodeType::Leaf(_) => "leaf",
+                NodeType::Inner(..) => "inner",
+            };
+            let val = dist.get_mut(name).unwrap();
+            val.0 += 1;
+            let n = val.0 as f32;
+            val.1 = (val.1 * (n - 1.0) + node.prefix.len() as f32) / n;
+            stack.extend(node.children().map(|child| (child, depth + 1)));
+        }
+        PatriciaTrieStats {
+            depth: max_depth,
+            num_nodes: dist.iter().map(|(_, (n, _))| n).sum(),
+            num_keys: dist["leaf"].0,
+            node_info: dist,
+        }
     }
 }
 
 impl<V> Default for PatriciaTrie<V> {
     fn default() -> Self {
-        Self {
-            root: None,
-            num_keys: 0,
-        }
+        Self { root: None }
     }
 }
 
@@ -134,6 +171,15 @@ impl<V> Node<V> {
         }
     }
 
+    fn children(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
+        match &self.inner {
+            NodeType::Empty | NodeType::Leaf(_) => Box::new(empty()),
+            NodeType::Inner(children) => {
+                Box::new(children.iter().filter_map(|child| child.as_deref()))
+            }
+        }
+    }
+
     #[inline]
     fn find_child(&self, key: u8) -> Option<&Self> {
         match &self.inner {
@@ -177,7 +223,7 @@ impl<V> Node<V> {
                 Matching::FullKey(n) => return Some((node, n)),
                 Matching::Exact => return Some((node, node.prefix.len())),
                 Matching::FullPrefix(k) => k,
-                Matching::Partial(_, _) => break,
+                Matching::Partial(..) => break,
             };
 
             let Some(child) = node.find_child(k) else {
@@ -201,7 +247,6 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
         let Some(root) = &mut self.root else {
             // insert leaf at root
             self.root = Some(Node::new_leaf(key.collect(), value));
-            self.num_keys += 1;
             return;
         };
         let mut node = root;
@@ -250,7 +295,6 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
             }
             break;
         }
-        self.num_keys += 1;
     }
 
     fn delete<K>(&mut self, key: K) -> Option<V>
@@ -267,7 +311,6 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
                 unreachable!("should not happen");
             };
             self.root = None;
-            self.num_keys -= 1;
             return Some(value);
         }
 
@@ -323,7 +366,6 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
                 node.prefix = new_prefix.into_boxed_slice();
                 node.inner = single_child.inner;
             }
-            self.num_keys -= 1;
             return Some(value);
         }
         None
@@ -478,7 +520,8 @@ mod test {
         assert_eq!(trie.contains_prefix(b"test"), false);
         assert_eq!(trie.delete(b"hello"), Some(1));
         assert_eq!(trie.get(b"hello"), None);
-        assert_eq!(trie.size(), 2);
+        let stats = trie.stats();
+        assert_eq!(stats.num_keys, 2);
 
         let dir = env!("CARGO_MANIFEST_DIR");
         let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
@@ -487,7 +530,9 @@ mod test {
         let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(n).collect();
 
         let mut trie: PatriciaTrie<_> = words.iter().enumerate().map(|(i, w)| (w, i)).collect();
-        assert_eq!(trie.size(), n);
+        let stats = trie.stats();
+        println!("{:#?}", stats);
+        assert_eq!(stats.num_keys, n);
         for (i, word) in words.iter().enumerate() {
             assert_eq!(trie.get(word), Some(&i));
             for j in 0..word.len() {
@@ -503,6 +548,7 @@ mod test {
                 assert_eq!(trie.get(word), Some(&i));
             }
         }
-        assert_eq!(trie.size(), n / 2);
+        let stats = trie.stats();
+        assert_eq!(stats.num_keys, n / 2);
     }
 }

@@ -1,5 +1,6 @@
 use crate::PrefixSearch;
 
+#[derive(Debug)]
 struct Node<V> {
     value: Option<V>,
     children: [Option<Box<Node<V>>>; 256],
@@ -14,13 +15,24 @@ impl<V> Default for Node<V> {
     }
 }
 
+#[derive(Debug)]
 pub struct Trie<V> {
     root: Option<Node<V>>,
+    num_keys: usize,
+}
+
+impl<V> Trie<V> {
+    pub fn size(&self) -> usize {
+        self.num_keys
+    }
 }
 
 impl<V> Default for Trie<V> {
     fn default() -> Self {
-        Self { root: None }
+        Self {
+            root: None,
+            num_keys: 0,
+        }
     }
 }
 
@@ -56,7 +68,9 @@ impl<V> Node<V> {
     }
 }
 
-impl<V> PrefixSearch<V> for Trie<V> {
+impl<V> PrefixSearch for Trie<V> {
+    type Value = V;
+
     fn insert<K>(&mut self, key: K, value: V)
     where
         K: AsRef<[u8]>,
@@ -73,6 +87,9 @@ impl<V> PrefixSearch<V> for Trie<V> {
                 *child = Some(Default::default());
             }
             node = unsafe { child.as_mut().unwrap_unchecked() };
+        }
+        if node.value.is_none() {
+            self.num_keys += 1;
         }
         node.value = Some(value);
     }
@@ -102,6 +119,7 @@ impl<V> PrefixSearch<V> for Trie<V> {
         let Some(child) = &mut node.children[last] else {
             return None;
         };
+        self.num_keys -= 1;
         if child.is_leaf() {
             node.children[last].take().and_then(|node| node.value)
         } else {
@@ -133,19 +151,56 @@ impl<V> PrefixSearch<V> for Trie<V> {
 #[cfg(test)]
 mod test {
     use crate::{trie::Trie, PrefixSearch};
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn test_trie() {
         let mut trie = Trie::default();
         assert_eq!(trie.get(b"hello"), None);
+        assert_eq!(trie.get(b""), None);
+        assert!(!trie.contains_prefix(b""));
         trie.insert(b"hello", 1);
+        assert_eq!(trie.delete(b"hello"), Some(1));
+        assert_eq!(trie.delete(b"hello "), None);
+        trie.insert(b"hello", 1);
+        trie.insert(b"hell", 2);
+        trie.insert(b"hello world", 3);
         assert_eq!(trie.get(b"hello"), Some(&1));
+        assert_eq!(trie.get(b"hell"), Some(&2));
+        assert_eq!(trie.get(b"hello world"), Some(&3));
         assert_eq!(trie.contains_prefix(b"hell"), true);
         assert_eq!(trie.contains_prefix(b"hello"), true);
         assert_eq!(trie.contains_prefix(b""), true);
-        assert_eq!(trie.contains_prefix(b"hello world"), false);
+        assert_eq!(trie.contains_prefix(b"hello world!"), false);
         assert_eq!(trie.contains_prefix(b"test"), false);
         assert_eq!(trie.delete(b"hello"), Some(1));
         assert_eq!(trie.get(b"hello"), None);
+        assert_eq!(trie.size(), 2);
+
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
+            .expect("failed to read file");
+        let n = 100_000;
+        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(n).collect();
+
+        let mut trie: Trie<_> = words.iter().enumerate().map(|(i, w)| (w, i)).collect();
+        assert_eq!(trie.size(), n);
+        for (i, word) in words.iter().enumerate() {
+            assert_eq!(trie.get(word), Some(&i));
+            for j in 0..word.len() {
+                assert!(trie.contains_prefix(&word[..=j]));
+            }
+        }
+        for (i, word) in words.iter().enumerate() {
+            let even = i % 2 == 0;
+            if even {
+                assert_eq!(trie.delete(word), Some(i));
+                assert_eq!(trie.get(word), None);
+            } else {
+                assert_eq!(trie.get(word), Some(&i));
+            }
+        }
+        assert_eq!(trie.size(), n / 2);
     }
 }

@@ -5,13 +5,11 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use text_utils_prefix::{optimized_continuations, ContinuationSearch, PrefixSearch};
 use text_utils_prefix::{patricia_trie::PatriciaTrie, trie::Trie};
-use text_utils_prefix::{ContinuationSearch, PrefixSearch};
 
 use art_tree::{Art, ByteString};
 use patricia_tree::PatriciaMap;
-
-const ASCII_LETTERS: &[u8; 52] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 fn bench_prefix(c: &mut Criterion) {
     let dir = env!("CARGO_MANIFEST_DIR");
@@ -23,7 +21,12 @@ fn bench_prefix(c: &mut Criterion) {
     let word = *words.choose(&mut rng).unwrap();
     println!("choose word {}", String::from_utf8_lossy(word));
     let mut group = c.benchmark_group("prefix_search");
-    let continuations: Vec<_> = ASCII_LETTERS.iter().map(|&c| [c]).collect();
+
+    let continuations_json = fs::read(PathBuf::from(dir).join("resources/test/continuations.json"))
+        .expect("failed to read file");
+    // use serde to deserialize continuations array from json
+    let continuations: Vec<String> = serde_json::from_slice(&continuations_json).unwrap();
+    let (permutation, skips) = optimized_continuations(&continuations);
 
     // benchmark art-tree
     let mut trie: Art<_, _> = Art::new();
@@ -72,11 +75,6 @@ fn bench_prefix(c: &mut Criterion) {
     group.bench_with_input("patricia_trie_contains", word, |b, input| {
         b.iter(|| trie.contains_prefix(&input[..input.len().saturating_sub(3)]));
     });
-    let conts = trie.contains_continuations("Albert", &continuations);
-    assert_eq!(
-        conts.iter().map(|&b| if b { 1 } else { 0 }).sum::<usize>(),
-        4
-    );
     group.bench_with_input(
         "patricia_trie_continuations",
         &("Albert", &continuations),
@@ -86,11 +84,56 @@ fn bench_prefix(c: &mut Criterion) {
         },
     );
     group.bench_with_input(
-        "patricia_trie_batch_continuations",
+        "patricia_trie_continuations_optimized",
+        &("Albert", &continuations),
+        |b, input| {
+            let (word, continuations) = input;
+            b.iter(|| {
+                trie.contains_continuations_optimized(&word, &continuations, &permutation, &skips)
+            });
+        },
+    );
+    group.bench_with_input(
+        "patricia_trie_continuations_batch",
         &(["Albert"; 64], &continuations),
         |b, input| {
             let (words, continuations) = input;
             b.iter(|| trie.batch_contains_continuations(words, &continuations));
+        },
+    );
+    group.bench_with_input(
+        "patricia_trie_continuations_batch_optimized",
+        &(["Albert"; 64], &continuations),
+        |b, input| {
+            let (words, continuations) = input;
+            b.iter(|| {
+                trie.batch_contains_continuations_optimized(
+                    words,
+                    &continuations,
+                    &permutation,
+                    &skips,
+                )
+            });
+        },
+    );
+    let inputs: [_; 64] = std::array::from_fn(|_| b"Albert".to_vec());
+    let continuations: Vec<_> = continuations
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect();
+    group.bench_with_input(
+        "patricia_trie_continuations_batch_optimized_parallel",
+        &(inputs, continuations),
+        |b, input| {
+            let (words, continuations) = input;
+            b.iter(|| {
+                trie.batch_contains_continuations_optimized_parallel(
+                    words,
+                    continuations,
+                    &permutation,
+                    &skips,
+                )
+            });
         },
     );
 

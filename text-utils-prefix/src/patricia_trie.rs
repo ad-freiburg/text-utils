@@ -1,35 +1,13 @@
-use std::{
-    fmt::Debug,
-    iter::{empty, once},
-};
+use std::iter::{empty, once};
 
 use crate::{ContinuationSearch, PrefixSearch};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 enum NodeType<V> {
     #[default]
     Empty,
     Leaf(V),
     Inner([Option<Box<Node<V>>>; 256]),
-}
-
-impl<V: Debug> Debug for NodeType<V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Empty => f.debug_tuple("Empty").finish(),
-            Self::Leaf(value) => f.debug_tuple("Leaf").field(value).finish(),
-            Self::Inner(children) => f
-                .debug_tuple("Inner")
-                .field(
-                    &children
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, c)| if c.is_some() { Some((i, c)) } else { None })
-                        .collect::<Vec<_>>(),
-                )
-                .finish(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -59,7 +37,7 @@ impl<V> Default for PatriciaTrie<V> {
     }
 }
 
-impl<K, V: Debug> FromIterator<(K, V)> for PatriciaTrie<V>
+impl<K, V> FromIterator<(K, V)> for PatriciaTrie<V>
 where
     K: AsRef<[u8]>,
 {
@@ -173,16 +151,15 @@ impl<V> Node<V> {
     }
 
     #[inline]
-    fn set_child(&mut self, key: u8, child: Self) -> Result<(), Self> {
+    fn set_child(&mut self, key: u8, child: Self) {
         let NodeType::Inner(children) = &mut self.inner else {
-            return Err(child);
+            unreachable!("set child called on leaf node");
         };
         let pos = &mut children[key as usize];
         if pos.is_some() {
-            return Err(child);
+            unreachable!("should not happen");
         }
         *pos = Some(Box::new(child));
-        Ok(())
     }
 
     #[inline]
@@ -212,7 +189,9 @@ impl<V> Node<V> {
     }
 }
 
-impl<V: Debug> PrefixSearch<V> for PatriciaTrie<V> {
+impl<V> PrefixSearch for PatriciaTrie<V> {
+    type Value = V;
+
     fn insert<K>(&mut self, key: K, value: V)
     where
         K: AsRef<[u8]>,
@@ -248,12 +227,8 @@ impl<V: Debug> PrefixSearch<V> for PatriciaTrie<V> {
                 let NodeType::Leaf(node_value) = std::mem::take(&mut node.inner) else {
                     unreachable!("should not happen");
                 };
-                inner
-                    .set_child(node.prefix[n], Node::new_leaf(new_prefix, node_value))
-                    .expect("should not happen");
-                inner
-                    .set_child(k, Node::new_leaf(key.collect(), value))
-                    .expect("should not happen");
+                inner.set_child(node.prefix[n], Node::new_leaf(new_prefix, node_value));
+                inner.set_child(k, Node::new_leaf(key.collect(), value));
                 *node = inner;
                 break;
             } else if let Matching::FullPrefix(k) = matching {
@@ -263,19 +238,14 @@ impl<V: Debug> PrefixSearch<V> for PatriciaTrie<V> {
                     node = node.find_child_mut(k).expect("should not happen");
                     continue;
                 }
-                node.set_child(k, Node::new_leaf(key.collect(), value))
-                    .expect("should not happen");
+                node.set_child(k, Node::new_leaf(key.collect(), value));
             } else if let Matching::Partial(n, k) = matching {
                 // partial prefix match, introduce new inner node
                 let mut inner = Node::new_inner(node.prefix[..n].to_vec());
                 let mut new_node = Node::new_inner(node.prefix[n + 1..].to_vec());
                 new_node.inner = std::mem::take(&mut node.inner);
-                inner
-                    .set_child(node.prefix[n], new_node)
-                    .expect("should not happen");
-                inner
-                    .set_child(k, Node::new_leaf(key.collect(), value))
-                    .expect("should not happen");
+                inner.set_child(node.prefix[n], new_node);
+                inner.set_child(k, Node::new_leaf(key.collect(), value));
                 *node = inner;
             }
             break;
@@ -387,7 +357,7 @@ impl<V: Debug> PrefixSearch<V> for PatriciaTrie<V> {
     }
 }
 
-impl<V: Debug> ContinuationSearch<V> for PatriciaTrie<V> {
+impl<V> ContinuationSearch for PatriciaTrie<V> {
     fn continuations<'a, P>(&'a self, prefix: P) -> impl Iterator<Item = (Vec<u8>, &'a V)>
     where
         P: AsRef<[u8]>,
@@ -413,27 +383,70 @@ impl<V: Debug> ContinuationSearch<V> for PatriciaTrie<V> {
         root.contains_prefix_iter(key, 0).is_some()
     }
 
-    fn contains_continuations<P, C>(&self, prefix: P, continuations: &[C]) -> Vec<bool>
+    fn contains_continuations<P, C>(&self, prefix: P, continuations: &[C]) -> Vec<usize>
     where
         P: AsRef<[u8]>,
         C: AsRef<[u8]>,
     {
         let Some(root) = &self.root else {
-            return vec![false; continuations.len()];
+            return vec![];
         };
 
         let key = prefix.as_ref().iter().copied();
         let Some((node, n)) = root.contains_prefix_iter(key, 0) else {
-            return vec![false; continuations.len()];
+            return vec![];
         };
 
         continuations
             .iter()
-            .map(|c| {
+            .enumerate()
+            .filter_map(|(i, c)| {
                 let key = c.as_ref().iter().copied();
-                node.contains_prefix_iter(key, n).is_some()
+                if node.contains_prefix_iter(key, n).is_some() {
+                    Some(i)
+                } else {
+                    None
+                }
             })
             .collect()
+    }
+
+    fn contains_continuations_optimized<P, C>(
+        &self,
+        prefix: P,
+        continuations: &[C],
+        permutation: &[usize],
+        skips: &[usize],
+    ) -> Vec<usize>
+    where
+        P: AsRef<[u8]>,
+        C: AsRef<[u8]>,
+    {
+        let mut result = vec![];
+        let Some(root) = &self.root else {
+            return result;
+        };
+
+        let key = prefix.as_ref().iter().copied();
+        let Some((node, n)) = root.contains_prefix_iter(key, 0) else {
+            return result;
+        };
+
+        let mut i = 0;
+        while let Some(&j) = permutation.get(i) {
+            let continuation = continuations[j].as_ref();
+            if node
+                .contains_prefix_iter(continuation.iter().copied(), n)
+                .is_some()
+            {
+                result.push(j);
+            } else {
+                i += skips[i];
+            }
+            i += 1;
+        }
+
+        result
     }
 }
 
@@ -470,11 +483,11 @@ mod test {
         let dir = env!("CARGO_MANIFEST_DIR");
         let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
             .expect("failed to read file");
-        let N = 100_000;
-        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(N).collect();
+        let n = 100_000;
+        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(n).collect();
 
         let mut trie: PatriciaTrie<_> = words.iter().enumerate().map(|(i, w)| (w, i)).collect();
-        assert_eq!(trie.size(), N);
+        assert_eq!(trie.size(), n);
         for (i, word) in words.iter().enumerate() {
             assert_eq!(trie.get(word), Some(&i));
             for j in 0..word.len() {
@@ -490,6 +503,6 @@ mod test {
                 assert_eq!(trie.get(word), Some(&i));
             }
         }
-        assert_eq!(trie.size(), N / 2);
+        assert_eq!(trie.size(), n / 2);
     }
 }

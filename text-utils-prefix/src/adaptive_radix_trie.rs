@@ -5,18 +5,18 @@ use std::{
 
 use crate::{ContinuationSearch, PrefixSearch};
 
-type Index<const N: usize> = [u8; N];
-type Children<V, const N: usize> = [Option<Box<Node<V>>>; N];
+type Index<const N: usize> = Box<[u8; N]>;
+type Children<V, const N: usize> = Box<[Option<Box<Node<V>>>; N]>;
 
 #[derive(Default, Debug)]
 enum NodeType<V> {
     #[default]
     Empty,
     Leaf(V),
-    N4(Index<4>, Children<V, 4>, usize),
-    N16(Index<16>, Children<V, 16>, usize),
-    N48(Box<Index<256>>, Children<V, 48>, usize),
-    N256(Children<V, 256>, usize),
+    N4(Index<4>, Children<V, 4>, u8),
+    N16(Index<16>, Children<V, 16>, u8),
+    N48(Index<256>, Children<V, 48>, u8),
+    N256(Children<V, 256>, u16),
 }
 
 #[derive(Debug)]
@@ -117,7 +117,11 @@ impl<V> Node<V> {
     fn new_inner(prefix: Vec<u8>) -> Self {
         Self {
             prefix: prefix.into_boxed_slice(),
-            inner: NodeType::N4(std::array::from_fn(|_| 0), std::array::from_fn(|_| None), 0),
+            inner: NodeType::N4(
+                Box::new(std::array::from_fn(|_| 0)),
+                Box::new(std::array::from_fn(|_| None)),
+                0,
+            ),
         }
     }
 
@@ -184,17 +188,17 @@ impl<V> Node<V> {
         match &self.inner {
             NodeType::Empty | NodeType::Leaf(_) => Box::new(empty()),
             NodeType::N4(_, children, num_children) => Box::new(
-                children[..*num_children]
+                children[..*num_children as usize]
                     .iter()
                     .filter_map(|child| child.as_deref()),
             ),
             NodeType::N16(_, children, num_children) => Box::new(
-                children[..*num_children]
+                children[..*num_children as usize]
                     .iter()
                     .filter_map(|child| child.as_deref()),
             ),
             NodeType::N48(_, children, num_children) => Box::new(
-                children[..*num_children]
+                children[..*num_children as usize]
                     .iter()
                     .filter_map(|child| child.as_deref()),
             ),
@@ -214,8 +218,9 @@ impl<V> Node<V> {
             NodeType::Empty | NodeType::Leaf(_) => unreachable!("should not happen"),
             NodeType::N4(keys, children, num_children) => {
                 // also keep sorted order for n4 for easier upgrade
-                let idx = keys[..*num_children].binary_search(&key).unwrap_err();
-                if idx < *num_children {
+                let n = *num_children as usize;
+                let idx = keys[..n].binary_search(&key).unwrap_err();
+                if idx < n {
                     keys[idx..].rotate_right(1);
                     children[idx..].rotate_right(1);
                 }
@@ -224,8 +229,9 @@ impl<V> Node<V> {
                 *num_children += 1;
             }
             NodeType::N16(keys, children, num_children) => {
-                let idx = keys[..*num_children].binary_search(&key).unwrap_err();
-                if idx < *num_children {
+                let n = *num_children as usize;
+                let idx = keys[..n].binary_search(&key).unwrap_err();
+                if idx < n {
                     keys[idx..].rotate_right(1);
                     children[idx..].rotate_right(1);
                 }
@@ -234,8 +240,8 @@ impl<V> Node<V> {
                 *num_children += 1;
             }
             NodeType::N48(index, children, num_children) => {
-                index[key as usize] = *num_children as u8;
-                children[*num_children] = Some(Box::new(child));
+                index[key as usize] = *num_children;
+                children[*num_children as usize] = Some(Box::new(child));
                 *num_children += 1;
             }
             NodeType::N256(children, num_children) => {
@@ -291,6 +297,7 @@ impl<V> Node<V> {
             NodeType::Empty | NodeType::Leaf(_) => None,
             NodeType::N4(keys, children, num_children) => {
                 for i in 0..*num_children {
+                    let i = i as usize;
                     if keys[i] == key {
                         return children[i].as_deref();
                     }
@@ -298,7 +305,7 @@ impl<V> Node<V> {
                 None
             }
             NodeType::N16(keys, children, num_children) => {
-                let idx = keys[..*num_children].binary_search(&key).ok()?;
+                let idx = keys[..*num_children as usize].binary_search(&key).ok()?;
                 children[idx].as_deref()
             }
             NodeType::N48(keys, children, _) => {
@@ -314,6 +321,7 @@ impl<V> Node<V> {
             NodeType::Empty | NodeType::Leaf(_) => None,
             NodeType::N4(keys, children, num_children) => {
                 for i in 0..*num_children {
+                    let i = i as usize;
                     if keys[i] == key {
                         return children[i].as_deref_mut();
                     }
@@ -321,7 +329,7 @@ impl<V> Node<V> {
                 None
             }
             NodeType::N16(keys, children, num_children) => {
-                let idx = keys[..*num_children].binary_search(&key).ok()?;
+                let idx = keys[..*num_children as usize].binary_search(&key).ok()?;
                 children[idx].as_deref_mut()
             }
             NodeType::N48(keys, children, _) => children
@@ -336,9 +344,8 @@ impl<V> Node<V> {
             NodeType::Empty | NodeType::Leaf(_) => {
                 unreachable!("should not happen")
             }
-            NodeType::N256(_, num_children) => {
+            NodeType::N256(..) => {
                 // upgrade should only be called on non empty n256 nodes
-                assert!(*num_children < 256);
                 return;
             }
             NodeType::N4(keys, children, num_children) => {
@@ -349,15 +356,15 @@ impl<V> Node<V> {
                 assert_eq!(*num_children, 4);
                 // just move over because n4 is also sorted
                 NodeType::N16(
-                    std::array::from_fn(|i| if i < 4 { keys[i] } else { 0 }),
-                    std::array::from_fn(|i| {
+                    Box::new(std::array::from_fn(|i| if i < 4 { keys[i] } else { 0 })),
+                    Box::new(std::array::from_fn(|i| {
                         if i < 4 {
                             assert!(children[i].is_some());
                             std::mem::take(&mut children[i])
                         } else {
                             None
                         }
-                    }),
+                    })),
                     4,
                 )
             }
@@ -373,14 +380,14 @@ impl<V> Node<V> {
                 }
                 NodeType::N48(
                     Box::new(index),
-                    std::array::from_fn(|i| {
+                    Box::new(std::array::from_fn(|i| {
                         if i < 16 {
                             assert!(children[i].is_some());
                             std::mem::take(&mut children[i])
                         } else {
                             None
                         }
-                    }),
+                    })),
                     16,
                 )
             }
@@ -391,7 +398,7 @@ impl<V> Node<V> {
                 }
                 assert_eq!(*num_children, 48);
                 NodeType::N256(
-                    std::array::from_fn(|i| {
+                    Box::new(std::array::from_fn(|i| {
                         let idx = index[i];
                         if idx < 48 {
                             assert!(children[idx as usize].is_some());
@@ -399,7 +406,7 @@ impl<V> Node<V> {
                         } else {
                             None
                         }
-                    }),
+                    })),
                     48,
                 )
             }
@@ -673,12 +680,17 @@ impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
 
 #[cfg(test)]
 mod test {
+    use crate::adaptive_radix_trie::Node;
     use crate::{adaptive_radix_trie::AdaptiveRadixTrie, PrefixSearch};
     use std::fs;
     use std::path::PathBuf;
 
     #[test]
     fn test_trie() {
+        println!(
+            "size of adaptive radix trie node: {}",
+            std::mem::size_of::<Node<i32>>()
+        );
         let mut trie = AdaptiveRadixTrie::default();
         assert_eq!(trie.get(b"hello"), None);
         assert_eq!(trie.get(b""), None);

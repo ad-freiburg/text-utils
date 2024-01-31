@@ -10,7 +10,7 @@ enum NodeType<V> {
     #[default]
     Empty,
     Leaf(V),
-    Inner([Option<Box<Node<V>>>; 256]),
+    Inner(Box<[Option<Box<Node<V>>>; 256]>),
 }
 
 #[derive(Debug)]
@@ -105,7 +105,7 @@ impl<V> Node<V> {
     fn new_inner(prefix: Vec<u8>) -> Self {
         Self {
             prefix: prefix.into_boxed_slice(),
-            inner: NodeType::Inner(std::array::from_fn(|_| None)),
+            inner: NodeType::Inner(Box::new(std::array::from_fn(|_| None))),
         }
     }
 
@@ -494,12 +494,20 @@ impl<V> ContinuationSearch for PatriciaTrie<V> {
 
 #[cfg(test)]
 mod test {
+    use crate::patricia_trie::Node;
     use crate::{patricia_trie::PatriciaTrie, PrefixSearch};
     use std::fs;
     use std::path::PathBuf;
 
     #[test]
     fn test_trie() {
+        println!(
+            "size of patricia trie node: {}, box array: {}, box slice: {}, vec: {}",
+            std::mem::size_of::<Node<i32>>(),
+            std::mem::size_of::<Box<[usize; 256]>>(),
+            std::mem::size_of::<Box<[usize]>>(),
+            std::mem::size_of::<Vec<usize>>()
+        );
         let mut trie = PatriciaTrie::default();
         assert_eq!(trie.get(b"hello"), None);
         assert_eq!(trie.get(b""), None);

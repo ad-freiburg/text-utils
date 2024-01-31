@@ -1,18 +1,16 @@
-use std::collections::HashMap;
-
 use crate::PrefixSearch;
 
 #[derive(Debug)]
 struct Node<V> {
     value: Option<V>,
-    children: [Option<Box<Node<V>>>; 256],
+    children: Box<[Option<Box<Node<V>>>; 256]>,
 }
 
 impl<V> Default for Node<V> {
     fn default() -> Self {
         Self {
             value: None,
-            children: std::array::from_fn(|_| None),
+            children: Box::new(std::array::from_fn(|_| None)),
         }
     }
 }
@@ -177,12 +175,14 @@ impl<V> PrefixSearch for Trie<V> {
 
 #[cfg(test)]
 mod test {
+    use crate::trie::Node;
     use crate::{trie::Trie, PrefixSearch};
     use std::fs;
     use std::path::PathBuf;
 
     #[test]
     fn test_trie() {
+        println!("size of trie node: {}", std::mem::size_of::<Node<i32>>());
         let mut trie = Trie::default();
         assert_eq!(trie.get(b"hello"), None);
         assert_eq!(trie.get(b""), None);

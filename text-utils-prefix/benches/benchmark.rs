@@ -14,9 +14,9 @@ use patricia_tree::PatriciaMap;
 
 fn bench_prefix(c: &mut Criterion) {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
+    let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.100k.txt"))
         .expect("failed to read file");
-    let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(100_000).collect();
+    let words: Vec<_> = index.lines().map(|s| s.as_bytes()).collect();
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     // sample random word from all words
     let word = *words.choose(&mut rng).unwrap();

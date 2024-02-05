@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use text_utils_prefix::adaptive_radix_trie::AdaptiveRadixTrie;
+use text_utils_prefix::AdaptiveRadixTrie;
 
 fn main() {
     let dir = env!("CARGO_MANIFEST_DIR");

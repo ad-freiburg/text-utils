@@ -8,10 +8,8 @@ use crate::{ContinuationSearch, PrefixSearch};
 type Index<const N: usize> = Box<[u8; N]>;
 type Children<V, const N: usize> = Box<[Option<Box<Node<V>>>; N]>;
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 enum NodeType<V> {
-    #[default]
-    Empty,
     Leaf(V),
     N4(Index<4>, Children<V, 4>, u8),
     N16(Index<16>, Children<V, 16>, u8),
@@ -58,7 +56,6 @@ impl<V> AdaptiveRadixTrie<V> {
         while let Some((node, depth)) = stack.pop() {
             max_depth = max_depth.max(depth);
             let name = match &node.inner {
-                NodeType::Empty => unreachable!("should not happen"),
                 NodeType::Leaf(_) => "leaf",
                 NodeType::N4(..) => "n4",
                 NodeType::N16(..) => "n16",
@@ -69,7 +66,7 @@ impl<V> AdaptiveRadixTrie<V> {
             val.0 += 1;
             let n = val.0 as f32;
             val.1 = (val.1 * (n - 1.0) + node.prefix.len() as f32) / n;
-            stack.extend(node.children().map(|child| (child, depth + 1)));
+            stack.extend(node.children().map(|(_, child)| (child, depth + 1)));
         }
         AdaptiveRadixTrieStats {
             depth: max_depth,
@@ -93,7 +90,7 @@ where
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut trie = Self::default();
         for (k, v) in iter {
-            trie.insert(k, v);
+            trie.insert(k.as_ref(), v);
         }
         trie
     }
@@ -184,27 +181,39 @@ impl<V> Node<V> {
         self.find_child(key).is_some()
     }
 
-    fn children(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
+    fn children(&self) -> Box<dyn Iterator<Item = (u8, &Self)> + '_> {
         match &self.inner {
-            NodeType::Empty | NodeType::Leaf(_) => Box::new(empty()),
-            NodeType::N4(_, children, num_children) => Box::new(
-                children[..*num_children as usize]
+            NodeType::Leaf(_) => Box::new(empty()),
+            NodeType::N4(keys, children, num_children) => Box::new(
+                keys[..*num_children as usize]
                     .iter()
-                    .filter_map(|child| child.as_deref()),
+                    .copied()
+                    .zip(&children[..*num_children as usize])
+                    .map(|(k, child)| (k, child.as_deref().unwrap())),
             ),
-            NodeType::N16(_, children, num_children) => Box::new(
-                children[..*num_children as usize]
+            NodeType::N16(keys, children, num_children) => Box::new(
+                keys[..*num_children as usize]
                     .iter()
-                    .filter_map(|child| child.as_deref()),
+                    .copied()
+                    .zip(&children[..*num_children as usize])
+                    .map(|(k, child)| (k, child.as_deref().unwrap())),
             ),
-            NodeType::N48(_, children, num_children) => Box::new(
-                children[..*num_children as usize]
-                    .iter()
-                    .filter_map(|child| child.as_deref()),
-            ),
-            NodeType::N256(children, _) => {
-                Box::new(children.iter().filter_map(|child| child.as_deref()))
+            NodeType::N48(index, children, num_children) => {
+                Box::new(index.iter().enumerate().filter_map(|(i, &idx)| {
+                    if idx < *num_children {
+                        Some((i as u8, children[idx as usize].as_deref().unwrap()))
+                    } else {
+                        None
+                    }
+                }))
             }
+
+            NodeType::N256(children, _) => Box::new(
+                children
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, child)| child.as_deref().map(|child| (i as u8, child))),
+            ),
         }
     }
 
@@ -215,7 +224,7 @@ impl<V> Node<V> {
         assert!(self.find_child(key).is_none());
         self.upgrade();
         match &mut self.inner {
-            NodeType::Empty | NodeType::Leaf(_) => unreachable!("should not happen"),
+            NodeType::Leaf(_) => unreachable!("should not happen"),
             NodeType::N4(keys, children, num_children) => {
                 // also keep sorted order for n4 for easier upgrade
                 let n = *num_children as usize;
@@ -252,17 +261,55 @@ impl<V> Node<V> {
     }
 
     #[inline]
-    fn remove_child(&mut self, key: u8) {
-        // potentially downgrade the current node before removal, will change
+    fn remove_child(&mut self, key: u8) -> Self {
+        assert!(self.find_child(key).is_some());
+        let child = match &mut self.inner {
+            NodeType::Leaf(_) => unreachable!("should not happen"),
+            NodeType::N4(keys, children, num_children) => {
+                let n = *num_children as usize;
+                let idx = keys[..n].binary_search(&key).unwrap();
+                keys[idx..].rotate_left(1);
+                let child = children[idx].take().unwrap();
+                children[idx..].rotate_left(1);
+                *num_children -= 1;
+                child
+            }
+            NodeType::N16(keys, children, num_children) => {
+                let n = *num_children as usize;
+                let idx = keys[..n].binary_search(&key).unwrap();
+                keys[idx..].rotate_left(1);
+                let child = children[idx].take().unwrap();
+                children[idx..].rotate_left(1);
+                *num_children -= 1;
+                child
+            }
+            NodeType::N48(index, children, num_children) => {
+                let k = key as usize;
+                let idx = index[k];
+                index[k] = u8::MAX;
+                index.iter_mut().for_each(|i| {
+                    if *i < 48 && *i > idx {
+                        *i -= 1;
+                    }
+                });
+                let idx = idx as usize;
+                let child = children[idx].take().unwrap();
+                children[idx..].rotate_left(1);
+                *num_children -= 1;
+                child
+            }
+            NodeType::N256(children, num_children) => {
+                *num_children -= 1;
+                children[key as usize].take().unwrap()
+            }
+        };
+        // potentially downgrade the current node after removal, will change
         // nothing if the node does not need to be downgraded
         self.downgrade();
-        match &mut self.inner {
-            NodeType::Empty | NodeType::Leaf(_) => unreachable!("should not happen"),
-            NodeType::N4(_, _, _) => todo!(),
-            NodeType::N16(_, _, _) => todo!(),
-            NodeType::N48(_, _, _) => todo!(),
-            NodeType::N256(_, _) => todo!(),
-        }
+        // also potentially merge the current node after removal with single
+        // child (can only happen with N4)
+        self.merge();
+        *child
     }
 
     #[inline]
@@ -272,9 +319,6 @@ impl<V> Node<V> {
         offset: usize,
     ) -> Option<(&Self, usize)> {
         let mut node = self;
-        // extend given key with null byte
-        // because its needed for the correctness of the algorithm
-        // when it comes to key lookup
         loop {
             let k = match node.matching(&mut key, offset) {
                 Matching::FullKey(n) => return Some((node, n)),
@@ -294,7 +338,7 @@ impl<V> Node<V> {
     #[inline]
     fn find_child(&self, key: u8) -> Option<&Self> {
         match &self.inner {
-            NodeType::Empty | NodeType::Leaf(_) => None,
+            NodeType::Leaf(_) => None,
             NodeType::N4(keys, children, num_children) => {
                 for i in 0..*num_children {
                     let i = i as usize;
@@ -318,7 +362,7 @@ impl<V> Node<V> {
     #[inline]
     fn find_child_mut(&mut self, key: u8) -> Option<&mut Self> {
         match &mut self.inner {
-            NodeType::Empty | NodeType::Leaf(_) => None,
+            NodeType::Leaf(_) => None,
             NodeType::N4(keys, children, num_children) => {
                 for i in 0..*num_children {
                     let i = i as usize;
@@ -339,21 +383,10 @@ impl<V> Node<V> {
         }
     }
 
+    #[inline]
     fn upgrade(&mut self) {
-        let inner = match &mut self.inner {
-            NodeType::Empty | NodeType::Leaf(_) => {
-                unreachable!("should not happen")
-            }
-            NodeType::N256(..) => {
-                // upgrade should only be called on non empty n256 nodes
-                return;
-            }
-            NodeType::N4(keys, children, num_children) => {
-                if *num_children < 4 {
-                    // nothing to do
-                    return;
-                }
-                assert_eq!(*num_children, 4);
+        self.inner = match &mut self.inner {
+            NodeType::N4(keys, children, num_children) if *num_children == 4 => {
                 // just move over because n4 is also sorted
                 NodeType::N16(
                     Box::new(std::array::from_fn(|i| if i < 4 { keys[i] } else { 0 })),
@@ -368,12 +401,7 @@ impl<V> Node<V> {
                     4,
                 )
             }
-            NodeType::N16(keys, children, num_children) => {
-                if *num_children < 16 {
-                    // nothing to do
-                    return;
-                }
-                assert_eq!(*num_children, 16);
+            NodeType::N16(keys, children, num_children) if *num_children == 16 => {
                 let mut index = [u8::MAX; 256];
                 for (i, k) in keys.iter().enumerate() {
                     index[*k as usize] = i as u8;
@@ -391,115 +419,168 @@ impl<V> Node<V> {
                     16,
                 )
             }
-            NodeType::N48(index, children, num_children) => {
-                if *num_children < 48 {
-                    // nothing to do
-                    return;
-                }
-                assert_eq!(*num_children, 48);
-                NodeType::N256(
-                    Box::new(std::array::from_fn(|i| {
-                        let idx = index[i];
-                        if idx < 48 {
-                            assert!(children[idx as usize].is_some());
-                            std::mem::take(&mut children[idx as usize])
-                        } else {
-                            None
-                        }
-                    })),
-                    48,
-                )
-            }
+            NodeType::N48(index, children, num_children) if *num_children == 48 => NodeType::N256(
+                Box::new(std::array::from_fn(|i| {
+                    let idx = index[i];
+                    if idx < 48 {
+                        assert!(children[idx as usize].is_some());
+                        std::mem::take(&mut children[idx as usize])
+                    } else {
+                        None
+                    }
+                })),
+                48,
+            ),
+            _ => return,
         };
-        self.inner = inner;
     }
 
+    #[inline]
     fn downgrade(&mut self) {
-        todo!()
+        self.inner = match &mut self.inner {
+            NodeType::N16(keys, children, num_children) if *num_children == 4 => NodeType::N4(
+                Box::new(std::array::from_fn(|i| keys[i])),
+                Box::new(std::array::from_fn(|i| children[i].take())),
+                4,
+            ),
+            NodeType::N48(index, children, num_children) if *num_children == 16 => {
+                let mut keys = [0; 16];
+                let mut new_children = std::array::from_fn(|_| None);
+                index
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &idx)| idx < 48)
+                    .enumerate()
+                    .for_each(|(i, (k, idx))| {
+                        keys[i] = k as u8;
+                        new_children[i] = children[*idx as usize].take();
+                    });
+                assert!(keys[..15].iter().zip(keys[1..].iter()).all(|(a, b)| a < b));
+                assert!(new_children.iter().all(|c| c.is_some()));
+                NodeType::N16(Box::new(keys), Box::new(new_children), 16)
+            }
+            NodeType::N256(children, num_children) if *num_children == 48 => {
+                let mut index = [u8::MAX; 256];
+                let mut new_children = std::array::from_fn(|_| None);
+                children
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(_, child)| child.is_some())
+                    .enumerate()
+                    .for_each(|(i, (b, child))| {
+                        index[b] = i as u8;
+                        new_children[i] = child.take();
+                    });
+                assert!(new_children.iter().all(|c| c.is_some()));
+                NodeType::N48(Box::new(index), Box::new(new_children), 48)
+            }
+            _ => return,
+        };
+    }
+
+    #[inline]
+    fn merge(&mut self) {
+        let (k, child) = match &mut self.inner {
+            NodeType::N4(keys, children, num_children) if *num_children == 1 => {
+                (keys[0], children[0].take().unwrap())
+            }
+            _ => return,
+        };
+        let new_prefix: Vec<_> = self
+            .prefix
+            .iter()
+            .copied()
+            .chain(once(k))
+            .chain(child.prefix.iter().copied())
+            .collect();
+        self.prefix = new_prefix.into_boxed_slice();
+        self.inner = child.inner;
+    }
+
+    #[inline]
+    fn leaves_recursive(&self, prefix: Vec<u8>) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        Box::new(self.children().flat_map(move |(k, child)| {
+            let mut key = prefix.clone();
+            key.push(k);
+            let NodeType::Leaf(value) = &child.inner else {
+                return child.leaves_recursive(key);
+            };
+            key.extend(child.prefix.iter().copied());
+            key.pop();
+            Box::new(once((key, value)))
+        }))
     }
 }
 
 impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
     type Value = V;
 
-    fn insert<K>(&mut self, key: K, value: V)
-    where
-        K: AsRef<[u8]>,
-    {
-        let mut key = key.as_ref().iter().copied().chain(once(0));
+    fn insert(&mut self, key: &[u8], value: V) -> Option<V> {
+        let mut key = key.iter().copied().chain(once(0));
         // empty tree
         let Some(root) = &mut self.root else {
             // insert leaf at root
             self.root = Some(Node::new_leaf(key.collect(), value));
-            return;
+            return None;
         };
         let mut node = root;
         loop {
-            let matching = node.matching(&mut key, 0);
-            if node.is_leaf() {
-                let (inner_prefix, new_prefix, n, k) = match matching {
-                    Matching::FullKey(_) => unreachable!("should not happen"),
-                    Matching::FullPrefix(_) => unreachable!("should not happen"),
-                    Matching::Partial(n, k) => (
-                        node.prefix[..n].to_vec(),
-                        node.prefix[n + 1..].to_vec(),
-                        n,
-                        k,
-                    ),
-                    Matching::Exact => {
-                        // exact match, only replace leaf value
-                        node.inner = NodeType::Leaf(value);
-                        return;
+            match node.matching(&mut key, 0) {
+                Matching::FullKey(_) => unreachable!("should not happen"),
+                Matching::FullPrefix(k) => {
+                    // full prefix match, either go to next child
+                    // or append leaf with rest of key
+                    if node.has_child(k) {
+                        node = node.find_child_mut(k).unwrap();
+                        continue;
                     }
-                };
-                let mut inner = Node::new_inner(inner_prefix);
-                let NodeType::Leaf(node_value) = std::mem::take(&mut node.inner) else {
-                    unreachable!("should not happen");
-                };
-                inner.set_child(node.prefix[n], Node::new_leaf(new_prefix, node_value));
-                inner.set_child(k, Node::new_leaf(key.collect(), value));
-                *node = inner;
-                break;
-            } else if let Matching::FullPrefix(k) = matching {
-                // full prefix match, either go to next child
-                // or append leaf with rest of key
-                if node.has_child(k) {
-                    node = node.find_child_mut(k).expect("should not happen");
-                    continue;
+                    node.set_child(k, Node::new_leaf(key.collect(), value));
+                    break;
                 }
-                node.set_child(k, Node::new_leaf(key.collect(), value));
-            } else if let Matching::Partial(n, k) = matching {
-                // partial prefix match, introduce new inner node
-                let mut inner = Node::new_inner(node.prefix[..n].to_vec());
-                let mut new_node = Node::new_inner(node.prefix[n + 1..].to_vec());
-                new_node.inner = std::mem::take(&mut node.inner);
-                inner.set_child(node.prefix[n], new_node);
-                inner.set_child(k, Node::new_leaf(key.collect(), value));
-                *node = inner;
-            }
-            break;
+                Matching::Partial(n, k) => {
+                    let inner_prefix = node.prefix[..n].to_vec();
+                    let old_prefix = node.prefix[n + 1..].to_vec();
+                    let p_k = node.prefix[n];
+
+                    let mut old_node = std::mem::replace(node, Node::new_inner(inner_prefix));
+                    old_node.prefix = old_prefix.into();
+                    node.set_child(k, Node::new_leaf(key.collect(), value));
+                    node.set_child(p_k, old_node);
+                    break;
+                }
+                Matching::Exact => {
+                    // exact match, only replace leaf value
+                    let NodeType::Leaf(node_value) =
+                        std::mem::replace(&mut node.inner, NodeType::Leaf(value))
+                    else {
+                        unreachable!("should not happen");
+                    };
+                    return Some(node_value);
+                }
+            };
         }
+        None
     }
 
-    fn delete<K>(&mut self, key: K) -> Option<V>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn delete(&mut self, key: &[u8]) -> Option<V> {
         let Some(root) = &mut self.root else {
             return None;
         };
 
         // handle special case where root is leaf
         if root.is_leaf() {
-            let NodeType::Leaf(value) = std::mem::take(&mut root.inner) else {
+            let Some(Node {
+                inner: NodeType::Leaf(value),
+                ..
+            }) = self.root.take()
+            else {
                 unreachable!("should not happen");
             };
-            self.root = None;
             return Some(value);
         }
 
         let mut node = root;
-        let mut key = key.as_ref().iter().copied().chain(once(0));
+        let mut key = key.iter().copied().chain(once(0));
         loop {
             let matching = node.matching(&mut key, 0);
 
@@ -521,106 +602,135 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
             let Matching::Exact = child.matching(&mut key, 0) else {
                 break;
             };
-
-            todo!();
             // key is an exact match for a leaf
-            // let NodeType::Inner(children) = &mut node.inner else {
-            //     unreachable!("should not happen");
-            // };
-            // let child = std::mem::take(&mut children[k as usize])?;
-            // let NodeType::Leaf(value) = child.inner else {
-            //     unreachable!("should not happen");
-            // };
-            // let child_indices: Vec<_> = children
-            //     .iter()
-            //     .enumerate()
-            //     .filter_map(|(i, child)| child.as_ref().map(|_| i))
-            //     .collect();
-            // assert!(!child_indices.is_empty());
-            // if child_indices.len() == 1 {
-            //     // if we only have one child left, we can merge
-            //     // the child into the current node
-            //     let single_child_k = child_indices.into_iter().next().unwrap();
-            //     let single_child = std::mem::take(&mut children[single_child_k])?;
-            //     let new_prefix: Vec<_> = node
-            //         .prefix
-            //         .iter()
-            //         .copied()
-            //         .chain(once(single_child_k as u8))
-            //         .chain(single_child.prefix.iter().copied())
-            //         .collect();
-            //     node.prefix = new_prefix.into_boxed_slice();
-            //     node.inner = single_child.inner;
-            // }
-            // return Some(value);
+            let Node {
+                inner: NodeType::Leaf(value),
+                ..
+            } = node.remove_child(k) else {
+                unreachable!("should not happen");
+            };
+            return Some(value);
         }
         None
     }
 
-    fn get<K>(&self, key: K) -> Option<&V>
-    where
-        K: AsRef<[u8]>,
-    {
+    fn get(&self, key: &[u8]) -> Option<&V> {
         let Some(root) = &self.root else {
             return None;
         };
 
-        let key = key.as_ref().iter().copied().chain(once(0));
+        let key = key.iter().copied().chain(once(0));
         root.find_iter(key).and_then(|node| match &node.inner {
             NodeType::Leaf(v) => Some(v),
             _ => None,
         })
     }
 
-    fn contains_prefix<P>(&self, prefix: P) -> bool
-    where
-        P: AsRef<[u8]>,
-    {
+    fn contains_prefix(&self, prefix: &[u8]) -> bool {
         let Some(root) = &self.root else {
             return false;
         };
 
-        let key = prefix.as_ref().iter().copied();
-        root.contains_prefix_iter(key, 0).is_some()
-    }
-}
-
-impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
-    fn continuations<'a, P>(&'a self, prefix: P) -> impl Iterator<Item = (Vec<u8>, &'a V)>
-    where
-        P: AsRef<[u8]>,
-        V: 'a,
-    {
-        empty()
-    }
-
-    fn contains_continuation<P, C>(&self, prefix: P, continuation: C) -> bool
-    where
-        P: AsRef<[u8]>,
-        C: AsRef<[u8]>,
-    {
-        let Some(root) = &self.root else {
-            return false;
-        };
-
-        let key = prefix
-            .as_ref()
-            .iter()
-            .chain(continuation.as_ref().iter())
-            .copied();
+        let key = prefix.iter().copied();
         root.contains_prefix_iter(key, 0).is_some()
     }
 
-    fn contains_continuations<P, C>(&self, prefix: P, continuations: &[C]) -> Vec<usize>
+    fn path<'a>(&'a self, prefix: &[u8]) -> Vec<(usize, &'a Self::Value)>
     where
-        P: AsRef<[u8]>,
-        C: AsRef<[u8]>,
+        Self::Value: 'a,
     {
         let Some(root) = &self.root else {
             return vec![];
         };
 
-        let key = prefix.as_ref().iter().copied();
+        let mut path = vec![];
+        let mut node = root;
+        let mut key = prefix.iter().copied();
+        let mut i = 0;
+        loop {
+            match node.matching(&mut key, 0) {
+                Matching::FullKey(_) => break,
+                Matching::FullPrefix(k) => {
+                    i += node.prefix.len();
+                    if let Some(leaf) = node.find_child(0) {
+                        let NodeType::Leaf(v) = &leaf.inner else {
+                            unreachable!("should not happen");
+                        };
+                        path.push((i, v));
+                    }
+                    let Some(child) = node.find_child(k) else {
+                        break;
+                    };
+                    node = child;
+                    i += 1;
+                }
+                Matching::Exact => {
+                    let Some(child) = node.find_child(0) else {
+                        break;
+                    };
+                    let NodeType::Leaf(v) = &child.inner else {
+                        unreachable!("should not happen");
+                    };
+                    path.push((i + node.prefix.len(), v));
+                    break;
+                }
+                Matching::Partial(..) => break,
+            };
+        }
+        path
+    }
+}
+
+impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
+    type Value = V;
+
+    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        let Some(root) = &self.root else {
+            return Box::new(empty());
+        };
+        let mut node = root;
+        let mut key = prefix.iter().copied();
+        let mut prefix = prefix.to_vec();
+        loop {
+            let k = match node.matching(&mut key, 0) {
+                Matching::FullKey(n) => {
+                    prefix.extend(node.prefix[n..].iter().copied());
+                    break;
+                }
+                Matching::Exact => break,
+                Matching::FullPrefix(k) => k,
+                Matching::Partial(..) => return Box::new(empty()),
+            };
+
+            let Some(child) = node.find_child(k) else {
+                break;
+            };
+            node = child;
+        }
+
+        if let NodeType::Leaf(value) = &node.inner {
+            prefix.pop();
+            Box::new(once((prefix, value)))
+        } else {
+            node.leaves_recursive(prefix)
+        }
+    }
+
+    fn contains_continuation(&self, prefix: &[u8], continuation: &[u8]) -> bool {
+        let Some(root) = &self.root else {
+            return false;
+        };
+
+        let key = prefix.iter().chain(continuation.iter()).copied();
+        root.contains_prefix_iter(key, 0).is_some()
+    }
+
+    fn contains_continuations(&self, prefix: &[u8], continuations: &[Vec<u8>]) -> Vec<usize> {
+        let Some(root) = &self.root else {
+            return vec![];
+        };
+
+        let key = prefix.iter().copied();
         let Some((node, n)) = root.contains_prefix_iter(key, 0) else {
             return vec![];
         };
@@ -629,7 +739,7 @@ impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
             .iter()
             .enumerate()
             .filter_map(|(i, c)| {
-                let key = c.as_ref().iter().copied();
+                let key = c.iter().copied();
                 if node.contains_prefix_iter(key, n).is_some() {
                     Some(i)
                 } else {
@@ -639,30 +749,26 @@ impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
             .collect()
     }
 
-    fn contains_continuations_optimized<P, C>(
+    fn contains_continuations_optimized(
         &self,
-        prefix: P,
-        continuations: &[C],
+        prefix: &[u8],
+        continuations: &[Vec<u8>],
         permutation: &[usize],
         skips: &[usize],
-    ) -> Vec<usize>
-    where
-        P: AsRef<[u8]>,
-        C: AsRef<[u8]>,
-    {
+    ) -> Vec<usize> {
         let mut result = vec![];
         let Some(root) = &self.root else {
             return result;
         };
 
-        let key = prefix.as_ref().iter().copied();
+        let key = prefix.iter().copied();
         let Some((node, n)) = root.contains_prefix_iter(key, 0) else {
             return result;
         };
 
         let mut i = 0;
         while let Some(&j) = permutation.get(i) {
-            let continuation = continuations[j].as_ref();
+            let continuation = &continuations[j];
             if node
                 .contains_prefix_iter(continuation.iter().copied(), n)
                 .is_some()
@@ -675,72 +781,5 @@ impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
         }
 
         result
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use crate::adaptive_radix_trie::Node;
-    use crate::{adaptive_radix_trie::AdaptiveRadixTrie, PrefixSearch};
-    use std::fs;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_trie() {
-        println!(
-            "size of adaptive radix trie node: {}",
-            std::mem::size_of::<Node<i32>>()
-        );
-        let mut trie = AdaptiveRadixTrie::default();
-        assert_eq!(trie.get(b"hello"), None);
-        assert_eq!(trie.get(b""), None);
-        assert!(!trie.contains_prefix(b""));
-        trie.insert(b"hello", 1);
-        // assert_eq!(trie.delete(b"hello"), Some(1));
-        // assert_eq!(trie.delete(b"hello "), None);
-        // trie.insert(b"hello", 1);
-        trie.insert(b"hell", 2);
-        trie.insert(b"hello world", 3);
-        // println!("{:#?}", trie);
-        assert_eq!(trie.get(b"hello"), Some(&1));
-        assert_eq!(trie.get(b"hell"), Some(&2));
-        assert_eq!(trie.get(b"hello world"), Some(&3));
-        assert_eq!(trie.contains_prefix(b"hell"), true);
-        assert_eq!(trie.contains_prefix(b"hello"), true);
-        assert_eq!(trie.contains_prefix(b""), true);
-        assert_eq!(trie.contains_prefix(b"hello world!"), false);
-        assert_eq!(trie.contains_prefix(b"test"), false);
-        // assert_eq!(trie.delete(b"hello"), Some(1));
-        // assert_eq!(trie.get(b"hello"), None);
-        // assert_eq!(trie.size(), 2);
-
-        let dir = env!("CARGO_MANIFEST_DIR");
-        let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
-            .expect("failed to read file");
-        let n = 100_000;
-        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(n).collect();
-
-        let mut trie: AdaptiveRadixTrie<_> =
-            words.iter().enumerate().map(|(i, w)| (w, i)).collect();
-        let stats = trie.stats();
-        assert_eq!(stats.num_keys, n);
-        for (i, word) in words.iter().enumerate() {
-            assert_eq!(trie.get(word), Some(&i));
-            for j in 0..word.len() {
-                assert!(trie.contains_prefix(&word[..=j]));
-            }
-        }
-        println!("{:#?}", trie.stats());
-        // for (i, word) in words.iter().enumerate() {
-        //     let even = i % 2 == 0;
-        //     if even {
-        //         assert_eq!(trie.delete(word), Some(i));
-        //         assert_eq!(trie.get(word), None);
-        //     } else {
-        //         assert_eq!(trie.get(word), Some(&i));
-        //     }
-        // }
-        // let stats = trie.stats();
-        // assert_eq!(stats.num_keys, n / 2);
     }
 }

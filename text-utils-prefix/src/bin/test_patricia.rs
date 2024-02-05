@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use text_utils_prefix::patricia_trie::PatriciaTrie;
+use text_utils_prefix::PatriciaTrie;
 
 fn main() {
     let dir = env!("CARGO_MANIFEST_DIR");

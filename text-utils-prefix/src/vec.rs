@@ -1,12 +1,11 @@
 use itertools::Itertools;
 use rayon::prelude::*;
-use std::collections::HashSet;
 use std::hash::Hash;
 use std::{cmp::Ordering, iter::empty};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AdaptiveRadixTrie, PrefixSearch};
+use crate::PrefixSearch;
 
 #[derive(Serialize, Deserialize)]
 pub struct PrefixVec<V: Hash + Eq> {
@@ -251,9 +250,23 @@ where
     }
 }
 
+pub(crate) struct Node {
+    indices: Vec<usize>,
+    children: [Option<Box<Node>>; 256],
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            indices: vec![],
+            children: std::array::from_fn(|_| None),
+        }
+    }
+}
+
 pub struct PrefixVecContinuations<V: Hash + Eq> {
     pub(crate) vec: PrefixVec<V>,
-    continuation_trie: AdaptiveRadixTrie<Vec<usize>>,
+    pub(crate) continuation_trie: Node,
 }
 
 impl<V: Hash + Eq> PrefixVecContinuations<V> {
@@ -261,15 +274,13 @@ impl<V: Hash + Eq> PrefixVecContinuations<V> {
     where
         C: AsRef<[u8]>,
     {
-        let mut continuation_trie = AdaptiveRadixTrie::default();
+        let mut continuation_trie = Node::default();
         for (i, continuation) in continuations.iter().enumerate() {
-            if let Some(old) = continuation_trie.insert(continuation.as_ref(), vec![i]) {
-                let new = old
-                    .into_iter()
-                    .chain(continuation_trie.delete(continuation.as_ref()).unwrap())
-                    .collect();
-                continuation_trie.insert(continuation.as_ref(), new);
-            };
+            let mut node = &mut continuation_trie;
+            for byte in continuation.as_ref() {
+                node = node.children[*byte as usize].get_or_insert_with(Box::default);
+            }
+            node.indices.push(i);
         }
         Self {
             vec,
@@ -281,18 +292,15 @@ impl<V: Hash + Eq> PrefixVecContinuations<V> {
     where
         P: AsRef<[u8]>,
     {
-        let prefix = prefix.as_ref().to_vec();
-        match self.vec.find_range(&prefix, 0, self.vec.data.len(), 0) {
-            FindResult::Found(left, right) => {
-                Box::new(self.vec.data[left..right].iter().map(move |(key, value)| {
-                    let full_key = prefix
-                        .clone()
-                        .into_iter()
-                        .chain(key.iter().copied())
-                        .collect();
-                    (full_key, value)
-                }))
-            }
+        match self
+            .vec
+            .find_range(prefix.as_ref(), 0, self.vec.data.len(), 0)
+        {
+            FindResult::Found(left, right) => Box::new(
+                self.vec.data[left..right]
+                    .iter()
+                    .map(|(key, value)| (key.to_vec(), value)),
+            ),
             FindResult::NotFound(_) => Box::new(empty()),
         }
     }
@@ -307,17 +315,24 @@ impl<V: Hash + Eq> PrefixVecContinuations<V> {
             return vec![];
         };
 
-        let cont_indices: HashSet<_> = self.vec.data[left..right]
+        self.vec.data[left..right]
             .iter()
             .flat_map(|(value, _)| {
-                self.continuation_trie
-                    .path(&value[prefix.len()..])
-                    .into_iter()
-                    .flat_map(|(_, indices)| indices)
+                let mut indices = vec![];
+                let mut node = &self.continuation_trie;
+                indices.extend(node.indices.iter().copied());
+                for byte in &value[prefix.len()..] {
+                    if let Some(child) = &node.children[*byte as usize] {
+                        node = child;
+                        indices.extend(node.indices.iter().copied());
+                    } else {
+                        break;
+                    }
+                }
+                indices
             })
-            .collect::<HashSet<_>>();
-
-        cont_indices.into_iter().copied().collect()
+            .unique()
+            .collect()
     }
 
     pub fn batch_contains_continuations<P>(&self, prefixes: &[P]) -> Vec<Vec<usize>>

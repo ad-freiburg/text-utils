@@ -685,8 +685,6 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
 }
 
 impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
-    type Value = V;
-
     fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(root) = &self.root else {
             return Box::new(empty());

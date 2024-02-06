@@ -1,12 +1,12 @@
 use itertools::Itertools;
 use rayon::prelude::*;
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::{cmp::Ordering, iter::empty};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{PatriciaTrie, PrefixSearch};
+use crate::{AdaptiveRadixTrie, PrefixSearch};
 
 #[derive(Serialize, Deserialize)]
 pub struct PrefixVec<V: Hash + Eq> {
@@ -252,8 +252,8 @@ where
 }
 
 pub struct PrefixVecContinuations<V: Hash + Eq> {
-    vec: PrefixVec<V>,
-    continuation_trie: PatriciaTrie<Vec<usize>>,
+    pub(crate) vec: PrefixVec<V>,
+    continuation_trie: AdaptiveRadixTrie<Vec<usize>>,
 }
 
 impl<V: Hash + Eq> PrefixVecContinuations<V> {
@@ -261,7 +261,7 @@ impl<V: Hash + Eq> PrefixVecContinuations<V> {
     where
         C: AsRef<[u8]>,
     {
-        let mut continuation_trie = PatriciaTrie::default();
+        let mut continuation_trie = AdaptiveRadixTrie::default();
         for (i, continuation) in continuations.iter().enumerate() {
             if let Some(old) = continuation_trie.insert(continuation.as_ref(), vec![i]) {
                 let new = old
@@ -274,6 +274,26 @@ impl<V: Hash + Eq> PrefixVecContinuations<V> {
         Self {
             vec,
             continuation_trie,
+        }
+    }
+
+    pub fn continuations<P>(&self, prefix: P) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_>
+    where
+        P: AsRef<[u8]>,
+    {
+        let prefix = prefix.as_ref().to_vec();
+        match self.vec.find_range(&prefix, 0, self.vec.data.len(), 0) {
+            FindResult::Found(left, right) => {
+                Box::new(self.vec.data[left..right].iter().map(move |(key, value)| {
+                    let full_key = prefix
+                        .clone()
+                        .into_iter()
+                        .chain(key.iter().copied())
+                        .collect();
+                    (full_key, value)
+                }))
+            }
+            FindResult::NotFound(_) => Box::new(empty()),
         }
     }
 

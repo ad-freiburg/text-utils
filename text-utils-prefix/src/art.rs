@@ -498,16 +498,19 @@ impl<V> Node<V> {
     }
 
     #[inline]
-    fn leaves_recursive(&self, prefix: Vec<u8>) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+    fn leaves_recursive(
+        &self,
+        mut prefix: Vec<u8>,
+    ) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        prefix.extend(self.prefix.iter().copied());
+        if let NodeType::Leaf(value) = &self.inner {
+            prefix.pop();
+            return Box::new(once((prefix, value)));
+        }
         Box::new(self.children().flat_map(move |(k, child)| {
             let mut key = prefix.clone();
             key.push(k);
-            let NodeType::Leaf(value) = &child.inner else {
-                return child.leaves_recursive(key);
-            };
-            key.extend(child.prefix.iter().copied());
-            key.pop();
-            Box::new(once((key, value)))
+            child.leaves_recursive(key)
         }))
     }
 }
@@ -690,30 +693,27 @@ impl<V> ContinuationSearch for AdaptiveRadixTrie<V> {
         };
         let mut node = root;
         let mut key = prefix.iter().copied();
-        let mut prefix = prefix.to_vec();
+        let mut prefix = vec![];
         loop {
             let k = match node.matching(&mut key, 0) {
-                Matching::FullKey(n) => {
-                    prefix.extend(node.prefix[n..].iter().copied());
+                Matching::FullKey(_) | Matching::Exact => {
                     break;
                 }
-                Matching::Exact => break,
-                Matching::FullPrefix(k) => k,
+                Matching::FullPrefix(k) => {
+                    prefix.extend(node.prefix.iter().copied());
+                    k
+                }
                 Matching::Partial(..) => return Box::new(empty()),
             };
 
             let Some(child) = node.find_child(k) else {
-                break;
+                return Box::new(empty());
             };
+            prefix.push(k);
             node = child;
         }
 
-        if let NodeType::Leaf(value) = &node.inner {
-            prefix.pop();
-            Box::new(once((prefix, value)))
-        } else {
-            node.leaves_recursive(prefix)
-        }
+        node.leaves_recursive(prefix)
     }
 
     fn contains_continuation(&self, prefix: &[u8], continuation: &[u8]) -> bool {

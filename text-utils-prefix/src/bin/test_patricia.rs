@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use text_utils_prefix::PatriciaTrie;
+use text_utils_prefix::AdaptiveRadixTrie;
 
 fn main() {
     let dir = env!("CARGO_MANIFEST_DIR");
@@ -9,7 +9,7 @@ fn main() {
     let n = 1_000_000;
     let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(n).collect();
 
-    let trie: PatriciaTrie<_> = words.iter().enumerate().map(|(i, w)| (w, i)).collect();
+    let trie: AdaptiveRadixTrie<_> = words.iter().enumerate().map(|(i, w)| (w, i)).collect();
     let stats = trie.stats();
     println!("{stats:#?}");
 }

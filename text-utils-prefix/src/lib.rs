@@ -9,6 +9,16 @@ pub use art::AdaptiveRadixTrie;
 pub use patricia::PatriciaTrie;
 pub use vec::{PrefixVec, PrefixVecContinuations};
 
+pub trait PrefixContinuationSearch<V>:
+    PrefixSearch<Value = V> + ContinuationSearch<Value = V>
+{
+}
+
+impl<V, T> PrefixContinuationSearch<V> for T where
+    T: PrefixSearch<Value = V> + ContinuationSearch<Value = V>
+{
+}
+
 pub trait PrefixSearch {
     type Value;
 
@@ -194,7 +204,10 @@ where
 mod test {
     use std::{fs, path::PathBuf};
 
-    use crate::{optimized_prefix_order, AdaptiveRadixTrie, PatriciaTrie, PrefixSearch, PrefixVec};
+    use crate::{
+        optimized_prefix_order, AdaptiveRadixTrie, PatriciaTrie, PrefixContinuationSearch,
+        PrefixSearch, PrefixVec, PrefixVecContinuations,
+    };
 
     fn get_tries() -> Vec<(&'static str, Box<dyn PrefixSearch<Value = usize>>)> {
         vec![
@@ -213,9 +226,8 @@ mod test {
     }
 
     #[test]
-    fn test_simple() {
-        for (name, mut trie) in get_tries() {
-            println!("{name}");
+    fn test_prefix_search() {
+        for (_, mut trie) in get_tries() {
             assert_eq!(trie.get(b"hello"), None);
             assert_eq!(trie.get(b""), None);
             assert!(!trie.contains_prefix(b""));
@@ -251,10 +263,9 @@ mod test {
         let dir = env!("CARGO_MANIFEST_DIR");
         let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.100k.txt"))
             .expect("failed to read file");
-        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(1_000).collect();
+        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).take(10_000).collect();
 
-        for (name, mut trie) in get_tries() {
-            println!("{name}");
+        for (_, mut trie) in get_tries() {
             words.iter().enumerate().for_each(|(i, w)| {
                 trie.insert(w, i);
             });
@@ -274,6 +285,113 @@ mod test {
                 } else {
                     assert_eq!(trie.get(word), Some(&i));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_continuation_vec() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.100k.txt"))
+            .expect("failed to read file");
+        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).collect();
+
+        let continuations_json =
+            fs::read(PathBuf::from(dir).join("resources/test/continuations.json"))
+                .expect("failed to read file");
+
+        // use serde to deserialize continuations array from json
+        let continuations: Vec<Vec<u8>> =
+            serde_json::from_slice::<Vec<String>>(&continuations_json)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.as_bytes().to_vec())
+                .collect();
+
+        let vec = PrefixVecContinuations::new(
+            words.iter().enumerate().map(|(i, w)| (w, i)).collect(),
+            &continuations,
+        );
+
+        let prefix = b"Albert";
+
+        let conts: Vec<_> = vec.continuations(prefix).map(|(w, v)| (w, *v)).collect();
+        // check that no other words than the given conts start with the prefix
+        assert!(words.iter().all(|w| {
+            if w.starts_with(prefix) {
+                conts.iter().any(|(c, _)| w == c)
+            } else {
+                conts.iter().all(|(c, _)| w != c)
+            }
+        }));
+        for (word, idx) in &conts {
+            assert!(word.starts_with(prefix));
+            assert_eq!(vec.vec.get(word), Some(idx));
+            assert_eq!(words[*idx], word);
+        }
+        let cont_indices = vec.contains_continuations(prefix);
+        for (i, cont) in continuations.iter().enumerate() {
+            let full_prefix: Vec<_> = prefix.iter().chain(cont.iter()).copied().collect();
+            let in_conts = conts.iter().any(|(w, _)| w.starts_with(&full_prefix));
+            assert!(if cont_indices.contains(&i) {
+                in_conts
+            } else {
+                !in_conts
+            });
+        }
+    }
+
+    #[test]
+    fn test_continuation_search() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.100k.txt"))
+            .expect("failed to read file");
+        let words: Vec<_> = index.lines().map(|s| s.as_bytes()).collect();
+
+        let continuations_json =
+            fs::read(PathBuf::from(dir).join("resources/test/continuations.json"))
+                .expect("failed to read file");
+
+        // use serde to deserialize continuations array from json
+        let continuations: Vec<Vec<u8>> =
+            serde_json::from_slice::<Vec<String>>(&continuations_json)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.as_bytes().to_vec())
+                .collect();
+
+        let tries: Vec<(_, Box<dyn PrefixContinuationSearch<usize>>)> = vec![
+            ("art", Box::new(AdaptiveRadixTrie::default())),
+            ("patricia", Box::new(AdaptiveRadixTrie::default())),
+        ];
+
+        let prefix = b"Albert";
+
+        for (_, mut trie) in tries {
+            words.iter().enumerate().for_each(|(i, w)| {
+                trie.insert(w, i);
+            });
+            let conts: Vec<_> = trie.continuations(prefix).map(|(w, v)| (w, *v)).collect();
+            // check that no other words than the given conts start with the prefix
+            assert!(words.iter().all(|w| {
+                if w.starts_with(prefix) {
+                    conts.iter().any(|(c, _)| w == c)
+                } else {
+                    conts.iter().all(|(c, _)| w != c)
+                }
+            }));
+            for (word, idx) in &conts {
+                assert!(word.starts_with(prefix));
+                assert_eq!(trie.get(word), Some(idx));
+                assert_eq!(words[*idx], word);
+            }
+            let cont_indices = trie.contains_continuations(prefix, &continuations);
+            for (i, cont) in continuations.iter().enumerate() {
+                let full_prefix: Vec<_> = prefix.iter().chain(cont.iter()).copied().collect();
+                let contains_cont = trie.contains_continuation(prefix, cont);
+                let in_conts = conts.iter().any(|(w, _)| w.starts_with(&full_prefix));
+                let all = contains_cont && in_conts;
+                assert!(if cont_indices.contains(&i) { all } else { !all });
             }
         }
     }

@@ -1,13 +1,13 @@
-use itertools::Itertools;
 use rayon::prelude::*;
 
 pub mod art;
 pub mod patricia;
+pub mod utils;
 pub mod vec;
 
 pub use art::AdaptiveRadixTrie;
 pub use patricia::PatriciaTrie;
-pub use vec::{PrefixVec, PrefixVecContinuations};
+pub use vec::{ContinuationsVec, PrefixVec};
 
 pub trait PrefixSearch {
     type Value;
@@ -20,171 +20,106 @@ pub trait PrefixSearch {
 
     fn contains_prefix(&self, prefix: &[u8]) -> bool;
 
-    fn path<'a>(&'a self, prefix: &[u8]) -> Vec<(usize, &'a Self::Value)>
-    where
-        Self::Value: 'a;
-}
+    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)>;
 
-pub trait ContinuationSearch: PrefixSearch {
     fn continuations(
         &self,
         prefix: &[u8],
     ) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_>;
+}
 
-    fn contains_continuation(&self, prefix: &[u8], continuation: &[u8]) -> bool;
+pub trait ContinuationSearch {
+    fn contains_continuations(&self, prefix: &[u8]) -> Vec<usize>;
 
-    fn contains_continuations(&self, prefix: &[u8], continuations: &[Vec<u8>]) -> Vec<usize> {
-        // default naive implementation, should be overridden if there is a more efficient way
-        continuations
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| {
-                if self.contains_continuation(prefix.as_ref(), c.as_ref()) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    fn contains_continuations_optimized(
-        &self,
-        prefix: &[u8],
-        continuations: &[Vec<u8>],
-        permutation: &[usize],
-        skips: &[usize],
-    ) -> Vec<usize> {
-        // default naive implementation, should be overridden if there is a more efficient way
-        assert_eq!(continuations.len(), permutation.len());
-        assert_eq!(continuations.len(), skips.len());
-        let mut result = vec![];
-        let mut i = 0;
-        while let Some(&j) = permutation.get(i) {
-            let continuation = continuations[j].as_ref();
-            if self.contains_continuation(prefix.as_ref(), continuation) {
-                result.push(j);
-            } else {
-                i += skips[i];
-            };
-            i += 1;
-        }
-        result
-    }
-
-    fn batch_contains_continuations(
-        &self,
-        prefixes: &[Vec<u8>],
-        continuations: &[Vec<u8>],
-    ) -> Vec<Vec<usize>> {
+    fn batch_contains_continuations(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>> {
         prefixes
             .iter()
-            .map(|p| self.contains_continuations(p, continuations))
+            .map(|prefix| self.contains_continuations(prefix))
             .collect()
     }
 
-    fn batch_contains_continuations_optimized(
-        &self,
-        prefixes: &[Vec<u8>],
-        continuations: &[Vec<u8>],
-        permutation: &[usize],
-        skips: &[usize],
-    ) -> Vec<Vec<usize>> {
-        prefixes
-            .iter()
-            .map(|p| self.contains_continuations_optimized(p, continuations, permutation, skips))
-            .collect()
-    }
-
-    fn batch_contains_continuations_optimized_parallel(
-        &self,
-        prefixes: &[Vec<u8>],
-        continuations: &[Vec<u8>],
-        permutation: &[usize],
-        skips: &[usize],
-    ) -> Vec<Vec<usize>>
+    fn batch_contains_continuations_parallel(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>>
     where
         Self: Sync,
     {
         prefixes
             .par_iter()
-            .map(|p| self.contains_continuations_optimized(p, continuations, permutation, skips))
+            .map(|prefix| self.contains_continuations(prefix))
             .collect()
     }
 }
 
-pub fn optimized_prefix_order<C>(continuations: &[C]) -> (Vec<usize>, Vec<usize>)
-where
-    C: AsRef<[u8]>,
-{
-    let permutation: Vec<_> = continuations
-        .iter()
-        .enumerate()
-        .sorted_by(|(_, a), (_, b)| a.as_ref().cmp(b.as_ref()))
-        .map(|(i, _)| i)
-        .collect();
-    let mut skips = vec![0; continuations.len()];
-    for i in 0..permutation.len() {
-        // if the current key is a prefix of the next one, we can skip the
-        // latter
-        let continuation = continuations[permutation[i]].as_ref();
-        while let Some(next) = permutation.get(i + skips[i] + 1) {
-            let next_continuation = continuations[*next].as_ref();
-            if next_continuation.starts_with(continuation) {
-                skips[i] += 1;
-            } else {
-                break;
-            }
-        }
-    }
-    (permutation, skips)
+pub trait ContinuationsTrie {
+    fn contains_continuations(
+        &self,
+        prefix: &[u8],
+        continuations: &[Vec<u8>],
+        permutation: &[usize],
+        skips: &[usize],
+    ) -> Vec<usize>;
 }
 
 pub struct ContinuationTrie<T> {
-    trie: T,
-    continuations: (Vec<Vec<u8>>, Vec<usize>, Vec<usize>),
+    pub trie: T,
+    conts: Vec<Vec<u8>>,
+    optimized: (Vec<usize>, Vec<usize>),
 }
 
-impl<T> ContinuationTrie<T>
-where
-    T: ContinuationSearch + Sync,
-{
+impl<T> ContinuationTrie<T> {
     pub fn new<C>(trie: T, continuations: &[C]) -> Self
     where
         C: AsRef<[u8]>,
     {
-        let (permutation, skips) = optimized_prefix_order(continuations);
         Self {
             trie,
-            continuations: (
-                continuations.iter().map(|c| c.as_ref().to_vec()).collect(),
-                permutation,
-                skips,
-            ),
+            conts: continuations.iter().map(|c| c.as_ref().to_vec()).collect(),
+            optimized: utils::optimized_prefix_order(continuations),
         }
     }
+}
 
-    pub fn continuation_indices<P>(&self, prefix: P) -> Vec<usize>
-    where
-        P: AsRef<[u8]>,
-    {
-        let (continuations, permutation, skips) = &self.continuations;
-        self.trie.contains_continuations_optimized(
-            prefix.as_ref(),
-            continuations,
-            permutation,
-            skips,
-        )
+impl<T> ContinuationSearch for ContinuationTrie<T>
+where
+    T: ContinuationsTrie,
+{
+    fn contains_continuations(&self, prefix: &[u8]) -> Vec<usize> {
+        let (permutation, skips) = &self.optimized;
+        self.trie
+            .contains_continuations(prefix, &self.conts, permutation, skips)
+    }
+}
+
+impl<T> PrefixSearch for ContinuationTrie<T>
+where
+    T: PrefixSearch,
+{
+    type Value = T::Value;
+
+    fn insert(&mut self, key: &[u8], value: Self::Value) -> Option<Self::Value> {
+        self.trie.insert(key, value)
     }
 
-    pub fn batch_continuation_indices(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>> {
-        let (continuations, permutation, skips) = &self.continuations;
-        self.trie.batch_contains_continuations_optimized_parallel(
-            prefixes,
-            continuations,
-            permutation,
-            skips,
-        )
+    fn delete(&mut self, key: &[u8]) -> Option<Self::Value> {
+        self.trie.delete(key)
+    }
+
+    fn get(&self, key: &[u8]) -> Option<&Self::Value> {
+        self.trie.get(key)
+    }
+
+    fn contains_prefix(&self, prefix: &[u8]) -> bool {
+        self.trie.contains_prefix(prefix)
+    }
+
+    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
+        self.trie.path(prefix)
+    }
+
+    fn continuations(
+        &self,
+        prefix: &[u8],
+    ) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
+        self.trie.continuations(prefix)
     }
 }
 
@@ -193,13 +128,14 @@ mod test {
     use std::{fs, path::PathBuf};
 
     use itertools::Itertools;
+    use rand::{seq::SliceRandom, Rng};
 
     use crate::{
-        optimized_prefix_order, AdaptiveRadixTrie, ContinuationSearch, PatriciaTrie, PrefixSearch,
-        PrefixVec, PrefixVecContinuations,
+        AdaptiveRadixTrie, ContinuationSearch, ContinuationTrie, ContinuationsTrie,
+        ContinuationsVec, PatriciaTrie, PrefixSearch, PrefixVec,
     };
 
-    fn get_tries() -> Vec<(&'static str, Box<dyn PrefixSearch<Value = usize>>)> {
+    fn get_prefix_searchers() -> Vec<(&'static str, Box<dyn PrefixSearch<Value = usize>>)> {
         vec![
             ("art", Box::new(AdaptiveRadixTrie::default())),
             ("patricia", Box::new(PatriciaTrie::default())),
@@ -207,9 +143,18 @@ mod test {
         ]
     }
 
-    fn load_prefixes() -> Vec<&'static [u8]> {
-        [b"Albert".as_slice(), b"Ber", b"Frank"]
+    fn load_prefixes(words: &[String], n: usize) -> Vec<&[u8]> {
+        // sample n random prefixes from the words
+        let mut rng = rand::thread_rng();
+        words
+            .choose_multiple(&mut rng, n)
             .into_iter()
+            .map(|s| {
+                let s = s.as_bytes();
+                // choose random prefix length
+                let len = rng.gen_range(0..s.len());
+                &s[..len.max(2).min(s.len())]
+            })
             .collect()
     }
 
@@ -235,58 +180,47 @@ mod test {
     }
 
     #[test]
-    fn test_optimized_prefix_order() {
-        let items = ["de", "a", "d", "ab", "abc", "b"];
-        let (permutation, skips) = optimized_prefix_order(&items);
-        assert_eq!(permutation, vec![1, 3, 4, 5, 2, 0]);
-        assert_eq!(skips, vec![2, 1, 0, 0, 1, 0]);
-    }
-
-    #[test]
     fn test_prefix_search() {
-        for (_, mut trie) in get_tries() {
-            assert_eq!(trie.get(b"hello"), None);
-            assert_eq!(trie.get(b""), None);
-            assert!(!trie.contains_prefix(b""));
-            trie.insert(b"", 4);
-            trie.insert(b"h", 5);
-            trie.insert(b"hello", 1);
-            assert_eq!(trie.delete(b"hello"), Some(1));
-            assert_eq!(trie.delete(b"hello "), None);
-            trie.insert(b"hello", 1);
-            trie.insert(b"hell", 2);
-            trie.insert(b"hello world", 3);
-            assert_eq!(trie.path(b""), vec![(0, &4)]);
-            assert_eq!(
-                trie.path(b"hello"),
-                vec![(0, &4), (1, &5), (4, &2), (5, &1)]
-            );
-            assert_eq!(trie.get(b"hello"), Some(&1));
-            assert_eq!(trie.get(b"hell"), Some(&2));
-            assert_eq!(trie.get(b"hello world"), Some(&3));
-            assert_eq!(trie.contains_prefix(b"hell"), true);
-            assert_eq!(trie.contains_prefix(b"hello"), true);
-            assert_eq!(trie.contains_prefix(b""), true);
-            assert_eq!(trie.contains_prefix(b"hello world!"), false);
-            assert_eq!(trie.contains_prefix(b"test"), false);
-            assert_eq!(trie.get(b"hello"), Some(&1));
-            assert_eq!(trie.delete(b"hello"), Some(1));
-            assert_eq!(trie.get(b"hello"), None);
+        for (_, mut pfx) in get_prefix_searchers() {
+            assert_eq!(pfx.get(b"hello"), None);
+            assert_eq!(pfx.get(b""), None);
+            assert!(!pfx.contains_prefix(b""));
+            pfx.insert(b"", 4);
+            pfx.insert(b"h", 5);
+            pfx.insert(b"hello", 1);
+            assert_eq!(pfx.delete(b"hello"), Some(1));
+            assert_eq!(pfx.delete(b"hello "), None);
+            pfx.insert(b"hello", 1);
+            pfx.insert(b"hell", 2);
+            pfx.insert(b"hello world", 3);
+            assert_eq!(pfx.path(b""), vec![(0, &4)]);
+            assert_eq!(pfx.path(b"hello"), vec![(0, &4), (1, &5), (4, &2), (5, &1)]);
+            assert_eq!(pfx.get(b"hello"), Some(&1));
+            assert_eq!(pfx.get(b"hell"), Some(&2));
+            assert_eq!(pfx.get(b"hello world"), Some(&3));
+            assert_eq!(pfx.contains_prefix(b"hell"), true);
+            assert_eq!(pfx.contains_prefix(b"hello"), true);
+            assert_eq!(pfx.contains_prefix(b""), true);
+            assert_eq!(pfx.contains_prefix(b"hello world!"), false);
+            assert_eq!(pfx.contains_prefix(b"test"), false);
+            assert_eq!(pfx.get(b"hello"), Some(&1));
+            assert_eq!(pfx.delete(b"hello"), Some(1));
+            assert_eq!(pfx.get(b"hello"), None);
         }
     }
 
     #[test]
     fn test_path() {
         let words = load_words();
-        let prefixes = load_prefixes();
+        let prefixes = load_prefixes(&words, 1000);
 
-        for (_, mut trie) in get_tries() {
+        for (_, mut pfx) in get_prefix_searchers() {
             words.iter().enumerate().for_each(|(i, w)| {
-                trie.insert(w.as_bytes(), i);
+                pfx.insert(w.as_bytes(), i);
             });
 
             for prefix in &prefixes {
-                let path = trie.path(prefix);
+                let path = pfx.path(prefix);
                 assert!(path
                     .iter()
                     .all(|&(n, i)| { &prefix[..n] == words[*i].as_bytes() }));
@@ -305,24 +239,24 @@ mod test {
     fn test_insert_delete_contains_prefix() {
         let words = load_words();
 
-        for (_, mut trie) in get_tries() {
+        for (_, mut pfx) in get_prefix_searchers() {
             words.iter().enumerate().for_each(|(i, w)| {
-                trie.insert(w.as_bytes(), i);
+                pfx.insert(w.as_bytes(), i);
             });
 
             for (i, word) in words.iter().enumerate() {
-                assert_eq!(trie.get(word.as_bytes()), Some(&i));
+                assert_eq!(pfx.get(word.as_bytes()), Some(&i));
                 let bytes = word.as_bytes();
-                assert!(trie.contains_prefix(&bytes[..=bytes.len() / 2]));
+                assert!(pfx.contains_prefix(&bytes[..=bytes.len() / 2]));
             }
 
             for (i, word) in words.iter().enumerate() {
                 let even = i % 2 == 0;
                 if even {
-                    assert_eq!(trie.delete(word.as_bytes()), Some(i));
-                    assert_eq!(trie.get(word.as_bytes()), None);
+                    assert_eq!(pfx.delete(word.as_bytes()), Some(i));
+                    assert_eq!(pfx.get(word.as_bytes()), None);
                 } else {
-                    assert_eq!(trie.get(word.as_bytes()), Some(&i));
+                    assert_eq!(pfx.get(word.as_bytes()), Some(&i));
                 }
             }
         }
@@ -331,16 +265,20 @@ mod test {
     #[test]
     fn test_continuation_vec() {
         let words = load_words();
-        let prefixes = load_prefixes();
-        let continuations = load_continuations().into_iter().skip(4).collect::<Vec<_>>();
+        let prefixes = load_prefixes(&words, 10);
+        let continuations = load_continuations();
 
-        let vec = PrefixVecContinuations::new(
+        let vec = ContinuationsVec::new(
             words.iter().enumerate().map(|(i, w)| (w, i)).collect(),
             &continuations,
         );
 
         for prefix in prefixes {
-            let conts: Vec<_> = vec.continuations(prefix).map(|(w, v)| (w, *v)).collect();
+            let conts: Vec<_> = vec
+                .vec
+                .continuations(prefix)
+                .map(|(w, v)| (w, *v))
+                .collect();
             // check that no other words than the given conts start with the prefix
             assert!(words.iter().all(|w| {
                 let w = w.as_bytes();
@@ -376,22 +314,85 @@ mod test {
         }
     }
 
+    trait PrefixContTrie: PrefixSearch + ContinuationsTrie {}
+    impl<T> PrefixContTrie for T where T: PrefixSearch + ContinuationsTrie + ?Sized {}
+    impl<T: PrefixSearch + ?Sized> PrefixSearch for Box<T> {
+        type Value = T::Value;
+
+        fn insert(&mut self, key: &[u8], value: Self::Value) -> Option<Self::Value> {
+            self.as_mut().insert(key, value)
+        }
+
+        fn delete(&mut self, key: &[u8]) -> Option<Self::Value> {
+            self.as_mut().delete(key)
+        }
+
+        fn get(&self, key: &[u8]) -> Option<&Self::Value> {
+            self.as_ref().get(key)
+        }
+
+        fn contains_prefix(&self, prefix: &[u8]) -> bool {
+            self.as_ref().contains_prefix(prefix)
+        }
+
+        fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
+            self.as_ref().path(prefix)
+        }
+
+        fn continuations(
+            &self,
+            prefix: &[u8],
+        ) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
+            self.as_ref().continuations(prefix)
+        }
+    }
+    impl<T: ContinuationsTrie + ?Sized> ContinuationsTrie for Box<T> {
+        fn contains_continuations(
+            &self,
+            prefix: &[u8],
+            continuations: &[Vec<u8>],
+            permutation: &[usize],
+            skips: &[usize],
+        ) -> Vec<usize> {
+            self.as_ref()
+                .contains_continuations(prefix, continuations, permutation, skips)
+        }
+    }
+
     #[test]
-    fn test_continuation_search() {
+    fn test_continuation_tries() {
         let words = load_words();
-        let prefixes = load_prefixes();
+        let prefixes = load_prefixes(&words, 10);
         let continuations = load_continuations();
 
-        let tries: Vec<(_, Box<dyn ContinuationSearch<Value = usize>>)> = vec![
-            ("art", Box::new(AdaptiveRadixTrie::default())),
-            ("patricia", Box::new(AdaptiveRadixTrie::default())),
+        let tries: Vec<(_, ContinuationTrie<Box<dyn PrefixContTrie<Value = usize>>>)> = vec![
+            (
+                "art",
+                ContinuationTrie::new(
+                    Box::new(
+                        words
+                            .iter()
+                            .zip(0..words.len())
+                            .collect::<AdaptiveRadixTrie<_>>(),
+                    ),
+                    &continuations,
+                ),
+            ),
+            (
+                "patricia",
+                ContinuationTrie::new(
+                    Box::new(
+                        words
+                            .iter()
+                            .zip(0..words.len())
+                            .collect::<PatriciaTrie<_>>(),
+                    ),
+                    &continuations,
+                ),
+            ),
         ];
 
-        for (_, mut trie) in tries {
-            words.iter().enumerate().for_each(|(i, w)| {
-                trie.insert(w.as_bytes(), i);
-            });
-
+        for (_, trie) in tries {
             for prefix in &prefixes {
                 let conts: Vec<_> = trie.continuations(prefix).map(|(w, v)| (w, *v)).collect();
                 // check that no other words than the given conts start with the prefix
@@ -408,15 +409,73 @@ mod test {
                     assert_eq!(trie.get(word), Some(idx));
                     assert_eq!(words[*idx].as_bytes(), word);
                 }
-                let cont_indices = trie.contains_continuations(prefix, &continuations);
+                let cont_indices = trie.contains_continuations(prefix);
                 for (i, cont) in continuations.iter().enumerate() {
                     let full_prefix: Vec<_> = prefix.iter().chain(cont.iter()).copied().collect();
-                    let contains_cont = trie.contains_continuation(prefix, cont);
                     let in_conts = conts.iter().any(|(w, _)| w.starts_with(&full_prefix));
-                    let all = contains_cont && in_conts;
-                    assert!(if cont_indices.contains(&i) { all } else { !all });
+                    assert!(if cont_indices.contains(&i) {
+                        in_conts
+                    } else {
+                        !in_conts
+                    });
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_continuation_search() {
+        let words = load_words();
+        let prefixes = load_prefixes(&words, 100);
+        let continuations = load_continuations();
+
+        let cont_search: Vec<(_, Box<dyn ContinuationSearch>)> = vec![
+            (
+                "art",
+                Box::new(ContinuationTrie::new(
+                    words
+                        .iter()
+                        .zip(0..words.len())
+                        .collect::<AdaptiveRadixTrie<_>>(),
+                    &continuations,
+                )),
+            ),
+            (
+                "patricia",
+                Box::new(ContinuationTrie::new(
+                    words
+                        .iter()
+                        .zip(0..words.len())
+                        .collect::<PatriciaTrie<_>>(),
+                    &continuations,
+                )),
+            ),
+            (
+                "vec",
+                Box::new(ContinuationsVec::new(
+                    words.iter().zip(0..words.len()).collect(),
+                    &continuations,
+                )),
+            ),
+        ];
+
+        for prefix in &prefixes {
+            let conts: Vec<_> = cont_search
+                .iter()
+                .map(|(_, c)| {
+                    let mut conts = c.contains_continuations(prefix);
+                    conts.sort();
+                    conts
+                })
+                .collect();
+            assert!(conts.windows(2).all(|w| w[0] == w[1]),);
+            assert!(conts[0].iter().all(|&i| {
+                let extended_prefix: Vec<_> =
+                    prefix.iter().chain(&continuations[i]).copied().collect();
+                words
+                    .iter()
+                    .any(|w| w.as_bytes().starts_with(&extended_prefix))
+            }));
         }
     }
 }

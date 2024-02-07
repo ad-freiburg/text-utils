@@ -5,9 +5,11 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use text_utils_prefix::vec::PrefixVecContinuations;
-use text_utils_prefix::{optimized_prefix_order, ContinuationSearch, PrefixSearch};
-use text_utils_prefix::{AdaptiveRadixTrie, AdaptiveRadixTrie};
+use text_utils_prefix::vec::ContinuationsVec;
+use text_utils_prefix::{
+    utils::optimized_prefix_order, ContinuationSearch, ContinuationTrie, PrefixSearch,
+};
+use text_utils_prefix::{AdaptiveRadixTrie, PatriciaTrie};
 
 use art_tree::{Art, ByteString};
 use patricia_tree::PatriciaMap;
@@ -32,7 +34,6 @@ fn bench_prefix(c: &mut Criterion) {
         .collect();
     let prefix = "Albert".as_bytes();
     let prefixes: Vec<_> = (0..64).map(|_| prefix.to_vec()).collect();
-    let (permutation, skips) = optimized_prefix_order(&continuations);
 
     group.bench_with_input("optimized_prefix_order", &continuations, |b, input| {
         b.iter(|| optimized_prefix_order(input));
@@ -63,7 +64,7 @@ fn bench_prefix(c: &mut Criterion) {
     });
 
     // benchmark patricia trie
-    let mut trie: AdaptiveRadixTrie<_> = words.iter().zip(0..words.len()).collect();
+    let mut trie: PatriciaTrie<_> = words.iter().zip(0..words.len()).collect();
     group.bench_with_input("patricia_trie_insert", word, |b, input| {
         b.iter(|| trie.insert(input, 1));
     });
@@ -73,60 +74,22 @@ fn bench_prefix(c: &mut Criterion) {
     group.bench_with_input("patricia_trie_contains", word, |b, input| {
         b.iter(|| trie.contains_prefix(&input[..input.len().saturating_sub(3)]));
     });
-    group.bench_with_input(
-        "patricia_trie_continuations",
-        &(prefix, &continuations),
-        |b, input| {
-            let (word, continuations) = input;
-            b.iter(|| trie.contains_continuations(word, continuations));
-        },
-    );
-    group.bench_with_input(
-        "patricia_trie_continuations_optimized",
-        &(prefix, &continuations),
-        |b, input| {
-            let (word, continuations) = input;
-            b.iter(|| {
-                trie.contains_continuations_optimized(word, continuations, &permutation, &skips)
-            });
-        },
-    );
+    let trie: ContinuationTrie<_> = ContinuationTrie::new(trie, &continuations);
+    group.bench_with_input("patricia_trie_continuations", prefix, |b, input| {
+        b.iter(|| trie.contains_continuations(input));
+    });
     group.bench_with_input(
         "patricia_trie_continuations_batch",
-        &(&prefixes, &continuations),
+        &prefixes,
         |b, input| {
-            let (words, continuations) = input;
-            b.iter(|| trie.batch_contains_continuations(words, &continuations));
+            b.iter(|| trie.batch_contains_continuations(input));
         },
     );
     group.bench_with_input(
-        "patricia_trie_continuations_batch_optimized",
-        &(&prefixes, &continuations),
+        "patricia_trie_continuations_batch_parallel",
+        &prefixes,
         |b, input| {
-            let (words, continuations) = input;
-            b.iter(|| {
-                trie.batch_contains_continuations_optimized(
-                    words,
-                    continuations,
-                    &permutation,
-                    &skips,
-                )
-            });
-        },
-    );
-    group.bench_with_input(
-        "patricia_trie_continuations_batch_optimized_parallel",
-        &(&prefixes, &continuations),
-        |b, input| {
-            let (words, continuations) = input;
-            b.iter(|| {
-                trie.batch_contains_continuations_optimized_parallel(
-                    words,
-                    continuations,
-                    &permutation,
-                    &skips,
-                )
-            });
+            b.iter(|| trie.batch_contains_continuations_parallel(input));
         },
     );
 
@@ -141,66 +104,28 @@ fn bench_prefix(c: &mut Criterion) {
     group.bench_with_input("adaptive_radix_trie_contains", word, |b, input| {
         b.iter(|| trie.contains_prefix(&input[..input.len().saturating_sub(3)]));
     });
-    group.bench_with_input(
-        "adaptive_radix_trie_continuations",
-        &(prefix, &continuations),
-        |b, input| {
-            let (word, continuations) = input;
-            b.iter(|| trie.contains_continuations(&word, &continuations));
-        },
-    );
-    group.bench_with_input(
-        "adaptive_radix_trie_continuations_optimized",
-        &(prefix, &continuations),
-        |b, input| {
-            let (word, continuations) = input;
-            b.iter(|| {
-                trie.contains_continuations_optimized(&word, &continuations, &permutation, &skips)
-            });
-        },
-    );
+
+    let trie: ContinuationTrie<_> = ContinuationTrie::new(trie, &continuations);
+    group.bench_with_input("adaptive_radix_trie_continuations", prefix, |b, input| {
+        b.iter(|| trie.contains_continuations(input));
+    });
     group.bench_with_input(
         "adaptive_radix_trie_continuations_batch",
-        &(&prefixes, &continuations),
+        &prefixes,
         |b, input| {
-            let (words, continuations) = input;
-            b.iter(|| trie.batch_contains_continuations(words, continuations));
+            b.iter(|| trie.batch_contains_continuations(input));
         },
     );
     group.bench_with_input(
-        "adaptive_radix_trie_continuations_batch_optimized",
-        &(&prefixes, &continuations),
+        "adaptive_radix_trie_continuations_batch_parallel",
+        &prefixes,
         |b, input| {
-            let (words, continuations) = input;
-            b.iter(|| {
-                trie.batch_contains_continuations_optimized(
-                    words,
-                    continuations,
-                    &permutation,
-                    &skips,
-                )
-            });
-        },
-    );
-    group.bench_with_input(
-        "adaptive_radix_trie_continuations_batch_optimized_parallel",
-        &(&prefixes, &continuations),
-        |b, input| {
-            let (words, continuations) = input;
-            b.iter(|| {
-                trie.batch_contains_continuations_optimized_parallel(
-                    words,
-                    continuations,
-                    &permutation,
-                    &skips,
-                )
-            });
+            b.iter(|| trie.batch_contains_continuations_parallel(input));
         },
     );
 
     // benchmark prefix vec continuations
-    let vec =
-        PrefixVecContinuations::new(words.iter().zip(0..words.len()).collect(), &continuations);
+    let vec = ContinuationsVec::new(words.iter().zip(0..words.len()).collect(), &continuations);
     group.bench_with_input("prefix_vec_continuations", word, |b, input| {
         b.iter(|| vec.contains_continuations(input));
     });

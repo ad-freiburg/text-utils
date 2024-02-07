@@ -1,14 +1,12 @@
 use itertools::Itertools;
-use rayon::prelude::*;
-use std::hash::Hash;
 use std::{cmp::Ordering, iter::empty};
 
 use serde::{Deserialize, Serialize};
 
-use crate::PrefixSearch;
+use crate::{ContinuationSearch, PrefixSearch};
 
 #[derive(Serialize, Deserialize)]
-pub struct PrefixVec<V: Hash + Eq> {
+pub struct PrefixVec<V> {
     data: Vec<(Box<[u8]>, V)>,
 }
 
@@ -17,7 +15,7 @@ pub struct PrefixVecStats {
     pub num_keys: usize,
 }
 
-impl<V: Hash + Eq> Default for PrefixVec<V> {
+impl<V> Default for PrefixVec<V> {
     fn default() -> Self {
         Self { data: vec![] }
     }
@@ -28,7 +26,7 @@ enum FindResult {
     NotFound(usize),
 }
 
-impl<V: Hash + Eq> PrefixVec<V> {
+impl<V> PrefixVec<V> {
     pub fn stats(&self) -> PrefixVecStats {
         PrefixVecStats {
             num_keys: self.data.len(),
@@ -146,7 +144,7 @@ impl<V: Hash + Eq> PrefixVec<V> {
     }
 }
 
-impl<V: Hash + Eq> PrefixSearch for PrefixVec<V> {
+impl<V> PrefixSearch for PrefixVec<V> {
     type Value = V;
 
     #[inline]
@@ -165,7 +163,10 @@ impl<V: Hash + Eq> PrefixSearch for PrefixVec<V> {
     }
 
     fn delete(&mut self, key: &[u8]) -> Option<Self::Value> {
-        let Ok(idx) = self.data.binary_search_by(|(prefix, _)| prefix.as_ref().cmp(key)) else {
+        let Ok(idx) = self
+            .data
+            .binary_search_by(|(prefix, _)| prefix.as_ref().cmp(key))
+        else {
             return None;
         };
         let (_, value) = self.data.remove(idx);
@@ -192,10 +193,7 @@ impl<V: Hash + Eq> PrefixSearch for PrefixVec<V> {
         matches!(self.find_range(prefix, 0, self.data.len(), 0), FindResult::Found(left, _) if left < self.data.len())
     }
 
-    fn path<'a>(&'a self, prefix: &[u8]) -> Vec<(usize, &'a Self::Value)>
-    where
-        Self::Value: 'a,
-    {
+    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
         let mut left = 0;
         let mut right = self.data.len();
         let mut path = vec![];
@@ -207,7 +205,7 @@ impl<V: Hash + Eq> PrefixSearch for PrefixVec<V> {
             _ => (),
         }
         for (i, k) in prefix.iter().enumerate() {
-            let Some((l, r)) =  self.range_search(k, i, left, right) else {
+            let Some((l, r)) = self.range_search(k, i, left, right) else {
                 break;
             };
             left = l;
@@ -221,12 +219,22 @@ impl<V: Hash + Eq> PrefixSearch for PrefixVec<V> {
         }
         path
     }
+
+    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        match self.find_range(prefix, 0, self.data.len(), 0) {
+            FindResult::Found(left, right) => Box::new(
+                self.data[left..right]
+                    .iter()
+                    .map(|(key, value)| (key.to_vec(), value)),
+            ),
+            FindResult::NotFound(_) => Box::new(empty()),
+        }
+    }
 }
 
 impl<K, V> FromIterator<(K, V)> for PrefixVec<V>
 where
     K: AsRef<[u8]>,
-    V: Hash + Eq,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut pfx = Self::default();
@@ -264,12 +272,12 @@ impl Default for Node {
     }
 }
 
-pub struct PrefixVecContinuations<V: Hash + Eq> {
+pub struct ContinuationsVec<V> {
     pub(crate) vec: PrefixVec<V>,
     pub(crate) continuation_trie: Node,
 }
 
-impl<V: Hash + Eq> PrefixVecContinuations<V> {
+impl<V> ContinuationsVec<V> {
     pub fn new<C>(vec: PrefixVec<V>, continuations: &[C]) -> Self
     where
         C: AsRef<[u8]>,
@@ -287,29 +295,38 @@ impl<V: Hash + Eq> PrefixVecContinuations<V> {
             continuation_trie,
         }
     }
+}
 
-    pub fn continuations<P>(&self, prefix: P) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_>
-    where
-        P: AsRef<[u8]>,
-    {
-        match self
-            .vec
-            .find_range(prefix.as_ref(), 0, self.vec.data.len(), 0)
-        {
-            FindResult::Found(left, right) => Box::new(
-                self.vec.data[left..right]
-                    .iter()
-                    .map(|(key, value)| (key.to_vec(), value)),
-            ),
-            FindResult::NotFound(_) => Box::new(empty()),
-        }
+impl<V> PrefixSearch for ContinuationsVec<V> {
+    type Value = V;
+
+    fn insert(&mut self, key: &[u8], value: V) -> Option<V> {
+        self.vec.insert(key, value)
     }
 
-    pub fn contains_continuations<P>(&self, prefix: P) -> Vec<usize>
-    where
-        P: AsRef<[u8]>,
-    {
-        let prefix = prefix.as_ref();
+    fn delete(&mut self, key: &[u8]) -> Option<Self::Value> {
+        self.vec.delete(key)
+    }
+
+    fn get(&self, prefix: &[u8]) -> Option<&V> {
+        self.vec.get(prefix)
+    }
+
+    fn contains_prefix(&self, prefix: &[u8]) -> bool {
+        self.vec.contains_prefix(prefix)
+    }
+
+    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
+        self.vec.path(prefix)
+    }
+
+    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        self.vec.continuations(prefix)
+    }
+}
+
+impl<V> ContinuationSearch for ContinuationsVec<V> {
+    fn contains_continuations(&self, prefix: &[u8]) -> Vec<usize> {
         let FindResult::Found(left, right) = self.vec.find_range(prefix, 0, self.vec.data.len(), 0)
         else {
             return vec![];
@@ -332,26 +349,6 @@ impl<V: Hash + Eq> PrefixVecContinuations<V> {
                 indices
             })
             .unique()
-            .collect()
-    }
-
-    pub fn batch_contains_continuations<P>(&self, prefixes: &[P]) -> Vec<Vec<usize>>
-    where
-        P: AsRef<[u8]>,
-    {
-        prefixes
-            .iter()
-            .map(|p| self.contains_continuations(p))
-            .collect()
-    }
-
-    pub fn batch_contains_continuations_parallel(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>>
-    where
-        Self: Sync,
-    {
-        prefixes
-            .par_iter()
-            .map(|p| self.contains_continuations(p))
             .collect()
     }
 }

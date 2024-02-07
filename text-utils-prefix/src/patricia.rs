@@ -3,7 +3,7 @@ use std::{
     iter::{empty, once},
 };
 
-use crate::{ContinuationSearch, PrefixSearch};
+use crate::{ContinuationsTrie, PrefixSearch};
 
 #[derive(Debug)]
 enum NodeType<V> {
@@ -212,7 +212,7 @@ impl<V> Node<V> {
     fn contains_prefix_iter(
         &self,
         mut key: impl Iterator<Item = u8>,
-        offset: usize,
+        mut offset: usize,
     ) -> Option<(&Self, usize)> {
         let mut node = self;
         // extend given key with null byte
@@ -225,6 +225,8 @@ impl<V> Node<V> {
                 Matching::FullPrefix(k) => k,
                 Matching::Partial(..) => break,
             };
+            // reset offset after first node
+            offset = 0;
 
             let Some(child) = node.find_child(k) else {
                 break;
@@ -397,10 +399,7 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
         root.contains_prefix_iter(key, 0).is_some()
     }
 
-    fn path<'a>(&'a self, prefix: &[u8]) -> Vec<(usize, &'a Self::Value)>
-    where
-        Self::Value: 'a,
-    {
+    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
         let Some(root) = &self.root else {
             return vec![];
         };
@@ -441,9 +440,7 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
         }
         path
     }
-}
 
-impl<V> ContinuationSearch for PatriciaTrie<V> {
     fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(root) = &self.root else {
             return Box::new(empty());
@@ -472,41 +469,10 @@ impl<V> ContinuationSearch for PatriciaTrie<V> {
 
         node.leaves_recursive(prefix)
     }
+}
 
-    fn contains_continuation(&self, prefix: &[u8], continuation: &[u8]) -> bool {
-        let Some(root) = &self.root else {
-            return false;
-        };
-
-        let key = prefix.iter().chain(continuation.iter()).copied();
-        root.contains_prefix_iter(key, 0).is_some()
-    }
-
-    fn contains_continuations(&self, prefix: &[u8], continuations: &[Vec<u8>]) -> Vec<usize> {
-        let Some(root) = &self.root else {
-            return vec![];
-        };
-
-        let key = prefix.iter().copied();
-        let Some((node, n)) = root.contains_prefix_iter(key, 0) else {
-            return vec![];
-        };
-
-        continuations
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| {
-                let key = c.iter().copied();
-                if node.contains_prefix_iter(key, n).is_some() {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    fn contains_continuations_optimized(
+impl<V> ContinuationsTrie for PatriciaTrie<V> {
+    fn contains_continuations(
         &self,
         prefix: &[u8],
         continuations: &[Vec<u8>],

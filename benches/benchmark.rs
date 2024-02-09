@@ -7,9 +7,10 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_utils::edit::{distance, operations};
-use text_utils::prefix::PrefixTreeSearch;
+use text_utils::prefix::PrefixSearch;
 use text_utils::prefix_tree::Node;
 use text_utils::prefix_vec::PrefixVec;
+use text_utils::prefix_vec2::PrefixVec2;
 use text_utils::text::{clean, match_words, word_boundaries};
 use text_utils::tokenization::{
     token_groups_to_sparse_coo_matrix, BPETokenizer, BPETokenizerConfig, ByteGroups, ByteTokenizer,
@@ -18,6 +19,7 @@ use text_utils::tokenization::{
 };
 use text_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
+    SerializeMsgPack,
 };
 
 const INPUT_SIZES: [usize; 4] = [16, 128, 512, 2048];
@@ -234,55 +236,112 @@ fn bench_utils(c: &mut Criterion) {
 
 fn bench_prefix(c: &mut Criterion) {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let multi30k = fs::read_to_string(PathBuf::from(dir).join("resources/test/multi30k.txt"))
-        .expect("failed to read file")
-        .replace("\n", " ");
-    let words: Vec<_> = multi30k
-        .split_whitespace()
-        .map(|s| s.as_bytes().to_vec())
-        .collect();
+    let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
+        .expect("failed to read file");
+    let words: Vec<_> = index.lines().map(|s| s.as_bytes()).collect();
     let mut rng = ChaCha8Rng::seed_from_u64(22);
     // sample random word from all words
-    let word = words.choose(&mut rng).unwrap().as_slice();
-    let mut group = c.benchmark_group("prefix");
+    let word = *words.choose(&mut rng).unwrap();
+    println!("choose word {}", String::from_utf8_lossy(word));
+    let mut group = c.benchmark_group("prefix_search");
 
     // benchmark prefix tree
-    let mut tree: Node<_> = words.iter().cloned().zip(0..words.len()).collect();
-    group.bench_with_input("tree_build", &words, |b, input| {
-        b.iter(|| {
-            let _tree: Node<_> = input.iter().cloned().zip(0..input.len()).collect();
-        });
-    });
+    let mut tree: Node<_> = words.iter().zip(0..words.len()).collect();
     group.bench_with_input("tree_insert", word, |b, input| {
         b.iter(|| tree.insert(input, 1));
     });
     group.bench_with_input("tree_get", word, |b, input| {
         b.iter(|| tree.get(input));
     });
+    group.bench_with_input("tree_contains", word, |b, input| {
+        b.iter(|| tree.contains(&input[..input.len().saturating_sub(3)]));
+    });
 
     // benchmark prefix vec
-    let mut vec: PrefixVec<_> = words.iter().cloned().zip(0..words.len()).collect();
-    group.bench_with_input("vec_build", &words, |b, input| {
-        b.iter(|| {
-            let _vec: PrefixVec<_> = input.iter().cloned().zip(0..input.len()).collect();
-        });
-    });
-    for size in vec![128, 256, 512, 1024, 2048, 4096, 8192] {
-        group.bench_with_input(format!("vec_build_{size}"), &words[..size], |b, input| {
-            b.iter(|| {
-                let _vec: PrefixVec<_> = input.iter().cloned().zip(0..input.len()).collect();
-            });
-        });
-    }
+    let mut vec: PrefixVec<_> = words.iter().zip(0..words.len()).collect();
     group.bench_with_input("vec_insert", word, |b, input| {
         b.iter(|| vec.insert(input, 1));
     });
     group.bench_with_input("vec_get", word, |b, input| {
         b.iter(|| vec.get(input));
     });
+    group.bench_with_input("vec_contains", word, |b, input| {
+        b.iter(|| vec.contains(&input[..input.len().saturating_sub(3)]));
+    });
     vec.compute_memo(2);
     group.bench_with_input("vec_get_memo_2", word, |b, input| {
         b.iter(|| vec.get(input));
+    });
+
+    // benchmark prefix vec 2
+    let mut vec2: PrefixVec2<_> = words.iter().zip(0..words.len()).collect();
+    group.bench_with_input("vec2_insert", word, |b, input| {
+        b.iter(|| vec2.insert(input, 1));
+    });
+    group.bench_with_input("vec2_get", word, |b, input| {
+        b.iter(|| vec2.get(input));
+    });
+    group.bench_with_input("vec2_contains", word, |b, input| {
+        b.iter(|| vec2.contains(&input[..input.len().saturating_sub(3)]));
+    });
+
+    // benchmark build, load, and save
+    drop(group);
+    let mut group = c.benchmark_group("prefix_io");
+    let n = 10_000;
+
+    let tree: Node<_> = words.iter().zip(0..words.len()).take(n).collect();
+    let path = PathBuf::from(dir).join("resources/test/prefix_tree.bin");
+    group.bench_with_input("tree_build", &words, |b, input| {
+        b.iter(|| {
+            input
+                .iter()
+                .zip(0..input.len())
+                .take(n)
+                .collect::<Node<_>>()
+        });
+    });
+    group.bench_with_input("tree_save", &path, |b, input| {
+        b.iter(|| tree.save(input));
+    });
+    group.bench_with_input("tree_load", &path, |b, input| {
+        b.iter(|| Node::<usize>::load(input))
+    });
+
+    let vec: PrefixVec<_> = words.iter().zip(0..words.len()).take(n).collect();
+    let path = PathBuf::from(dir).join("resources/test/prefix_vec.bin");
+    group.bench_with_input("vec_build", &words, |b, input| {
+        b.iter(|| {
+            input
+                .iter()
+                .zip(0..input.len())
+                .take(n)
+                .collect::<PrefixVec<_>>()
+        });
+    });
+    group.bench_with_input("vec_save", &path, |b, input| {
+        b.iter(|| vec.save(input));
+    });
+    group.bench_with_input("vec_load", &path, |b, input| {
+        b.iter(|| PrefixVec::<usize>::load(input))
+    });
+
+    let vec2: PrefixVec2<_> = words.iter().zip(0..words.len()).take(n).collect();
+    let path = PathBuf::from(dir).join("resources/test/prefix_vec2.bin");
+    group.bench_with_input("vec2_build", &words, |b, input| {
+        b.iter(|| {
+            input
+                .iter()
+                .zip(0..input.len())
+                .take(n)
+                .collect::<PrefixVec2<_>>()
+        });
+    });
+    group.bench_with_input("vec2_save", &path, |b, input| {
+        b.iter(|| vec2.save(input));
+    });
+    group.bench_with_input("vec2_load", &path, |b, input| {
+        b.iter(|| PrefixVec2::<usize>::load(input))
     });
 }
 

@@ -1,3 +1,4 @@
+workspace = { members = ["text-utils-constraints", "text-utils-prefix"] }
 [package]
 publish = false
 name = "text-utils-rs"
@@ -10,8 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 log = "0.4"
-env_logger = "0.10"
-rayon = "1.6"
+env_logger = "0.11"
+rayon = "1.8"
 indicatif = { version = "0.17", features = ["rayon"] }
 pyo3 = { version = "0.20", features = ["anyhow", "extension-module", "abi3-py38", "auto-initialize", "macros"] }
 itertools = "0.12"
@@ -31,6 +32,9 @@ bitvec = "1"
 numpy = "0.20"
 clap = { version = "4", features = ["derive"] }
 tokenizers = "0.15"
+bimap = { version = "0.6", features = ["serde"] }
+text-utils-prefix = { path = "text-utils-prefix" }
+text-utils-constraints = { path = "text-utils-constraints" }
 
 [dev-dependencies]
 criterion = "0.5"

@@ -25,23 +25,19 @@ pub fn make_anchored(pat: &str) -> String {
     }
 }
 
-#[derive(Clone)]
 pub struct RegularExpressionConstraint {
     dfa: DFA<Vec<u32>>,
     pattern: String,
     continuations: Vec<Vec<u8>>,
-    state: StateID,
 }
 
 impl RegularExpressionConstraint {
     pub fn new(pattern: &str, continuations: &[Vec<u8>]) -> Result<Self, Box<dyn Error>> {
         let dfa = DFA::new(&make_anchored(pattern))?;
-        let state = dfa.start_state_forward(&Input::new(""))?;
         Ok(RegularExpressionConstraint {
             dfa,
             pattern: pattern.to_string(),
             continuations: continuations.to_vec(),
-            state,
         })
     }
 
@@ -63,17 +59,20 @@ impl RegularExpressionConstraint {
         // remove last new line
         pattern.pop();
         let dfa = DFA::new(&make_anchored(&pattern))?;
-        let state = dfa.start_state_forward(&Input::new(""))?;
         Ok(RegularExpressionConstraint {
             dfa,
             pattern,
             continuations: continuations.to_vec(),
-            state,
         })
     }
 }
 
 impl RegularExpressionConstraint {
+    #[allow(dead_code)]
+    fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
     #[inline]
     fn is_maybe_match(&self, state: StateID) -> bool {
         if self.dfa.is_dead_state(state) || self.dfa.is_quit_state(state) {
@@ -85,14 +84,14 @@ impl RegularExpressionConstraint {
     }
 
     #[inline]
-    fn is_valid_continuation(&self, mut state: StateID, continuation: &[u8]) -> bool {
+    fn is_continuation(&self, mut state: StateID, continuation: &[u8]) -> Option<StateID> {
         for &b in continuation {
             state = self.dfa.next_state(state, b);
             if !self.is_maybe_match(state) {
-                return false;
+                return None;
             }
         }
-        true
+        Some(state)
     }
 
     #[inline]
@@ -106,49 +105,52 @@ impl RegularExpressionConstraint {
 }
 
 impl Constraint for RegularExpressionConstraint {
-    fn set_prefix(&mut self, prefix: &[u8]) {
+    type State = u32;
+
+    fn get_state(&self, prefix: &[u8]) -> Self::State {
         let start = self
             .dfa
             .start_state_forward(&Input::new(prefix))
             .expect("failed to get start state");
-        self.state = self.drive(start, prefix);
+        self.drive(start, prefix).as_u32()
     }
 
-    fn get_valid_continuations(&self) -> Vec<usize> {
-        self.continuations
-            .iter()
-            .enumerate()
-            .filter_map(|(i, cont)| {
-                if self.is_valid_continuation(self.state, cont) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect()
+    fn is_match_state(&self, state: Self::State) -> bool {
+        self.dfa
+            .is_match_state(self.dfa.next_eoi_state(StateID::try_from(state).unwrap()))
     }
 
-    fn add_continuation(&mut self, continuation: usize) -> bool {
-        self.state = self.drive(self.state, &self.continuations[continuation]);
-        self.dfa.is_match_state(self.dfa.next_eoi_state(self.state))
-    }
-
-    fn get_valid_continuations_with_prefix(&self, prefix: &[u8]) -> Vec<usize> {
+    fn get_valid_continuations_with_prefix(&self, prefix: &[u8]) -> (Vec<usize>, Vec<Self::State>) {
         let Ok(start) = self.dfa.start_state_forward(&Input::new(prefix)) else {
-            return vec![];
+            return (vec![], vec![]);
         };
         let state = self.drive(start, prefix);
-        self.continuations
-            .iter()
-            .enumerate()
-            .filter_map(|(i, cont)| {
-                if self.is_valid_continuation(state, cont) {
-                    Some(i)
-                } else {
-                    None
+        self.continuations.iter().enumerate().fold(
+            (vec![], vec![]),
+            |(mut indices, mut states), (i, cont)| {
+                if let Some(state) = self.is_continuation(state, cont) {
+                    indices.push(i);
+                    states.push(state.as_u32());
                 }
-            })
-            .collect()
+                (indices, states)
+            },
+        )
+    }
+
+    fn get_valid_continuations_with_state(
+        &self,
+        state: Self::State,
+    ) -> (Vec<usize>, Vec<Self::State>) {
+        self.continuations.iter().enumerate().fold(
+            (vec![], vec![]),
+            |(mut indices, mut states), (i, cont)| {
+                if let Some(state) = self.is_continuation(StateID::try_from(state).unwrap(), cont) {
+                    indices.push(i);
+                    states.push(state.as_u32());
+                }
+                (indices, states)
+            },
+        )
     }
 }
 
@@ -156,7 +158,7 @@ impl Constraint for RegularExpressionConstraint {
 mod test {
     use std::{fs, path::PathBuf};
 
-    use rand::seq::SliceRandom;
+    use rand::seq::IteratorRandom;
 
     use super::*;
 
@@ -195,21 +197,20 @@ mod test {
             .iter()
             .map(|s| s.as_bytes().to_vec())
             .collect();
-        let mut re = RegularExpressionConstraint::new(r"^ab$", &conts).unwrap();
-        let mut conts = re.get_valid_continuations();
-        conts.sort();
+        let re = RegularExpressionConstraint::new(r"^ab$", &conts).unwrap();
+        let (conts, states) = re.get_valid_continuations_with_prefix(b"");
         assert_eq!(conts, vec![0, 3]);
-        let is_match = re.add_continuation(0);
-        assert_eq!(re.get_valid_continuations(), vec![1]);
-        assert!(!is_match);
-        let is_match = re.add_continuation(1);
-        assert!(re.get_valid_continuations().is_empty());
-        assert!(is_match);
-        re.set_prefix(b"a");
-        let conts = re.get_valid_continuations();
+        assert!(!re.is_match_state(states[0]));
+        let (conts, states) = re.get_valid_continuations_with_state(states[0]);
         assert_eq!(conts, vec![1]);
-        re.set_prefix(b"c");
-        let conts = re.get_valid_continuations();
+        assert!(re
+            .get_valid_continuations_with_state(states[0])
+            .0
+            .is_empty());
+        assert!(re.is_match_state(states[0]));
+        let (conts, _) = re.get_valid_continuations_with_prefix(b"a");
+        assert_eq!(conts, vec![1]);
+        let (conts, _) = re.get_valid_continuations_with_prefix(b"c");
         assert!(conts.is_empty());
     }
 
@@ -219,24 +220,26 @@ mod test {
         let mut rng = rand::thread_rng();
         let n = 10;
         for pat in load_patterns() {
-            let mut re = RegularExpressionConstraint::new(&pat, &continuations).unwrap();
+            let re = RegularExpressionConstraint::new(&pat, &continuations).unwrap();
             println!(
                 "memory usage: {:.2}kB",
                 re.dfa.memory_usage() as f32 / 1000.0
             );
-            println!("pattern:\n{}", re.pattern);
+            println!("pattern:\n{}", re.pattern());
             for i in 0..n {
-                re.set_prefix(b"");
+                let mut state = re.get_state(b"");
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
-                    let conts = re.get_valid_continuations();
-                    // random sample cont
-                    let Some(cont) = conts.choose(&mut rng) else {
+                    let (conts, states) = re.get_valid_continuations_with_state(state);
+                    // random sample index between 0 and conts.len()
+                    let Some(idx) = (0..conts.len()).choose(&mut rng) else {
                         break;
                     };
-                    is_match = re.add_continuation(*cont);
-                    decoded.extend(continuations[*cont].iter().copied());
+                    let cont = conts[idx];
+                    decoded.extend(continuations[cont].iter().copied());
+                    state = states[idx];
+                    is_match = re.is_match_state(state);
                 }
                 assert!(is_match);
                 println!("{}. sample:\n{}", i + 1, String::from_utf8_lossy(&decoded));
@@ -254,24 +257,26 @@ mod test {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources/test")
                 .join(file);
-            let mut re = RegularExpressionConstraint::from_file(path, &continuations).unwrap();
+            let re = RegularExpressionConstraint::from_file(path, &continuations).unwrap();
             println!(
                 "memory usage: {:.2}kB",
                 re.dfa.memory_usage() as f32 / 1000.0
             );
-            println!("pattern:\n{}", re.pattern);
+            println!("pattern:\n{}", re.pattern());
             for i in 0..n {
-                re.set_prefix(b"");
+                let mut state = re.get_state(b"");
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
-                    let conts = re.get_valid_continuations();
-                    // random sample cont
-                    let Some(cont) = conts.choose(&mut rng) else {
+                    let (conts, states) = re.get_valid_continuations_with_state(state);
+                    // random sample index between 0 and conts.len()
+                    let Some(idx) = (0..conts.len()).choose(&mut rng) else {
                         break;
                     };
-                    is_match = re.add_continuation(*cont);
-                    decoded.extend(continuations[*cont].iter().copied());
+                    let cont = conts[idx];
+                    decoded.extend(continuations[cont].iter().copied());
+                    state = states[idx];
+                    is_match = re.is_match_state(state);
                 }
                 assert!(is_match);
                 println!("{}. sample:\n{}", i + 1, String::from_utf8_lossy(&decoded));

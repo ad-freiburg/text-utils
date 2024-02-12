@@ -253,13 +253,14 @@ def search(
         decoder_kwargs = kwargs_select_fn(
             kwargs,
             indices_mask
-        ) if kwargs_select_fn is not None else kwargs
+        ) if kwargs_select_fn is not None else {}
 
         decoder_token_ids = _sub_select(
             token_ids, mask
         )[:, :max_decoder_length]  # type: ignore
         # always add a padding mask, indicating which tokens are padding
         # and the lengths of the sequence to the additional arguments
+        print(list(decoder_kwargs))
         assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \
             "padding_mask and lengths are added automatically, do not provide them yourself"
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
@@ -401,7 +402,7 @@ def beam_search(
         decoder_kwargs = kwargs_select_fn(
             kwargs,
             decoder_mask
-        ) if kwargs_select_fn is not None else kwargs
+        ) if kwargs_select_fn is not None else {}
         # always add a padding mask, indicating which tokens are padding
         # and the lengths of the sequence to the additional arguments
         assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \

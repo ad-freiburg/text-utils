@@ -9,7 +9,8 @@ from text_utils._internal import (
     windows,
     metrics,
     unicode,
-    prefix
+    continuations,
+    constraints
 )
 from text_utils import (
     api,

@@ -2,14 +2,13 @@ extern crate core;
 
 use pyo3::prelude::*;
 
+pub mod constraints;
+pub mod continuations;
 pub mod corrupt;
 pub mod data;
 pub mod dictionary;
 pub mod edit;
 pub mod metrics;
-pub mod prefix;
-pub mod prefix_tree;
-pub mod prefix_vec;
 pub mod text;
 pub mod tokenization;
 pub mod unicode;
@@ -30,7 +29,8 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     metrics::add_submodule(py, m)?;
     unicode::add_submodule(py, m)?;
     corrupt::add_submodule(py, m)?;
-    prefix::add_submodule(py, m)?;
+    continuations::add_submodule(py, m)?;
+    constraints::add_submodule(py, m)?;
 
     Ok(())
 }

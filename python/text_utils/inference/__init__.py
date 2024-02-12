@@ -260,7 +260,6 @@ def search(
         )[:, :max_decoder_length]  # type: ignore
         # always add a padding mask, indicating which tokens are padding
         # and the lengths of the sequence to the additional arguments
-        print(list(decoder_kwargs))
         assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \
             "padding_mask and lengths are added automatically, do not provide them yourself"
         decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id

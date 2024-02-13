@@ -1656,7 +1656,7 @@ fn byte_pair_stats(vocab: &BytePairVocab) -> BytePairStats {
 }
 
 #[inline]
-fn replace_pair_in_word(word: &Vec<Vec<u8>>, pair: &BytePair) -> Vec<Vec<u8>> {
+fn replace_pair_in_word(word: &[Vec<u8>], pair: &BytePair) -> Vec<Vec<u8>> {
     assert!(!word.is_empty());
     let mut new_word = vec![word[0].to_vec()];
     for subword in &word[1..] {

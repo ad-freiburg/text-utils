@@ -844,14 +844,14 @@ pub fn inference_pipeline_with_windows(
     tokenizer_cfg: TokenizerConfig,
     window_cfg: WindowConfig,
     normalization: Option<Normalization>,
+    clean_text: bool,
     use_graphemes: bool,
 ) -> anyhow::Result<InferencePipeline> {
     let tok = tokenizer(tokenizer_cfg)?;
-    Ok(Arc::new(move |(data, info)| {
-        let mut data = InferenceData {
-            text: clean(&data.text, use_graphemes),
-            ..data
-        };
+    Ok(Arc::new(move |(mut data, info)| {
+        if clean_text {
+            data.text = clean(&data.text, use_graphemes)
+        }
         if let Some(normalization) = normalization {
             data.text = normalize(&data.text, normalization, use_graphemes);
         }
@@ -897,6 +897,7 @@ impl InferenceLoader {
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
         normalization: Option<Normalization>,
+        clean_text: bool,
         use_graphemes: bool,
         num_threads: u8,
         buffer_size: usize,
@@ -909,6 +910,7 @@ impl InferenceLoader {
             tokenizer_config.clone(),
             window_config,
             normalization,
+            clean_text,
             use_graphemes,
         )?;
         let splits: Vec<usize> = generators.iter().map(|g| g.min_len()).collect();
@@ -967,6 +969,7 @@ impl InferenceLoader {
         tokenizer_config,
         window_config,
         normalization = Normalization::NFKC,
+        clean_text = true,
         use_graphemes = true,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
@@ -980,6 +983,7 @@ impl InferenceLoader {
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
         normalization: Option<Normalization>,
+        clean_text: bool,
         use_graphemes: bool,
         num_threads: u8,
         buffer_size: usize,
@@ -1000,6 +1004,7 @@ impl InferenceLoader {
             tokenizer_config,
             window_config,
             normalization,
+            clean_text,
             use_graphemes,
             num_threads,
             buffer_size,
@@ -1018,6 +1023,7 @@ impl InferenceLoader {
         window_config,
         file_format = InferenceDataFormat::Text,
         normalization = Normalization::NFKC,
+        clean_text = true,
         use_graphemes = true,
         languages = None,
         num_threads = num_cpus::get() as u8,
@@ -1033,6 +1039,7 @@ impl InferenceLoader {
         window_config: WindowConfig,
         file_format: InferenceDataFormat,
         normalization: Option<Normalization>,
+        clean_text: bool,
         use_graphemes: bool,
         languages: Option<Vec<String>>,
         num_threads: u8,
@@ -1064,6 +1071,7 @@ impl InferenceLoader {
             tokenizer_config,
             window_config,
             normalization,
+            clean_text,
             use_graphemes,
             num_threads,
             buffer_size,

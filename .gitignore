@@ -141,3 +141,4 @@ dmypy.json
 
 /python/text_utils/_internal*.so
 /third_party
+/resources

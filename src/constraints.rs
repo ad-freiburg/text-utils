@@ -15,19 +15,15 @@ struct Regex {
 #[pymethods]
 impl Regex {
     #[new]
-    fn new(
-        pattern: &str,
-        continuations: Vec<Vec<u8>>,
-        prefix: Option<Vec<u8>>,
-    ) -> anyhow::Result<Self> {
-        let inner = RegularExpressionConstraint::new(pattern, &continuations).map_err(|e| {
+    fn new(pattern: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
+        let inner = RegularExpressionConstraint::new(pattern, continuations).map_err(|e| {
             anyhow!(
                 "failed to create regular expression constraint from pattern '{}': {}",
                 pattern,
                 e
             )
         })?;
-        let state = inner.get_state(&prefix.unwrap_or_default());
+        let state = inner.get_state(b"");
         let (indices, next_states) = inner.get_valid_continuations_with_state(state);
         Ok(Self {
             inner: Arc::new(inner),
@@ -35,6 +31,32 @@ impl Regex {
             indices,
             next_states,
         })
+    }
+
+    #[staticmethod]
+    fn from_file(path: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
+        let inner = RegularExpressionConstraint::from_file(path, continuations).map_err(|e| {
+            anyhow!(
+                "failed to create regular expression constraint from file '{}': {}",
+                path,
+                e
+            )
+        })?;
+        let state = inner.get_state(b"");
+        let (indices, next_states) = inner.get_valid_continuations_with_state(state);
+        Ok(Self {
+            inner: Arc::new(inner),
+            state,
+            indices,
+            next_states,
+        })
+    }
+
+    fn reset(&mut self, prefix: Option<Vec<u8>>) {
+        self.state = self.inner.get_state(&prefix.unwrap_or_default());
+        let (indices, next_states) = self.inner.get_valid_continuations_with_state(self.state);
+        self.indices = indices;
+        self.next_states = next_states;
     }
 
     fn clone(&self) -> Self {

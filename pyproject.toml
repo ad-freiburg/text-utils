@@ -1,7 +1,7 @@
 [project]
 name = "dtpu"
 description = "Utilities for text processing tasks with Deep NLP"
-version = "0.2.3"
+version = "0.3.0"
 authors = [
     { name = "Sebastian Walter", email = "swalter@cs.uni-freiburg.de" }
 ]
@@ -21,29 +21,28 @@ classifiers = [
 ]
 
 dependencies = [
-    "torch>=2.0",
-    "einops>=0.6.0",
-    "numpy>=1.21.0",
-    "peft>=0.5.0",
+    "torch>=2.2",
+    "einops>=0.7.0",
+    "numpy>=1.26.0",
+    "peft>=0.8.0",
     "pyyaml>=6.0",
     "tqdm>=4.60.0",
-    "tensorboard>=2.10.0",
+    "tensorboard>=2.16.0",
     "flask>=2.2.0",
-    "requests>=2.20.0",
-    "termcolor>=2.2.0",
-    "antlr4-python3-runtime==4.13.1",
+    "requests>=2.30.0",
 ]
 
 [project.scripts]
+"tu.create_continuation_index" = "text_utils.cli.create_continuation_index:main"
 "tu.create_dictionary" = "text_utils.cli.create_dictionary:main"
 "tu.train_bpe" = "text_utils.cli.train_bpe:main"
 
 [project.optional-dependencies]
 test = [
-    "pytest>=6.2.0"
+    "pytest>=8.0.0"
 ]
 8bit = [
-    "bitsandbytes>=0.37",
+    "bitsandbytes>=0.42",
 ]
 
 [project.urls]

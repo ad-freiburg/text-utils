@@ -2,7 +2,7 @@ workspace = { members = ["text-utils-constraints", "text-utils-prefix"] }
 [package]
 publish = false
 name = "text-utils-rs"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 
 [lib]

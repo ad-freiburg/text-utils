@@ -19,7 +19,7 @@ fn load_continuations() -> Vec<Vec<u8>> {
 fn bench_re(c: &mut Criterion) {
     let conts = load_continuations();
 
-    let re = RegularExpressionConstraint::new(r"yes|no|maybe", &conts).unwrap();
+    let re = RegularExpressionConstraint::new(r"yes|no|maybe", conts.clone()).unwrap();
     let state = re.get_state(b"may");
     c.bench_function("re_mc_get_valid_continuations", |b| {
         b.iter(|| re.get_valid_continuations_with_state(state))
@@ -39,7 +39,7 @@ fn bench_re(c: &mut Criterion) {
         )
     });
 
-    let re = RegularExpressionConstraint::new(r"\w+@\w+\.(com|de|org)", &conts).unwrap();
+    let re = RegularExpressionConstraint::new(r"\w+@\w+\.(com|de|org)", conts.clone()).unwrap();
     let state = re.get_state(b"test");
     c.bench_function("re_email1_get_valid_continuations", |b| {
         b.iter(|| re.get_valid_continuations_with_state(state))
@@ -77,7 +77,7 @@ fn bench_re(c: &mut Criterion) {
     for (file, prefix) in files.iter().zip(prefixes) {
         let path = PathBuf::from(dir).join("resources/test/").join(file);
         let file_name = path.file_stem().unwrap().to_str().unwrap();
-        let re = RegularExpressionConstraint::from_file(&path, &conts).unwrap();
+        let re = RegularExpressionConstraint::from_file(&path, conts.clone()).unwrap();
         let state = re.get_state(prefix.as_bytes());
         assert!(
             !re.get_valid_continuations_with_prefix(prefix.as_bytes())

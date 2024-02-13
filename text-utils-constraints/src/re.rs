@@ -32,18 +32,18 @@ pub struct RegularExpressionConstraint {
 }
 
 impl RegularExpressionConstraint {
-    pub fn new(pattern: &str, continuations: &[Vec<u8>]) -> Result<Self, Box<dyn Error>> {
+    pub fn new(pattern: &str, continuations: Vec<Vec<u8>>) -> Result<Self, Box<dyn Error>> {
         let dfa = DFA::new(&make_anchored(pattern))?;
         Ok(RegularExpressionConstraint {
             dfa,
             pattern: pattern.to_string(),
-            continuations: continuations.to_vec(),
+            continuations,
         })
     }
 
     pub fn from_file(
         path: impl AsRef<Path>,
-        continuations: &[Vec<u8>],
+        continuations: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
         let reader = BufReader::new(File::open(path.as_ref())?);
         let mut pattern = String::new();
@@ -197,7 +197,7 @@ mod test {
             .iter()
             .map(|s| s.as_bytes().to_vec())
             .collect();
-        let re = RegularExpressionConstraint::new(r"^ab$", &conts).unwrap();
+        let re = RegularExpressionConstraint::new(r"^ab$", conts.clone()).unwrap();
         let (conts, states) = re.get_valid_continuations_with_prefix(b"");
         assert_eq!(conts, vec![0, 3]);
         assert!(!re.is_match_state(states[0]));
@@ -220,7 +220,7 @@ mod test {
         let mut rng = rand::thread_rng();
         let n = 10;
         for pat in load_patterns() {
-            let re = RegularExpressionConstraint::new(&pat, &continuations).unwrap();
+            let re = RegularExpressionConstraint::new(&pat, continuations.clone()).unwrap();
             println!(
                 "memory usage: {:.2}kB",
                 re.dfa.memory_usage() as f32 / 1000.0
@@ -257,7 +257,7 @@ mod test {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources/test")
                 .join(file);
-            let re = RegularExpressionConstraint::from_file(path, &continuations).unwrap();
+            let re = RegularExpressionConstraint::from_file(path, continuations.clone()).unwrap();
             println!(
                 "memory usage: {:.2}kB",
                 re.dfa.memory_usage() as f32 / 1000.0

@@ -61,19 +61,17 @@ pub trait ContinuationsTrie {
 
 pub struct ContinuationTrie<T> {
     pub trie: T,
-    conts: Vec<Vec<u8>>,
+    continuations: Vec<Vec<u8>>,
     optimized: (Vec<usize>, Vec<usize>),
 }
 
 impl<T> ContinuationTrie<T> {
-    pub fn new<C>(trie: T, continuations: &[C]) -> Self
-    where
-        C: AsRef<[u8]>,
-    {
+    pub fn new(trie: T, continuations: Vec<Vec<u8>>) -> Self {
+        let optimized = utils::optimized_prefix_order(&continuations);
         Self {
             trie,
-            conts: continuations.iter().map(|c| c.as_ref().to_vec()).collect(),
-            optimized: utils::optimized_prefix_order(continuations),
+            continuations,
+            optimized,
         }
     }
 }
@@ -85,7 +83,7 @@ where
     fn contains_continuations(&self, prefix: &[u8]) -> Vec<usize> {
         let (permutation, skips) = &self.optimized;
         self.trie
-            .contains_continuations(prefix, &self.conts, permutation, skips)
+            .contains_continuations(prefix, &self.continuations, permutation, skips)
     }
 }
 

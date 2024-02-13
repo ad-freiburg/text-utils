@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader},
 };
 
+use crate::utils::SerializeMsgPack;
 use anyhow::anyhow;
 use pyo3::prelude::*;
 use text_utils_prefix::{AdaptiveRadixTrie, ContinuationSearch, ContinuationTrie, PrefixSearch};
@@ -15,10 +16,15 @@ pub struct Continuations {
 #[pymethods]
 impl Continuations {
     #[staticmethod]
-    fn from_index_and_continuations(
-        path: &str,
-        continuations: Vec<Vec<u8>>,
-    ) -> anyhow::Result<Self> {
+    fn load_with_continuations(file: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
+        let trie = AdaptiveRadixTrie::load(file)?;
+        Ok(Self {
+            continuations: ContinuationTrie::new(trie, continuations),
+        })
+    }
+
+    #[staticmethod]
+    fn build_from_file(path: &str, out: &str) -> anyhow::Result<()> {
         // build patricia trie similar to prefix vec above
         let file = File::open(path)?;
         // now loop over lines and insert them into the trie
@@ -34,9 +40,9 @@ impl Continuations {
                 trie.insert(s.trim().as_bytes(), value);
             }
         }
-        Ok(Self {
-            continuations: ContinuationTrie::new(trie, &continuations),
-        })
+        // save art to out file
+        trie.save(out)?;
+        Ok(())
     }
 
     fn continuation_indices(&self, prefix: &[u8]) -> Vec<usize> {

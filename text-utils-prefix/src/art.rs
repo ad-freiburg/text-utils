@@ -3,27 +3,116 @@ use std::{
     iter::{empty, once},
 };
 
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+
 use crate::{ContinuationsTrie, PrefixSearch};
 
 type Index<const N: usize> = Box<[u8; N]>;
 type Children<V, const N: usize> = Box<[Option<Box<Node<V>>>; N]>;
 
-#[derive(Debug)]
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize)]
 enum NodeType<V> {
     Leaf(V),
     N4(Index<4>, Children<V, 4>, u8),
     N16(Index<16>, Children<V, 16>, u8),
-    N48(Index<256>, Children<V, 48>, u8),
-    N256(Children<V, 256>, u16),
+    // N48(Index<256>, Children<V, 48>, u8),
+    N48 {
+        #[serde_as(as = "Box<[_; 256]>")]
+        index: Index<256>,
+        #[serde_as(as = "Box<[_; 48]>")]
+        children: Children<V, 48>,
+        num_children: u8,
+    },
+    N256 {
+        #[serde_as(as = "Box<[_; 256]>")]
+        children: Children<V, 256>,
+        num_children: u16,
+    }, // N256(Children<V, 256>, u16),
 }
 
-#[derive(Debug)]
+// impl<V: Serialize> Serialize for NodeType<V> {
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: serde::Serializer,
+//     {
+//         match self {
+//             NodeType::Leaf(v) => {
+//                 let mut s = serializer.serialize_tuple_variant("N", 0, "L", 1)?;
+//                 s.serialize_field(v)?;
+//                 s.end()
+//             }
+//             NodeType::N4(index, children, n) => {
+//                 let mut s = serializer.serialize_tuple_variant("N", 1, "4", 3)?;
+//                 s.serialize_field(index)?;
+//                 s.serialize_field(children)?;
+//                 s.serialize_field(n)?;
+//                 s.end()
+//             }
+//             NodeType::N16(keys, children, n) => {
+//                 let mut s = serializer.serialize_tuple_variant("N", 2, "16", 3)?;
+//                 s.serialize_field(keys)?;
+//                 s.serialize_field(children)?;
+//                 s.serialize_field(n)?;
+//                 s.end()
+//             }
+//             NodeType::N48(index, children, n) => {
+//                 let mut s = serializer.serialize_tuple_variant("N", 3, "48", 3)?;
+//                 let vec: Vec<_> = index.iter().collect();
+//                 s.serialize_field(&vec)?;
+//                 let vec: Vec<_> = children.iter().collect();
+//                 s.serialize_field(&vec)?;
+//                 s.serialize_field(n)?;
+//                 s.end()
+//             }
+//             NodeType::N256(children, n) => {
+//                 let mut s = serializer.serialize_tuple_variant("N", 4, "256", 2)?;
+//                 let vec: Vec<_> = children.iter().collect();
+//                 s.serialize_field(&vec)?;
+//                 s.serialize_field(n)?;
+//                 s.end()
+//             }
+//         }
+//     }
+// }
+
+// impl<'de, V: Deserialize<'de>> Deserialize<'de> for NodeType<V> {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: serde::Deserializer<'de>,
+//     {
+//         struct NodeTypeVisitor<V> {
+//             marker: PhantomData<V>,
+//         }
+//
+//         impl<'de, V> Visitor<'de> for NodeTypeVisitor<V> {
+//             type Value = V;
+//
+//             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+//                 formatter.write_str("an adaptive radix trie node type")
+//             }
+//
+//             fn visit_
+//         }
+//
+//         deserializer.deserialize_enum(
+//             "N",
+//             &["L", "4", "16", "48", "256"],
+//             NodeTypeVisitor {
+//                 marker: PhantomData,
+//             },
+//         )
+//     }
+// }
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Node<V> {
     prefix: Box<[u8]>,
     inner: NodeType<V>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AdaptiveRadixTrie<V> {
     root: Option<Node<V>>,
 }
@@ -59,8 +148,8 @@ impl<V> AdaptiveRadixTrie<V> {
                 NodeType::Leaf(_) => "leaf",
                 NodeType::N4(..) => "n4",
                 NodeType::N16(..) => "n16",
-                NodeType::N48(..) => "n48",
-                NodeType::N256(..) => "n256",
+                NodeType::N48 { .. } => "n48",
+                NodeType::N256 { .. } => "n256",
             };
             let val = dist.get_mut(name).unwrap();
             val.0 += 1;
@@ -198,17 +287,19 @@ impl<V> Node<V> {
                     .zip(&children[..*num_children as usize])
                     .map(|(k, child)| (k, child.as_deref().unwrap())),
             ),
-            NodeType::N48(index, children, num_children) => {
-                Box::new(index.iter().enumerate().filter_map(|(i, &idx)| {
-                    if idx < *num_children {
-                        Some((i as u8, children[idx as usize].as_deref().unwrap()))
-                    } else {
-                        None
-                    }
-                }))
-            }
+            NodeType::N48 {
+                index,
+                children,
+                num_children,
+            } => Box::new(index.iter().enumerate().filter_map(|(i, &idx)| {
+                if idx < *num_children {
+                    Some((i as u8, children[idx as usize].as_deref().unwrap()))
+                } else {
+                    None
+                }
+            })),
 
-            NodeType::N256(children, _) => Box::new(
+            NodeType::N256 { children, .. } => Box::new(
                 children
                     .iter()
                     .enumerate()
@@ -248,12 +339,19 @@ impl<V> Node<V> {
                 children[idx] = Some(Box::new(child));
                 *num_children += 1;
             }
-            NodeType::N48(index, children, num_children) => {
+            NodeType::N48 {
+                index,
+                children,
+                num_children,
+            } => {
                 index[key as usize] = *num_children;
                 children[*num_children as usize] = Some(Box::new(child));
                 *num_children += 1;
             }
-            NodeType::N256(children, num_children) => {
+            NodeType::N256 {
+                children,
+                num_children,
+            } => {
                 children[key as usize] = Some(Box::new(child));
                 *num_children += 1;
             }
@@ -283,7 +381,11 @@ impl<V> Node<V> {
                 *num_children -= 1;
                 child
             }
-            NodeType::N48(index, children, num_children) => {
+            NodeType::N48 {
+                index,
+                children,
+                num_children,
+            } => {
                 let k = key as usize;
                 let idx = index[k];
                 index[k] = u8::MAX;
@@ -298,7 +400,10 @@ impl<V> Node<V> {
                 *num_children -= 1;
                 child
             }
-            NodeType::N256(children, num_children) => {
+            NodeType::N256 {
+                children,
+                num_children,
+            } => {
                 *num_children -= 1;
                 children[key as usize].take().unwrap()
             }
@@ -354,10 +459,10 @@ impl<V> Node<V> {
                 let idx = keys[..*num_children as usize].binary_search(&key).ok()?;
                 children[idx].as_deref()
             }
-            NodeType::N48(keys, children, _) => {
-                children.get(keys[key as usize] as usize)?.as_deref()
-            }
-            NodeType::N256(children, _) => children[key as usize].as_deref(),
+            NodeType::N48 {
+                index, children, ..
+            } => children.get(index[key as usize] as usize)?.as_deref(),
+            NodeType::N256 { children, .. } => children[key as usize].as_deref(),
         }
     }
 
@@ -378,10 +483,12 @@ impl<V> Node<V> {
                 let idx = keys[..*num_children as usize].binary_search(&key).ok()?;
                 children[idx].as_deref_mut()
             }
-            NodeType::N48(keys, children, _) => children
-                .get_mut(keys[key as usize] as usize)?
+            NodeType::N48 {
+                index, children, ..
+            } => children
+                .get_mut(index[key as usize] as usize)?
                 .as_deref_mut(),
-            NodeType::N256(children, _) => children[key as usize].as_deref_mut(),
+            NodeType::N256 { children, .. } => children[key as usize].as_deref_mut(),
         }
     }
 
@@ -408,9 +515,9 @@ impl<V> Node<V> {
                 for (i, k) in keys.iter().enumerate() {
                     index[*k as usize] = i as u8;
                 }
-                NodeType::N48(
-                    Box::new(index),
-                    Box::new(std::array::from_fn(|i| {
+                NodeType::N48 {
+                    index: Box::new(index),
+                    children: Box::new(std::array::from_fn(|i| {
                         if i < 16 {
                             assert!(children[i].is_some());
                             std::mem::take(&mut children[i])
@@ -418,11 +525,15 @@ impl<V> Node<V> {
                             None
                         }
                     })),
-                    16,
-                )
+                    num_children: 16,
+                }
             }
-            NodeType::N48(index, children, num_children) if *num_children == 48 => NodeType::N256(
-                Box::new(std::array::from_fn(|i| {
+            NodeType::N48 {
+                index,
+                children,
+                num_children,
+            } if *num_children == 48 => NodeType::N256 {
+                children: Box::new(std::array::from_fn(|i| {
                     let idx = index[i];
                     if idx < 48 {
                         assert!(children[idx as usize].is_some());
@@ -431,8 +542,8 @@ impl<V> Node<V> {
                         None
                     }
                 })),
-                48,
-            ),
+                num_children: 48,
+            },
             _ => return,
         };
     }
@@ -445,7 +556,11 @@ impl<V> Node<V> {
                 Box::new(std::array::from_fn(|i| children[i].take())),
                 4,
             ),
-            NodeType::N48(index, children, num_children) if *num_children == 16 => {
+            NodeType::N48 {
+                index,
+                children,
+                num_children,
+            } if *num_children == 16 => {
                 let mut keys = [0; 16];
                 let mut new_children = std::array::from_fn(|_| None);
                 index
@@ -461,7 +576,10 @@ impl<V> Node<V> {
                 assert!(new_children.iter().all(|c| c.is_some()));
                 NodeType::N16(Box::new(keys), Box::new(new_children), 16)
             }
-            NodeType::N256(children, num_children) if *num_children == 48 => {
+            NodeType::N256 {
+                children,
+                num_children,
+            } if *num_children == 48 => {
                 let mut index = [u8::MAX; 256];
                 let mut new_children = std::array::from_fn(|_| None);
                 children
@@ -474,7 +592,11 @@ impl<V> Node<V> {
                         new_children[i] = child.take();
                     });
                 assert!(new_children.iter().all(|c| c.is_some()));
-                NodeType::N48(Box::new(index), Box::new(new_children), 48)
+                NodeType::N48 {
+                    index: Box::new(index),
+                    children: Box::new(new_children),
+                    num_children: 48,
+                }
             }
             _ => return,
         };

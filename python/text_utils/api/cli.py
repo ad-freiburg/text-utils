@@ -59,7 +59,7 @@ class TextProcessingCli:
             "--file",
             type=str,
             default=None,
-            help="Path to a text file which will be processed line by line"
+            help="Path to a text file which will be processed"
         )
         input_group.add_argument(
             "-i",
@@ -239,7 +239,8 @@ class TextProcessingCli:
         raise NotImplementedError
 
     def setup(self) -> TextProcessor:
-        device = self.args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        device = self.args.device or (
+            "cuda" if torch.cuda.is_available() else "cpu")
         if self.args.experiment:
             cor = self.text_processor_cls.from_experiment(
                 experiment_dir=self.args.experiment,

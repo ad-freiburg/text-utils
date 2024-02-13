@@ -276,7 +276,7 @@ impl InferenceData {
                 )
             }
         };
-        Ok(Self::new(text.trim().to_string(), detections, language))
+        Ok(Self::new(text.to_string(), detections, language))
     }
 }
 
@@ -995,12 +995,9 @@ impl InferenceLoader {
         // we have to convert the full python iterator
         // here already, because of some weird issues with pyo3 and threading
         let gen = inference_data_generator_from_python(iterator);
-        let mut values = vec![];
-        for value in gen {
-            values.push(Ok(value?));
-        }
+        // let values: Vec<anyhow::Result<_>> = gen.into_iter().collect();
         Self::new(
-            vec![Box::new(values.into_iter())],
+            vec![Box::new(gen)],
             tokenizer_config,
             window_config,
             normalization,

@@ -371,7 +371,7 @@ class TextProcessingCli:
                 if self.args.unsorted:
                     # correct lines from stdin as they come
                     input_it = (
-                        self.parse_input(line.strip(), self.args.lang)
+                        self.parse_input(line.rstrip("\r\n"), self.args.lang)
                         for line in sys.stdin
                     )
                     sized_it = ProgressIterator(
@@ -385,7 +385,7 @@ class TextProcessingCli:
                 else:
                     # read stdin completely, then potentially sort and correct
                     inputs = [
-                        self.parse_input(line.strip(), self.args.lang)
+                        self.parse_input(line.rstrip("\r\n"), self.args.lang)
                         for line in sys.stdin
                     ]
                     sized_it = ProgressIterator(

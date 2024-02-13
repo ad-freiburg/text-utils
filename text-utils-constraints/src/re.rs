@@ -177,10 +177,15 @@ mod test {
     }
 
     fn load_patterns() -> Vec<String> {
-        ["yes|no", "[0-9]{5}", r"[a-z]{10}@[a-z]{10}\.(com|org|de)"]
-            .iter()
-            .map(|s| make_anchored(s))
-            .collect()
+        [
+            "yes|no",
+            "[0-9]{5}",
+            r"[a-z]{10}@[a-z]{10}\.(com|org|de)",
+            r"Reasoning:\n([1-9]\. .{0, 64}\n){1,9}\nAnswer: (yes|no)",
+        ]
+        .iter()
+        .map(|s| make_anchored(s))
+        .collect()
     }
 
     #[test]

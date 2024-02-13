@@ -5,6 +5,7 @@ import time
 import logging
 import warnings
 from typing import Iterator, Iterable, Union, Optional, Type
+import readline  # noqa
 
 import torch
 

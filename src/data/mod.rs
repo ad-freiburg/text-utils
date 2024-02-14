@@ -994,10 +994,9 @@ impl InferenceLoader {
     ) -> anyhow::Result<Self> {
         // we have to convert the full python iterator
         // here already, because of some weird issues with pyo3 and threading
-        let gen = inference_data_generator_from_python(iterator);
-        // let values: Vec<anyhow::Result<_>> = gen.into_iter().collect();
+        let data: Vec<anyhow::Result<_>> = inference_data_generator_from_python(iterator).collect();
         Self::new(
-            vec![Box::new(gen)],
+            vec![Box::new(data.into_iter())],
             tokenizer_config,
             window_config,
             normalization,

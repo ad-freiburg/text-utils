@@ -51,10 +51,9 @@ impl RegularExpressionConstraint {
             let line = line?;
             if line.starts_with('#') {
                 continue;
-            } else {
-                pattern.push_str(&line);
-                pattern.push('\n');
             }
+            pattern.push_str(&line);
+            pattern.push('\n');
         }
         // remove last new line
         pattern.pop();

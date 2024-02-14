@@ -10,7 +10,7 @@ use text_utils_prefix::{AdaptiveRadixTrie, ContinuationSearch, ContinuationTrie,
 
 #[pyclass]
 pub struct Continuations {
-    continuations: ContinuationTrie<AdaptiveRadixTrie<u32>>,
+    continuations: ContinuationTrie<AdaptiveRadixTrie<String>>,
 }
 
 #[pymethods]
@@ -35,9 +35,9 @@ impl Continuations {
             if splits.len() < 2 {
                 return Err(anyhow!("invalid line: {}", line));
             }
-            let value: u32 = splits[0].trim().parse()?;
+            let value = splits[0];
             for s in &splits[1..] {
-                trie.insert(s.trim().as_bytes(), value);
+                trie.insert(s.trim().as_bytes(), value.to_string());
             }
         }
         // save art to out file

@@ -59,10 +59,17 @@ class TextProcessingServer:
         @self.server.after_request
         def _after_request(response: Response) -> Response:
             response.headers.add(
-                "Access-Control-Allow-Origin", self.allow_origin)
-            response.headers.add("Access-Control-Allow-Headers", "*")
+                "Access-Control-Allow-Origin",
+                self.allow_origin
+            )
             response.headers.add(
-                "Access-Control-Allow-Private-Network", "true")
+                "Access-Control-Allow-Headers",
+                "*"
+            )
+            response.headers.add(
+                "Access-Control-Allow-Private-Network",
+                "true"
+            )
             return response
 
         @self.server.route(f"{self.base_url}/info")

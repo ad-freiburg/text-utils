@@ -5,7 +5,11 @@ import time
 import logging
 import warnings
 from typing import Iterator, Iterable, Union, Optional, Type
-import readline  # noqa
+try:
+    import readline  # noqa
+except ImportError:
+    # readline is e.g. not available on Windows
+    pass
 
 import torch
 

@@ -74,7 +74,7 @@ fn bench_prefix(c: &mut Criterion) {
     group.bench_with_input("patricia_trie_contains", word, |b, input| {
         b.iter(|| trie.contains_prefix(&input[..input.len().saturating_sub(3)]));
     });
-    let trie: ContinuationTrie<_> = ContinuationTrie::new(trie, &continuations);
+    let trie: ContinuationTrie<_> = ContinuationTrie::new(trie, continuations.clone());
     group.bench_with_input("patricia_trie_continuations", prefix, |b, input| {
         b.iter(|| trie.contains_continuations(input));
     });
@@ -105,7 +105,7 @@ fn bench_prefix(c: &mut Criterion) {
         b.iter(|| trie.contains_prefix(&input[..input.len().saturating_sub(3)]));
     });
 
-    let trie: ContinuationTrie<_> = ContinuationTrie::new(trie, &continuations);
+    let trie: ContinuationTrie<_> = ContinuationTrie::new(trie, continuations.clone());
     group.bench_with_input("adaptive_radix_trie_continuations", prefix, |b, input| {
         b.iter(|| trie.contains_continuations(input));
     });

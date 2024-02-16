@@ -13,6 +13,7 @@ pub struct Continuations {
     continuations: ContinuationTrie<AdaptiveRadixTrie<String>>,
 }
 
+pub type ContinuationIndices = (Vec<usize>, Vec<usize>);
 #[pymethods]
 impl Continuations {
     #[staticmethod]
@@ -45,25 +46,41 @@ impl Continuations {
         Ok(())
     }
 
-    fn continuation_indices(&self, prefix: &[u8]) -> Vec<usize> {
-        self.continuations.contains_continuations(prefix)
+    fn get(&self, key: &[u8]) -> Option<String> {
+        self.continuations.get(key).cloned()
     }
 
-    fn batch_continuation_indices(&self, prefixes: Vec<Vec<u8>>) -> (Vec<usize>, Vec<usize>) {
-        self.continuations
-            .batch_contains_continuations(&prefixes)
-            .into_iter()
-            .enumerate()
-            .fold(
-                (vec![], vec![]),
-                |(mut batch_indices, mut cont_indices), (i, cont)| {
-                    for c in cont {
-                        batch_indices.push(i);
-                        cont_indices.push(c);
-                    }
-                    (batch_indices, cont_indices)
-                },
-            )
+    fn continuation_indices(&self, prefix: &[u8]) -> (Vec<usize>, Option<String>) {
+        (
+            self.continuations.contains_continuations(prefix),
+            self.continuations.get(prefix).cloned(),
+        )
+    }
+
+    fn batch_continuation_indices(
+        &self,
+        prefixes: Vec<Vec<u8>>,
+    ) -> (ContinuationIndices, Vec<Option<String>>) {
+        (
+            self.continuations
+                .batch_contains_continuations(&prefixes)
+                .into_iter()
+                .enumerate()
+                .fold(
+                    (vec![], vec![]),
+                    |(mut batch_indices, mut cont_indices), (i, cont)| {
+                        for c in cont {
+                            batch_indices.push(i);
+                            cont_indices.push(c);
+                        }
+                        (batch_indices, cont_indices)
+                    },
+                ),
+            prefixes
+                .iter()
+                .map(|prefix| self.continuations.get(prefix).cloned())
+                .collect(),
+        )
     }
 }
 

@@ -31,6 +31,7 @@ pub trait PrefixSearch {
 pub trait ContinuationSearch {
     fn contains_continuations(&self, prefix: &[u8]) -> Vec<usize>;
 
+    #[inline]
     fn batch_contains_continuations(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>> {
         prefixes
             .iter()
@@ -38,6 +39,7 @@ pub trait ContinuationSearch {
             .collect()
     }
 
+    #[inline]
     fn batch_contains_continuations_parallel(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>>
     where
         Self: Sync,
@@ -373,7 +375,7 @@ mod test {
                             .zip(0..words.len())
                             .collect::<AdaptiveRadixTrie<_>>(),
                     ),
-                    &continuations,
+                    continuations.clone(),
                 ),
             ),
             (
@@ -385,7 +387,7 @@ mod test {
                             .zip(0..words.len())
                             .collect::<PatriciaTrie<_>>(),
                     ),
-                    &continuations,
+                    continuations.clone(),
                 ),
             ),
         ];
@@ -435,7 +437,7 @@ mod test {
                         .iter()
                         .zip(0..words.len())
                         .collect::<AdaptiveRadixTrie<_>>(),
-                    &continuations,
+                    continuations.clone(),
                 )),
             ),
             (
@@ -445,7 +447,7 @@ mod test {
                         .iter()
                         .zip(0..words.len())
                         .collect::<PatriciaTrie<_>>(),
-                    &continuations,
+                    continuations.clone(),
                 )),
             ),
             (

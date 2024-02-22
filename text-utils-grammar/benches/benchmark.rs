@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use text_utils_constraints::{Constraint, RegularExpressionConstraint};
+use text_utils_grammar::{Constraint, RegularExpressionConstraint};
 
 fn load_continuations() -> Vec<Vec<u8>> {
     let dir = env!("CARGO_MANIFEST_DIR");

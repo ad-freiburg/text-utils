@@ -1,42 +1,19 @@
-use std::{
-    error::Error,
-    fs::File,
-    io::{BufRead, BufReader},
-    path::Path,
-};
+use std::{error::Error, fs::File, io::read_to_string, path::Path};
 
-use crate::Constraint;
-use regex_automata::{
-    dfa::{dense::DFA, Automaton},
-    util::primitives::StateID,
-    Input,
-};
-
-pub fn make_anchored(pat: &str) -> String {
-    match (pat.starts_with('^'), pat.ends_with('$')) {
-        (true, true) => pat.to_string(),
-        (true, false) => format!("^({})$", pat.chars().skip(1).collect::<String>()),
-        (false, true) => {
-            let mut chars = pat.chars().collect::<Vec<_>>();
-            chars.pop();
-            format!("^({})$", chars.into_iter().collect::<String>())
-        }
-        (false, false) => format!("^({})$", pat),
-    }
-}
+use crate::{utils::PrefixDFA, Constraint};
+use regex::Regex;
+use regex_automata::util::primitives::StateID;
 
 pub struct RegularExpressionConstraint {
-    dfa: DFA<Vec<u32>>,
-    pattern: String,
+    pdfa: PrefixDFA,
     continuations: Vec<Vec<u8>>,
 }
 
 impl RegularExpressionConstraint {
     pub fn new(pattern: &str, continuations: Vec<Vec<u8>>) -> Result<Self, Box<dyn Error>> {
-        let dfa = DFA::new(&make_anchored(pattern))?;
+        let pdfa = PrefixDFA::new(pattern)?;
         Ok(RegularExpressionConstraint {
-            dfa,
-            pattern: pattern.to_string(),
+            pdfa,
             continuations,
         })
     }
@@ -45,95 +22,24 @@ impl RegularExpressionConstraint {
         path: impl AsRef<Path>,
         continuations: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
-        let reader = BufReader::new(File::open(path.as_ref())?);
-        let mut pattern = String::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.starts_with('#') {
-                continue;
-            }
-            pattern.push_str(&line);
-            pattern.push('\n');
-        }
-        // remove last new line
-        pattern.pop();
-        let dfa = DFA::new(&make_anchored(&pattern))?;
-        Ok(RegularExpressionConstraint {
-            dfa,
-            pattern,
-            continuations: continuations.to_vec(),
-        })
-    }
-}
-
-impl RegularExpressionConstraint {
-    #[allow(dead_code)]
-    fn pattern(&self) -> &str {
-        &self.pattern
-    }
-
-    #[inline]
-    fn is_maybe_match(&self, state: StateID) -> bool {
-        if self.dfa.is_dead_state(state) || self.dfa.is_quit_state(state) {
-            false
-        } else {
-            // non-special, match, start or accelerated states can be a match
-            true
-        }
-    }
-
-    #[inline]
-    fn is_continuation(&self, mut state: StateID, continuation: &[u8]) -> Option<StateID> {
-        for &b in continuation {
-            state = self.dfa.next_state(state, b);
-            if !self.is_maybe_match(state) {
-                return None;
-            }
-        }
-        Some(state)
-    }
-
-    #[inline]
-    fn drive(&self, state: StateID, continuation: &[u8]) -> StateID {
-        let mut state = state;
-        for &b in continuation {
-            state = self.dfa.next_state(state, b);
-        }
-        state
+        let file = File::open(path.as_ref())?;
+        let content = read_to_string(file)?;
+        let sep = Regex::new("(?m)^%%$")?;
+        let m = sep.find(&content).ok_or("line with %% not found")?;
+        let pattern = &content[m.end()..];
+        Self::new(pattern, continuations)
     }
 }
 
 impl Constraint for RegularExpressionConstraint {
-    type State = u32;
+    type State = StateID;
 
-    fn get_state(&self, prefix: &[u8]) -> Self::State {
-        let start = self
-            .dfa
-            .start_state_forward(&Input::new(prefix))
-            .expect("failed to get start state");
-        self.drive(start, prefix).as_u32()
+    fn get_start_state(&self) -> Self::State {
+        self.pdfa.get_start_state()
     }
 
     fn is_match_state(&self, state: Self::State) -> bool {
-        self.dfa
-            .is_match_state(self.dfa.next_eoi_state(StateID::try_from(state).unwrap()))
-    }
-
-    fn get_valid_continuations_with_prefix(&self, prefix: &[u8]) -> (Vec<usize>, Vec<Self::State>) {
-        let Ok(start) = self.dfa.start_state_forward(&Input::new(prefix)) else {
-            return (vec![], vec![]);
-        };
-        let state = self.drive(start, prefix);
-        self.continuations.iter().enumerate().fold(
-            (vec![], vec![]),
-            |(mut indices, mut states), (i, cont)| {
-                if let Some(state) = self.is_continuation(state, cont) {
-                    indices.push(i);
-                    states.push(state.as_u32());
-                }
-                (indices, states)
-            },
-        )
+        self.pdfa.is_match_state(state)
     }
 
     fn get_valid_continuations_with_state(
@@ -143,23 +49,25 @@ impl Constraint for RegularExpressionConstraint {
         self.continuations.iter().enumerate().fold(
             (vec![], vec![]),
             |(mut indices, mut states), (i, cont)| {
-                if let Some(state) = self.is_continuation(StateID::try_from(state).unwrap(), cont) {
+                if let Some(state) = self.pdfa.drive(state, cont) {
                     indices.push(i);
-                    states.push(state.as_u32());
+                    states.push(state);
                 }
                 (indices, states)
             },
         )
     }
+
+    fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
+        self.pdfa.get_state(prefix)
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{fs, path::PathBuf};
-
-    use rand::seq::IteratorRandom;
-
     use super::*;
+    use rand::seq::IteratorRandom;
+    use std::{fs, path::PathBuf};
 
     fn load_continuations() -> Vec<Vec<u8>> {
         let dir = env!("CARGO_MANIFEST_DIR");
@@ -183,16 +91,8 @@ mod test {
             r"Reasoning:\n([1-9]\. .{0, 64}\n){1,9}\nAnswer: (yes|no)",
         ]
         .iter()
-        .map(|s| make_anchored(s))
+        .map(|s| s.to_string())
         .collect()
-    }
-
-    #[test]
-    fn test_make_anchored() {
-        assert_eq!(make_anchored("a"), "^(a)$");
-        assert_eq!(make_anchored("^a"), "^(a)$");
-        assert_eq!(make_anchored("a$"), "^(a)$");
-        assert_eq!(make_anchored("^a$"), "^a$");
     }
 
     #[test]
@@ -202,7 +102,7 @@ mod test {
             .map(|s| s.as_bytes().to_vec())
             .collect();
         let re = RegularExpressionConstraint::new(r"^ab$", conts.clone()).unwrap();
-        let (conts, states) = re.get_valid_continuations_with_prefix(b"");
+        let (conts, states) = re.get_valid_continuations_with_state(re.get_start_state());
         assert_eq!(conts, vec![0, 3]);
         assert!(!re.is_match_state(states[0]));
         let (conts, states) = re.get_valid_continuations_with_state(states[0]);
@@ -212,9 +112,11 @@ mod test {
             .0
             .is_empty());
         assert!(re.is_match_state(states[0]));
-        let (conts, _) = re.get_valid_continuations_with_prefix(b"a");
+        let state = re.pdfa.get_state(b"a").unwrap();
+        let (conts, _) = re.get_valid_continuations_with_state(state);
         assert_eq!(conts, vec![1]);
-        let (conts, _) = re.get_valid_continuations_with_prefix(b"c");
+        let state = re.pdfa.get_state(b"c").unwrap();
+        let (conts, _) = re.get_valid_continuations_with_state(state);
         assert!(conts.is_empty());
     }
 
@@ -225,13 +127,8 @@ mod test {
         let n = 10;
         for pat in load_patterns() {
             let re = RegularExpressionConstraint::new(&pat, continuations.clone()).unwrap();
-            println!(
-                "memory usage: {:.2}kB",
-                re.dfa.memory_usage() as f32 / 1000.0
-            );
-            println!("pattern:\n{}", re.pattern());
             for i in 0..n {
-                let mut state = re.get_state(b"");
+                let mut state = re.get_start_state();
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
@@ -262,13 +159,8 @@ mod test {
                 .join("resources/test")
                 .join(file);
             let re = RegularExpressionConstraint::from_file(path, continuations.clone()).unwrap();
-            println!(
-                "memory usage: {:.2}kB",
-                re.dfa.memory_usage() as f32 / 1000.0
-            );
-            println!("pattern:\n{}", re.pattern());
             for i in 0..n {
-                let mut state = re.get_state(b"");
+                let mut state = re.get_start_state();
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {

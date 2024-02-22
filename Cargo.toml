@@ -1,4 +1,3 @@
-workspace = { members = ["text-utils-constraints", "text-utils-prefix"] }
 [package]
 publish = false
 name = "text-utils-rs"
@@ -34,7 +33,7 @@ clap = { version = "4", features = ["derive"] }
 tokenizers = "0.15"
 bimap = { version = "0.6", features = ["serde"] }
 text-utils-prefix = { path = "text-utils-prefix" }
-text-utils-constraints = { path = "text-utils-constraints" }
+text-utils-grammar = { path = "text-utils-grammar" }
 
 [dev-dependencies]
 criterion = "0.5"

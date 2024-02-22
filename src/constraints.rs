@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use pyo3::prelude::*;
-use text_utils_constraints::{Constraint, RegularExpressionConstraint};
+use text_utils_constraints::{Constraint, RegularExpressionConstraint, RegularExpressionState};
 
 #[pyclass]
 struct Regex {
     inner: Arc<RegularExpressionConstraint>,
-    state: u32,
+    state: RegularExpressionState,
     indices: Vec<usize>,
-    next_states: Vec<u32>,
+    next_states: Vec<RegularExpressionState>,
 }
 
 #[pymethods]
@@ -23,7 +23,7 @@ impl Regex {
                 e
             )
         })?;
-        let state = inner.get_state(b"");
+        let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(state);
         Ok(Self {
             inner: Arc::new(inner),
@@ -42,7 +42,7 @@ impl Regex {
                 e
             )
         })?;
-        let state = inner.get_state(b"");
+        let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(state);
         Ok(Self {
             inner: Arc::new(inner),

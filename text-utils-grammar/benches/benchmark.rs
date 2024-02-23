@@ -20,37 +20,30 @@ fn bench_re(c: &mut Criterion) {
     let conts = load_continuations();
 
     let re = RegularExpressionConstraint::new(r"yes|no|maybe", conts.clone()).unwrap();
-    let state = re.get_state(b"may");
+    let state = re.get_state(b"may").unwrap();
     c.bench_function("re_mc_get_valid_continuations", |b| {
-        b.iter(|| re.get_valid_continuations_with_state(state))
-    });
-    c.bench_function("re_mc_get_valid_continuations_with_prefix", |b| {
-        b.iter(|| re.get_valid_continuations_with_prefix(b"may"))
-    });
-    let prefixes: Vec<Vec<u8>> = [b"may"; 10].into_iter().map(|s| s.to_vec()).collect();
-    c.bench_function("re_mc_get_valid_continuations_with_prefixes", |b| {
-        b.iter(|| re.get_valid_continuations_with_prefixes(&prefixes))
+        b.iter(|| re.get_valid_continuations_with_state(&state))
     });
     c.bench_function("re_mc_get_valid_continuations_with_states", |b| {
         b.iter_batched(
-            || vec![state; 10],
-            |input| re.get_valid_continuations_with_states(input),
+            || [state; 10],
+            |input| re.get_valid_continuations_with_states(&input),
             BatchSize::SmallInput,
         )
     });
 
     let re = RegularExpressionConstraint::new(r"\w+@\w+\.(com|de|org)", conts.clone()).unwrap();
-    let state = re.get_state(b"test");
+    let state = re.get_state(b"test").unwrap();
     c.bench_function("re_email1_get_valid_continuations", |b| {
-        b.iter(|| re.get_valid_continuations_with_state(state))
+        b.iter(|| re.get_valid_continuations_with_state(&state))
     });
-    let state = re.get_state(b"test@gmai");
+    let state = re.get_state(b"test@gmai").unwrap();
     c.bench_function("re_email2_get_valid_continuations", |b| {
-        b.iter(|| re.get_valid_continuations_with_state(state))
+        b.iter(|| re.get_valid_continuations_with_state(&state))
     });
-    let state = re.get_state(b"test@gmail.c");
+    let state = re.get_state(b"test@gmail.c").unwrap();
     c.bench_function("re_email3_get_valid_continuations", |b| {
-        b.iter(|| re.get_valid_continuations_with_state(state))
+        b.iter(|| re.get_valid_continuations_with_state(&state))
     });
 
     let dir = env!("CARGO_MANIFEST_DIR");
@@ -70,7 +63,6 @@ fn bench_re(c: &mut Criterion) {
 <bop>aseimarbar</eop>
 <boo>positorybo<eoo>
 .
-
 <bos>abilushcji</eos>
 <bop>nomek"#,
     ];
@@ -78,35 +70,21 @@ fn bench_re(c: &mut Criterion) {
         let path = PathBuf::from(dir).join("resources/test/").join(file);
         let file_name = path.file_stem().unwrap().to_str().unwrap();
         let re = RegularExpressionConstraint::from_file(&path, conts.clone()).unwrap();
-        let state = re.get_state(prefix.as_bytes());
+        let state = re.get_state(prefix.as_bytes()).unwrap();
         assert!(
-            !re.get_valid_continuations_with_prefix(prefix.as_bytes())
-                .0
-                .is_empty(),
+            !re.get_valid_continuations_with_state(&state).0.is_empty(),
             "'{prefix}' has no valid continuations"
         );
         c.bench_function(
             &format!("re_file_{file_name}_get_valid_continuations"),
-            |b| b.iter(|| re.get_valid_continuations_with_state(state)),
-        );
-        c.bench_function(
-            &format!("re_file_{file_name}_get_valid_continuations_with_prefix"),
-            |b| b.iter(|| re.get_valid_continuations_with_prefix(prefix.as_bytes())),
-        );
-        let prefixes: Vec<_> = [prefix; 10]
-            .into_iter()
-            .map(|s| s.as_bytes().to_vec())
-            .collect();
-        c.bench_function(
-            &format!("re_file_{file_name}_get_valid_continuations_with_prefixes"),
-            |b| b.iter(|| re.get_valid_continuations_with_prefixes(&prefixes)),
+            |b| b.iter(|| re.get_valid_continuations_with_state(&state)),
         );
         c.bench_function(
             &format!("re_file_{file_name}_get_valid_continuations_with_states"),
             |b| {
                 b.iter_batched(
-                    || vec![state; 10],
-                    |input| re.get_valid_continuations_with_states(input),
+                    || [state; 10],
+                    |input| re.get_valid_continuations_with_states(&input),
                     BatchSize::SmallInput,
                 )
             },

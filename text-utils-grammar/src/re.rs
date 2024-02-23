@@ -33,23 +33,24 @@ impl RegularExpressionConstraint {
 
 impl Constraint for RegularExpressionConstraint {
     type State = StateID;
+    type NextState = StateID;
 
     fn get_start_state(&self) -> Self::State {
         self.pdfa.get_start_state()
     }
 
-    fn is_match_state(&self, state: Self::State) -> bool {
-        self.pdfa.is_match_state(state)
+    fn is_match_state(&self, state: &Self::State) -> bool {
+        self.pdfa.is_match_state(*state)
     }
 
     fn get_valid_continuations_with_state(
         &self,
-        state: Self::State,
-    ) -> (Vec<usize>, Vec<Self::State>) {
+        state: &Self::State,
+    ) -> (Vec<usize>, Vec<Self::NextState>) {
         self.continuations.iter().enumerate().fold(
             (vec![], vec![]),
             |(mut indices, mut states), (i, cont)| {
-                if let Some(state) = self.pdfa.drive(state, cont) {
+                if let Some(state) = self.pdfa.drive(*state, cont) {
                     indices.push(i);
                     states.push(state);
                 }
@@ -102,22 +103,20 @@ mod test {
             .map(|s| s.as_bytes().to_vec())
             .collect();
         let re = RegularExpressionConstraint::new(r"^ab$", conts.clone()).unwrap();
-        let (conts, states) = re.get_valid_continuations_with_state(re.get_start_state());
+        let (conts, states) = re.get_valid_continuations_with_state(&re.get_start_state());
         assert_eq!(conts, vec![0, 3]);
-        assert!(!re.is_match_state(states[0]));
-        let (conts, states) = re.get_valid_continuations_with_state(states[0]);
+        assert!(!re.is_match_state(&states[0]));
+        let (conts, states) = re.get_valid_continuations_with_state(&states[0]);
         assert_eq!(conts, vec![1]);
         assert!(re
-            .get_valid_continuations_with_state(states[0])
+            .get_valid_continuations_with_state(&states[0])
             .0
             .is_empty());
-        assert!(re.is_match_state(states[0]));
+        assert!(re.is_match_state(&states[0]));
         let state = re.pdfa.get_state(b"a").unwrap();
-        let (conts, _) = re.get_valid_continuations_with_state(state);
+        let (conts, _) = re.get_valid_continuations_with_state(&state);
         assert_eq!(conts, vec![1]);
-        let state = re.pdfa.get_state(b"c").unwrap();
-        let (conts, _) = re.get_valid_continuations_with_state(state);
-        assert!(conts.is_empty());
+        assert!(re.pdfa.get_state(b"c").is_none());
     }
 
     #[test]
@@ -132,7 +131,7 @@ mod test {
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
-                    let (conts, states) = re.get_valid_continuations_with_state(state);
+                    let (conts, states) = re.get_valid_continuations_with_state(&state);
                     // random sample index between 0 and conts.len()
                     let Some(idx) = (0..conts.len()).choose(&mut rng) else {
                         break;
@@ -140,7 +139,7 @@ mod test {
                     let cont = conts[idx];
                     decoded.extend(continuations[cont].iter().copied());
                     state = states[idx];
-                    is_match = re.is_match_state(state);
+                    is_match = re.is_match_state(&state);
                 }
                 assert!(is_match);
                 println!("{}. sample:\n{}", i + 1, String::from_utf8_lossy(&decoded));
@@ -164,7 +163,7 @@ mod test {
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
-                    let (conts, states) = re.get_valid_continuations_with_state(state);
+                    let (conts, states) = re.get_valid_continuations_with_state(&state);
                     // random sample index between 0 and conts.len()
                     let Some(idx) = (0..conts.len()).choose(&mut rng) else {
                         break;
@@ -172,7 +171,7 @@ mod test {
                     let cont = conts[idx];
                     decoded.extend(continuations[cont].iter().copied());
                     state = states[idx];
-                    is_match = re.is_match_state(state);
+                    is_match = re.is_match_state(&state);
                 }
                 assert!(is_match);
                 println!("{}. sample:\n{}", i + 1, String::from_utf8_lossy(&decoded));

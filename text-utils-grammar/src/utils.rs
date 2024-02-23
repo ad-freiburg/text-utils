@@ -85,21 +85,6 @@ impl PrefixDFA {
         }
         PrefixMatch::Maybe(state)
     }
-
-    #[inline]
-    pub(crate) fn valid_continuations_and_states<'a>(
-        &'a self,
-        state: StateID,
-        continuations: &'a [Vec<u8>],
-    ) -> impl Iterator<Item = (usize, StateID)> + 'a {
-        continuations
-            .iter()
-            .enumerate()
-            .filter_map(move |(i, cont)| {
-                let next_state = self.drive(state, cont)?;
-                Some((i, next_state))
-            })
-    }
 }
 
 pub fn optimized_prefix_order<C>(continuations: &[C]) -> (Vec<usize>, Vec<usize>)

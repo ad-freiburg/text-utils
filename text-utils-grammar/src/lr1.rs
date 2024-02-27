@@ -12,7 +12,7 @@ use regex::{escape, Regex};
 use regex_automata::util::primitives::StateID;
 
 use crate::{
-    utils::{PrefixDFA, PrefixMatch},
+    utils::{optimized_prefix_order, PrefixDFA, PrefixMatch},
     Constraint,
 };
 
@@ -386,6 +386,8 @@ pub struct LR1GrammarConstraint {
     table: StateTable<u32>,
     pdfas: Vec<(PrefixDFA, Option<TIdx<u32>>)>,
     continuations: Vec<Vec<u8>>,
+    permutation: Vec<usize>,
+    skips: Vec<usize>,
 }
 
 enum LR1Action {
@@ -406,12 +408,14 @@ impl LR1GrammarConstraint {
             tokens,
         )?;
         let (_, table) = lrtable::from_yacc(&grammar, Minimiser::Pager)?;
-
+        let (permutation, skips) = optimized_prefix_order(&continuations);
         Ok(Self {
             continuations,
             grammar,
             pdfas,
             table,
+            permutation,
+            skips,
         })
     }
 
@@ -572,7 +576,13 @@ impl Constraint for LR1GrammarConstraint {
         let matching_pdfas = self.matching_pdfas(*state.stack.last().unwrap());
 
         // now check all continuations
-        for (i, cont) in self.continuations.iter().enumerate() {
+        let mut i = 0;
+        while i < self.permutation.len() {
+            let skip = self.skips[i];
+            let j = self.permutation[i];
+            let cont = &self.continuations[j];
+            i += 1;
+
             // get all pdfas that are still matching
             let mut still_matching: Vec<_> = vec![];
             for &(pidx, pdfa_state) in &state.matching {
@@ -586,7 +596,7 @@ impl Constraint for LR1GrammarConstraint {
             // them in the next state; this corresponds the
             // longest matching rule in the lexer
             if !still_matching.is_empty() {
-                cont_indices.push(i);
+                cont_indices.push(j);
                 next_states.push(LR1NextState {
                     action: None,
                     matching: still_matching,
@@ -601,10 +611,11 @@ impl Constraint for LR1GrammarConstraint {
                     .collect();
 
                 if matching.is_empty() {
+                    i += skip;
                     continue;
                 }
 
-                cont_indices.push(i);
+                cont_indices.push(j);
                 next_states.push(LR1NextState {
                     action: None,
                     matching,
@@ -620,10 +631,11 @@ impl Constraint for LR1GrammarConstraint {
                     .collect();
 
                 if next_matching.is_empty() {
+                    i += skip;
                     continue;
                 }
 
-                cont_indices.push(i);
+                cont_indices.push(j);
                 next_states.push(LR1NextState {
                     action: Some(next_action.clone()),
                     matching: next_matching,

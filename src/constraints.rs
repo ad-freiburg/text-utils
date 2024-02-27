@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use pyo3::prelude::*;
-use text_utils_constraints::{Constraint, RegularExpressionConstraint, RegularExpressionState};
+use text_utils_grammar::{Constraint, RegularExpressionConstraint, RegularExpressionState};
 
 #[pyclass]
 struct Regex {
@@ -24,7 +24,7 @@ impl Regex {
             )
         })?;
         let state = inner.get_start_state();
-        let (indices, next_states) = inner.get_valid_continuations_with_state(state);
+        let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
         Ok(Self {
             inner: Arc::new(inner),
             state,
@@ -43,7 +43,7 @@ impl Regex {
             )
         })?;
         let state = inner.get_start_state();
-        let (indices, next_states) = inner.get_valid_continuations_with_state(state);
+        let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
         Ok(Self {
             inner: Arc::new(inner),
             state,
@@ -53,8 +53,11 @@ impl Regex {
     }
 
     fn reset(&mut self, prefix: Option<Vec<u8>>) {
-        self.state = self.inner.get_state(&prefix.unwrap_or_default());
-        let (indices, next_states) = self.inner.get_valid_continuations_with_state(self.state);
+        self.state = self
+            .inner
+            .get_state(&prefix.unwrap_or_default())
+            .expect("failed to reset to given prefix");
+        let (indices, next_states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
         self.next_states = next_states;
     }
@@ -73,7 +76,7 @@ impl Regex {
     }
 
     fn is_final_state(&self) -> bool {
-        self.inner.is_match_state(self.state)
+        self.inner.is_match_state(&self.state)
     }
 
     fn next(&mut self, index: usize) -> anyhow::Result<()> {
@@ -85,7 +88,7 @@ impl Regex {
             )
         })?;
         self.state = self.next_states[idx];
-        let (indices, states) = self.inner.get_valid_continuations_with_state(self.state);
+        let (indices, states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
         self.next_states = states;
         Ok(())

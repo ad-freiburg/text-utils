@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let parser = LR1GrammarParser::from_file(args.parser, args.lexer)?;
     let input = read_to_string(args.input)?;
-    let parse = parser.parse(&input, false).ok_or_else(|| "Parse error")?;
+    let parse = parser.parse(&input, false).ok_or("Parse error")?;
     println!("{}", parse.pretty(&input, true));
     Ok(())
 }

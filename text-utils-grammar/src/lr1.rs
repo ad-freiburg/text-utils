@@ -51,7 +51,7 @@ fn pattern_from_parts(
                     } else if let Some(pattern) = fragments.get(_name) {
                         let replacement = pattern_from_parts(
                             name,
-                            &vec![Part::Regex(pattern.to_string())],
+                            &[Part::Regex(pattern.to_string())],
                             name_regex,
                             fragments,
                             tokens,

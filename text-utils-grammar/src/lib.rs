@@ -1,13 +1,13 @@
 use rayon::prelude::*;
 
-pub mod lrk;
+pub mod lr1;
 pub mod re;
 pub mod utils;
 
 pub use re::RegularExpressionConstraint;
 pub use regex_automata::util::primitives::StateID as RegularExpressionState;
 
-pub use lrk::{LR1GrammarConstraint, LR1GrammarParser, LR1NextState, LR1State};
+pub use lr1::{LR1GrammarConstraint, LR1GrammarParser, LR1NextState, LR1State};
 
 pub trait Constraint {
     type State;

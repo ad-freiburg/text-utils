@@ -1,9 +1,10 @@
-use std::{collections::HashSet, error::Error, fs::File, io::read_to_string, path::Path};
+use std::{collections::HashMap, error::Error, fs::File, io::read_to_string, path::Path};
 
 use cfgrammar::{
     yacc::{YaccGrammar, YaccKind, YaccOriginalActionKind},
     NewlineCache, TIdx,
 };
+use indexmap::IndexMap;
 use lrlex::{DefaultLexeme, DefaultLexerTypes, LRNonStreamingLexer};
 use lrpar::{Lexeme, Node, RTParserBuilder};
 use lrtable::{Action, Minimiser, StIdx, StateTable};
@@ -15,57 +16,156 @@ use crate::{
     Constraint,
 };
 
+enum Part {
+    Literal(String),
+    Regex(String),
+}
+
+// define function to recursively build pattern from parts
+fn pattern_from_parts(
+    name: &str,
+    parts: &[Part],
+    name_regex: &Regex,
+    fragments: &HashMap<&str, &str>,
+    tokens: &IndexMap<&str, Vec<Part>>,
+) -> Result<String, Box<dyn Error>> {
+    let mut pattern = String::new();
+    for part in parts {
+        match part {
+            Part::Literal(s) => pattern.push_str(s),
+            Part::Regex(s) => {
+                // find all tokens or framents in regex
+                // and replace them with their pattern
+                let mut replaced = String::new();
+                let mut last_match = 0;
+                for caps in name_regex.captures_iter(s) {
+                    let m = caps.get(0).unwrap();
+                    replaced.push_str(&s[last_match..m.start()]);
+                    // surround token or fragment with parentheses to group it
+                    replaced.push('(');
+                    let _name = caps.get(1).unwrap().as_str();
+                    if let Some(parts) = tokens.get(_name) {
+                        let replacement =
+                            pattern_from_parts(name, parts, name_regex, fragments, tokens)?;
+                        replaced.push_str(&replacement);
+                    } else if let Some(pattern) = fragments.get(_name) {
+                        let replacement = pattern_from_parts(
+                            name,
+                            &vec![Part::Regex(pattern.to_string())],
+                            name_regex,
+                            fragments,
+                            tokens,
+                        )?;
+                        replaced.push_str(&replacement);
+                    } else {
+                        return Err(format!(
+                            "token or fragment {_name} within {name} not found in lexer"
+                        )
+                        .into());
+                    }
+                    replaced.push(')');
+                    last_match = m.end();
+                }
+                replaced.push_str(&s[last_match..]);
+                pattern.push_str(&replaced);
+            }
+        }
+    }
+    Ok(pattern)
+}
+
 type PdfaList = Vec<(PrefixDFA, Option<TIdx<u32>>)>;
 
 fn load_grammar_and_pdfas(
     grammar: &str,
     grammar_kind: YaccKind,
-    tokens: &str,
+    lexer: &str,
 ) -> Result<(YaccGrammar, PdfaList), Box<dyn Error>> {
     let grammar = YaccGrammar::new(grammar_kind, grammar)
         .map_err(|e| format!("errors creating grammar: {:#?}", e))?;
 
     // get token patterns and corresponding pdfas
-    let token_regex = Regex::new(r"(?m)^([A-Z_]+|;)\s+(.+)$")?;
+    let token_name = Regex::new(r"\{([A-Z_]+)\}")?;
+    let fragment_token_regex = Regex::new(r"(?m)^([A-Z_]+|;)\s+(.+)$")?;
     let sep = Regex::new("(?m)^%%$")?;
-    let m = sep.find(tokens).ok_or("line with %% not found")?;
-    let tokens = &tokens[m.end()..];
+    let m = sep.find(lexer).ok_or("line with %% not found")?;
 
-    // build pdfas
-    let mut pdfas = vec![];
-    let mut ignore_pdfas = vec![];
-    let mut seen = HashSet::new();
-    for line in tokens.lines() {
-        if line.is_empty() {
+    // parse fragements
+    let mut fragments = HashMap::new();
+    for line in lexer[..m.start()].lines() {
+        if line.is_empty() || line.trim_start().starts_with("//") {
             continue;
         }
-        let cap = token_regex
+        let cap = fragment_token_regex
+            .captures(line)
+            .ok_or(format!("invalid fragment line: {line}"))?;
+        let name = cap.get(1).unwrap().as_str();
+        let pattern = cap.get(2).unwrap().as_str();
+        if fragments.insert(name, pattern).is_some() {
+            return Err(format!("duplicate fragment {name}").into());
+        };
+    }
+    println!("{:#?}", fragments);
+
+    // parse tokens / terminals
+    // use index map to preserve order
+    let mut tokens = IndexMap::new();
+    let mut ignore_tokens = vec![];
+    for line in lexer[m.end()..].lines() {
+        if line.is_empty() || line.trim_start().starts_with("//") {
+            continue;
+        }
+        let cap = fragment_token_regex
             .captures(line)
             .ok_or(format!("invalid token line: {line}"))?;
         let name = cap.get(1).unwrap().as_str();
         let pattern = cap.get(2).unwrap().as_str();
-        let pdfa = PrefixDFA::new(pattern)?;
+        let mut parts = vec![];
+        for part in pattern.split_whitespace() {
+            if (part.starts_with('\'') && part.ends_with('\''))
+                || (part.starts_with('"') && part.ends_with('"'))
+            {
+                // treat part as literal
+                parts.push(Part::Literal(escape(&part[1..part.len() - 1])));
+            } else {
+                // treat part as regular expression
+                parts.push(Part::Regex(part.to_string()));
+            }
+        }
+        if parts.is_empty() {
+            return Err(format!("invalid token pattern {pattern} for {name}").into());
+        }
+        if name == ";" {
+            ignore_tokens.push(parts);
+            continue;
+        }
+        if !ignore_tokens.is_empty() {
+            return Err("ignore tokens must be at the end of the lexer file".into());
+        }
+        if grammar.token_idx(name).is_none() {
+            return Err(format!("token {name} not found in grammar").into());
+        };
+        if tokens.insert(name, parts).is_some() {
+            return Err(format!("duplicate token {name}").into());
+        };
+    }
+
+    // build pdfas from fragments and tokens
+    let mut pdfas = vec![];
+    for (name, parts) in tokens.iter() {
+        let pattern = pattern_from_parts(name, parts, &token_name, &fragments, &tokens)?;
+        let pdfa = PrefixDFA::new(&pattern)?;
         if pdfa.is_match_state(pdfa.get_start_state()) {
             return Err(format!("token pattern {pattern} for {name} matches empty string").into());
         };
-        if name == ";" {
-            ignore_pdfas.push((pdfa, None));
-            continue;
-        }
-        let Some(tidx) = grammar.token_idx(name) else {
-            return Err(format!("token {name} not found in grammar").into());
-        };
-        if !seen.insert(name) {
-            return Err(format!("duplicate token {name}").into());
-        }
-        pdfas.push((pdfa, Some(tidx)));
+        pdfas.push((pdfa, grammar.token_idx(name)));
     }
 
     // add all unseen tokens from grammar as literal tokens to lexer
     for token in grammar
         .iter_tidxs()
         .filter_map(|tidx| grammar.token_name(tidx))
-        .filter(|name| !seen.contains(name))
+        .filter(|name| !fragments.contains_key(name) && !tokens.contains_key(name))
     {
         let tidx = grammar
             .token_idx(token)
@@ -75,7 +175,11 @@ fn load_grammar_and_pdfas(
     }
 
     // add ignore pdfas at the end
-    pdfas.extend(ignore_pdfas);
+    for parts in &ignore_tokens {
+        let pattern = pattern_from_parts("ignore token", parts, &token_name, &fragments, &tokens)?;
+        let pdfa = PrefixDFA::new(&pattern)?;
+        pdfas.push((pdfa, None));
+    }
 
     Ok((grammar, pdfas))
 }
@@ -134,7 +238,9 @@ fn prefix_lexer(
 }
 
 fn lexer(text: &str, pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> Option<(Tokens, Spans)> {
-    let Some((mut tokens, mut spans, last_matches, last_span)) = prefix_lexer(text.as_bytes(), pdfas) else {
+    let Some((mut tokens, mut spans, last_matches, last_span)) =
+        prefix_lexer(text.as_bytes(), pdfas)
+    else {
         return None;
     };
     if let Some(&tidx) = last_matches.iter().find_map(|&(pidx, state)| {
@@ -162,23 +268,29 @@ pub struct LR1GrammarParser {
 #[derive(Debug, PartialEq)]
 pub enum LR1Parse<'a> {
     Terminal(&'a str, Span),
-    NonTerminal(&'a str, Vec<LR1Parse<'a>>),
+    NonTerminal(&'a str, Vec<LR1Parse<'a>>, Span),
 }
 
 impl LR1Parse<'_> {
+    pub fn span(&self) -> &Span {
+        match self {
+            LR1Parse::Terminal(.., span) => span,
+            LR1Parse::NonTerminal(.., span) => span,
+        }
+    }
+
     pub fn pretty(&self, text: &str, collapse: bool) -> String {
         fn pretty_parse(parse: &LR1Parse<'_>, indent: usize, text: &str, collapse: bool) -> String {
             match parse {
-                LR1Parse::Terminal(name, span) => {
-                    let &(start, len) = span;
-                    format!("{:indent$}{}: '{}'", "", name, &text[start..start + len],)
+                LR1Parse::Terminal(name, (start, len)) => {
+                    format!("{:indent$}{name}: '{}'", "", &text[*start..*start + *len],)
                 }
-                LR1Parse::NonTerminal(name, children) => {
+                LR1Parse::NonTerminal(name, children, ..) => {
                     assert!(!children.is_empty());
                     if children.len() == 1 && collapse {
                         return pretty_parse(&children[0], indent, text, collapse);
                     }
-                    let mut s = format!("{:indent$}{}", "", name);
+                    let mut s = format!("{:indent$}{name}", "");
                     for child in children {
                         s.push('\n');
                         s.push_str(&pretty_parse(child, indent + 2, text, collapse));
@@ -254,13 +366,14 @@ impl LR1GrammarParser {
                         return node_to_lr1(grammar, &nodes[0], collapse);
                     }
                     let rname = grammar.rule_name_str(*ridx);
-                    Some(LR1Parse::NonTerminal(
-                        rname,
-                        nodes
-                            .iter()
-                            .map(|node| node_to_lr1(grammar, node, collapse))
-                            .collect::<Option<_>>()?,
-                    ))
+                    let nodes: Vec<_> = nodes
+                        .iter()
+                        .map(|node| node_to_lr1(grammar, node, collapse))
+                        .collect::<Option<_>>()?;
+                    let first_span = nodes.first()?.span();
+                    let last_span = nodes.last()?.span();
+                    let span = (first_span.0, last_span.0 + last_span.1 - first_span.0);
+                    Some(LR1Parse::NonTerminal(rname, nodes, span))
                 }
             }
         }
@@ -371,7 +484,7 @@ pub struct LR1State {
 impl LR1State {
     #[allow(dead_code)]
     fn next(mut self, state: LR1NextState) -> Self {
-        if let Some((keep, stidx)) = state.action {
+        if let Some((keep, stidx, ..)) = state.action {
             self.stack.truncate(keep);
             self.stack.push(stidx);
         }
@@ -381,7 +494,7 @@ impl LR1State {
 }
 
 pub struct LR1NextState {
-    action: Option<(usize, StIdx<u32>)>,
+    action: Option<(usize, StIdx<u32>, String)>,
     matching: Matching,
 }
 
@@ -397,8 +510,8 @@ impl Constraint for LR1GrammarConstraint {
             if !pdfa.is_match_state(pdfa_state) {
                 return false;
             }
-            let LR1Action::ShiftReduce(keep, stidx) = self
-                    .shift_reduce(&state.stack, *token) else {
+            let LR1Action::ShiftReduce(keep, stidx) = self.shift_reduce(&state.stack, *token)
+            else {
                 return false;
             };
             let mut stack = state.stack[..keep].to_vec();
@@ -414,6 +527,7 @@ impl Constraint for LR1GrammarConstraint {
         &self,
         state: &Self::State,
     ) -> (Vec<usize>, Vec<Self::NextState>) {
+        assert!(!state.matching.is_empty());
         let mut cont_indices = vec![];
         let mut next_states = vec![];
 
@@ -426,7 +540,7 @@ impl Constraint for LR1GrammarConstraint {
         //    for all pdfas)
         // 3. step with the corresponding token and return the action
         //    --> the action will later be used to create the next state
-        let next = if let Some(LR1Action::ShiftReduce(keep, next_stidx)) = state
+        let next = if let Some((LR1Action::ShiftReduce(keep, next_stidx), tidx)) = state
             .matching
             .iter()
             .find_map(|&(pidx, pdfa_state)| {
@@ -439,10 +553,11 @@ impl Constraint for LR1GrammarConstraint {
                     None
                 }
             })
-            .map(|&tidx| self.shift_reduce(&state.stack, tidx))
+            .map(|&tidx| (self.shift_reduce(&state.stack, tidx), tidx))
         {
             let next_pdfas = self.matching_pdfas(next_stidx);
-            Some(((keep, next_stidx), next_pdfas))
+            let token_name = self.grammar.token_name(tidx).unwrap();
+            Some(((keep, next_stidx, token_name.to_string()), next_pdfas))
         } else {
             None
         };
@@ -510,7 +625,7 @@ impl Constraint for LR1GrammarConstraint {
 
                 cont_indices.push(i);
                 next_states.push(LR1NextState {
-                    action: Some(*next_action),
+                    action: Some(next_action.clone()),
                     matching: next_matching,
                 });
             }
@@ -727,6 +842,29 @@ mod test {
         assert!(!pdfa.is_match_state(state));
     }
 
+    fn load_lrk_grammars() -> Vec<(PathBuf, PathBuf, Vec<PathBuf>)> {
+        // list all directories in grammars/
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars");
+
+        let mut grammars = vec![];
+        for sub_dir in fs::read_dir(dir).unwrap() {
+            let sub_dir = sub_dir.unwrap();
+            let sub_dir_name = sub_dir.file_name().to_str().unwrap().to_string();
+            // read grammar from .y file in dir/sub_dir/<sub_dir>.y
+            let grammar = sub_dir.path().join(format!("{sub_dir_name}.y"));
+            // read tokens from .l file in dir/sub_dir/<sub_dir>.l
+            let tokens = sub_dir.path().join(format!("{sub_dir_name}.l"));
+
+            // load all examples from dir/sub_dir/examples/
+            let examples = fs::read_dir(sub_dir.path().join("examples"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            grammars.push((grammar, tokens, examples));
+        }
+        grammars
+    }
+
     #[test]
     fn test_lrk_parser() {
         let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.y");
@@ -734,39 +872,49 @@ mod test {
         let lrk = LR1GrammarParser::from_file(grammar, tokens).unwrap();
         assert_eq!(lrk.parse("2 - 1", false), None);
         let text = "(1 + 28)*\n3";
-        let parse = lrk.parse(text, true).unwrap();
+        let parse = lrk.parse(text, false).unwrap();
         println!("{}", parse.pretty(text, true));
+
+        // for (grammar, tokens, examples) in load_lrk_grammars() {
+        //     let lrk = LR1GrammarParser::from_file(grammar, tokens).unwrap();
+        //     for example in examples {
+        //         let text = fs::read_to_string(&example).unwrap();
+        //         let parse = lrk.parse(&text, false).unwrap();
+        //         println!("{}", parse.pretty(&text, true));
+        //     }
+        // }
     }
 
     #[test]
     fn test_lrk_constraint() {
         let conts = load_continuations();
-        // let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.y");
-        // let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.l");
-        // let lrk = LR1GrammarConstraint::from_file(grammar, tokens, conts.clone()).unwrap();
-        // let state = lrk.get_start_state();
-        // let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
-        // println!(
-        //     "matching {}, {} conts: {:#?}",
-        //     lrk.is_match_state(&state),
-        //     cont_indices.len(),
-        //     cont_indices
-        //         .iter()
-        //         .map(|i| String::from_utf8_lossy(&conts[*i]))
-        //         .collect_vec()
-        // );
-        // let state = lrk.get_state(b"1").unwrap();
-        // let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
-        // println!(
-        //     "matching {}, {} conts: {:#?}",
-        //     lrk.is_match_state(&state),
-        //     cont_indices.len(),
-        //     cont_indices
-        //         .iter()
-        //         .take(10)
-        //         .map(|i| String::from_utf8_lossy(&conts[*i]))
-        //         .collect_vec()
-        // );
+
+        let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.y");
+        let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.l");
+        let lrk = LR1GrammarConstraint::from_file(grammar, tokens, conts.clone()).unwrap();
+        let state = lrk.get_start_state();
+        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        println!(
+            "matching {}, {} conts: {:#?}",
+            lrk.is_match_state(&state),
+            cont_indices.len(),
+            cont_indices
+                .iter()
+                .map(|i| String::from_utf8_lossy(&conts[*i]))
+                .collect_vec()
+        );
+        let state = lrk.get_state(b"1").unwrap();
+        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        println!(
+            "matching {}, {} conts: {:#?}",
+            lrk.is_match_state(&state),
+            cont_indices.len(),
+            cont_indices
+                .iter()
+                .take(10)
+                .map(|i| String::from_utf8_lossy(&conts[*i]))
+                .collect_vec()
+        );
         let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/test/test.y");
         let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/test/test.l");
         let lrk = LR1GrammarConstraint::from_file(grammar, tokens, conts.clone()).unwrap();

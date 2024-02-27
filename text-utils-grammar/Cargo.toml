@@ -12,7 +12,8 @@ cfgrammar = { version = "0.13.4", features = ["serde"] }
 lrtable = { version = "0.13.4", features = ["serde"] }
 lrlex = "0.13.4"
 lrpar = { version = "0.13.4", features = ["serde"] }
-getopts = "0.2"
+indexmap = "2.2"
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.5"

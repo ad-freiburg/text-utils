@@ -1,12 +1,12 @@
-%start selectOrAsk
+%start query
 %%
+query
+    : prologue selectOrAsk
+    ;
+
 selectOrAsk
     : selectQuery
     | askQuery
-    ;
-
-query
-    : prologue selectOrAsk
     ;
 
 baseDeclOptional

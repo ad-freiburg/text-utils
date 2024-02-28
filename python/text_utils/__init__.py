@@ -10,7 +10,7 @@ from text_utils._internal import (
     metrics,
     unicode,
     continuations,
-    constraints
+    grammar
 )
 from text_utils import (
     api,

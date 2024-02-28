@@ -1,10 +1,11 @@
 use std::{collections::HashMap, error::Error, fs::File, io::read_to_string, path::Path};
 
 use cfgrammar::{
-    yacc::{YaccGrammar, YaccKind, YaccOriginalActionKind},
-    NewlineCache, TIdx,
+    yacc::{YaccGrammar, YaccGrammarError, YaccKind, YaccOriginalActionKind},
+    NewlineCache, Spanned, TIdx,
 };
 use indexmap::IndexMap;
+use itertools::Itertools;
 use lrlex::{DefaultLexeme, DefaultLexerTypes, LRNonStreamingLexer};
 use lrpar::{Lexeme, Node, RTParserBuilder};
 use lrtable::{Action, Minimiser, StIdx, StateTable};
@@ -42,7 +43,7 @@ fn pattern_from_parts(
                     let m = caps.get(0).unwrap();
                     replaced.push_str(&s[last_match..m.start()]);
                     // surround token or fragment with parentheses to group it
-                    replaced.push('(');
+                    replaced.push_str("(?:");
                     let _name = caps.get(1).unwrap().as_str();
                     if let Some(parts) = tokens.get(_name) {
                         let replacement =
@@ -76,17 +77,39 @@ fn pattern_from_parts(
 
 type PdfaList = Vec<(PrefixDFA, Option<TIdx<u32>>)>;
 
+fn format_yacc_error(grammar: &str, e: &YaccGrammarError) -> String {
+    format!(
+        "{} at {}",
+        e,
+        e.spans()
+            .iter()
+            .map(|s| if s.is_empty() {
+                let start = s.start().saturating_sub(20);
+                let end = grammar.len().min(s.end() + 20);
+                let context = &grammar.as_bytes()[start..end];
+                format!("middle of '{}'", String::from_utf8_lossy(context))
+            } else {
+                format!("'{}'", &grammar[s.start()..s.end()])
+            })
+            .join(" and ")
+    )
+}
+
 fn load_grammar_and_pdfas(
     grammar: &str,
     grammar_kind: YaccKind,
     lexer: &str,
 ) -> Result<(YaccGrammar, PdfaList), Box<dyn Error>> {
-    let grammar = YaccGrammar::new(grammar_kind, grammar)
-        .map_err(|e| format!("errors creating grammar: {:#?}", e))?;
+    let grammar = YaccGrammar::new(grammar_kind, grammar).map_err(|e| {
+        format!(
+            "errors creating grammar:\n{}",
+            e.iter().map(|e| format_yacc_error(grammar, e)).join("\n")
+        )
+    })?;
 
     // get token patterns and corresponding pdfas
-    let token_name = Regex::new(r"\{([A-Z_]+)\}")?;
-    let fragment_token_regex = Regex::new(r"(?m)^([A-Z_]+|;)\s+(.+)$")?;
+    let token_name = Regex::new(r"\{([A-Z0-9_]+)\}")?;
+    let fragment_token_regex = Regex::new(r"(?m)^([A-Z0-9_]+|;)\s+(.+)$")?;
     let sep = Regex::new("(?m)^%%$")?;
     let m = sep.find(lexer).ok_or("line with %% not found")?;
 
@@ -105,7 +128,6 @@ fn load_grammar_and_pdfas(
             return Err(format!("duplicate fragment {name}").into());
         };
     }
-    println!("{:#?}", fragments);
 
     // parse tokens / terminals
     // use index map to preserve order
@@ -143,7 +165,7 @@ fn load_grammar_and_pdfas(
             return Err("ignore tokens must be at the end of the lexer file".into());
         }
         if grammar.token_idx(name).is_none() {
-            return Err(format!("token {name} not found in grammar").into());
+            eprintln!("token {name} not used in grammar, skipping...");
         };
         if tokens.insert(name, parts).is_some() {
             return Err(format!("duplicate token {name}").into());
@@ -192,7 +214,7 @@ type Matching = Vec<(usize, StateID)>;
 fn prefix_lexer(
     prefix: &[u8],
     pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
-) -> Option<(Tokens, Spans, Matching, Span)> {
+) -> Result<(Tokens, Spans, Matching, Span), Box<dyn Error>> {
     // returns a list of tokens and a list of indices of pdfas matching
     // the rest of the prefix, or None if no matching pdfa is found
     let mut tokens = vec![];
@@ -231,18 +253,21 @@ fn prefix_lexer(
             }
             i += longest;
         } else {
-            return None;
+            return Err(format!(
+                "no matching token found from position {i}: '{}'",
+                String::from_utf8_lossy(&prefix[i..])
+            )
+            .into());
         }
     }
-    Some((tokens, spans, prefix_matches, (i, prefix.len() - i)))
+    Ok((tokens, spans, prefix_matches, (i, prefix.len() - i)))
 }
 
-fn lexer(text: &str, pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> Option<(Tokens, Spans)> {
-    let Some((mut tokens, mut spans, last_matches, last_span)) =
-        prefix_lexer(text.as_bytes(), pdfas)
-    else {
-        return None;
-    };
+fn lexer(
+    text: &str,
+    pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
+) -> Result<(Tokens, Spans), Box<dyn Error>> {
+    let (mut tokens, mut spans, last_matches, last_span) = prefix_lexer(text.as_bytes(), pdfas)?;
     if let Some(&tidx) = last_matches.iter().find_map(|&(pidx, state)| {
         let (pdfa, Some(tidx)) = &pdfas[pidx] else {
             return None;
@@ -256,7 +281,7 @@ fn lexer(text: &str, pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> Option<(Tokens
         tokens.push(tidx);
         spans.push(last_span);
     }
-    Some((tokens, spans))
+    Ok((tokens, spans))
 }
 
 pub struct LR1GrammarParser {
@@ -267,21 +292,28 @@ pub struct LR1GrammarParser {
 
 #[derive(Debug, PartialEq)]
 pub enum LR1Parse<'a> {
+    Empty(&'a str),
     Terminal(&'a str, Span),
     NonTerminal(&'a str, Vec<LR1Parse<'a>>, Span),
 }
 
 impl LR1Parse<'_> {
-    pub fn span(&self) -> &Span {
+    pub fn is_empty(&self) -> bool {
+        matches!(self, LR1Parse::Empty(..))
+    }
+
+    pub fn span(&self) -> Option<&Span> {
         match self {
-            LR1Parse::Terminal(.., span) => span,
-            LR1Parse::NonTerminal(.., span) => span,
+            LR1Parse::Empty(..) => None,
+            LR1Parse::Terminal(.., span) => Some(span),
+            LR1Parse::NonTerminal(.., span) => Some(span),
         }
     }
 
     pub fn pretty(&self, text: &str, collapse: bool) -> String {
         fn pretty_parse(parse: &LR1Parse<'_>, indent: usize, text: &str, collapse: bool) -> String {
             match parse {
+                LR1Parse::Empty(name) => format!("{:indent$}{name}: %EMPTY%", ""),
                 LR1Parse::Terminal(name, (start, len)) => {
                     format!("{:indent$}{name}: '{}'", "", &text[*start..*start + *len],)
                 }
@@ -329,7 +361,15 @@ impl LR1GrammarParser {
         Self::new(&grammar, &tokens)
     }
 
-    pub fn parse(&self, text: &str, collapse: bool) -> Option<LR1Parse<'_>> {
+    pub fn lex(&self, text: &str) -> Result<Vec<&str>, Box<dyn Error>> {
+        let (tokens, _) = lexer(text, &self.pdfas)?;
+        Ok(tokens
+            .into_iter()
+            .map(|tidx| self.grammar.token_name(tidx).unwrap())
+            .collect())
+    }
+
+    pub fn parse(&self, text: &str, collapse: bool) -> Result<LR1Parse<'_>, Box<dyn Error>> {
         let (tokens, spans) = lexer(text, &self.pdfas)?;
         let lexer = LRNonStreamingLexer::new(
             text,
@@ -344,40 +384,53 @@ impl LR1GrammarParser {
             RTParserBuilder::new(&self.grammar, &self.table);
         let (tree, errors) = parser.parse_generictree(&lexer);
         if !errors.is_empty() {
-            return None;
+            return Err(format!("errors parsing input:\n{}", errors.iter().join("\n")).into());
         }
-        let tree = tree?;
+        let Some(tree) = tree else {
+            return Err("failed to parse input".into());
+        };
         // convert tree to lr1 parse
         fn node_to_lr1<'a>(
             grammar: &'a YaccGrammar,
             node: &Node<DefaultLexeme<u32>, u32>,
             collapse: bool,
-        ) -> Option<LR1Parse<'a>> {
+        ) -> LR1Parse<'a> {
             match node {
                 Node::Term { lexeme } => {
                     let span = lexeme.span();
                     let tidx = lexeme.tok_id();
-                    let tname = grammar.token_name(TIdx(tidx))?;
-                    Some(LR1Parse::Terminal(tname, (span.start(), span.len())))
+                    let tname = grammar.token_name(TIdx(tidx)).unwrap();
+                    LR1Parse::Terminal(tname, (span.start(), span.len()))
                 }
                 Node::Nonterm { ridx, nodes } => {
-                    assert!(!nodes.is_empty());
-                    if nodes.len() == 1 && collapse {
+                    let rname = grammar.rule_name_str(*ridx);
+                    if nodes.is_empty() {
+                        return LR1Parse::Empty(rname);
+                    } else if nodes.len() == 1 && collapse {
                         return node_to_lr1(grammar, &nodes[0], collapse);
                     }
-                    let rname = grammar.rule_name_str(*ridx);
                     let nodes: Vec<_> = nodes
                         .iter()
-                        .map(|node| node_to_lr1(grammar, node, collapse))
-                        .collect::<Option<_>>()?;
-                    let first_span = nodes.first()?.span();
-                    let last_span = nodes.last()?.span();
+                        .filter_map(|node| {
+                            let node = node_to_lr1(grammar, node, collapse);
+                            if node.is_empty() {
+                                None
+                            } else {
+                                Some(node)
+                            }
+                        })
+                        .collect();
+                    if nodes.is_empty() {
+                        return LR1Parse::Empty(rname);
+                    }
+                    let first_span = nodes.first().unwrap().span().unwrap();
+                    let last_span = nodes.last().unwrap().span().unwrap();
                     let span = (first_span.0, last_span.0 + last_span.1 - first_span.0);
-                    Some(LR1Parse::NonTerminal(rname, nodes, span))
+                    LR1Parse::NonTerminal(rname, nodes, span)
                 }
             }
         }
-        node_to_lr1(&self.grammar, &tree, collapse)
+        Ok(node_to_lr1(&self.grammar, &tree, collapse))
     }
 }
 
@@ -480,6 +533,7 @@ impl LR1GrammarConstraint {
     }
 }
 
+#[derive(Clone)]
 pub struct LR1State {
     stack: Vec<StIdx<u32>>,
     matching: Matching,
@@ -487,16 +541,16 @@ pub struct LR1State {
 
 impl LR1State {
     #[allow(dead_code)]
-    fn next(mut self, state: LR1NextState) -> Self {
+    pub fn next(&mut self, state: LR1NextState) {
         if let Some((keep, stidx, ..)) = state.action {
             self.stack.truncate(keep);
             self.stack.push(stidx);
         }
         self.matching = state.matching;
-        self
     }
 }
 
+#[derive(Clone, Default)]
 pub struct LR1NextState {
     action: Option<(usize, StIdx<u32>, String)>,
     matching: Matching,
@@ -652,7 +706,7 @@ impl Constraint for LR1GrammarConstraint {
     fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
         // fix this by parsing prefix into tokens with the lexer
         // and then driving the pda with these tokens
-        let (tokens, _, matching, _) = prefix_lexer(prefix, &self.pdfas)?;
+        let (tokens, _, matching, _) = prefix_lexer(prefix, &self.pdfas).ok()?;
         let mut stack = vec![self.table.start_state()];
         let mut idx = 0;
         while idx < tokens.len() {

@@ -18,7 +18,7 @@ fn make_anchored(pat: &str) -> String {
         }
         (false, false) => pat.to_string(),
     };
-    format!("^({})$", pat)
+    format!("^(?:{})$", pat)
 }
 
 pub(crate) struct PrefixDFA {

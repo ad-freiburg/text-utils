@@ -1,4 +1,5 @@
 use rayon::prelude::*;
+use wasm_bindgen::prelude::*;
 
 pub mod lr1;
 pub mod re;
@@ -38,4 +39,11 @@ pub trait Constraint {
             .map(|state| self.get_valid_continuations_with_state(state))
             .collect()
     }
+}
+
+#[wasm_bindgen]
+pub fn parse(text: &str, grammar: &str, lexer: &str) -> Option<String> {
+    let parser = LR1GrammarParser::new(grammar, lexer).ok()?;
+    let parse = parser.parse(text, true).ok()?;
+    Some(parse.pretty(text, true))
 }

@@ -1,5 +1,7 @@
 %start Expr
+
 %%
+
 Expr: Expr '+' Term
     | Term ;
 

@@ -1,6 +1,8 @@
 %start start
+
 %%
+
 start: statement ;
 
-statement: statement "KEYWORD"
-     | "KEYWORD" ;
+statement: statement 'KEYWORD'
+     | 'KEYWORD' ;

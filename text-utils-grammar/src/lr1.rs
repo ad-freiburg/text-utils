@@ -17,9 +17,26 @@ use crate::{
     Constraint,
 };
 
+#[derive(Debug)]
 enum Part {
     Literal(String),
     Regex(String),
+}
+
+fn extract_parts(pattern: &str) -> Vec<Part> {
+    let mut parts = vec![];
+    for part in pattern.split_whitespace() {
+        if (part.starts_with('\'') && part.ends_with('\''))
+            || (part.starts_with('"') && part.ends_with('"'))
+        {
+            // treat part as literal
+            parts.push(Part::Literal(escape(&part[1..part.len() - 1])));
+        } else {
+            // treat part as regular expression
+            parts.push(Part::Regex(part.to_string()));
+        }
+    }
+    parts
 }
 
 // define function to recursively build pattern from parts
@@ -27,7 +44,7 @@ fn pattern_from_parts(
     name: &str,
     parts: &[Part],
     name_regex: &Regex,
-    fragments: &HashMap<&str, &str>,
+    fragments: &HashMap<&str, Vec<Part>>,
     tokens: &IndexMap<&str, Vec<Part>>,
 ) -> Result<String, Box<dyn Error>> {
     let mut pattern = String::new();
@@ -45,18 +62,9 @@ fn pattern_from_parts(
                     // surround token or fragment with parentheses to group it
                     replaced.push_str("(?:");
                     let _name = caps.get(1).unwrap().as_str();
-                    if let Some(parts) = tokens.get(_name) {
+                    if let Some(parts) = tokens.get(_name).or_else(|| fragments.get(_name)) {
                         let replacement =
                             pattern_from_parts(name, parts, name_regex, fragments, tokens)?;
-                        replaced.push_str(&replacement);
-                    } else if let Some(pattern) = fragments.get(_name) {
-                        let replacement = pattern_from_parts(
-                            name,
-                            &[Part::Regex(pattern.to_string())],
-                            name_regex,
-                            fragments,
-                            tokens,
-                        )?;
                         replaced.push_str(&replacement);
                     } else {
                         return Err(format!(
@@ -108,8 +116,8 @@ fn load_grammar_and_pdfas(
     })?;
 
     // get token patterns and corresponding pdfas
-    let token_name = Regex::new(r"\{([A-Z0-9_]+)\}")?;
-    let fragment_token_regex = Regex::new(r"(?m)^([A-Z0-9_]+|;)\s+(.+)$")?;
+    let token_name = Regex::new(r"\{([A-Z][A-Z0-9_]*)\}")?;
+    let fragment_token_regex = Regex::new(r"(?m)^([A-Z][A-Z0-9_]*|;)\s+(.+)$")?;
     let sep = Regex::new("(?m)^%%$")?;
     let m = sep.find(lexer).ok_or("line with %% not found")?;
 
@@ -123,8 +131,12 @@ fn load_grammar_and_pdfas(
             .captures(line)
             .ok_or(format!("invalid fragment line: {line}"))?;
         let name = cap.get(1).unwrap().as_str();
+        if name == ";" {
+            return Err("fragments cannot be named ;, which is reserved for ignore tokens".into());
+        }
         let pattern = cap.get(2).unwrap().as_str();
-        if fragments.insert(name, pattern).is_some() {
+        let parts = extract_parts(pattern);
+        if fragments.insert(name, parts).is_some() {
             return Err(format!("duplicate fragment {name}").into());
         };
     }
@@ -142,18 +154,7 @@ fn load_grammar_and_pdfas(
             .ok_or(format!("invalid token line: {line}"))?;
         let name = cap.get(1).unwrap().as_str();
         let pattern = cap.get(2).unwrap().as_str();
-        let mut parts = vec![];
-        for part in pattern.split_whitespace() {
-            if (part.starts_with('\'') && part.ends_with('\''))
-                || (part.starts_with('"') && part.ends_with('"'))
-            {
-                // treat part as literal
-                parts.push(Part::Literal(escape(&part[1..part.len() - 1])));
-            } else {
-                // treat part as regular expression
-                parts.push(Part::Regex(part.to_string()));
-            }
-        }
+        let parts = extract_parts(pattern);
         if parts.is_empty() {
             return Err(format!("invalid token pattern {pattern} for {name}").into());
         }
@@ -200,6 +201,11 @@ fn load_grammar_and_pdfas(
     for parts in &ignore_tokens {
         let pattern = pattern_from_parts("ignore token", parts, &token_name, &fragments, &tokens)?;
         let pdfa = PrefixDFA::new(&pattern)?;
+        if pdfa.is_match_state(pdfa.get_start_state()) {
+            return Err(
+                format!("token pattern {pattern} for ignore token matches empty string").into(),
+            );
+        };
         pdfas.push((pdfa, None));
     }
 
@@ -313,9 +319,9 @@ impl LR1Parse<'_> {
     pub fn pretty(&self, text: &str, collapse: bool) -> String {
         fn pretty_parse(parse: &LR1Parse<'_>, indent: usize, text: &str, collapse: bool) -> String {
             match parse {
-                LR1Parse::Empty(name) => format!("{:indent$}{name}: %EMPTY%", ""),
+                LR1Parse::Empty(name) => format!("{:indent$}{name} ''", ""),
                 LR1Parse::Terminal(name, (start, len)) => {
-                    format!("{:indent$}{name}: '{}'", "", &text[*start..*start + *len],)
+                    format!("{:indent$}{name} '{}'", "", &text[*start..*start + *len],)
                 }
                 LR1Parse::NonTerminal(name, children, ..) => {
                     assert!(!children.is_empty());
@@ -371,6 +377,8 @@ impl LR1GrammarParser {
 
     pub fn parse(&self, text: &str, collapse: bool) -> Result<LR1Parse<'_>, Box<dyn Error>> {
         let (tokens, spans) = lexer(text, &self.pdfas)?;
+        let mut nlc = NewlineCache::new();
+        nlc.feed(text);
         let lexer = LRNonStreamingLexer::new(
             text,
             tokens
@@ -378,13 +386,20 @@ impl LR1GrammarParser {
                 .zip(spans)
                 .map(|(tidx, (start, len))| Ok(DefaultLexeme::new(tidx.as_storaget(), start, len)))
                 .collect(),
-            NewlineCache::new(),
+            nlc,
         );
         let parser: RTParserBuilder<'_, u32, DefaultLexerTypes> =
             RTParserBuilder::new(&self.grammar, &self.table);
         let (tree, errors) = parser.parse_generictree(&lexer);
         if !errors.is_empty() {
-            return Err(format!("errors parsing input:\n{}", errors.iter().join("\n")).into());
+            return Err(format!(
+                "errors parsing input:\n{}",
+                errors
+                    .iter()
+                    .map(|e| e.pp(&lexer, &|tidx| self.grammar.token_epp(tidx)))
+                    .join("\n")
+            )
+            .into());
         }
         let Some(tree) = tree else {
             return Err("failed to parse input".into());

@@ -202,7 +202,7 @@ impl LR1Parser {
     fn new(grammar: &str, lexer: &str) -> anyhow::Result<Self> {
         let inner = LR1GrammarParser::new(grammar, lexer).map_err(|e| {
             anyhow!(
-                "failed to create LR(1) grammar parser from grammar '{}' and lexer '{}': {}",
+                "failed to create LR(1) grammar parser from grammar {} and lexer {}: {}",
                 grammar,
                 lexer,
                 e
@@ -229,7 +229,7 @@ impl LR1Parser {
         let parse = self
             .inner
             .parse(input, collapse)
-            .ok_or_else(|| anyhow!("failed to parse input"))?;
+            .map_err(|e| anyhow!("failed to parse input: {e}"))?;
         Ok(parse.pretty(input, collapse))
     }
 
@@ -243,7 +243,7 @@ impl LR1Parser {
         let parse = slf
             .inner
             .parse(input, collapse)
-            .ok_or_else(|| anyhow!("failed to parse input"))?;
+            .map_err(|e| anyhow!("failed to parse input: {e}"))?;
         Ok(parse_into_py(input, &parse, py)?)
     }
 }
@@ -251,6 +251,10 @@ impl LR1Parser {
 fn parse_into_py(text: &str, parse: &LR1Parse<'_>, py: Python<'_>) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     let lr1_type = match parse {
+        LR1Parse::Empty(name) => {
+            dict.set_item("name", name)?;
+            "empty"
+        }
         LR1Parse::Terminal(name, span) => {
             dict.set_item("name", name)?;
             dict.set_item("span", span)?;

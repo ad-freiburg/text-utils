@@ -1,5 +1,8 @@
 %start json
+// ported from antlr4 grammar at https://github.com/antlr/grammars-v4/tree/master/json
+
 %%
+
 json
     : value 
     ;

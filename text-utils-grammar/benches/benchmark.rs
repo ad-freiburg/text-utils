@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use text_utils_grammar::{
-    Constraint, LR1GrammarConstraint, LR1GrammarParser, RegularExpressionConstraint,
+    utils::optimized_prefix_order, Constraint, LR1GrammarConstraint, LR1GrammarParser,
+    RegularExpressionConstraint,
 };
 
 fn load_continuations() -> Vec<Vec<u8>> {
@@ -16,6 +17,16 @@ fn load_continuations() -> Vec<Vec<u8>> {
         .into_iter()
         .map(|c| c.as_bytes().to_vec())
         .collect()
+}
+
+fn bench_utils(c: &mut Criterion) {
+    let conts = load_continuations();
+
+    c.bench_function("optimized_prefix_order", |b| {
+        b.iter(|| {
+            optimized_prefix_order(&conts);
+        })
+    });
 }
 
 fn bench_re_constraint(c: &mut Criterion) {
@@ -106,7 +117,7 @@ fn bench_lr1_constraint(c: &mut Criterion) {
         .to_str()
         .unwrap()
         .to_string();
-    let lr1_constraint = LR1GrammarConstraint::from_file(grammar, tokens, conts.clone()).unwrap();
+    let lr1_constraint = LR1GrammarConstraint::from_files(grammar, tokens, conts.clone()).unwrap();
     let state = lr1_constraint.get_start_state();
     c.bench_function("lr1_json_empty_get_valid_continuations", |b| {
         b.iter(|| lr1_constraint.get_valid_continuations_with_state(&state))
@@ -144,7 +155,7 @@ fn bench_lr1_parser(c: &mut Criterion) {
         .to_str()
         .unwrap()
         .to_string();
-    let parser = LR1GrammarParser::from_file(grammar, tokens).unwrap();
+    let parser = LR1GrammarParser::from_files(grammar, tokens).unwrap();
     let input = read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/json/examples/numbers.json"),
     )
@@ -163,6 +174,7 @@ fn bench_lr1_parser(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_utils,
     bench_re_constraint,
     bench_lr1_constraint,
     bench_lr1_parser

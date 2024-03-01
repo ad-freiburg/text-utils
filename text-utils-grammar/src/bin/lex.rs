@@ -17,7 +17,7 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let parser = LR1GrammarParser::from_file(args.parser, args.lexer)?;
+    let parser = LR1GrammarParser::from_files(args.parser, args.lexer)?;
     let input = read_to_string(args.input)?;
 
     let mut elapsed = Duration::ZERO;

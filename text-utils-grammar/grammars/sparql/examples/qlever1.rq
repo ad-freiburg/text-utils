@@ -4,7 +4,7 @@ PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT DISTINCT ?name ?population WHERE {
   ?city wdt:P31/wdt:P279* wd:Q515 .
   ?city wdt:P17 wd:Q183 .
-  ?city wdt:P1082 ?population .
+  ?city <kge kg="wikidata">has population of</kge> ?population .
   ?city rdfs:label ?name .
   FILTER (LANG(?name) = "de")
 }

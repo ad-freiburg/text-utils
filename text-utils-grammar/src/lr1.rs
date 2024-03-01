@@ -1,4 +1,10 @@
-use std::{collections::HashMap, error::Error, fs::File, io::read_to_string, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+    fs::File,
+    io::read_to_string,
+    path::Path,
+};
 
 use cfgrammar::{
     yacc::{YaccGrammar, YaccGrammarError, YaccKind, YaccOriginalActionKind},
@@ -356,7 +362,7 @@ impl LR1GrammarParser {
         })
     }
 
-    pub fn from_file(
+    pub fn from_files(
         grammar_path: impl AsRef<Path>,
         tokens_path: impl AsRef<Path>,
     ) -> Result<Self, Box<dyn Error>> {
@@ -419,11 +425,6 @@ impl LR1GrammarParser {
                 }
                 Node::Nonterm { ridx, nodes } => {
                     let rname = grammar.rule_name_str(*ridx);
-                    if nodes.is_empty() {
-                        return LR1Parse::Empty(rname);
-                    } else if nodes.len() == 1 && collapse {
-                        return node_to_lr1(grammar, &nodes[0], collapse);
-                    }
                     let nodes: Vec<_> = nodes
                         .iter()
                         .filter_map(|node| {
@@ -437,6 +438,8 @@ impl LR1GrammarParser {
                         .collect();
                     if nodes.is_empty() {
                         return LR1Parse::Empty(rname);
+                    } else if nodes.len() == 1 && collapse {
+                        return nodes.into_iter().next().unwrap();
                     }
                     let first_span = nodes.first().unwrap().span().unwrap();
                     let last_span = nodes.last().unwrap().span().unwrap();
@@ -487,7 +490,7 @@ impl LR1GrammarConstraint {
         })
     }
 
-    pub fn from_file(
+    pub fn from_files(
         grammar_path: impl AsRef<Path>,
         tokens_path: impl AsRef<Path>,
         continuations: Vec<Vec<u8>>,
@@ -601,8 +604,7 @@ impl Constraint for LR1GrammarConstraint {
         state: &Self::State,
     ) -> (Vec<usize>, Vec<Self::NextState>) {
         assert!(!state.matching.is_empty());
-        let mut cont_indices = vec![];
-        let mut next_states = vec![];
+        let mut conts = BTreeMap::new();
 
         // in case no pdfa is still matching for a continuation
         // we do the following:
@@ -665,11 +667,13 @@ impl Constraint for LR1GrammarConstraint {
             // them in the next state; this corresponds the
             // longest matching rule in the lexer
             if !still_matching.is_empty() {
-                cont_indices.push(j);
-                next_states.push(LR1NextState {
-                    action: None,
-                    matching: still_matching,
-                });
+                conts.insert(
+                    j,
+                    LR1NextState {
+                        action: None,
+                        matching: still_matching,
+                    },
+                );
             } else if only_skippable_matching {
                 let matching: Vec<_> = matching_pdfas
                     .iter()
@@ -684,11 +688,13 @@ impl Constraint for LR1GrammarConstraint {
                     continue;
                 }
 
-                cont_indices.push(j);
-                next_states.push(LR1NextState {
-                    action: None,
-                    matching,
-                });
+                conts.insert(
+                    j,
+                    LR1NextState {
+                        action: None,
+                        matching,
+                    },
+                );
             } else if let Some((next_action, next_pdfas)) = &next {
                 // if there are no matching pdfas, check the matching pdfas for the next state
                 let next_matching: Vec<_> = next_pdfas
@@ -704,14 +710,16 @@ impl Constraint for LR1GrammarConstraint {
                     continue;
                 }
 
-                cont_indices.push(j);
-                next_states.push(LR1NextState {
-                    action: Some(next_action.clone()),
-                    matching: next_matching,
-                });
+                conts.insert(
+                    j,
+                    LR1NextState {
+                        action: Some(next_action.clone()),
+                        matching: next_matching,
+                    },
+                );
             }
         }
-        (cont_indices, next_states)
+        conts.into_iter().unzip()
     }
 
     fn get_start_state(&self) -> Self::State {
@@ -821,7 +829,7 @@ mod test {
     #[test]
     fn test_lexer() {
         let (pdfas, map) = get_calc_pfdas();
-        assert!(lexer("2 - 1", &pdfas).is_none());
+        assert!(lexer("2 - 1", &pdfas).is_err());
         let (tokens, spans) = lexer("(1 + 28)*\n3", &pdfas).unwrap();
         assert_eq!(
             tokens.into_iter().map(|tidx| map[&tidx]).collect_vec(),
@@ -844,7 +852,7 @@ mod test {
             vec!["AB1", "B"]
         );
         assert_eq!(spans, vec![(0, 2), (2, 1)]);
-        assert!(lexer("abac", &pdfas).is_none());
+        assert!(lexer("abac", &pdfas).is_err());
     }
 
     #[test]
@@ -950,8 +958,8 @@ mod test {
     fn test_lrk_parser() {
         let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.y");
         let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.l");
-        let lrk = LR1GrammarParser::from_file(grammar, tokens).unwrap();
-        assert_eq!(lrk.parse("2 - 1", false), None);
+        let lrk = LR1GrammarParser::from_files(grammar, tokens).unwrap();
+        assert!(lrk.parse("2 - 1", false).is_err());
         let text = "(1 + 28)*\n3";
         let parse = lrk.parse(text, false).unwrap();
         println!("{}", parse.pretty(text, true));
@@ -972,7 +980,7 @@ mod test {
 
         let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.y");
         let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.l");
-        let lrk = LR1GrammarConstraint::from_file(grammar, tokens, conts.clone()).unwrap();
+        let lrk = LR1GrammarConstraint::from_files(grammar, tokens, conts.clone()).unwrap();
         let state = lrk.get_start_state();
         let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
         println!(
@@ -998,7 +1006,7 @@ mod test {
         );
         let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/test/test.y");
         let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/test/test.l");
-        let lrk = LR1GrammarConstraint::from_file(grammar, tokens, conts.clone()).unwrap();
+        let lrk = LR1GrammarConstraint::from_files(grammar, tokens, conts.clone()).unwrap();
         let state = lrk.get_state(b"  SELECT  TEST").unwrap();
         let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
         println!(

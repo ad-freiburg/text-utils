@@ -1381,7 +1381,6 @@ impl Tokenize for HuggingfaceTokenizer {
                 }
                 move |token: &str, id: &u32| -> Vec<u8> {
                     if bpe.byte_fallback && is_byte_fallback(token) {
-                        println!("got byte fallback {token}");
                         let byte = u8::from_str_radix(&token[3..5], 16)
                             .expect("failed to convert byte fallback token into bytes");
                         return vec![byte];

@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::borrow::Borrow;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
@@ -724,6 +724,8 @@ pub trait BaseTokenize: Send + Sync + 'static {
 pub trait Tokenize: BaseTokenize {
     fn vocab_size(&self) -> usize;
 
+    fn get_vocab(&self) -> Vec<Vec<u8>>;
+
     fn tokenize(
         &self,
         s: &str,
@@ -1059,9 +1061,32 @@ where
     }
 }
 
+pub trait ToBytes {
+    fn to_bytes(&self) -> Vec<u8>;
+}
+
+impl ToBytes for char {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = [0; 4];
+        self.encode_utf8(&mut buf).as_bytes().to_vec()
+    }
+}
+
+impl ToBytes for String {
+    fn to_bytes(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+}
+
+impl ToBytes for Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
+        self.clone()
+    }
+}
+
 impl<Token, Config> Tokenize for VocabTokenizer<Token, Config>
 where
-    Token: PartialEq + Eq + Hash + Send + Sync + Clone + 'static,
+    Token: PartialEq + Eq + Hash + Send + Sync + Clone + ToBytes + 'static,
     Config: Send + Sync + 'static,
     Self: VocabTokenize<Token>,
 {
@@ -1121,6 +1146,17 @@ where
         }
         self.join_parts(&parts)
     }
+
+    fn get_vocab(&self) -> Vec<Vec<u8>> {
+        let mut vocab = BTreeMap::new();
+        for (token, &id) in &self.state.1.vocab {
+            assert!(vocab.insert(id, token.to_bytes()).is_none());
+        }
+        for (special, &id) in &self.special_vocab.vocab {
+            assert!(vocab.insert(id, special.to_bytes()).is_none());
+        }
+        vocab.into_values().collect()
+    }
 }
 
 /// Dummy tokenizer that just waits a specified time in its tokenize function.
@@ -1152,6 +1188,10 @@ impl Tokenize for DummyTokenizer {
 
     fn de_tokenize(&self, _: &[u32], _: bool) -> String {
         "".to_string()
+    }
+
+    fn get_vocab(&self) -> Vec<Vec<u8>> {
+        vec![]
     }
 }
 
@@ -1325,6 +1365,44 @@ impl Tokenize for HuggingfaceTokenizer {
                     token_ids, e
                 )
             })
+    }
+
+    fn get_vocab(&self) -> Vec<Vec<u8>> {
+        let decode_fn = match self.inner.get_model() {
+            hft::ModelWrapper::BPE(bpe) => {
+                let special = bpe
+                    .get_unk_token()
+                    .clone()
+                    .or_else(|| self.inner.id_to_token(self.pad_token_id()))
+                    .expect("neither unknown nor pad token available");
+                let special_id = self.inner.token_to_id(&special).expect("should not happen");
+                fn is_byte_fallback(token: &str) -> bool {
+                    token.len() == 6 && token.starts_with("<0x") && token.ends_with('>')
+                }
+                move |token: &str, id: &u32| -> Vec<u8> {
+                    if bpe.byte_fallback && is_byte_fallback(token) {
+                        println!("got byte fallback {token}");
+                        let byte = u8::from_str_radix(&token[3..5], 16)
+                            .expect("failed to convert byte fallback token into bytes");
+                        return vec![byte];
+                    }
+                    let decoded = self
+                        .inner
+                        .decode(&[special_id, *id, special_id], false)
+                        .expect("failed to decode with BPE tokenizer");
+                    decoded[special.len()..decoded.len() - special.len()]
+                        .as_bytes()
+                        .to_vec()
+                }
+            }
+            _ => unimplemented!("get vocab for models other than BPE not implemented"),
+        };
+        self.inner
+            .get_vocab(true)
+            .into_iter()
+            .sorted_by_key(|(_, id)| *id)
+            .map(|(k, v)| decode_fn(&k, &v))
+            .collect()
     }
 }
 
@@ -1598,6 +1676,20 @@ impl Tokenize for BPETokenizer {
             }
         }
         String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    fn get_vocab(&self) -> Vec<Vec<u8>> {
+        let mut vocab: BTreeMap<_, _> = (0..256).map(|b| (b as u32, vec![b as u8])).collect();
+
+        for (merge, id) in &self.state.0 {
+            assert!(vocab.insert(256 + id, merge.clone()).is_none());
+        }
+
+        for (special, &id) in &self.special_vocab.vocab {
+            assert!(vocab.insert(id, special.to_bytes()).is_none());
+        }
+
+        vocab.into_values().collect()
     }
 }
 
@@ -2110,6 +2202,14 @@ impl Tokenize for ByteTokenizer {
         }
         String::from_utf8_lossy(&bytes).to_string()
     }
+
+    fn get_vocab(&self) -> Vec<Vec<u8>> {
+        let mut vocab: BTreeMap<_, _> = (0..256).map(|b| (b as u32, vec![b as u8])).collect();
+        for (special, &id) in &self.special_vocab.vocab {
+            vocab.insert(id, special.to_bytes());
+        }
+        vocab.into_values().collect()
+    }
 }
 
 pub struct ByT5Tokenizer {
@@ -2193,6 +2293,10 @@ impl Tokenize for ByT5Tokenizer {
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
         self.inner.de_tokenize(token_ids, ignore_special_tokens)
     }
+
+    fn get_vocab(&self) -> Vec<Vec<u8>> {
+        self.inner.get_vocab()
+    }
 }
 
 pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
@@ -2275,6 +2379,10 @@ impl PyTokenizer {
 
     fn pad_token_id(&self) -> u32 {
         self.tokenizer.pad_token_id()
+    }
+
+    fn get_vocab(&self) -> Vec<Vec<u8>> {
+        self.tokenizer.get_vocab()
     }
 }
 

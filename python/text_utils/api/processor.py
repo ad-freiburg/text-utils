@@ -174,8 +174,12 @@ class TextProcessor:
         cudnn.benchmark = True
         cuda.matmul.allow_tf32 = True
 
+        self.model = torch.compile(
+            model,
+            fullgraph=True,
+            disable=not cfg["train"].get("compile", False)
+        )
         self.devices = get_devices(device)
-        self.model = model
         self.to(device)
 
         self.cfg = cfg

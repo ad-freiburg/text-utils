@@ -248,10 +248,14 @@ training will resume from latest checkpoint."
                 )
             )
 
-        self.model: Union[DDP, FSDP] = torch.compile(self.model, disable=not compile)  # type: ignore
+        self.model: Union[DDP, FSDP] = torch.compile(
+            self.model,
+            fullgraph=True,
+            disable=not compile
+        )  # type: ignore
 
         self.optimizer = optimizer_from_config(
-            self.model,
+            self.model,  # type: ignore
             self.cfg["train"]["optimizer"],
             additional_optimizer_fn=self._additional_optimizer_fn()
         )

@@ -92,8 +92,8 @@ impl RegexConstraint {
     }
 
     fn should_stop(&self) -> bool {
-        // same as is match for regex
-        self.is_match
+        // always false for regex
+        false
     }
 
     fn next(&mut self, index: usize) -> anyhow::Result<()> {

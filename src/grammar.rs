@@ -14,6 +14,7 @@ struct RegexConstraint {
     inner: Arc<RegularExpressionConstraint>,
     state: RegularExpressionState,
     indices: Vec<usize>,
+    is_match: bool,
     next_states: Vec<RegularExpressionState>,
 }
 
@@ -30,10 +31,12 @@ impl RegexConstraint {
         })?;
         let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
+        let is_match = inner.is_match_state(&state);
         Ok(Self {
             inner: Arc::new(inner),
             state,
             indices,
+            is_match,
             next_states,
         })
     }
@@ -49,10 +52,12 @@ impl RegexConstraint {
         })?;
         let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
+        let is_match = inner.is_match_state(&state);
         Ok(Self {
             inner: Arc::new(inner),
             state,
             indices,
+            is_match,
             next_states,
         })
     }
@@ -64,6 +69,7 @@ impl RegexConstraint {
             .expect("failed to reset to given prefix");
         let (indices, next_states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
+        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = next_states;
     }
 
@@ -72,16 +78,13 @@ impl RegexConstraint {
             inner: self.inner.clone(),
             state: self.state,
             indices: self.indices.clone(),
+            is_match: self.is_match,
             next_states: self.next_states.clone(),
         }
     }
 
-    fn get_constraint_indices(&self) -> Vec<usize> {
-        self.indices.clone()
-    }
-
-    fn is_final_state(&self) -> bool {
-        self.inner.is_match_state(&self.state)
+    fn get_constraint(&self) -> (Vec<usize>, bool) {
+        (self.indices.clone(), self.is_match)
     }
 
     fn next(&mut self, index: usize) -> anyhow::Result<()> {
@@ -95,6 +98,7 @@ impl RegexConstraint {
         self.state = self.next_states[idx];
         let (indices, states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
+        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = states;
         Ok(())
     }
@@ -105,6 +109,7 @@ struct LR1Constraint {
     inner: Arc<LR1GrammarConstraint>,
     state: LR1State,
     indices: Vec<usize>,
+    is_match: bool,
     next_states: Vec<LR1NextState>,
 }
 
@@ -116,10 +121,12 @@ impl LR1Constraint {
             .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?;
         let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
+        let is_match = inner.is_match_state(&state);
         Ok(Self {
             inner: Arc::new(inner),
             state,
             indices,
+            is_match,
             next_states,
         })
     }
@@ -141,10 +148,12 @@ impl LR1Constraint {
             })?;
         let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
+        let is_match = inner.is_match_state(&state);
         Ok(Self {
             inner: Arc::new(inner),
             state,
             indices,
+            is_match,
             next_states,
         })
     }
@@ -156,6 +165,7 @@ impl LR1Constraint {
             .expect("failed to reset to given prefix");
         let (indices, next_states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
+        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = next_states;
     }
 
@@ -164,16 +174,13 @@ impl LR1Constraint {
             inner: self.inner.clone(),
             state: self.state.clone(),
             indices: self.indices.clone(),
+            is_match: self.is_match,
             next_states: self.next_states.clone(),
         }
     }
 
-    fn get_constraint_indices(&self) -> Vec<usize> {
-        self.indices.clone()
-    }
-
-    fn is_final_state(&self) -> bool {
-        self.inner.is_match_state(&self.state)
+    fn get_constraint(&self) -> (Vec<usize>, bool) {
+        (self.indices.clone(), self.is_match)
     }
 
     fn next(&mut self, index: usize) -> anyhow::Result<()> {
@@ -187,6 +194,7 @@ impl LR1Constraint {
         self.state.next(std::mem::take(&mut self.next_states[idx]));
         let (indices, states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
+        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = states;
         Ok(())
     }

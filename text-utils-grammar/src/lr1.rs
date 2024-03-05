@@ -931,56 +931,56 @@ mod test {
         assert!(!pdfa.is_match_state(state));
     }
 
-    fn load_lrk_grammars() -> Vec<(PathBuf, PathBuf, Vec<PathBuf>)> {
-        // list all directories in grammars/
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars");
-
-        let mut grammars = vec![];
-        for sub_dir in fs::read_dir(dir).unwrap() {
-            let sub_dir = sub_dir.unwrap();
-            let sub_dir_name = sub_dir.file_name().to_str().unwrap().to_string();
-            // read grammar from .y file in dir/sub_dir/<sub_dir>.y
-            let grammar = sub_dir.path().join(format!("{sub_dir_name}.y"));
-            // read tokens from .l file in dir/sub_dir/<sub_dir>.l
-            let tokens = sub_dir.path().join(format!("{sub_dir_name}.l"));
-
-            // load all examples from dir/sub_dir/examples/
-            let examples = fs::read_dir(sub_dir.path().join("examples"))
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .collect();
-            grammars.push((grammar, tokens, examples));
-        }
-        grammars
+    fn load_lrk_grammar(name: &str) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("grammars")
+            .join(name);
+        let grammar = dir.as_path().join(format!("{name}.y"));
+        let lexer = dir.as_path().join(format!("{name}.l"));
+        // load all examples from grammars/<name>/examples/
+        let examples = fs::read_dir(dir.as_path().join("examples"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        (grammar, lexer, examples)
     }
 
     #[test]
     fn test_lrk_parser() {
-        let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.y");
-        let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.l");
-        let lrk = LR1GrammarParser::from_files(grammar, tokens).unwrap();
+        let (grammar, lexer, _) = load_lrk_grammar("calc");
+        let lrk = LR1GrammarParser::from_files(grammar, lexer).unwrap();
         assert!(lrk.parse("2 - 1", false).is_err());
         let text = "(1 + 28)*\n3";
         let parse = lrk.parse(text, false).unwrap();
         println!("{}", parse.pretty(text, true));
-
-        // for (grammar, tokens, examples) in load_lrk_grammars() {
-        //     let lrk = LR1GrammarParser::from_file(grammar, tokens).unwrap();
-        //     for example in examples {
-        //         let text = fs::read_to_string(&example).unwrap();
-        //         let parse = lrk.parse(&text, false).unwrap();
-        //         println!("{}", parse.pretty(&text, true));
-        //     }
-        // }
     }
 
     #[test]
     fn test_lrk_constraint() {
         let conts = load_continuations();
 
-        let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.y");
-        let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/calc/calc.l");
-        let lrk = LR1GrammarConstraint::from_files(grammar, tokens, conts.clone()).unwrap();
+        let (grammar, lexer, _) = load_lrk_grammar("json");
+        let lrk = LR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
+        assert!(lrk.get_state(b"\"id\": \"1\"").is_none());
+        assert!(lrk.get_state(b"\"id\"").is_some());
+        let state = lrk.get_state(b"{\"id\": \"1\"").unwrap();
+        assert!(!lrk.is_match_state(&state));
+        let state = lrk.get_state(b"{\"id\": \"1\"}").unwrap();
+        assert!(lrk.is_match_state(&state));
+        assert!(lrk.get_state(b"{\"id\": \"1\"}}").is_none());
+        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        println!(
+            "matching {}, {} conts: {:#?}",
+            lrk.is_match_state(&state),
+            cont_indices.len(),
+            cont_indices
+                .iter()
+                .map(|i| String::from_utf8_lossy(&conts[*i]))
+                .collect_vec()
+        );
+
+        let (grammar, lexer, _) = load_lrk_grammar("calc");
+        let lrk = LR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
         let state = lrk.get_start_state();
         let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
         println!(
@@ -1004,9 +1004,9 @@ mod test {
                 .map(|i| String::from_utf8_lossy(&conts[*i]))
                 .collect_vec()
         );
-        let grammar = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/test/test.y");
-        let tokens = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/test/test.l");
-        let lrk = LR1GrammarConstraint::from_files(grammar, tokens, conts.clone()).unwrap();
+
+        let (grammar, lexer, _) = load_lrk_grammar("test");
+        let lrk = LR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
         let state = lrk.get_state(b"  SELECT  TEST").unwrap();
         let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
         println!(

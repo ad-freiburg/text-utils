@@ -69,8 +69,8 @@ impl RegexConstraint {
             .expect("failed to reset to given prefix");
         let (indices, next_states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
-        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = next_states;
+        self.is_match = self.inner.is_match_state(&self.state);
     }
 
     fn clone(&self) -> Self {
@@ -83,8 +83,17 @@ impl RegexConstraint {
         }
     }
 
-    fn get_constraint(&self) -> (Vec<usize>, bool) {
-        (self.indices.clone(), self.is_match)
+    fn get(&self) -> Vec<usize> {
+        self.indices.clone()
+    }
+
+    fn is_match(&self) -> bool {
+        self.is_match
+    }
+
+    fn should_stop(&self) -> bool {
+        // same as is match for regex
+        self.is_match
     }
 
     fn next(&mut self, index: usize) -> anyhow::Result<()> {
@@ -98,8 +107,8 @@ impl RegexConstraint {
         self.state = self.next_states[idx];
         let (indices, states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
-        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = states;
+        self.is_match = self.inner.is_match_state(&self.state);
         Ok(())
     }
 }
@@ -165,8 +174,8 @@ impl LR1Constraint {
             .expect("failed to reset to given prefix");
         let (indices, next_states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
-        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = next_states;
+        self.is_match = self.inner.is_match_state(&self.state);
     }
 
     fn clone(&self) -> Self {
@@ -179,8 +188,16 @@ impl LR1Constraint {
         }
     }
 
-    fn get_constraint(&self) -> (Vec<usize>, bool) {
-        (self.indices.clone(), self.is_match)
+    fn get(&self) -> Vec<usize> {
+        self.indices.clone()
+    }
+
+    fn is_match(&self) -> bool {
+        self.is_match
+    }
+
+    fn should_stop(&self) -> bool {
+        self.is_match && self.inner.only_skippable_matching(&self.state)
     }
 
     fn next(&mut self, index: usize) -> anyhow::Result<()> {
@@ -194,8 +211,8 @@ impl LR1Constraint {
         self.state.next(std::mem::take(&mut self.next_states[idx]));
         let (indices, states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
-        self.is_match = self.inner.is_match_state(&self.state);
         self.next_states = states;
+        self.is_match = self.inner.is_match_state(&self.state);
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, fmt::Debug};
 
 use itertools::Itertools;
 use regex_automata::{
@@ -23,6 +23,12 @@ fn make_anchored(pat: &str) -> String {
 
 pub(crate) struct PrefixDFA {
     dfa: DFA<Vec<u32>>,
+}
+
+impl Debug for PrefixDFA {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrefixDFA").finish()
+    }
 }
 
 pub(crate) enum PrefixMatch {

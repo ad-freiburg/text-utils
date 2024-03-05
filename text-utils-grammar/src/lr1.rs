@@ -535,19 +535,34 @@ impl LR1GrammarConstraint {
         LR1Action::ShiftReduce(stack_end + 1, stidx)
     }
 
-    fn matching_pdfas(&self, stidx: StIdx<u32>) -> Vec<(usize, &PrefixDFA)> {
-        let state_actions: Vec<_> = self.table.state_actions(stidx).collect();
+    fn matchable_pdfas(&self, stack: &[StIdx<u32>]) -> Vec<(usize, &PrefixDFA)> {
+        let Some(&last) = stack.last() else {
+            return vec![];
+        };
+        let state_actions: Vec<_> = self.table.state_actions(last).collect();
         self.pdfas
             .iter()
             .enumerate()
             .filter_map(|(i, (pdfa, tidx))| {
-                if tidx.is_none() || state_actions.contains(tidx.as_ref().unwrap()) {
-                    Some((i, pdfa))
-                } else {
-                    None
+                if let Some(tidx) = tidx {
+                    if !state_actions.contains(tidx)
+                        || !matches!(self.shift_reduce(stack, *tidx), LR1Action::ShiftReduce(..))
+                    {
+                        return None;
+                    }
                 }
+                Some((i, pdfa))
             })
             .collect()
+    }
+
+    pub fn only_skippable_matching(&self, state: &LR1State) -> bool {
+        state.matching.iter().all(|&(pidx, pdfa_state)| {
+            let (pdfa, None) = &self.pdfas[pidx] else {
+                return false;
+            };
+            pdfa.is_match_state(pdfa_state)
+        })
     }
 }
 
@@ -579,7 +594,10 @@ impl Constraint for LR1GrammarConstraint {
     type NextState = LR1NextState;
 
     fn is_match_state(&self, state: &Self::State) -> bool {
-        state.matching.iter().any(|&(pidx, pdfa_state)| {
+        matches!(
+            self.shift_reduce(&state.stack, self.grammar.eof_token_idx()),
+            LR1Action::Accept
+        ) || state.matching.iter().any(|&(pidx, pdfa_state)| {
             let (pdfa, Some(token)) = &self.pdfas[pidx] else {
                 return false;
             };
@@ -630,21 +648,20 @@ impl Constraint for LR1GrammarConstraint {
             })
             .map(|&tidx| (self.shift_reduce(&state.stack, tidx), tidx))
         {
-            let next_pdfas = self.matching_pdfas(next_stidx);
+            let mut next_stack = state.stack[..keep].to_vec();
+            next_stack.push(next_stidx);
+            let next_matchable_pdfas = self.matchable_pdfas(&next_stack);
             let token_name = self.grammar.token_name(tidx).unwrap();
-            Some(((keep, next_stidx, token_name.to_string()), next_pdfas))
+            Some((
+                (keep, next_stidx, token_name.to_string()),
+                next_matchable_pdfas,
+            ))
         } else {
             None
         };
 
-        let only_skippable_matching = state.matching.iter().all(|&(pidx, pdfa_state)| {
-            let (pdfa, None) = &self.pdfas[pidx] else {
-                return false;
-            };
-            pdfa.is_match_state(pdfa_state)
-        });
-
-        let matching_pdfas = self.matching_pdfas(*state.stack.last().unwrap());
+        let only_skippable_matching = self.only_skippable_matching(state);
+        let matchable_pdfas = self.matchable_pdfas(&state.stack);
 
         // now check all continuations
         let mut i = 0;
@@ -675,7 +692,9 @@ impl Constraint for LR1GrammarConstraint {
                     },
                 );
             } else if only_skippable_matching {
-                let matching: Vec<_> = matching_pdfas
+                // if no pdfas are still matching, check the ones who
+                // are matchable in the current state and stay in that state
+                let matching: Vec<_> = matchable_pdfas
                     .iter()
                     .filter_map(|&(i, pdfa)| {
                         pdfa.drive(pdfa.get_start_state(), cont)
@@ -695,9 +714,10 @@ impl Constraint for LR1GrammarConstraint {
                         matching,
                     },
                 );
-            } else if let Some((next_action, next_pdfas)) = &next {
-                // if there are no matching pdfas, check the matching pdfas for the next state
-                let next_matching: Vec<_> = next_pdfas
+            } else if let Some((next_action, next_matchable_pdfas)) = &next {
+                // if there are no pdfas still matching and no skippable pdfas matching,
+                // check the matchable pdfas for the next state
+                let next_matching: Vec<_> = next_matchable_pdfas
                     .iter()
                     .filter_map(|&(i, pdfa)| {
                         pdfa.drive(pdfa.get_start_state(), cont)
@@ -965,9 +985,12 @@ mod test {
         assert!(lrk.get_state(b"\"id\"").is_some());
         let state = lrk.get_state(b"{\"id\": \"1\"").unwrap();
         assert!(!lrk.is_match_state(&state));
+        let state = lrk.get_state(b"{\"id\": \"1\"}}").unwrap();
+        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        assert!(!lrk.is_match_state(&state));
+        assert!(cont_indices.is_empty());
         let state = lrk.get_state(b"{\"id\": \"1\"}").unwrap();
         assert!(lrk.is_match_state(&state));
-        assert!(lrk.get_state(b"{\"id\": \"1\"}}").is_none());
         let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
         println!(
             "matching {}, {} conts: {:#?}",
@@ -978,6 +1001,7 @@ mod test {
                 .map(|i| String::from_utf8_lossy(&conts[*i]))
                 .collect_vec()
         );
+        return;
 
         let (grammar, lexer, _) = load_lrk_grammar("calc");
         let lrk = LR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();

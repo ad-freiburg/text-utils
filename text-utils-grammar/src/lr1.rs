@@ -659,6 +659,31 @@ fn is_accept_state(grammar: &YaccGrammar, table: &StateTable<u32>, stack: &[StId
     )
 }
 
+fn is_match_state(
+    grammar: &YaccGrammar,
+    table: &StateTable<u32>,
+    pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
+    state: &LR1State,
+) -> bool {
+    is_accept_state(grammar, table, &state.stack)
+        || state.matching.iter().any(|&(pidx, pdfa_state)| {
+            let (pdfa, Some(token)) = &pdfas[pidx] else {
+                return false;
+            };
+            if !pdfa.is_match_state(pdfa_state) {
+                return false;
+            }
+            let LR1Action::ShiftReduce(keep, stidx) =
+                shift_reduce(grammar, table, &state.stack, *token)
+            else {
+                return false;
+            };
+            let mut stack = state.stack[..keep].to_vec();
+            stack.push(stidx);
+            is_accept_state(grammar, table, &stack)
+        })
+}
+
 impl ExactLR1GrammarConstraint {
     pub fn new(
         grammar: &str,
@@ -699,7 +724,7 @@ impl ExactLR1GrammarConstraint {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LR1State {
     stack: Vec<StIdx<u32>>,
     matching: Matching,
@@ -756,27 +781,7 @@ impl Constraint for ExactLR1GrammarConstraint {
     }
 
     fn is_match_state(&self, state: &Self::State) -> bool {
-        is_accept_state(&self.grammar, &self.table, &state.stack)
-            || state.matching.iter().any(|&(pidx, pdfa_state)| {
-                let (pdfa, token) = &self.pdfas[pidx];
-                if !pdfa.is_match_state(pdfa_state) {
-                    return false;
-                }
-                let Some(token) = token else {
-                    // a skippable token would not change anything here,
-                    // as the check for accept state would already have
-                    // returned true
-                    return false;
-                };
-                let LR1Action::ShiftReduce(keep, stidx) =
-                    shift_reduce(&self.grammar, &self.table, &state.stack, *token)
-                else {
-                    return false;
-                };
-                let mut stack = state.stack[..keep].to_vec();
-                stack.push(stidx);
-                is_accept_state(&self.grammar, &self.table, &stack)
-            })
+        is_match_state(&self.grammar, &self.table, &self.pdfas, state)
     }
 
     fn get_valid_continuations_with_state(
@@ -954,6 +959,10 @@ impl LR1GrammarConstraint {
         let tokens = read_to_string(file)?;
         Self::new(&grammar, &tokens, continuations)
     }
+
+    pub fn only_skippable_matching(&self, state: &LR1State) -> bool {
+        only_skippable_matching(&state.matching, &self.pdfas)
+    }
 }
 
 impl Constraint for LR1GrammarConstraint {
@@ -986,24 +995,7 @@ impl Constraint for LR1GrammarConstraint {
     }
 
     fn is_match_state(&self, state: &Self::State) -> bool {
-        is_accept_state(&self.grammar, &self.table, &state.stack)
-            || state.matching.iter().any(|&(pidx, pdfa_state)| {
-                let (pdfa, token) = &self.pdfas[pidx];
-                if !pdfa.is_match_state(pdfa_state) {
-                    return false;
-                }
-                let Some(token) = token else {
-                    return false;
-                };
-                let LR1Action::ShiftReduce(keep, stidx) =
-                    shift_reduce(&self.grammar, &self.table, &state.stack, *token)
-                else {
-                    return false;
-                };
-                let mut stack = state.stack[..keep].to_vec();
-                stack.push(stidx);
-                is_accept_state(&self.grammar, &self.table, &stack)
-            })
+        is_match_state(&self.grammar, &self.table, &self.pdfas, state)
     }
 
     fn get_valid_continuations_with_state(

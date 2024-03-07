@@ -5,8 +5,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use text_utils_grammar::{
-    Constraint, ExactLR1GrammarConstraint, LR1GrammarParser, LR1NextState, LR1Parse, LR1State,
-    RegularExpressionConstraint, RegularExpressionState,
+    Constraint, ExactLR1GrammarConstraint, LR1GrammarConstraint, LR1GrammarParser, LR1NextState,
+    LR1Parse, LR1State, RegularExpressionConstraint, RegularExpressionState,
 };
 
 #[pyclass]
@@ -113,21 +113,90 @@ impl RegexConstraint {
     }
 }
 
+enum LR1Type {
+    Exact(ExactLR1GrammarConstraint),
+    Regular(LR1GrammarConstraint),
+}
+
+#[derive(Clone)]
+enum LR1NextStates {
+    Exact(Vec<LR1NextState>),
+    Regular(Vec<LR1State>),
+}
+
 #[pyclass]
-struct ExactLR1Constraint {
-    inner: Arc<ExactLR1GrammarConstraint>,
+struct LR1Constraint {
+    inner: Arc<LR1Type>,
     state: LR1State,
     indices: Vec<usize>,
     is_match: bool,
-    next_states: Vec<LR1NextState>,
+    next_states: LR1NextStates,
+}
+
+impl LR1Type {
+    fn get_state(&self, prefix: &[u8]) -> Option<LR1State> {
+        match self {
+            LR1Type::Exact(inner) => inner.get_state(prefix),
+            LR1Type::Regular(inner) => inner.get_state(prefix),
+        }
+    }
+
+    fn get_start_state(&self) -> LR1State {
+        match self {
+            LR1Type::Exact(inner) => inner.get_start_state(),
+            LR1Type::Regular(inner) => inner.get_start_state(),
+        }
+    }
+
+    fn get_valid_continuations_with_state(&self, state: &LR1State) -> (Vec<usize>, LR1NextStates) {
+        match self {
+            LR1Type::Exact(inner) => {
+                let (indices, next_states) = inner.get_valid_continuations_with_state(state);
+                (indices, LR1NextStates::Exact(next_states))
+            }
+            LR1Type::Regular(inner) => {
+                let (indices, next_states) = inner.get_valid_continuations_with_state(state);
+                (indices, LR1NextStates::Regular(next_states))
+            }
+        }
+    }
+
+    fn is_match_state(&self, state: &LR1State) -> bool {
+        match self {
+            LR1Type::Exact(inner) => inner.is_match_state(state),
+            LR1Type::Regular(inner) => inner.is_match_state(state),
+        }
+    }
+
+    fn only_skippable_matching(&self, state: &LR1State) -> bool {
+        match self {
+            LR1Type::Exact(inner) => inner.only_skippable_matching(state),
+            LR1Type::Regular(inner) => inner.only_skippable_matching(state),
+        }
+    }
 }
 
 #[pymethods]
-impl ExactLR1Constraint {
+impl LR1Constraint {
     #[new]
-    fn new(grammar: &str, lexer: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
-        let inner = ExactLR1GrammarConstraint::new(grammar, lexer, continuations)
-            .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?;
+    #[pyo3(signature = (grammar, lexer, continuations, exact=false))]
+    fn new(
+        grammar: &str,
+        lexer: &str,
+        continuations: Vec<Vec<u8>>,
+        exact: bool,
+    ) -> anyhow::Result<Self> {
+        let inner = if exact {
+            LR1Type::Exact(
+                ExactLR1GrammarConstraint::new(grammar, lexer, continuations)
+                    .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
+            )
+        } else {
+            LR1Type::Regular(
+                LR1GrammarConstraint::new(grammar, lexer, continuations)
+                    .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
+            )
+        };
         let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
         let is_match = inner.is_match_state(&state);
@@ -141,20 +210,24 @@ impl ExactLR1Constraint {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (grammar_path, lexer_path, continuations, exact=false))]
     fn from_files(
         grammar_path: &str,
         lexer_path: &str,
         continuations: Vec<Vec<u8>>,
+        exact: bool,
     ) -> anyhow::Result<Self> {
-        let inner = ExactLR1GrammarConstraint::from_files(grammar_path, lexer_path, continuations)
-            .map_err(|e| {
-                anyhow!(
-                    "failed to create LR(1) grammar constraint from files {} and {}: {}",
-                    grammar_path,
-                    lexer_path,
-                    e
-                )
-            })?;
+        let inner = if exact {
+            LR1Type::Exact(
+                ExactLR1GrammarConstraint::from_files(grammar_path, lexer_path, continuations)
+                    .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
+            )
+        } else {
+            LR1Type::Regular(
+                LR1GrammarConstraint::from_files(grammar_path, lexer_path, continuations)
+                    .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
+            )
+        };
         let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
         let is_match = inner.is_match_state(&state);
@@ -208,7 +281,14 @@ impl ExactLR1Constraint {
                 self.indices
             )
         })?;
-        self.state.next(std::mem::take(&mut self.next_states[idx]));
+        match &mut self.next_states {
+            LR1NextStates::Exact(states) => {
+                self.state.next(std::mem::take(&mut states[idx]));
+            }
+            LR1NextStates::Regular(states) => {
+                self.state = std::mem::take(&mut states[idx]);
+            }
+        }
         let (indices, states) = self.inner.get_valid_continuations_with_state(&self.state);
         self.indices = indices;
         self.next_states = states;
@@ -350,7 +430,7 @@ fn parse_into_py(
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "grammar")?;
     m.add_class::<RegexConstraint>()?;
-    m.add_class::<ExactLR1Constraint>()?;
+    m.add_class::<LR1Constraint>()?;
     m.add_class::<LR1Parser>()?;
     parent_module.add_submodule(m)?;
 

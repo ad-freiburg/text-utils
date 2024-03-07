@@ -67,6 +67,10 @@ impl PrefixDFA {
         self.dfa.is_match_state(self.dfa.next_eoi_state(state))
     }
 
+    pub(crate) fn is_final_match_state(&self, state: StateID) -> bool {
+        self.is_match_state(state) && (0..=255).all(|b| self.drive(state, &[b]).is_none())
+    }
+
     #[inline]
     pub(crate) fn drive(&self, mut state: StateID, continuation: &[u8]) -> Option<StateID> {
         for &b in continuation {
@@ -80,7 +84,11 @@ impl PrefixDFA {
 
     #[inline]
     pub(crate) fn find_prefix_match(&self, mut state: StateID, prefix: &[u8]) -> PrefixMatch {
-        let mut last_match = None;
+        let mut last_match = if self.is_match_state(state) {
+            Some((0, state))
+        } else {
+            None
+        };
         for (i, &b) in prefix.iter().enumerate() {
             state = self.dfa.next_state(state, b);
             if self.is_match_state(state) {
@@ -134,9 +142,9 @@ mod test {
 
     #[test]
     fn test_make_anchored() {
-        assert_eq!(make_anchored("a"), "^(a)$");
-        assert_eq!(make_anchored("^a"), "^(a)$");
-        assert_eq!(make_anchored("a$"), "^(a)$");
+        assert_eq!(make_anchored("a"), "^(?:a)$");
+        assert_eq!(make_anchored("^a"), "^(?:a)$");
+        assert_eq!(make_anchored("a$"), "^(?:a)$");
         assert_eq!(make_anchored("^a$"), "^a$");
     }
 }

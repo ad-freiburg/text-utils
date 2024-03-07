@@ -5,7 +5,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use text_utils_grammar::{
-    Constraint, LR1GrammarConstraint, LR1GrammarParser, LR1NextState, LR1Parse, LR1State,
+    Constraint, ExactLR1GrammarConstraint, LR1GrammarParser, LR1NextState, LR1Parse, LR1State,
     RegularExpressionConstraint, RegularExpressionState,
 };
 
@@ -114,8 +114,8 @@ impl RegexConstraint {
 }
 
 #[pyclass]
-struct LR1Constraint {
-    inner: Arc<LR1GrammarConstraint>,
+struct ExactLR1Constraint {
+    inner: Arc<ExactLR1GrammarConstraint>,
     state: LR1State,
     indices: Vec<usize>,
     is_match: bool,
@@ -123,10 +123,10 @@ struct LR1Constraint {
 }
 
 #[pymethods]
-impl LR1Constraint {
+impl ExactLR1Constraint {
     #[new]
     fn new(grammar: &str, lexer: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
-        let inner = LR1GrammarConstraint::new(grammar, lexer, continuations)
+        let inner = ExactLR1GrammarConstraint::new(grammar, lexer, continuations)
             .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?;
         let state = inner.get_start_state();
         let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
@@ -146,7 +146,7 @@ impl LR1Constraint {
         lexer_path: &str,
         continuations: Vec<Vec<u8>>,
     ) -> anyhow::Result<Self> {
-        let inner = LR1GrammarConstraint::from_files(grammar_path, lexer_path, continuations)
+        let inner = ExactLR1GrammarConstraint::from_files(grammar_path, lexer_path, continuations)
             .map_err(|e| {
                 anyhow!(
                     "failed to create LR(1) grammar constraint from files {} and {}: {}",
@@ -350,7 +350,7 @@ fn parse_into_py(
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "grammar")?;
     m.add_class::<RegexConstraint>()?;
-    m.add_class::<LR1Constraint>()?;
+    m.add_class::<ExactLR1Constraint>()?;
     m.add_class::<LR1Parser>()?;
     parent_module.add_submodule(m)?;
 

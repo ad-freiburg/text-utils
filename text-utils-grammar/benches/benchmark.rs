@@ -2,8 +2,9 @@ use std::fs::{self, read_to_string};
 use std::path::PathBuf;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use text_utils_grammar::lr1::LR1GrammarConstraint;
 use text_utils_grammar::{
-    utils::optimized_prefix_order, Constraint, LR1GrammarConstraint, LR1GrammarParser,
+    utils::optimized_prefix_order, Constraint, ExactLR1GrammarConstraint, LR1GrammarParser,
     RegularExpressionConstraint,
 };
 
@@ -117,30 +118,48 @@ fn bench_lr1_constraint(c: &mut Criterion) {
         .to_str()
         .unwrap()
         .to_string();
-    let lr1_constraint = LR1GrammarConstraint::from_files(grammar, tokens, conts.clone()).unwrap();
-    let state = lr1_constraint.get_start_state();
+    let exact_lr_constraint =
+        ExactLR1GrammarConstraint::from_files(&grammar, &tokens, conts.clone()).unwrap();
+    let lr_constraint = LR1GrammarConstraint::from_files(grammar, tokens, conts.clone()).unwrap();
+    let state = exact_lr_constraint.get_start_state();
+    c.bench_function("exact_lr1_json_empty_get_valid_continuations", |b| {
+        b.iter(|| exact_lr_constraint.get_valid_continuations_with_state(&state))
+    });
+    let state = lr_constraint.get_start_state();
     c.bench_function("lr1_json_empty_get_valid_continuations", |b| {
-        b.iter(|| lr1_constraint.get_valid_continuations_with_state(&state))
+        b.iter(|| lr_constraint.get_valid_continuations_with_state(&state))
     });
     let input = read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/json/examples/numbers.json"),
     )
     .unwrap();
-    let state = lr1_constraint
+    let state = exact_lr_constraint
+        .get_state(&input.as_bytes()[..input.len() / 2])
+        .unwrap();
+    c.bench_function("exact_lr1_json_numbers_get_valid_continuations", |b| {
+        b.iter(|| exact_lr_constraint.get_valid_continuations_with_state(&state))
+    });
+    let state = lr_constraint
         .get_state(&input.as_bytes()[..input.len() / 2])
         .unwrap();
     c.bench_function("lr1_json_numbers_get_valid_continuations", |b| {
-        b.iter(|| lr1_constraint.get_valid_continuations_with_state(&state))
+        b.iter(|| lr_constraint.get_valid_continuations_with_state(&state))
     });
     let input = read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/json/examples/example1.json"),
     )
     .unwrap();
-    let state = lr1_constraint
+    let state = exact_lr_constraint
+        .get_state(&input.as_bytes()[..input.len() / 2])
+        .unwrap();
+    c.bench_function("exact_lr1_json_example1_get_valid_continuations", |b| {
+        b.iter(|| exact_lr_constraint.get_valid_continuations_with_state(&state))
+    });
+    let state = lr_constraint
         .get_state(&input.as_bytes()[..input.len() / 2])
         .unwrap();
     c.bench_function("lr1_json_example1_get_valid_continuations", |b| {
-        b.iter(|| lr1_constraint.get_valid_continuations_with_state(&state))
+        b.iter(|| lr_constraint.get_valid_continuations_with_state(&state))
     });
 }
 

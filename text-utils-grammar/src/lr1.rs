@@ -193,7 +193,12 @@ fn load_grammar_and_pdfas(
     // add all unseen tokens from grammar as literal tokens to lexer
     for token in grammar
         .iter_tidxs()
-        .filter_map(|tidx| grammar.token_name(tidx))
+        .filter_map(|tidx| {
+            if tidx == grammar.eof_token_idx() {
+                return None;
+            }
+            grammar.token_name(tidx)
+        })
         .filter(|name| !fragments.contains_key(name) && !tokens.contains_key(name))
     {
         let tidx = grammar
@@ -579,10 +584,7 @@ fn matchable_pdfas<'pdfa>(
     let Some(&last) = stack.last() else {
         return vec![];
     };
-    let state_actions: Vec<_> = table
-        .state_actions(last)
-        .filter(|&tidx| tidx != grammar.eof_token_idx())
-        .collect();
+    let state_actions: Vec<_> = table.state_actions(last).collect();
     pdfas
         .iter()
         .enumerate()
@@ -648,7 +650,7 @@ fn drive(
                 let stidx = table.goto(*stack.last()?, ridx)?;
                 stack.push(stidx);
             }
-            Action::Accept => unreachable!("don't drive with eof token"),
+            Action::Accept => return Some(stack),
             Action::Error => return None,
         }
     }

@@ -518,7 +518,7 @@ pub struct ExactLR1GrammarConstraint {
 }
 
 enum LR1Action {
-    ShiftReduce(usize, StIdx<u32>),
+    ShiftReduce(usize, Vec<StIdx<u32>>),
     Accept,
     None,
 }
@@ -534,8 +534,9 @@ fn shift_reduce(
     };
     // perform actions until the next shift,
     // can be implemented without actually
-    // modifying the stack, because it will only ever
-    // get smaller by reduces
+    // modifying the stack most of the time,
+    // because it will only ever
+    // get smaller by reduces (expect with empty productions)
     // stidx will always be the last element of the stack
     // (at position stack_end)
     let mut stack_end = stack.len() - 1;
@@ -548,8 +549,15 @@ fn shift_reduce(
             Action::Reduce(pidx) => {
                 let ridx = grammar.prod_to_rule(pidx);
                 let rlen = grammar.prod(pidx).len();
-                assert!(rlen > 0);
-                stack_end -= rlen - 1;
+                if rlen == 0 {
+                    // if we find a rule with empty production
+                    // the stack len would increase, so run a proper drive
+                    // as backup
+                    return drive(grammar, table, stack.to_vec(), &[Some(token)])
+                        .map_or(LR1Action::None, |stack| LR1Action::ShiftReduce(0, stack));
+                } else {
+                    stack_end -= rlen - 1;
+                }
                 let Some(new_stidx) = table.goto(stack[stack_end - 1], ridx) else {
                     return LR1Action::None;
                 };
@@ -559,7 +567,7 @@ fn shift_reduce(
             Action::Error => return LR1Action::None,
         };
     }
-    LR1Action::ShiftReduce(stack_end + 1, stidx)
+    LR1Action::ShiftReduce(stack_end + 1, vec![stidx])
 }
 
 fn matchable_pdfas<'pdfa>(
@@ -680,7 +688,7 @@ fn is_match_state(
                 return false;
             };
             let mut stack = state.stack[..keep].to_vec();
-            stack.push(stidx);
+            stack.extend(stidx);
             is_accept_state(grammar, table, &stack)
         })
 }
@@ -736,7 +744,7 @@ impl LR1State {
     pub fn next(&mut self, state: LR1NextState) {
         if let Some((keep, stidx, ..)) = state.action {
             self.stack.truncate(keep);
-            self.stack.push(stidx);
+            self.stack.extend(stidx);
         }
         self.matching = state.matching;
     }
@@ -744,7 +752,7 @@ impl LR1State {
 
 #[derive(Clone, Default)]
 pub struct LR1NextState {
-    action: Option<(usize, StIdx<u32>, String)>,
+    action: Option<(usize, Vec<StIdx<u32>>, String)>,
     matching: Matching,
 }
 
@@ -821,7 +829,7 @@ impl Constraint for ExactLR1GrammarConstraint {
                 )
             }) {
             let mut next_stack = state.stack[..keep].to_vec();
-            next_stack.push(next_stidx);
+            next_stack.extend(next_stidx.clone());
             let next_matchable_pdfas =
                 matchable_pdfas(&self.grammar, &self.table, &self.pdfas, &next_stack);
             let token_name = self.grammar.token_name(tidx).unwrap();

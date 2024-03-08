@@ -579,7 +579,10 @@ fn matchable_pdfas<'pdfa>(
     let Some(&last) = stack.last() else {
         return vec![];
     };
-    let state_actions: Vec<_> = table.state_actions(last).collect();
+    let state_actions: Vec<_> = table
+        .state_actions(last)
+        .filter(|&tidx| tidx != grammar.eof_token_idx())
+        .collect();
     pdfas
         .iter()
         .enumerate()
@@ -645,7 +648,7 @@ fn drive(
                 let stidx = table.goto(*stack.last()?, ridx)?;
                 stack.push(stidx);
             }
-            Action::Accept => unreachable!("dont drive with eof token"),
+            Action::Accept => unreachable!("don't drive with eof token"),
             Action::Error => return None,
         }
     }

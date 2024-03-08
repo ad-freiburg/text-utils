@@ -548,6 +548,7 @@ fn shift_reduce(
             Action::Reduce(pidx) => {
                 let ridx = grammar.prod_to_rule(pidx);
                 let rlen = grammar.prod(pidx).len();
+                assert!(rlen > 0);
                 stack_end -= rlen - 1;
                 let Some(new_stidx) = table.goto(stack[stack_end - 1], ridx) else {
                     return LR1Action::None;

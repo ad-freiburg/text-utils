@@ -133,13 +133,12 @@ def sample_select_fn(sample_top_k: int) -> IdxSelectFn:
         assert scores.ndim == 2
         k = min(sample_top_k, scores.shape[-1])
         top_k = torch.topk(scores, k, dim=-1)
-        values = top_k.values
-        values /= top_k.values.sum(dim=-1, keepdim=True)
+        values = torch.exp(top_k.values)
+        values /= values.sum(dim=-1, keepdim=True)
         sampled = torch.multinomial(values, 1)
         sampled_indices = torch.gather(top_k.indices, -1, sampled)
-        indices = torch.gather(top_k.indices, -1, sampled_indices).squeeze(-1)
-        scores = torch.gather(top_k.values, -1, indices).squeeze(-1)
-        return indices, scores
+        scores = torch.gather(scores, -1, sampled_indices)
+        return sampled_indices.squeeze(-1), scores.squeeze(-1)
 
     return _sample
 
@@ -395,7 +394,8 @@ def beam_search(
             padding_value=pad_token_id
         ).to(non_blocking=True, dtype=torch.long, device=device)
         decoder_mask = torch.tensor(decoder_mask, dtype=torch.long)
-        decoder_lengths_tensor = torch.tensor(decoder_lengths, dtype=torch.long)
+        decoder_lengths_tensor = torch.tensor(
+            decoder_lengths, dtype=torch.long)
 
         decoder_kwargs = kwargs_select_fn(
             kwargs,

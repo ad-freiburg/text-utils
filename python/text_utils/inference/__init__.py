@@ -129,6 +129,8 @@ def greedy_select_fn() -> IdxSelectFn:
 
 
 def sample_select_fn(sample_top_k: int) -> IdxSelectFn:
+    assert sample_top_k > 0, "sample_top_k must be greater than 0"
+
     def _sample(scores: torch.Tensor, _: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
         assert scores.ndim == 2
         k = min(sample_top_k, scores.shape[-1])

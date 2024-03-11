@@ -87,6 +87,10 @@ impl RegexConstraint {
         self.indices.clone()
     }
 
+    fn len(&self) -> usize {
+        self.indices.len()
+    }
+
     fn is_match(&self) -> bool {
         self.is_match
     }
@@ -263,6 +267,10 @@ impl LR1Constraint {
 
     fn get(&self) -> Vec<usize> {
         self.indices.clone()
+    }
+
+    fn len(&self) -> usize {
+        self.indices.len()
     }
 
     fn is_match(&self) -> bool {

@@ -1,6 +1,10 @@
-use std::{error::Error, fs::File, io::read_to_string, path::Path};
+use std::{collections::HashMap, error::Error, fs::File, io::read_to_string, path::Path};
 
-use crate::{utils::PrefixDFA, Constraint};
+use crate::{
+    utils::{extract_parts, pattern_from_parts, Part, PrefixDFA},
+    Constraint,
+};
+use indexmap::IndexMap;
 use regex::Regex;
 use regex_automata::util::primitives::StateID;
 
@@ -10,8 +14,38 @@ pub struct RegularExpressionConstraint {
 }
 
 impl RegularExpressionConstraint {
-    pub fn new(pattern: &str, continuations: Vec<Vec<u8>>) -> Result<Self, Box<dyn Error>> {
-        let pdfa = PrefixDFA::new(pattern)?;
+    pub fn new(content: &str, continuations: Vec<Vec<u8>>) -> Result<Self, Box<dyn Error>> {
+        let fragment_name = Regex::new(r"\{([A-Z][A-Z0-9_]*)\}")?;
+        let fragment_line = Regex::new(r"(?m)^([A-Z][A-Z0-9_]*)\s+(.+)$")?;
+        let sep = Regex::new("(?m)^%%$")?;
+        let pattern = if let Some(m) = sep.find(content) {
+            // parse fragements
+            let mut fragments = HashMap::new();
+            for line in content[..m.start()].lines() {
+                if line.is_empty() || line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let cap = fragment_line
+                    .captures(line)
+                    .ok_or(format!("invalid fragment line: {line}"))?;
+                let name = cap.get(1).unwrap().as_str();
+                let pattern = cap.get(2).unwrap().as_str();
+                let parts = extract_parts(pattern);
+                if fragments.insert(name, parts).is_some() {
+                    return Err(format!("duplicate fragment {name}").into());
+                };
+            }
+            pattern_from_parts(
+                "regular expression",
+                &[Part::Regex(content[m.end()..].to_string())],
+                &fragment_name,
+                &fragments,
+                &IndexMap::new(),
+            )?
+        } else {
+            content.to_string()
+        };
+        let pdfa = PrefixDFA::new(&pattern)?;
         Ok(RegularExpressionConstraint {
             pdfa,
             continuations,
@@ -24,10 +58,7 @@ impl RegularExpressionConstraint {
     ) -> Result<Self, Box<dyn Error>> {
         let file = File::open(path.as_ref())?;
         let content = read_to_string(file)?;
-        let sep = Regex::new("(?m)^%%$")?;
-        let m = sep.find(&content).ok_or("line with %% not found")?;
-        let pattern = &content[m.end()..];
-        Self::new(pattern, continuations)
+        Self::new(&content, continuations)
     }
 }
 

@@ -19,75 +19,9 @@ use regex::{escape, Regex};
 use regex_automata::util::primitives::StateID;
 
 use crate::{
-    utils::{optimized_prefix_order, PrefixDFA, PrefixMatch},
+    utils::{extract_parts, optimized_prefix_order, pattern_from_parts, PrefixDFA, PrefixMatch},
     Constraint,
 };
-
-#[derive(Debug)]
-enum Part {
-    Literal(String),
-    Regex(String),
-}
-
-fn extract_parts(pattern: &str) -> Vec<Part> {
-    let mut parts = vec![];
-    for part in pattern.split_whitespace() {
-        if (part.starts_with('\'') && part.ends_with('\''))
-            || (part.starts_with('"') && part.ends_with('"'))
-        {
-            // treat part as literal
-            parts.push(Part::Literal(escape(&part[1..part.len() - 1])));
-        } else {
-            // treat part as regular expression
-            parts.push(Part::Regex(part.to_string()));
-        }
-    }
-    parts
-}
-
-// define function to recursively build pattern from parts
-fn pattern_from_parts(
-    name: &str,
-    parts: &[Part],
-    name_regex: &Regex,
-    fragments: &HashMap<&str, Vec<Part>>,
-    tokens: &IndexMap<&str, Vec<Part>>,
-) -> Result<String, Box<dyn Error>> {
-    let mut pattern = String::new();
-    for part in parts {
-        match part {
-            Part::Literal(s) => pattern.push_str(s),
-            Part::Regex(s) => {
-                // find all tokens or framents in regex
-                // and replace them with their pattern
-                let mut replaced = String::new();
-                let mut last_match = 0;
-                for caps in name_regex.captures_iter(s) {
-                    let m = caps.get(0).unwrap();
-                    replaced.push_str(&s[last_match..m.start()]);
-                    // surround token or fragment with parentheses to group it
-                    replaced.push_str("(?:");
-                    let _name = caps.get(1).unwrap().as_str();
-                    if let Some(parts) = tokens.get(_name).or_else(|| fragments.get(_name)) {
-                        let replacement =
-                            pattern_from_parts(name, parts, name_regex, fragments, tokens)?;
-                        replaced.push_str(&replacement);
-                    } else {
-                        return Err(format!(
-                            "token or fragment {_name} within {name} not found in lexer"
-                        )
-                        .into());
-                    }
-                    replaced.push(')');
-                    last_match = m.end();
-                }
-                replaced.push_str(&s[last_match..]);
-                pattern.push_str(&replaced);
-            }
-        }
-    }
-    Ok(pattern)
-}
 
 type PdfaList = Vec<(PrefixDFA, Option<TIdx<u32>>)>;
 

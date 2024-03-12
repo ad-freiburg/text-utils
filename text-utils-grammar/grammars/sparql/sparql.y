@@ -937,6 +937,8 @@ String
 iri
     : 'IRIREF' 
     | PrefixedName
+    | 'PREFIX_LANGTAG' 'IRIREF'
+    | 'PREFIX_LANGTAG' PrefixedName
     ;
 
 PrefixedName

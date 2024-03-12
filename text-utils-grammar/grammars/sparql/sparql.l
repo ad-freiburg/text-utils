@@ -136,6 +136,7 @@ BLANK_NODE_LABEL '_:' ({PN_CHARS_U}|[0-9])(( {PN_CHARS} | '.' )*{PN_CHARS})?
 VAR1 '?' {VARNAME}
 VAR2 '$' {VARNAME}
 LANGTAG '@' [a-zA-Z]+ (-[a-zA-Z0-9]+)*
+PREFIX_LANGTAG {LANGTAG} '@'
 INTEGER [0-9]+
 DECIMAL [0-9]* '.' [0-9]+
 DOUBLE [0-9]+ '.' [0-9]* {EXPONENT} | '.' ([0-9])+ {EXPONENT} | ([0-9])+ {EXPONENT}

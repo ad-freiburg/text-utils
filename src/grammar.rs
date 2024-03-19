@@ -1,3 +1,4 @@
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
@@ -69,11 +70,13 @@ impl RegexConstraint {
             })
     }
 
-    fn reset(&mut self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
+    fn reset(&self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
+        let (tx, rx) = channel();
         spawn(move || {
             let mut inner = inner.lock().expect("error locking inner state");
+            tx.send(()).expect("failed to send on channel");
             inner.state = constraint
                 .get_state(&prefix.unwrap_or_default())
                 .expect("failed to reset to given prefix");
@@ -83,6 +86,9 @@ impl RegexConstraint {
             inner.next_states = next_states;
             inner.is_match = constraint.is_match_state(&inner.state);
         });
+        // wait until spawned thread signals that is has locked
+        // the inner state, otherwise some unexpected behavior could occurr
+        rx.recv()?;
         Ok(())
     }
 
@@ -125,8 +131,10 @@ impl RegexConstraint {
     fn next(&self, index: usize) -> anyhow::Result<()> {
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
+        let (tx, rx) = channel();
         spawn(move || {
             let mut inner = inner.lock().expect("error locking inner state");
+            tx.send(()).expect("failed to send on channel");
             let idx = inner.indices.binary_search(&index).expect("invalid index");
             inner.state = inner.next_states[idx];
             let (indices, states) = constraint.get_valid_continuations_with_state(&inner.state);
@@ -134,6 +142,9 @@ impl RegexConstraint {
             inner.next_states = states;
             inner.is_match = constraint.is_match_state(&inner.state);
         });
+        // wait until spawned thread signals that is has locked
+        // the inner state, otherwise some unexpected behavior could occurr
+        rx.recv()?;
         Ok(())
     }
 }
@@ -272,8 +283,10 @@ impl LR1Constraint {
     fn reset(&self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
+        let (tx, rx) = channel();
         spawn(move || {
             let mut inner = inner.lock().expect("error locking inner state");
+            tx.send(()).expect("failed to send on channel");
             inner.state = constraint
                 .get_state(&prefix.unwrap_or_default())
                 .expect("failed to reset to given prefix");
@@ -283,6 +296,9 @@ impl LR1Constraint {
             inner.next_states = next_states;
             inner.is_match = constraint.is_match_state(&inner.state);
         });
+        // wait until spawned thread signals that is has locked
+        // the inner state, otherwise some unexpected behavior could occurr
+        rx.recv()?;
         Ok(())
     }
 
@@ -327,8 +343,10 @@ impl LR1Constraint {
     fn next(&self, index: usize) -> anyhow::Result<()> {
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
+        let (tx, rx) = channel();
         spawn(move || {
             let mut inner = inner.lock().expect("error locking inner state");
+            tx.send(()).expect("failed to send on channel");
             let idx = inner.indices.binary_search(&index).expect("invalid index");
             match &mut inner.next_states {
                 LR1NextStates::Exact(states) => {
@@ -344,6 +362,9 @@ impl LR1Constraint {
             inner.next_states = states;
             inner.is_match = constraint.is_match_state(&inner.state);
         });
+        // wait until spawned thread signals that is has locked
+        // the inner state, otherwise some unexpected behavior could occurr
+        rx.recv()?;
         Ok(())
     }
 }

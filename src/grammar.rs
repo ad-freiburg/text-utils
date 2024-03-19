@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use rayon::spawn;
 use text_utils_grammar::{
     Constraint, ExactLR1GrammarConstraint, LR1GrammarConstraint, LR1GrammarParser, LR1NextState,
     LR1Parse, LR1State, RegularExpressionConstraint, RegularExpressionState,
@@ -128,13 +129,18 @@ enum LR1NextStates {
     Regular(Vec<LR1State>),
 }
 
-#[pyclass]
-struct LR1Constraint {
-    inner: Arc<LR1Type>,
+#[derive(Clone)]
+struct Inner {
     state: LR1State,
     indices: Vec<usize>,
     is_match: bool,
     next_states: LR1NextStates,
+}
+
+#[pyclass]
+struct LR1Constraint {
+    constraint: Arc<LR1Type>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl LR1Type {
@@ -190,7 +196,7 @@ impl LR1Constraint {
         continuations: Vec<Vec<u8>>,
         exact: bool,
     ) -> anyhow::Result<Self> {
-        let inner = if exact {
+        let constraint = if exact {
             LR1Type::Exact(
                 ExactLR1GrammarConstraint::new(grammar, lexer, continuations)
                     .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
@@ -201,15 +207,17 @@ impl LR1Constraint {
                     .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
             )
         };
-        let state = inner.get_start_state();
-        let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
-        let is_match = inner.is_match_state(&state);
+        let state = constraint.get_start_state();
+        let (indices, next_states) = constraint.get_valid_continuations_with_state(&state);
+        let is_match = constraint.is_match_state(&state);
         Ok(Self {
-            inner: Arc::new(inner),
-            state,
-            indices,
-            is_match,
-            next_states,
+            constraint: Arc::new(constraint),
+            inner: Arc::new(Mutex::new(Inner {
+                state,
+                indices,
+                is_match,
+                next_states,
+            })),
         })
     }
 
@@ -221,7 +229,7 @@ impl LR1Constraint {
         continuations: Vec<Vec<u8>>,
         exact: bool,
     ) -> anyhow::Result<Self> {
-        let inner = if exact {
+        let constraint = if exact {
             LR1Type::Exact(
                 ExactLR1GrammarConstraint::from_files(grammar_path, lexer_path, continuations)
                     .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
@@ -232,75 +240,97 @@ impl LR1Constraint {
                     .map_err(|e| anyhow!("failed to create LR(1) grammar constraint: {}", e))?,
             )
         };
-        let state = inner.get_start_state();
-        let (indices, next_states) = inner.get_valid_continuations_with_state(&state);
-        let is_match = inner.is_match_state(&state);
+        let state = constraint.get_start_state();
+        let (indices, next_states) = constraint.get_valid_continuations_with_state(&state);
+        let is_match = constraint.is_match_state(&state);
         Ok(Self {
-            inner: Arc::new(inner),
-            state,
-            indices,
-            is_match,
-            next_states,
+            constraint: Arc::new(constraint),
+            inner: Arc::new(Mutex::new(Inner {
+                state,
+                indices,
+                is_match,
+                next_states,
+            })),
         })
     }
 
-    fn reset(&mut self, prefix: Option<Vec<u8>>) {
-        self.state = self
+    fn reset(&mut self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
+        let mut inner = self
             .inner
+            .lock()
+            .map_err(|_| anyhow!("error locking inner state"))?;
+        inner.state = self
+            .constraint
             .get_state(&prefix.unwrap_or_default())
             .expect("failed to reset to given prefix");
-        let (indices, next_states) = self.inner.get_valid_continuations_with_state(&self.state);
-        self.indices = indices;
-        self.next_states = next_states;
-        self.is_match = self.inner.is_match_state(&self.state);
+        let (indices, next_states) = self
+            .constraint
+            .get_valid_continuations_with_state(&inner.state);
+        inner.indices = indices;
+        inner.next_states = next_states;
+        inner.is_match = self.constraint.is_match_state(&inner.state);
+        Ok(())
     }
 
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            state: self.state.clone(),
-            indices: self.indices.clone(),
-            is_match: self.is_match,
-            next_states: self.next_states.clone(),
-        }
+    fn clone(&self) -> anyhow::Result<Self> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow!("error locking inner state"))?;
+        Ok(Self {
+            constraint: self.constraint.clone(),
+            inner: Arc::new(Mutex::new(inner.clone())),
+        })
     }
 
-    fn get(&self) -> Vec<usize> {
-        self.indices.clone()
+    fn get(&self) -> anyhow::Result<Vec<usize>> {
+        self.inner
+            .lock()
+            .map(|inner| inner.indices.clone())
+            .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn len(&self) -> usize {
-        self.indices.len()
+    fn len(&self) -> anyhow::Result<usize> {
+        self.inner
+            .lock()
+            .map(|inner| inner.indices.len())
+            .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn is_match(&self) -> bool {
-        self.is_match
+    fn is_match(&self) -> anyhow::Result<bool> {
+        self.inner
+            .lock()
+            .map(|inner| inner.is_match)
+            .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn should_stop(&self) -> bool {
-        self.is_match && self.inner.only_skippable_matching(&self.state)
+    fn should_stop(&self) -> anyhow::Result<bool> {
+        self.inner
+            .lock()
+            .map(|inner| inner.is_match && self.constraint.only_skippable_matching(&inner.state))
+            .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn next(&mut self, index: usize) -> anyhow::Result<()> {
-        let idx = self.indices.binary_search(&index).map_err(|_| {
-            anyhow!(
-                "index {} not found in valid constraint indices: {:?}",
-                index,
-                self.indices
-            )
-        })?;
-        match &mut self.next_states {
-            LR1NextStates::Exact(states) => {
-                self.state.next(std::mem::take(&mut states[idx]));
+    fn next(&self, index: usize) -> anyhow::Result<()> {
+        let inner = self.inner.clone();
+        let constraint = self.constraint.clone();
+        spawn(move || {
+            let mut inner = inner.lock().expect("error locking inner state");
+            let idx = inner.indices.binary_search(&index).expect("invalid index");
+            match &mut inner.next_states {
+                LR1NextStates::Exact(states) => {
+                    let next = std::mem::take(&mut states[idx]);
+                    inner.state.next(next);
+                }
+                LR1NextStates::Regular(states) => {
+                    inner.state = std::mem::take(&mut states[idx]);
+                }
             }
-            LR1NextStates::Regular(states) => {
-                self.state = std::mem::take(&mut states[idx]);
-            }
-        }
-        let (indices, states) = self.inner.get_valid_continuations_with_state(&self.state);
-        self.indices = indices;
-        self.next_states = states;
-        self.is_match = self.inner.is_match_state(&self.state);
+            let (indices, states) = constraint.get_valid_continuations_with_state(&inner.state);
+            inner.indices = indices;
+            inner.next_states = states;
+            inner.is_match = constraint.is_match_state(&inner.state);
+        });
         Ok(())
     }
 }

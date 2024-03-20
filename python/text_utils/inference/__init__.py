@@ -26,7 +26,6 @@ class Beam:
         return Beam(
             other.token_ids + [token_id],
             other.log_probs + [log_p],
-            copy.deepcopy(other.info)
         )
 
     def truncate_prefix(
@@ -131,16 +130,16 @@ def greedy_select_fn() -> IdxSelectFn:
 def sample_select_fn(sample_top_k: int) -> IdxSelectFn:
     assert sample_top_k > 0, "sample_top_k must be greater than 0"
 
-    def _sample(scores: torch.Tensor, _: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
-        assert scores.ndim == 2
-        k = min(sample_top_k, scores.shape[-1])
-        top_k = torch.topk(scores, k, dim=-1)
+    def _sample(log_probs: torch.Tensor, _: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+        assert log_probs.ndim == 2
+        k = min(sample_top_k, log_probs.shape[-1])
+        top_k = torch.topk(log_probs, k, dim=-1)
         values = torch.exp(top_k.values)
         values /= values.sum(dim=-1, keepdim=True)
         sampled = torch.multinomial(values, 1)
         sampled_indices = torch.gather(top_k.indices, -1, sampled)
-        scores = torch.gather(scores, -1, sampled_indices)
-        return sampled_indices.squeeze(-1), scores.squeeze(-1)
+        log_probs = torch.gather(log_probs, -1, sampled_indices)
+        return sampled_indices.squeeze(-1), log_probs.squeeze(-1)
 
     return _sample
 

@@ -135,7 +135,11 @@ impl RegexConstraint {
         spawn(move || {
             let mut inner = inner.lock().expect("error locking inner state");
             tx.send(()).expect("failed to send on channel");
-            let idx = inner.indices.binary_search(&index).expect("invalid index");
+            let idx = inner
+                .indices
+                .binary_search(&index)
+                .map_err(|e| format!("could not find index {e} in {:?}", inner.indices))
+                .expect("invalid index");
             inner.state = inner.next_states[idx];
             let (indices, states) = constraint.get_valid_continuations_with_state(&inner.state);
             inner.indices = indices;
@@ -347,7 +351,11 @@ impl LR1Constraint {
         spawn(move || {
             let mut inner = inner.lock().expect("error locking inner state");
             tx.send(()).expect("failed to send on channel");
-            let idx = inner.indices.binary_search(&index).expect("invalid index");
+            let idx = inner
+                .indices
+                .binary_search(&index)
+                .map_err(|e| format!("could not find index {e} in {:?}", inner.indices))
+                .expect("invalid index");
             match &mut inner.next_states {
                 LR1NextStates::Exact(states) => {
                     let next = std::mem::take(&mut states[idx]);

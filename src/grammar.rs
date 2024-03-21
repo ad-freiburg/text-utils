@@ -102,17 +102,10 @@ impl RegexConstraint {
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn get(&self) -> anyhow::Result<Vec<usize>> {
+    fn get(&self) -> anyhow::Result<(Vec<usize>, bool)> {
         self.inner
             .lock()
-            .map(|inner| inner.indices.clone())
-            .map_err(|_| anyhow!("error locking inner state"))
-    }
-
-    fn len(&self) -> anyhow::Result<usize> {
-        self.inner
-            .lock()
-            .map(|inner| inner.indices.len())
+            .map(|inner| (inner.indices.clone(), inner.is_match))
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
@@ -316,17 +309,19 @@ impl LR1Constraint {
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn get(&self) -> anyhow::Result<Vec<usize>> {
+    fn get(&self) -> anyhow::Result<(Vec<usize>, bool)> {
         self.inner
             .lock()
-            .map(|inner| inner.indices.clone())
-            .map_err(|_| anyhow!("error locking inner state"))
-    }
-
-    fn len(&self) -> anyhow::Result<usize> {
-        self.inner
-            .lock()
-            .map(|inner| inner.indices.len())
+            .map(|inner| {
+                let indices =
+                    if inner.is_match && self.constraint.only_skippable_matching(&inner.state) {
+                        // should stop, return empty indices
+                        vec![]
+                    } else {
+                        inner.indices.clone()
+                    };
+                (indices, inner.is_match)
+            })
             .map_err(|_| anyhow!("error locking inner state"))
     }
 

@@ -74,20 +74,6 @@ class TextProcessingCli:
             help="Start an interactive session where your command line input is processed"
         )
         parser.add_argument(
-            "-if",
-            "--input-format",
-            choices=cls.text_processor_cls.supported_input_formats(),
-            default=cls.text_processor_cls.supported_input_formats()[0],
-            help="Format of the text input"
-        )
-        parser.add_argument(
-            "-of",
-            "--output-format",
-            choices=cls.text_processor_cls.supported_output_formats(),
-            default=cls.text_processor_cls.supported_output_formats()[0],
-            help="Format of the text output"
-        )
-        parser.add_argument(
             "-o",
             "--out-path",
             type=str,
@@ -140,14 +126,6 @@ class TextProcessingCli:
             help="List all available models with short descriptions"
         )
         parser.add_argument(
-            "--precision",
-            choices=["auto", "fp32", "fp16", "bfp16"],
-            default="auto",
-            help="Choose the precision for inference, fp16 or bfp16 can result in faster runtimes when running on a "
-            "new GPU that supports lower precision, but it can be slower on older GPUs. Auto will set the precision to "
-            "the precision used for training if it is available, otherwise it will use fp32."
-        )
-        parser.add_argument(
             "-v",
             "--version",
             action="store_true",
@@ -194,13 +172,6 @@ class TextProcessingCli:
             help="Sets the logging level for the underlying loggers"
         )
         parser.add_argument(
-            "--lang",
-            type=str,
-            default=None,
-            help="Specify the language of the input, only allowed if the chosen model supports multiple languages. "
-            "This language setting is ignored if the input format already specifies a language for each input."
-        )
-        parser.add_argument(
             "--profile",
             type=str,
             default=None,
@@ -214,14 +185,8 @@ class TextProcessingCli:
     def version(self) -> str:
         raise NotImplementedError
 
-    def parse_input(self, ipt: str, lang: Optional[str]) -> data.InferenceData:
-        item = data.InferenceData.from_str(ipt, self.args.input_format)
-        if item.language is None and lang is not None:
-            item.language = lang
-        return item
-
     def format_output(self, item: data.InferenceData) -> Iterable[str]:
-        return [item.to_str(self.args.output_format)]
+        return [item.text]
 
     def _run_with_profiling(self, file: str) -> None:
         import cProfile
@@ -245,7 +210,9 @@ class TextProcessingCli:
 
     def setup(self) -> TextProcessor:
         device = self.args.device or (
-            "cuda" if torch.cuda.is_available() else "cpu")
+            "cuda" if torch.cuda.is_available()
+            else "cpu"
+        )
         if self.args.experiment:
             cor = self.text_processor_cls.from_experiment(
                 experiment_dir=self.args.experiment,
@@ -259,18 +226,6 @@ class TextProcessingCli:
                 cache_dir=self.args.cache_dir,
                 force_download=self.args.force_download
             )
-
-        if self.args.lang is not None:
-            supported_languages = cor.supported_languages()
-            assert supported_languages is not None, \
-                f"language {self.args.lang} specified but model does not " \
-                f"support multiple languages"
-            assert self.args.lang in supported_languages, \
-                f"the model supports the languages {supported_languages}, " \
-                f"but {self.args.lang} was specified"
-
-        if self.args.precision != "auto":
-            cor.set_precision(self.args.precision)
 
         return cor
 
@@ -322,7 +277,7 @@ class TextProcessingCli:
         start = time.perf_counter()
         if self.args.process is not None:
             self.args.progress = False
-            ipt = self.parse_input(self.args.process, self.args.lang)
+            ipt = data.InferenceData(self.args.process)
             opt = next(self.process_iter(self.cor, iter([ipt])))
             for line in self.format_output(opt):
                 print(line)
@@ -352,10 +307,10 @@ class TextProcessingCli:
                     num_lines,
                     num_bytes,
                     end - start,
-                    self.cor._precision_dtype,
                     self.args.batch_size,
                     not self.args.unsorted,
                     self.cor.devices,
+                    next(self.cor.model.parameters()).dtype,
                     batch_max_tokens=self.args.batch_max_tokens,
                 )
                 print(report)
@@ -363,7 +318,7 @@ class TextProcessingCli:
         elif self.args.interactive:
             self.args.progress = False
             while True:
-                ipt = self.parse_input(input(">> "), self.args.lang)
+                ipt = data.InferenceData(input(">> "))
                 opt = next(self.process_iter(self.cor, iter([ipt])))
                 for line in self.format_output(opt):
                     print(line)
@@ -376,7 +331,7 @@ class TextProcessingCli:
                 if self.args.unsorted:
                     # correct lines from stdin as they come
                     input_it = (
-                        self.parse_input(line.rstrip("\r\n"), self.args.lang)
+                        data.InferenceData(line.rstrip("\r\n"))
                         for line in sys.stdin
                     )
                     sized_it = ProgressIterator(
@@ -390,7 +345,7 @@ class TextProcessingCli:
                 else:
                     # read stdin completely, then potentially sort and correct
                     inputs = [
-                        self.parse_input(line.rstrip("\r\n"), self.args.lang)
+                        data.InferenceData(line.rstrip("\r\n"))
                         for line in sys.stdin
                     ]
                     sized_it = ProgressIterator(
@@ -414,10 +369,10 @@ class TextProcessingCli:
                         sized_it.num_items,
                         sized_it.total_size,
                         time.perf_counter() - start,
-                        self.cor._precision_dtype,
                         self.args.batch_size,
                         not self.args.unsorted,
                         self.cor.devices,
+                        next(self.cor.model.parameters()).dtype,
                         batch_max_tokens=self.args.batch_max_tokens,
                     )
                     print(report)

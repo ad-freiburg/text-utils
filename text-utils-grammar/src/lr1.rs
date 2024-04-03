@@ -366,11 +366,12 @@ impl LR1GrammarParser {
         Self::new(&grammar, &tokens)
     }
 
-    pub fn lex(&self, text: &str) -> Result<Vec<&str>, Box<dyn Error>> {
-        let (tokens, _) = lexer(text, &self.pdfas)?;
+    pub fn lex(&self, text: &str) -> Result<Vec<(Option<&str>, Span)>, Box<dyn Error>> {
+        let (tokens, spans) = lexer(text, &self.pdfas)?;
         Ok(tokens
             .into_iter()
-            .filter_map(|tidx| tidx.and_then(|tidx| self.grammar.token_name(tidx)))
+            .zip(spans)
+            .map(|(tidx, span)| (tidx.and_then(|tidx| self.grammar.token_name(tidx)), span))
             .collect())
     }
 

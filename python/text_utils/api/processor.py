@@ -150,17 +150,6 @@ class TextProcessor:
     def max_length(self) -> int:
         raise NotImplementedError
 
-    def supported_languages(self) -> Optional[List[str]]:
-        return None
-
-    @classmethod
-    def supported_input_formats(cls) -> List[str]:
-        return ["text", "text_language"]
-
-    @classmethod
-    def supported_output_formats(cls) -> List[str]:
-        return cls.supported_input_formats()
-
     def __init__(
         self,
         model: nn.Module,
@@ -181,9 +170,6 @@ class TextProcessor:
         self.cfg = cfg
         self.logger.debug(f"got config:\n{self.cfg}")
 
-        self._precision_dtype: torch.dtype | None = torch.float32
-        self.set_precision(cfg["train"].get("precision", "fp32"))
-
         self._inference_loader_cfg = self._build_inference_loader_config()
 
     def _build_inference_loader_config(self) -> Dict[str, Any]:
@@ -198,17 +184,7 @@ class TextProcessor:
     @torch.inference_mode()
     def _run_model(self, batch: data.InferenceBatch) -> list[Any]:
         inputs = self._prepare_batch(batch)
-
-        # handle special case here, because autocasting is not supported on CPU
-        # for any other dtype than bfp16 yet
-        if self.devices[0].type == "cpu" and self._precision_dtype != torch.bfloat16:
-            return self._inference(inputs)
-
-        with autocast(
-            device_type=self.devices[0].type,
-            dtype=self._precision_dtype
-        ):
-            return self._inference(inputs)
+        return self._inference(inputs)
 
     def _process_results(
         self,
@@ -371,30 +347,4 @@ class TextProcessor:
             "only a single device supported by default, implement custom to() if you need " \
             "multi-device support"
         self.model = self.model.to(self.devices[0])
-        return self
-
-    def set_precision(self, precision: str) -> "TextProcessor":
-        assert precision in {"fp32", "fp16", "bfp16"}
-        if not all(d.type == self.devices[0].type for d in self.devices):
-            self.logger.info(
-                "autocasting only supported if all devices are of the same type"
-            )
-            self._precision_dtype = None
-            return self
-
-        if precision == "fp32":
-            precision_dtype = torch.float32
-        elif precision == "fp16":
-            precision_dtype = torch.float16
-        else:
-            precision_dtype = torch.bfloat16
-
-        if any(device.type == "cpu" for device in self.devices) and precision == "fp16":
-            self.logger.info(
-                "setting precision to bfp16 instead of fp16, "
-                "because fp16 is not supported on CPU yet"
-            )
-            precision_dtype = torch.bfloat16
-
-        self._precision_dtype = precision_dtype
         return self

@@ -1,4 +1,4 @@
-use crate::data::{Batch, InferenceData, InferenceDataFormat, Pipeline, TextData};
+use crate::data::{Batch, InferenceData, Pipeline, TextData};
 use crate::tokenization::{tokenizer, Tokenizer, TokenizerConfig};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
@@ -158,18 +158,10 @@ pub fn text_data_generator_from_files<P: AsRef<Path>>(
 
 pub fn inference_data_generator_from_file(
     path: impl AsRef<Path>,
-    format: InferenceDataFormat,
-    lang: Option<String>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>> {
     let iter = LossyUtf8Reader::new(BufReader::new(open(path.as_ref())?))
         .lines()
-        .map(move |s| {
-            let mut data = InferenceData::from_str(s?.as_str(), format)?;
-            if data.language.is_none() && lang.is_some() {
-                data.language = lang.clone();
-            };
-            Ok(data)
-        });
+        .map(move |s| Ok(InferenceData::new(s?, None)));
     Ok(Box::new(DataGenerator { min_len: 0, iter }))
 }
 

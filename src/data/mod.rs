@@ -8,19 +8,17 @@ use crate::text::clean;
 use crate::tokenization::{
     padding_mask, token_groups_to_sparse_coo_matrix, tokenizer, PaddingMask,
     TensorizedTokenizationInfo, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig,
-    LANG_UNK,
 };
 use crate::unicode::{normalize, Normalization, CS};
-use crate::utils::{py_invalid_type_error, py_required_key_error};
+use crate::utils::py_required_key_error;
 use crate::windows::{windows, WindowConfig};
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use numpy::ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArray2, PyArrayDyn};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -157,160 +155,21 @@ impl Item {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InferenceDataFormat {
-    Text,
-    TextPlusDetections,
-    TextPlusLanguage,
-    TextPlusDetectionsPlusLanguage,
-}
-
-impl<'a> FromPyObject<'a> for InferenceDataFormat {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let s: String = ob.extract()?;
-        let format = match s.as_str() {
-            "text" => InferenceDataFormat::Text,
-            "text_detections" => InferenceDataFormat::TextPlusDetections,
-            "text_language" => InferenceDataFormat::TextPlusLanguage,
-            "text_detections_language" => InferenceDataFormat::TextPlusDetectionsPlusLanguage,
-            k => return Err(py_invalid_type_error(k, "inference data format")),
-        };
-        Ok(format)
-    }
-}
-
-#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
+#[derive(Clone, Debug)]
 #[pyclass]
 pub struct InferenceData {
     #[pyo3(get, set)]
     text: String,
     #[pyo3(get, set)]
-    detections: Option<Vec<bool>>,
-    #[pyo3(get, set)]
-    language: Option<String>,
-}
-
-impl InferenceData {
-    #[inline]
-    fn parse_detections(str: &str) -> anyhow::Result<Vec<bool>> {
-        str.split(char::is_whitespace)
-            .map(|s| Ok(str::parse::<u8>(s.trim())? != 0))
-            .collect::<anyhow::Result<Vec<bool>>>()
-            .with_context(|| format!("failed to parse '{str}' to detections"))
-    }
-
-    #[inline]
-    fn detection_str(&self) -> anyhow::Result<String> {
-        if let Some(detections) = &self.detections {
-            Ok(detections
-                .iter()
-                .map(|d| (*d as u8).to_string())
-                .collect::<Vec<String>>()
-                .join(" "))
-        } else {
-            Err(anyhow!("expected detections to be set, but got none"))
-        }
-    }
-
-    pub fn from_str(s: &str, format: InferenceDataFormat) -> anyhow::Result<Self> {
-        let splits: Vec<&str> = s.split('\t').collect();
-        let (text, detections, language) = match format {
-            InferenceDataFormat::Text => (s, None, None),
-            InferenceDataFormat::TextPlusDetections => {
-                if splits.len() < 2 {
-                    return Err(anyhow!(
-                        "expected at least 2 tab separated values in '{}', got {}",
-                        s,
-                        splits.len()
-                    ));
-                }
-                (
-                    &s[0..splits.len() - 2
-                        + splits
-                            .iter()
-                            .take(splits.len() - 1)
-                            .map(|s| s.len())
-                            .sum::<usize>()],
-                    Some(Self::parse_detections(splits[splits.len() - 1])?),
-                    None,
-                )
-            }
-            InferenceDataFormat::TextPlusLanguage => {
-                let splits: Vec<&str> = s.split('\t').collect();
-                if splits.len() < 2 {
-                    return Err(anyhow!(
-                        "expected at least 2 tab separated values in '{}', got {}",
-                        s,
-                        splits.len()
-                    ));
-                }
-                (
-                    &s[0..splits.len() - 2
-                        + splits
-                            .iter()
-                            .take(splits.len() - 1)
-                            .map(|s| s.len())
-                            .sum::<usize>()],
-                    None,
-                    Some(splits[splits.len() - 1].trim().to_string()),
-                )
-            }
-            InferenceDataFormat::TextPlusDetectionsPlusLanguage => {
-                let splits: Vec<&str> = s.split('\t').collect();
-                if splits.len() < 3 {
-                    return Err(anyhow!(
-                        "expected at least 3 tab separated values in '{}', got {}",
-                        s,
-                        splits.len()
-                    ));
-                }
-                (
-                    &s[0..splits.len() - 3
-                        + splits
-                            .iter()
-                            .take(splits.len() - 2)
-                            .map(|s| s.len())
-                            .sum::<usize>()],
-                    Some(Self::parse_detections(splits[splits.len() - 2])?),
-                    Some(splits[splits.len() - 1].trim().to_string()),
-                )
-            }
-        };
-        Ok(Self::new(text.to_string(), detections, language))
-    }
+    info: Option<PyObject>,
 }
 
 #[pymethods]
 impl InferenceData {
     #[new]
-    pub fn new(s: String, detections: Option<Vec<bool>>, language: Option<String>) -> Self {
-        Self {
-            text: s,
-            detections,
-            language,
-        }
-    }
-    #[staticmethod]
-    #[pyo3(name = "from_str", signature = (s, format = InferenceDataFormat::Text))]
-    pub fn from_str_py(s: String, format: InferenceDataFormat) -> anyhow::Result<Self> {
-        Self::from_str(&s, format)
-    }
-
-    #[pyo3(signature = (format = InferenceDataFormat::Text))]
-    pub fn to_str(&self, format: InferenceDataFormat) -> anyhow::Result<String> {
-        let mut s = self.text.clone();
-        if format == InferenceDataFormat::Text {
-            return Ok(s);
-        }
-        if format == InferenceDataFormat::TextPlusDetections
-            || format == InferenceDataFormat::TextPlusDetectionsPlusLanguage
-        {
-            s.push('\t');
-            s.push_str(&self.detection_str()?);
-        }
-        s.push('\t');
-        s.push_str(self.language.as_deref().unwrap_or(LANG_UNK));
-        Ok(s)
+    #[pyo3(signature = (text, info = None))]
+    pub fn new(text: String, info: Option<PyObject>) -> Self {
+        Self { text, info }
     }
 }
 
@@ -651,22 +510,35 @@ impl InferenceBatch {
         self.len
     }
 
+    fn data(&mut self) -> anyhow::Result<Batch<InferenceData>> {
+        self.batch
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("can only get data before getting items, because they are moved")
+            })
+            .map(|batch| batch.iter().map(|item| item.data.clone()).collect())
+    }
+
+    fn infos(&mut self) -> anyhow::Result<Batch<Option<PyObject>>> {
+        self.batch
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("can only get infos before getting items, because they are moved")
+            })
+            .map(|batch| batch.iter().map(|item| item.data.info.clone()).collect())
+    }
+
     fn items(&mut self) -> anyhow::Result<Batch<InferenceItem>> {
-        if self.batch.is_none() {
-            return Err(anyhow!(
-                "can only get items once, because their data is moved"
-            ));
-        }
-        Ok(self.batch.take().unwrap())
+        self.batch
+            .take()
+            .ok_or_else(|| anyhow!("can only get items once, because their data is moved"))
     }
 
     fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyInferenceTensors> {
-        if self.tensorized.is_none() {
-            return Err(anyhow!(
-                "can only get tensors once, because their data is moved"
-            ));
-        }
-        let tensorized = self.tensorized.take().unwrap();
+        let tensorized = self
+            .tensorized
+            .take()
+            .ok_or_else(|| anyhow!("can only get tensors once, because their data is moved"))?;
         Ok((
             tensorized.0.into_pyarray(py).into_py(py),
             tensorized.1.into_py(py),
@@ -818,13 +690,7 @@ pub fn text_data_pipeline_with_tokenizer(
         Arc::new(move |(data, info)| -> anyhow::Result<Item> {
             let (data, info) = preprocess_fn(data, info)?;
             let item = Item {
-                tokenization: tokenizer.tokenize(
-                    &data.input,
-                    data.language.as_deref(),
-                    None,
-                    None,
-                    false,
-                )?,
+                tokenization: tokenizer.tokenize(&data.input, None, None, false)?,
                 label: label_fn(&data)?,
                 data,
             };
@@ -859,8 +725,7 @@ pub fn inference_pipeline_with_windows(
             .iter()
             .enumerate()
             .map(|(w_idx, w)| {
-                let tokenization =
-                    tok.tokenize(w.str, data.language.as_deref(), None, None, true)?;
+                let tokenization = tok.tokenize(w.str, None, None, true)?;
                 Ok(InferenceItem::new(
                     data.clone(),
                     tokenization,
@@ -968,8 +833,8 @@ impl InferenceLoader {
         iterator,
         tokenizer_config,
         window_config,
-        normalization = Normalization::NFKC,
-        clean_text = true,
+        normalization = None,
+        clean_text = false,
         use_graphemes = true,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
@@ -1017,11 +882,9 @@ impl InferenceLoader {
         files,
         tokenizer_config,
         window_config,
-        file_format = InferenceDataFormat::Text,
-        normalization = Normalization::NFKC,
-        clean_text = true,
+        normalization = None,
+        clean_text = false,
         use_graphemes = true,
-        languages = None,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
         batch_limit = 16,
@@ -1033,11 +896,9 @@ impl InferenceLoader {
         files: Vec<String>,
         tokenizer_config: TokenizerConfig,
         window_config: WindowConfig,
-        file_format: InferenceDataFormat,
         normalization: Option<Normalization>,
         clean_text: bool,
         use_graphemes: bool,
-        languages: Option<Vec<String>>,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -1048,18 +909,9 @@ impl InferenceLoader {
         if files.is_empty() {
             return Err(anyhow!("files is empty"));
         }
-        if languages.is_some() && files.len() != languages.as_ref().unwrap().len() {
-            return Err(anyhow!(
-                "there must be one language for every file if specified, but \
-                    got {} files and {} languages",
-                files.len(),
-                languages.as_ref().unwrap().len()
-            ));
-        }
         let mut generators = vec![];
-        for (idx, file) in files.iter().enumerate() {
-            let lang = languages.as_ref().map(|l| l[idx].clone());
-            let generator = inference_data_generator_from_file(Path::new(file), file_format, lang)?;
+        for file in &files {
+            let generator = inference_data_generator_from_file(Path::new(file))?;
             generators.push(generator);
         }
         Self::new(

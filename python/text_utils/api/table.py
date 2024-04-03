@@ -140,21 +140,24 @@ def generate_report(
     input_size: int,
     input_size_bytes: int,
     runtime: float,
-    precision: torch.dtype | None,
     batch_size: int,
     sort_by_length: bool,
     devices: list[torch.device],
+    precision: torch.dtype | str | None = None,
     batch_max_tokens: int | None = None,
     file_path: str | None = None
 ) -> str | None:
+    if precision is None:
+        precision = next(model.parameters()).dtype
+
     if precision == torch.float16:
         precision_str = "fp16"
     elif precision == torch.bfloat16:
         precision_str = "bfp16"
-    elif precision == torch.float32 or precision is None:
+    elif precision == torch.float32:
         precision_str = "fp32"
     else:
-        raise ValueError("expected precision to be one of torch.float16, torch.bfloat16 or torch.float32")
+        precision_str = str(precision)
 
     devices = [d for d in devices if d.type == "cuda"]
     devices.append(torch.device("cpu"))

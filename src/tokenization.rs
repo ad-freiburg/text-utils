@@ -26,6 +26,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
+use text_utils_grammar::LR1GrammarParser;
 use tokenizers as hft;
 
 pub const UNK: &str = "<unk>";
@@ -72,10 +73,7 @@ pub struct SpecialConfig {
     pub suffix: Vec<String>,
 }
 
-fn validate_special_and_language_config(
-    special_config: &SpecialConfig,
-    language_config: Option<&LanguageConfig>,
-) -> anyhow::Result<()> {
+fn validate_special_config(special_config: &SpecialConfig) -> anyhow::Result<()> {
     if !special_config.tokens.contains(&special_config.pad) {
         return Err(anyhow!("pad token not in special tokens",));
     }
@@ -96,20 +94,6 @@ fn validate_special_and_language_config(
         return Err(anyhow!(
             "one or more suffix tokens are not in special tokens",
         ));
-    }
-    if let Some(cfg) = language_config {
-        if !cfg.languages.contains(&cfg.default_language) {
-            return Err(anyhow!("default language not in list of languages",));
-        }
-        if cfg
-            .languages
-            .iter()
-            .any(|l| !special_config.tokens.contains(l))
-        {
-            return Err(anyhow!(
-                "one or more language tokens are not in special tokens",
-            ));
-        }
     }
     Ok(())
 }
@@ -151,13 +135,90 @@ impl<'a> FromPyObject<'a> for SpecialConfig {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum TokenizationConstraintConfig {
+    LR1Grammar {
+        lexer: String,
+        grammar: String,
+        skip_ignore_tokens: bool,
+    },
+}
+
+pub enum TokenizationConstraint {
+    LR1Grammar {
+        parser: LR1GrammarParser,
+        skip_ignore_tokens: bool,
+    },
+}
+
+impl TokenizationConstraint {
+    pub fn from_config(config: TokenizationConstraintConfig) -> anyhow::Result<Self> {
+        match config {
+            TokenizationConstraintConfig::LR1Grammar {
+                lexer,
+                grammar,
+                skip_ignore_tokens,
+            } => {
+                let parser = LR1GrammarParser::from_files(&grammar, &lexer).map_err(|e| {
+                    anyhow!(
+                        "failed to create LR1 grammar parser from lexer {lexer} and grammar {grammar}: {e}"
+                    )
+                })?;
+                Ok(Self::LR1Grammar {
+                    parser,
+                    skip_ignore_tokens,
+                })
+            }
+        }
+    }
+}
+
+impl<'a> FromPyObject<'a> for TokenizationConstraintConfig {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+        let Some(constraint_type) = d.get_item("type")? else {
+            return Err(py_required_key_error("type", "generation config"));
+        };
+        let constraint_type: String = constraint_type.extract()?;
+        let constraint = match constraint_type.as_str() {
+            "lr1_grammar" => {
+                let Some(lexer) = d.get_item("lexer")? else {
+                    return Err(py_required_key_error(
+                        "lexer",
+                        "tokenization constraint config",
+                    ));
+                };
+                let Some(grammar) = d.get_item("grammar")? else {
+                    return Err(py_required_key_error(
+                        "grammar",
+                        "tokenization constraint config",
+                    ));
+                };
+                let skip_ignore_tokens = d
+                    .get_item("skip_ignore_tokens")?
+                    .map(|v| v.extract())
+                    .transpose()?
+                    .unwrap_or(false);
+                TokenizationConstraintConfig::LR1Grammar {
+                    lexer: lexer.extract()?,
+                    grammar: grammar.extract()?,
+                    skip_ignore_tokens,
+                }
+            }
+            k => {
+                return Err(py_invalid_type_error(k, "tokenization constraint config"));
+            }
+        };
+        Ok(constraint)
+    }
+}
+
 /// This is a tokenizer config, containing configs for special tokens, language,
 /// and the actual tokenize config inside it.
 #[derive(Clone, Debug)]
 pub struct TokenizerConfig {
     pub tokenize: TokenizeConfig,
     pub special: SpecialConfig,
-    pub language: Option<LanguageConfig>,
 }
 
 impl<'a> FromPyObject<'a> for TokenizerConfig {
@@ -172,68 +233,6 @@ impl<'a> FromPyObject<'a> for TokenizerConfig {
                 .get_item("special")?
                 .ok_or_else(|| py_required_key_error("special", "tokenizer config"))?
                 .extract()?,
-            language: if let Some(value) = d.get_item("language")? {
-                Some(value.extract()?)
-            } else {
-                None
-            },
-        })
-    }
-}
-
-/// This configures the language a tokenizer can work with
-#[derive(Clone, Debug)]
-pub struct LanguageConfig {
-    add_language_token_to_prefix: bool,
-    add_language_token_to_suffix: bool,
-    languages: Vec<String>,
-    default_language: String,
-}
-
-impl LanguageConfig {
-    pub fn new(
-        add_language_token_to_prefix: bool,
-        add_language_token_to_suffix: bool,
-        languages: Vec<String>,
-        default_language: String,
-    ) -> Self {
-        Self {
-            add_language_token_to_prefix,
-            add_language_token_to_suffix,
-            languages,
-            default_language,
-        }
-    }
-}
-
-impl<'a> FromPyObject<'a> for LanguageConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
-        let Some(languages) = d.get_item("languages")? else {
-            return Err(py_required_key_error("languages", "language config"));
-        };
-        let languages = languages.extract()?;
-        let Some(default_language) = d.get_item("default_language")? else {
-            return Err(py_required_key_error("default_language", "language config"));
-        };
-        let default_language = default_language.extract()?;
-        Ok(Self {
-            add_language_token_to_prefix: if let Some(value) =
-                d.get_item("add_language_token_to_prefix")?
-            {
-                value.extract()?
-            } else {
-                true
-            },
-            add_language_token_to_suffix: if let Some(value) =
-                d.get_item("add_language_token_to_suffix")?
-            {
-                value.extract()?
-            } else {
-                false
-            },
-            languages,
-            default_language,
         })
     }
 }
@@ -688,18 +687,10 @@ pub type Tokenizer = Box<dyn Send + 'static + Tokenize>;
 pub trait BaseTokenize: Send + Sync + 'static {
     fn num_prefix_tokens(&self) -> usize {
         self.prefix_token_ids().len()
-            + match self.language_config().as_ref() {
-                Some(cfg) => cfg.add_language_token_to_prefix as usize,
-                None => 0,
-            }
     }
 
     fn num_suffix_tokens(&self) -> usize {
         self.suffix_token_ids().len()
-            + match self.language_config().as_ref() {
-                Some(cfg) => cfg.add_language_token_to_suffix as usize,
-                None => 0,
-            }
     }
 
     fn num_special_tokens(&self) -> usize {
@@ -716,8 +707,6 @@ pub trait BaseTokenize: Send + Sync + 'static {
 
     fn pad_token_id(&self) -> u32;
 
-    fn language_config(&self) -> Option<&LanguageConfig>;
-
     fn special_token_to_id(&self, token: &str) -> Option<u32>;
 }
 
@@ -729,11 +718,63 @@ pub trait Tokenize: BaseTokenize {
     fn tokenize(
         &self,
         s: &str,
-        lang: Option<&str>,
         prefix: Option<&[&str]>,
         suffix: Option<&[&str]>,
         ignore_special_tokens: bool,
     ) -> anyhow::Result<Tokenization>;
+
+    fn tokenize_with_constraint(
+        &self,
+        s: &str,
+        prefix: Option<&[&str]>,
+        suffix: Option<&[&str]>,
+        ignore_special_tokens: bool,
+        constraint: &TokenizationConstraint,
+    ) -> anyhow::Result<Tokenization> {
+        match constraint {
+            TokenizationConstraint::LR1Grammar {
+                parser,
+                skip_ignore_tokens,
+            } => {
+                let lexemes = parser.lex(s).map_err(|e| {
+                    anyhow!("tokenizing with grammar constraint failed with a lexer error: {e}")
+                })?;
+                let mut all_token_ids = vec![];
+                let num_lexemes = lexemes.len();
+                for (i, (lexeme, (start, len))) in lexemes.into_iter().enumerate() {
+                    if *skip_ignore_tokens && lexeme.is_none() {
+                        continue;
+                    }
+                    let tokenization = self.tokenize(
+                        &s[start..start + len],
+                        prefix,
+                        suffix,
+                        ignore_special_tokens,
+                    )?;
+                    if !matches!(tokenization.info, TokenizationInfo::Empty) {
+                        return Err(anyhow!(
+                            "default implementation does not support tokenization info with grammar constraint"
+                        ));
+                    }
+                    let pfx = if i == 0 { 0 } else { self.num_prefix_tokens() };
+                    let sfx = if i == num_lexemes - 1 {
+                        0
+                    } else {
+                        self.num_suffix_tokens()
+                    };
+                    let num_tokens = tokenization.token_ids.len() - pfx - sfx;
+                    all_token_ids.extend(
+                        tokenization
+                            .token_ids
+                            .into_iter()
+                            .skip(pfx)
+                            .take(num_tokens),
+                    );
+                }
+                Ok(Tokenization::new(all_token_ids, TokenizationInfo::Empty))
+            }
+        }
+    }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String;
 }
@@ -746,7 +787,6 @@ pub struct BaseTokenizer<Config = (), State = ()> {
     pad_token_id: u32,
     state: State,
     config: Config,
-    language_config: Option<LanguageConfig>,
     special_vocab: Vocab<String>,
     special_token_pattern: Option<Regex>,
 }
@@ -767,10 +807,6 @@ where
         self.pad_token_id
     }
 
-    fn language_config(&self) -> Option<&LanguageConfig> {
-        self.language_config.as_ref()
-    }
-
     fn special_token_to_id(&self, token: &str) -> Option<u32> {
         self.special_vocab.token_to_id(token)
     }
@@ -788,14 +824,11 @@ where
     fn new_base_tokenizer(
         special_offset: u32,
         special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
         config: Config,
         state: State,
     ) -> Self {
-        if let Err(e) =
-            validate_special_and_language_config(&special_config, language_config.as_ref())
-        {
-            panic!("invalid special and language config: {e}");
+        if let Err(e) = validate_special_config(&special_config) {
+            panic!("invalid special config: {e}");
         }
         let special_vocab = Vocab::build(special_config.tokens, special_offset);
         let prefix_token_ids = special_config
@@ -819,7 +852,6 @@ where
             prefix_token_ids,
             suffix_token_ids,
             pad_token_id: special_vocab.token_to_id(&special_config.pad).unwrap(),
-            language_config,
             special_vocab,
             special_token_pattern,
             config,
@@ -850,27 +882,11 @@ where
     fn add_prefix_and_suffix(
         &self,
         mut token_ids: Vec<u32>,
-        lang: Option<&str>,
         prefix: Option<&[&str]>,
         suffix: Option<&[&str]>,
     ) -> anyhow::Result<Vec<u32>> {
         let mut pfx = self.prefix_token_ids().to_vec();
         let mut sfx = self.suffix_token_ids().to_vec();
-        // add language token if needed
-        if let Some(lang_cfg) = self.language_config() {
-            let lang = lang.unwrap_or(&lang_cfg.default_language);
-            let Some(lang_id) = self.special_token_to_id(lang) else {
-                return Err(anyhow!(
-                    "language {lang} is not supported by this tokenizer"
-                ));
-            };
-            if lang_cfg.add_language_token_to_prefix {
-                pfx.push(lang_id);
-            }
-            if lang_cfg.add_language_token_to_suffix {
-                sfx.push(lang_id);
-            }
-        }
         // add additional prefix tokens if needed
         if let Some(add_prefix) = prefix {
             for &token in add_prefix {
@@ -982,10 +998,9 @@ where
     pub fn new_vocab_free_tokenizer(
         special_offset: u32,
         special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
         config: Config,
     ) -> Self {
-        Self::new_base_tokenizer(special_offset, special_config, language_config, config, ())
+        Self::new_base_tokenizer(special_offset, special_config, config, ())
     }
 }
 
@@ -1015,7 +1030,6 @@ where
         tokens: Vec<Token>,
         unk_token: String,
         mut special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
         config: Config,
     ) -> Self {
         let vocab = Vocab::build(tokens, 0);
@@ -1024,7 +1038,6 @@ where
         Self::new_base_tokenizer(
             vocab.size() as u32,
             special_config,
-            language_config,
             config,
             (unk_token, vocab),
         )
@@ -1045,7 +1058,6 @@ where
         vocab_file: impl AsRef<Path>,
         unk_token: String,
         mut special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
         config: Config,
     ) -> anyhow::Result<Self> {
         let vocab = Vocab::from_file(vocab_file, 0)?;
@@ -1054,7 +1066,6 @@ where
         Ok(Self::new_base_tokenizer(
             vocab.size() as u32,
             special_config,
-            language_config,
             config,
             (unk_token, vocab),
         ))
@@ -1097,7 +1108,6 @@ where
     fn tokenize(
         &self,
         s: &str,
-        lang: Option<&str>,
         prefix: Option<&[&str]>,
         suffix: Option<&[&str]>,
         ignore_special_tokens: bool,
@@ -1118,7 +1128,7 @@ where
                 // // }
             })
             .collect::<Vec<_>>();
-        let token_ids = self.add_prefix_and_suffix(token_ids, lang, prefix, suffix)?;
+        let token_ids = self.add_prefix_and_suffix(token_ids, prefix, suffix)?;
         Ok(Tokenization::new(token_ids, tokenization_info))
     }
 
@@ -1165,7 +1175,7 @@ pub type DummyTokenizer = VocabFreeTokenizer<Duration>;
 
 impl DummyTokenizer {
     fn new(delay: Duration) -> Self {
-        Self::new_vocab_free_tokenizer(0, SpecialConfig::default(), None, delay)
+        Self::new_vocab_free_tokenizer(0, SpecialConfig::default(), delay)
     }
 }
 
@@ -1177,7 +1187,6 @@ impl Tokenize for DummyTokenizer {
     fn tokenize(
         &self,
         _: &str,
-        _: Option<&str>,
         _: Option<&[&str]>,
         _: Option<&[&str]>,
         _: bool,
@@ -1286,10 +1295,6 @@ impl BaseTokenize for HuggingfaceTokenizer {
         self.pad_token_id
     }
 
-    fn language_config(&self) -> Option<&LanguageConfig> {
-        None
-    }
-
     fn special_token_to_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)
     }
@@ -1315,7 +1320,6 @@ impl Tokenize for HuggingfaceTokenizer {
     fn tokenize(
         &self,
         s: &str,
-        _lang: Option<&str>,
         prefix: Option<&[&str]>,
         suffix: Option<&[&str]>,
         _ignore_special_tokens: bool,
@@ -1459,16 +1463,11 @@ impl VocabTokenize<char> for CharTokenizer {
 }
 
 impl CharTokenizer {
-    pub fn new(
-        config: CharTokenizerConfig,
-        special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
-    ) -> Self {
+    pub fn new(config: CharTokenizerConfig, special_config: SpecialConfig) -> Self {
         Self::new_vocab_tokenizer(
             CHARS.chars().collect(),
             UNK.to_string(),
             special_config,
-            language_config,
             config,
         )
     }
@@ -1486,11 +1485,7 @@ pub type MergeOps = HashMap<Vec<u8>, u32>;
 pub type BPETokenizer = BaseTokenizer<BPETokenizerConfig, (MergeOps, Vec<Vec<u8>>, Regex)>;
 
 impl BPETokenizer {
-    pub fn new(
-        config: BPETokenizerConfig,
-        special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: BPETokenizerConfig, special_config: SpecialConfig) -> anyhow::Result<Self> {
         let mut merge_ops = MergeOps::load(&config.merge_file)?;
         if let Some(limit) = config.max_vocab_size {
             // to limit vocab size we filter out all merges with an id higher than the limit
@@ -1509,7 +1504,6 @@ impl BPETokenizer {
         Ok(Self::new_base_tokenizer(
             reverse_merge_ops.len() as u32,
             special_config,
-            language_config,
             config,
             (
                 merge_ops,
@@ -1638,7 +1632,6 @@ impl Tokenize for BPETokenizer {
     fn tokenize(
         &self,
         s: &str,
-        lang: Option<&str>,
         prefix: Option<&[&str]>,
         suffix: Option<&[&str]>,
         ignore_special_tokens: bool,
@@ -1655,7 +1648,7 @@ impl Tokenize for BPETokenizer {
                 }
             }
         }
-        let token_ids = self.add_prefix_and_suffix(token_ids, lang, prefix, suffix)?;
+        let token_ids = self.add_prefix_and_suffix(token_ids, prefix, suffix)?;
         Ok(Tokenization::new(token_ids, TokenizationInfo::Empty))
     }
 
@@ -2061,32 +2054,17 @@ pub struct ByteTokenizerConfig {
 pub type ByteTokenizer = VocabFreeTokenizer<ByteTokenizerConfig>;
 
 impl ByteTokenizer {
-    pub fn new(
-        config: ByteTokenizerConfig,
-        special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
-    ) -> Self {
-        Self::new_with(config, special_config, language_config)
+    pub fn new(config: ByteTokenizerConfig, special_config: SpecialConfig) -> Self {
+        Self::new_with(config, special_config)
     }
 
-    fn new_with(
-        config: ByteTokenizerConfig,
-        mut special_config: SpecialConfig,
-        language_config: Option<LanguageConfig>,
-    ) -> Self {
+    fn new_with(config: ByteTokenizerConfig, mut special_config: SpecialConfig) -> Self {
         if let Some(pad_to) = config.pad_to_multiple_of {
             assert!(
                 pad_to.is_power_of_two(),
                 "pad_to_multiple_of must be a power of two"
             );
-            let mut special_tokens: HashSet<&String> =
-                HashSet::from_iter(special_config.tokens.iter());
-            if let Some(lang_cfg) = &language_config {
-                special_tokens.insert(&lang_cfg.default_language);
-                for token in lang_cfg.languages.iter() {
-                    special_tokens.insert(token);
-                }
-            }
+            let special_tokens: HashSet<&String> = special_config.tokens.iter().collect();
             let num_special_tokens = special_tokens.len();
             let num_tokens = 256 + num_special_tokens;
             let num_pad_tokens =
@@ -2095,7 +2073,7 @@ impl ByteTokenizer {
                 .tokens
                 .extend((0..num_pad_tokens).map(|idx| format!("<extra_token_{}>", idx)));
         }
-        Self::new_vocab_free_tokenizer(256, special_config, language_config, config)
+        Self::new_vocab_free_tokenizer(256, special_config, config)
     }
 
     fn process_input(
@@ -2172,7 +2150,6 @@ impl Tokenize for ByteTokenizer {
     fn tokenize(
         &self,
         s: &str,
-        lang: Option<&str>,
         prefix: Option<&[&str]>,
         suffix: Option<&[&str]>,
         ignore_special_tokens: bool,
@@ -2180,7 +2157,7 @@ impl Tokenize for ByteTokenizer {
         let (bytes, info) = self.process_input(s, prefix, suffix, ignore_special_tokens);
 
         Ok(Tokenization::new(
-            self.add_prefix_and_suffix(bytes, lang, prefix, suffix)?,
+            self.add_prefix_and_suffix(bytes, prefix, suffix)?,
             info,
         ))
     }
@@ -2229,7 +2206,6 @@ impl ByT5Tokenizer {
                 prefix: vec![],
                 suffix: vec!["</s>".into()],
             },
-            None,
         );
         Self { inner }
     }
@@ -2242,10 +2218,6 @@ impl BaseTokenize for ByT5Tokenizer {
 
     fn suffix_token_ids(&self) -> &[u32] {
         self.inner.suffix_token_ids()
-    }
-
-    fn language_config(&self) -> Option<&LanguageConfig> {
-        self.inner.language_config()
     }
 
     fn special_token_to_id(&self, token: &str) -> Option<u32> {
@@ -2265,14 +2237,13 @@ impl Tokenize for ByT5Tokenizer {
     fn tokenize(
         &self,
         s: &str,
-        lang: Option<&str>,
         prefix: Option<&[&str]>,
         suffix: Option<&[&str]>,
         ignore_special_tokens: bool,
     ) -> anyhow::Result<Tokenization> {
         let Tokenization { token_ids, info } =
             self.inner
-                .tokenize(s, lang, prefix, suffix, ignore_special_tokens)?;
+                .tokenize(s, prefix, suffix, ignore_special_tokens)?;
         // adapt token ids to byt5 format
         // --> shift byte token_ids from 0..255 to 3..258
         // --> shift eos token
@@ -2300,16 +2271,10 @@ impl Tokenize for ByT5Tokenizer {
 
 pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
     Ok(match cfg.tokenize {
-        TokenizeConfig::Character(char_cfg) => {
-            Box::new(CharTokenizer::new(char_cfg, cfg.special, cfg.language))
-        }
-        TokenizeConfig::Byte(byte_cfg) => {
-            Box::new(ByteTokenizer::new(byte_cfg, cfg.special, cfg.language))
-        }
+        TokenizeConfig::Character(char_cfg) => Box::new(CharTokenizer::new(char_cfg, cfg.special)),
+        TokenizeConfig::Byte(byte_cfg) => Box::new(ByteTokenizer::new(byte_cfg, cfg.special)),
         TokenizeConfig::ByT5(byte_cfg) => Box::new(ByT5Tokenizer::new(byte_cfg)),
-        TokenizeConfig::BPE(bpe_cfg) => {
-            Box::new(BPETokenizer::new(bpe_cfg, cfg.special, cfg.language)?)
-        }
+        TokenizeConfig::BPE(bpe_cfg) => Box::new(BPETokenizer::new(bpe_cfg, cfg.special)?),
         TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
         TokenizeConfig::Huggingface(path) => {
             Box::new(HuggingfaceTokenizer::new(path, cfg.special)?)
@@ -2321,33 +2286,49 @@ pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
 #[pyo3(name = "Tokenizer")]
 struct PyTokenizer {
     tokenizer: Tokenizer,
+    constraint: Option<TokenizationConstraint>,
 }
 
 #[pymethods]
 impl PyTokenizer {
     #[staticmethod]
-    fn from_config(config: TokenizerConfig) -> anyhow::Result<Self> {
+    #[pyo3(signature = (config, constraint = None))]
+    fn from_config(
+        config: TokenizerConfig,
+        constraint: Option<TokenizationConstraintConfig>,
+    ) -> anyhow::Result<Self> {
         Ok(PyTokenizer {
             tokenizer: tokenizer(config)?,
+            constraint: constraint
+                .map(TokenizationConstraint::from_config)
+                .transpose()?,
         })
     }
 
-    #[pyo3(signature = (s, lang = None, prefix = None, suffix = None, ignore_special_tokens = true))]
+    #[pyo3(signature = (s, prefix = None, suffix = None, ignore_special_tokens = true))]
     fn tokenize(
         &self,
         s: &str,
-        lang: Option<&str>,
         prefix: Option<Vec<&str>>,
         suffix: Option<Vec<&str>>,
         ignore_special_tokens: bool,
     ) -> anyhow::Result<Tokenization> {
-        self.tokenizer.tokenize(
-            s,
-            lang,
-            prefix.as_deref(),
-            suffix.as_deref(),
-            ignore_special_tokens,
-        )
+        if let Some(constraint) = &self.constraint {
+            self.tokenizer.tokenize_with_constraint(
+                s,
+                prefix.as_deref(),
+                suffix.as_deref(),
+                ignore_special_tokens,
+                constraint,
+            )
+        } else {
+            self.tokenizer.tokenize(
+                s,
+                prefix.as_deref(),
+                suffix.as_deref(),
+                ignore_special_tokens,
+            )
+        }
     }
 
     fn special_token_to_id(&self, token: &str) -> Option<u32> {

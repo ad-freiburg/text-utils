@@ -42,7 +42,7 @@ dependencies = [
 test = [
     "pytest>=8.0.0"
 ]
-8bit = [
+low-precision = [
     "bitsandbytes>=0.42",
 ]
 

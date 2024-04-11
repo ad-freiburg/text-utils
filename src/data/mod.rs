@@ -47,18 +47,12 @@ pub struct TextData {
     input: String,
     #[pyo3(get)]
     target: String,
-    #[pyo3(get)]
-    language: Option<String>,
 }
 
 impl TextData {
-    pub fn new(input: String, target: Option<String>, language: Option<String>) -> Self {
+    pub fn new(input: String, target: Option<String>) -> Self {
         let target = target.unwrap_or_else(|| input.clone());
-        TextData {
-            input,
-            target,
-            language,
-        }
+        TextData { input, target }
     }
 }
 
@@ -963,7 +957,6 @@ type DataIter = dyn Iterator<Item = (Batch<Item>, <Batch<Item> as Tensorize>::Ou
 struct DataLoader {
     pipeline: TextDataPipeline,
     files: Vec<(String, Option<String>)>,
-    languages: Option<Vec<String>>,
     strategy: TextIterationStrategy,
     tokenizer_config: TokenizerConfig,
     num_threads: u8,
@@ -991,7 +984,6 @@ impl DataLoader {
     #[allow(clippy::too_many_arguments)]
     fn new(
         files: Vec<(String, Option<String>)>,
-        languages: Option<Vec<String>>,
         pipeline_config: TextDataPipelineConfig,
         tokenizer_config: TokenizerConfig,
         strategy: TextIterationStrategy,
@@ -1027,7 +1019,6 @@ impl DataLoader {
         Ok(DataLoader {
             pipeline,
             files,
-            languages,
             strategy,
             tokenizer_config,
             num_threads,
@@ -1053,13 +1044,8 @@ impl DataLoader {
     fn init_iter(&mut self) -> anyhow::Result<()> {
         let seed = self.seed.unwrap_or(0) + self.epoch as u64;
         let mut generators = vec![];
-        for (idx, (input_file, target_file)) in self.files.iter().enumerate() {
-            let lang = if self.languages.is_some() {
-                Some(self.languages.as_ref().unwrap()[idx].clone())
-            } else {
-                None
-            };
-            let generator = text_data_generator_from_files(input_file, target_file.as_ref(), lang)?;
+        for (input_file, target_file) in self.files.iter() {
+            let generator = text_data_generator_from_files(input_file, target_file.as_ref())?;
             generators.push(generator);
         }
 
@@ -1161,7 +1147,6 @@ impl DataLoader {
         }
         Self::new(
             files,
-            languages,
             pipeline_config,
             tokenizer_config,
             strategy,

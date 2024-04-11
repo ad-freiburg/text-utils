@@ -32,80 +32,6 @@ enum NodeType<V> {
     }, // N256(Children<V, 256>, u16),
 }
 
-// impl<V: Serialize> Serialize for NodeType<V> {
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: serde::Serializer,
-//     {
-//         match self {
-//             NodeType::Leaf(v) => {
-//                 let mut s = serializer.serialize_tuple_variant("N", 0, "L", 1)?;
-//                 s.serialize_field(v)?;
-//                 s.end()
-//             }
-//             NodeType::N4(index, children, n) => {
-//                 let mut s = serializer.serialize_tuple_variant("N", 1, "4", 3)?;
-//                 s.serialize_field(index)?;
-//                 s.serialize_field(children)?;
-//                 s.serialize_field(n)?;
-//                 s.end()
-//             }
-//             NodeType::N16(keys, children, n) => {
-//                 let mut s = serializer.serialize_tuple_variant("N", 2, "16", 3)?;
-//                 s.serialize_field(keys)?;
-//                 s.serialize_field(children)?;
-//                 s.serialize_field(n)?;
-//                 s.end()
-//             }
-//             NodeType::N48(index, children, n) => {
-//                 let mut s = serializer.serialize_tuple_variant("N", 3, "48", 3)?;
-//                 let vec: Vec<_> = index.iter().collect();
-//                 s.serialize_field(&vec)?;
-//                 let vec: Vec<_> = children.iter().collect();
-//                 s.serialize_field(&vec)?;
-//                 s.serialize_field(n)?;
-//                 s.end()
-//             }
-//             NodeType::N256(children, n) => {
-//                 let mut s = serializer.serialize_tuple_variant("N", 4, "256", 2)?;
-//                 let vec: Vec<_> = children.iter().collect();
-//                 s.serialize_field(&vec)?;
-//                 s.serialize_field(n)?;
-//                 s.end()
-//             }
-//         }
-//     }
-// }
-
-// impl<'de, V: Deserialize<'de>> Deserialize<'de> for NodeType<V> {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: serde::Deserializer<'de>,
-//     {
-//         struct NodeTypeVisitor<V> {
-//             marker: PhantomData<V>,
-//         }
-//
-//         impl<'de, V> Visitor<'de> for NodeTypeVisitor<V> {
-//             type Value = V;
-//
-//             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-//                 formatter.write_str("an adaptive radix trie node type")
-//             }
-//
-//             fn visit_
-//         }
-//
-//         deserializer.deserialize_enum(
-//             "N",
-//             &["L", "4", "16", "48", "256"],
-//             NodeTypeVisitor {
-//                 marker: PhantomData,
-//             },
-//         )
-//     }
-// }
-
 #[derive(Debug, Serialize, Deserialize)]
 struct Node<V> {
     prefix: Box<[u8]>,
@@ -805,7 +731,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
         path
     }
 
-    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(root) = &self.root else {
             return Box::new(empty());
         };

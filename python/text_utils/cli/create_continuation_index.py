@@ -19,7 +19,7 @@ def create(args: argparse.Namespace):
         os.makedirs(dir, exist_ok=True)
 
     start = time.perf_counter()
-    continuations.Continuations.build_from_file(
+    continuations.ContinuationIndex.build_from_file(
         args.input_file,
         args.output_file
     )
@@ -29,7 +29,7 @@ def create(args: argparse.Namespace):
     start = time.perf_counter()
     # empty continuations for testing
     conts = []
-    continuations.Continuations.load_with_continuations(
+    continuations.ContinuationIndex.load_with_continuations(
         args.output_file,
         conts
     )

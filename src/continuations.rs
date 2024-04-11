@@ -9,18 +9,18 @@ use pyo3::prelude::*;
 use text_utils_prefix::{AdaptiveRadixTrie, ContinuationSearch, ContinuationTrie, PrefixSearch};
 
 #[pyclass]
-pub struct Continuations {
-    continuations: ContinuationTrie<AdaptiveRadixTrie<String>>,
+pub struct ContinuationIndex {
+    cont_trie: ContinuationTrie<AdaptiveRadixTrie<String>>,
 }
 
 pub type ContinuationIndices = (Vec<usize>, Vec<usize>);
 #[pymethods]
-impl Continuations {
+impl ContinuationIndex {
     #[staticmethod]
     fn load_with_continuations(file: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
         let trie = AdaptiveRadixTrie::load(file)?;
         Ok(Self {
-            continuations: ContinuationTrie::new(trie, continuations),
+            cont_trie: ContinuationTrie::new(trie, continuations),
         })
     }
 
@@ -46,14 +46,21 @@ impl Continuations {
         Ok(())
     }
 
-    fn get(&self, key: &[u8]) -> Option<String> {
-        self.continuations.get(key).cloned()
+    fn get_value(&self, key: &[u8]) -> Option<String> {
+        self.cont_trie.get(key).cloned()
     }
 
-    fn continuation_indices(&self, prefix: &[u8]) -> (Vec<usize>, Option<String>) {
+    fn get_continuation(&self, index: usize) -> Option<&[u8]> {
+        self.cont_trie
+            .continuations
+            .get(index)
+            .map(|c| c.as_slice())
+    }
+
+    fn get(&self, prefix: &[u8]) -> (Vec<usize>, Option<String>) {
         (
-            self.continuations.contains_continuations(prefix),
-            self.continuations.get(prefix).cloned(),
+            self.cont_trie.contains_continuations(prefix),
+            self.cont_trie.get(prefix).cloned(),
         )
     }
 
@@ -62,7 +69,7 @@ impl Continuations {
         prefixes: Vec<Vec<u8>>,
     ) -> (ContinuationIndices, Vec<Option<String>>) {
         (
-            self.continuations
+            self.cont_trie
                 .batch_contains_continuations(&prefixes)
                 .into_iter()
                 .enumerate()
@@ -78,7 +85,7 @@ impl Continuations {
                 ),
             prefixes
                 .iter()
-                .map(|prefix| self.continuations.get(prefix).cloned())
+                .map(|prefix| self.cont_trie.get(prefix).cloned())
                 .collect(),
         )
     }
@@ -87,7 +94,7 @@ impl Continuations {
 /// A submodule containing python implementations of a continuation trie
 pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
     let m = PyModule::new(py, "continuations")?;
-    m.add_class::<Continuations>()?;
+    m.add_class::<ContinuationIndex>()?;
     parent_module.add_submodule(m)?;
 
     Ok(())

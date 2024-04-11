@@ -122,7 +122,6 @@ where
 pub fn text_data_generator_from_files<P: AsRef<Path>>(
     input: P,
     target: Option<P>,
-    lang: Option<String>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
     let input_len = count_lines(input.as_ref())?;
     let input_iter = LossyUtf8Reader::new(BufReader::new(open(input.as_ref())?)).lines();
@@ -148,7 +147,7 @@ pub fn text_data_generator_from_files<P: AsRef<Path>>(
         } else {
             None
         };
-        Ok(TextData::new(input_s?, target_s, lang.clone()))
+        Ok(TextData::new(input_s?, target_s))
     });
     Ok(Box::new(DataGenerator {
         min_len: input_len,
@@ -168,7 +167,6 @@ pub fn inference_data_generator_from_file(
 pub fn text_data_generator_from_sequences(
     input: Vec<String>,
     target: Option<Vec<String>>,
-    language: Option<Vec<String>>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
     let len = input.len();
     let input_iter = input.into_iter();
@@ -182,26 +180,13 @@ pub fn text_data_generator_from_sequences(
     } else {
         None
     };
-    let mut lang_iter = if let Some(language) = language {
-        if language.len() != len {
-            return Err(anyhow!("expect a language for every sequence"));
-        }
-        Some(language.into_iter())
-    } else {
-        None
-    };
     let iter = input_iter.map(move |input_s| {
         let target_s = if let Some(target_iter_mut) = target_iter.as_mut() {
             target_iter_mut.next()
         } else {
             None
         };
-        let lang_s = if let Some(lang_iter_mut) = lang_iter.as_mut() {
-            lang_iter_mut.next()
-        } else {
-            None
-        };
-        Ok(TextData::new(input_s, target_s, lang_s))
+        Ok(TextData::new(input_s, target_s))
     });
     Ok(Box::new(DataGenerator { iter, min_len: len }))
 }
@@ -915,7 +900,7 @@ mod tests {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+        let multi30k = text_data_generator_from_files(&d, None)?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -927,17 +912,15 @@ mod tests {
         let _data = TextData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_FIRST.to_string(),
-            language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
             target: MULTI30K_SECOND.to_string(),
             input: MULTI30K_SECOND.to_string(),
-            language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check sequential lines with input and target
-        let multi30k = text_data_generator_from_files(&d, Some(&d2), Some("1".to_string()))?;
+        let multi30k = text_data_generator_from_files(&d, Some(&d2))?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -948,18 +931,16 @@ mod tests {
         let _data = TextData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_REV_FIRST.to_string(),
-            language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
             target: MULTI30K_SECOND.to_string(),
             input: MULTI30K_REV_SECOND.to_string(),
-            language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check interleaved lines with two files
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
-        let multi30k_rev = text_data_generator_from_files(&d2, None, Some("2".to_string()))?;
+        let multi30k = text_data_generator_from_files(&d, None)?;
+        let multi30k_rev = text_data_generator_from_files(&d2, None)?;
         let mut it = TextIterator::new(
             vec![multi30k, multi30k_rev],
             super::TextIterationStrategy::Interleaved,
@@ -970,57 +951,32 @@ mod tests {
         let _data = TextData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_FIRST.to_string(),
-            language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
             target: MULTI30K_REV_FIRST.to_string(),
             input: MULTI30K_REV_FIRST.to_string(),
-            language: Some("2".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
         let _data = TextData {
             target: MULTI30K_SECOND.to_string(),
             input: MULTI30K_SECOND.to_string(),
-            language: Some("1".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         let _data = TextData {
             target: MULTI30K_REV_SECOND.to_string(),
             input: MULTI30K_REV_SECOND.to_string(),
-            language: Some("2".to_string()),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
-        // check that they are indeed interleaved
-        let mut idx: usize = 4;
-        while let Some((data, _)) = it.next() {
-            assert_eq!(
-                &data.unwrap().language.unwrap(),
-                if idx % 2 == 0 { "1" } else { "2" }
-            );
-            idx += 1;
-        }
         // check weighted lines with two files
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
-        let multi30k_rev = text_data_generator_from_files(&d2, None, Some("2".to_string()))?;
-        let mut it = TextIterator::new(
+        let multi30k = text_data_generator_from_files(&d, None)?;
+        let multi30k_rev = text_data_generator_from_files(&d2, None)?;
+        let it = TextIterator::new(
             vec![multi30k, multi30k_rev],
             super::TextIterationStrategy::Weighted,
             None,
         )?;
-
         assert_eq!(it.min_len(), 2 * 29000);
-        let mut first_count = 0;
-        let mut second_count = 0;
-        while let Some((data, _)) = it.next() {
-            if data.unwrap().language.unwrap().as_str() == "1" {
-                first_count += 1;
-            } else {
-                second_count += 1;
-            }
-        }
-        assert_eq!(first_count, 29000);
-        assert_eq!(first_count, second_count);
         Ok(())
     }
 
@@ -1036,7 +992,6 @@ mod tests {
         let tokenizer_cfg = TokenizerConfig {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(200)),
             special: SpecialConfig::default(),
-            language: None,
         };
         let (pipeline, _) = text_data_pipeline_with_tokenizer(
             TextDataPipelineConfig {
@@ -1048,7 +1003,7 @@ mod tests {
             512,
         )?;
         // test if it works with one worker and record the time it took
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+        let multi30k = text_data_generator_from_files(&d, None)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -1074,7 +1029,7 @@ mod tests {
 
         // if more cpus are available, test with more workers, check that its faster
         if n_cpus >= 2 {
-            let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+            let multi30k = text_data_generator_from_files(&d, None)?;
             let text_iter = TextIterator::new(
                 vec![multi30k],
                 super::TextIterationStrategy::Sequential,
@@ -1099,7 +1054,7 @@ mod tests {
 
         // test with even more workers, if available
         if n_cpus >= 4 {
-            let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+            let multi30k = text_data_generator_from_files(&d, None)?;
             let text_iter = TextIterator::new(
                 vec![multi30k],
                 super::TextIterationStrategy::Sequential,
@@ -1126,7 +1081,6 @@ mod tests {
         let tokenizer_cfg = TokenizerConfig {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
             special: SpecialConfig::default(),
-            language: None,
         };
         let (pipeline, _) = text_data_pipeline_with_tokenizer(
             TextDataPipelineConfig {
@@ -1137,7 +1091,7 @@ mod tests {
             tokenizer_cfg,
             512,
         )?;
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+        let multi30k = text_data_generator_from_files(&d, None)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -1166,7 +1120,7 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+        let multi30k = text_data_generator_from_files(&d, None)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -1179,7 +1133,6 @@ mod tests {
         let tokenizer_cfg = TokenizerConfig {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
             special: SpecialConfig::default(),
-            language: None,
         };
         let (pipeline, _) = text_data_pipeline_with_tokenizer(
             TextDataPipelineConfig {
@@ -1214,7 +1167,7 @@ mod tests {
         // (because some descriptions in multi30k appear twice)
         for shuffle in [true, false] {
             for sort in [true, false] {
-                let multi30k = text_data_generator_from_files(&d, None, Some("1".to_string()))?;
+                let multi30k = text_data_generator_from_files(&d, None)?;
                 let text_iter = TextIterator::new(
                     vec![multi30k],
                     super::TextIterationStrategy::Weighted,

@@ -713,7 +713,7 @@ pub trait BaseTokenize: Send + Sync + 'static {
 pub trait Tokenize: BaseTokenize {
     fn vocab_size(&self) -> usize;
 
-    fn get_vocab(&self) -> Vec<Vec<u8>>;
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>>;
 
     fn tokenize(
         &self,
@@ -1157,7 +1157,7 @@ where
         self.join_parts(&parts)
     }
 
-    fn get_vocab(&self) -> Vec<Vec<u8>> {
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut vocab = BTreeMap::new();
         for (token, &id) in &self.state.1.vocab {
             assert!(vocab.insert(id, token.to_bytes()).is_none());
@@ -1165,7 +1165,7 @@ where
         for (special, &id) in &self.special_vocab.vocab {
             assert!(vocab.insert(id, special.to_bytes()).is_none());
         }
-        vocab.into_values().collect()
+        Ok(vocab.into_values().collect())
     }
 }
 
@@ -1199,8 +1199,8 @@ impl Tokenize for DummyTokenizer {
         "".to_string()
     }
 
-    fn get_vocab(&self) -> Vec<Vec<u8>> {
-        vec![]
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
+        Ok(vec![])
     }
 }
 
@@ -1371,7 +1371,7 @@ impl Tokenize for HuggingfaceTokenizer {
             })
     }
 
-    fn get_vocab(&self) -> Vec<Vec<u8>> {
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
         let decode_fn = match self.inner.get_model() {
             hft::ModelWrapper::BPE(bpe) => {
                 let special = bpe
@@ -1398,14 +1398,19 @@ impl Tokenize for HuggingfaceTokenizer {
                         .to_vec()
                 }
             }
-            _ => unimplemented!("get vocab for models other than BPE not implemented"),
+            _ => {
+                return Err(anyhow!(
+                    "get vocab for models other than BPE not implemented"
+                ))
+            }
         };
-        self.inner
+        Ok(self
+            .inner
             .get_vocab(true)
             .into_iter()
             .sorted_by_key(|(_, id)| *id)
             .map(|(k, v)| decode_fn(&k, &v))
-            .collect()
+            .collect())
     }
 }
 
@@ -1530,9 +1535,7 @@ impl BPETokenizer {
                 .zip(bytes.iter().enumerate().skip(1))
                 .filter_map(|((first_idx, first), (second_idx, second))| {
                     let merged = [first.as_slice(), second.as_slice()].concat();
-                    let Some(merge_id) = self.state.0.get(&merged).copied() else {
-                        return None;
-                    };
+                    let merge_id = self.state.0.get(&merged).copied()?;
                     // heap in rust is a max heap by default
                     // so we reverse to get the earliest merges at earlier positions in
                     // the sequence first
@@ -1670,18 +1673,15 @@ impl Tokenize for BPETokenizer {
         String::from_utf8_lossy(&bytes).to_string()
     }
 
-    fn get_vocab(&self) -> Vec<Vec<u8>> {
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut vocab: BTreeMap<_, _> = (0..256).map(|b| (b as u32, vec![b as u8])).collect();
-
         for (merge, id) in &self.state.0 {
             assert!(vocab.insert(256 + id, merge.clone()).is_none());
         }
-
         for (special, &id) in &self.special_vocab.vocab {
             assert!(vocab.insert(id, special.to_bytes()).is_none());
         }
-
-        vocab.into_values().collect()
+        Ok(vocab.into_values().collect())
     }
 }
 
@@ -2179,12 +2179,12 @@ impl Tokenize for ByteTokenizer {
         String::from_utf8_lossy(&bytes).to_string()
     }
 
-    fn get_vocab(&self) -> Vec<Vec<u8>> {
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut vocab: BTreeMap<_, _> = (0..256).map(|b| (b as u32, vec![b as u8])).collect();
         for (special, &id) in &self.special_vocab.vocab {
             vocab.insert(id, special.to_bytes());
         }
-        vocab.into_values().collect()
+        Ok(vocab.into_values().collect())
     }
 }
 
@@ -2264,7 +2264,7 @@ impl Tokenize for ByT5Tokenizer {
         self.inner.de_tokenize(token_ids, ignore_special_tokens)
     }
 
-    fn get_vocab(&self) -> Vec<Vec<u8>> {
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
         self.inner.get_vocab()
     }
 }
@@ -2361,7 +2361,7 @@ impl PyTokenizer {
         self.tokenizer.pad_token_id()
     }
 
-    fn get_vocab(&self) -> Vec<Vec<u8>> {
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
         self.tokenizer.get_vocab()
     }
 }
@@ -2410,16 +2410,15 @@ mod tests {
                 use_graphemes: true,
             },
             SpecialConfig::default(),
-            None,
         );
         let text = "a täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, true).unwrap();
         assert_eq!(token_ids.len(), 6);
         assert_eq!(token_ids[3], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(tok.de_tokenize(&token_ids, false), "a t<unk>st".to_string());
         let text = "a <pad>täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, false).unwrap();
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, false).unwrap();
         assert_eq!(token_ids.len(), 7);
         assert_eq!(token_ids[2], tok.pad_token_id);
         assert_eq!(token_ids[4], tok.unk_token_id());
@@ -2429,7 +2428,7 @@ mod tests {
             "a <pad>t<unk>st".to_string()
         );
         let text = "a <pad>täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, None, true).unwrap();
+        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, true).unwrap();
         assert_eq!(token_ids.len(), 11);
         assert_eq!(tok.de_tokenize(&token_ids, true), "a <pad>tst".to_string());
         assert_eq!(
@@ -2446,10 +2445,10 @@ mod tests {
             groups: ByteGroups::Bytes,
             aggregation: GroupAggregation::Mean,
         };
-        let tok = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default(), None);
+        let tok = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default());
         assert_eq!(tok.vocab_size(), 384);
         let text = "a täst";
-        let Tokenization { token_ids, info } = tok.tokenize(text, None, None, None, true).unwrap();
+        let Tokenization { token_ids, info } = tok.tokenize(text, None, None, true).unwrap();
         assert_eq!(
             token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes()
@@ -2478,9 +2477,9 @@ mod tests {
             groups: ByteGroups::CodePoints,
             ..tokenize_cfg
         };
-        let tok = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default(), None);
+        let tok = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default());
         let text = "a täst";
-        let Tokenization { token_ids, info } = tok.tokenize(text, None, None, None, true).unwrap();
+        let Tokenization { token_ids, info } = tok.tokenize(text, None, None, true).unwrap();
         assert_eq!(
             token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes()
@@ -2534,10 +2533,10 @@ mod tests {
             max_vocab_size: None,
             use_graphemes: true,
         };
-        let bpe = BPETokenizer::new(bpe_config, special_config, None).unwrap();
+        let bpe = BPETokenizer::new(bpe_config, special_config).unwrap();
         info!("loaded bpe tokenizer");
         let s = "this is a long reading couple restaurant";
-        let token_ids = bpe.tokenize(s, None, None, None, true).unwrap().token_ids;
+        let token_ids = bpe.tokenize(s, None, None, true).unwrap().token_ids;
         info!("token ids: {token_ids:?}");
         let tokens: Vec<_> = token_ids
             .iter()
@@ -2556,7 +2555,7 @@ mod tests {
                 .take(256)
                 .collect();
 
-            let token_ids = bpe.tokenize(&s, None, None, None, true).unwrap().token_ids;
+            let token_ids = bpe.tokenize(&s, None, None, true).unwrap().token_ids;
             let ds = bpe.de_tokenize(&token_ids, true);
             assert_eq!(s, ds);
         }
@@ -2572,8 +2571,7 @@ mod tests {
         };
         let tok = ByT5Tokenizer::new(tokenize_cfg);
         assert_eq!(tok.vocab_size(), 259);
-        let Tokenization { token_ids, info: _ } =
-            tok.tokenize("a täst", None, None, None, true).unwrap();
+        let Tokenization { token_ids, info: _ } = tok.tokenize("a täst", None, None, true).unwrap();
         assert_eq!(token_ids, vec![100, 35, 119, 198, 167, 118, 119, 1]);
     }
 

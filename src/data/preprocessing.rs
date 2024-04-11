@@ -54,12 +54,12 @@ pub enum PreprocessingFnConfig {
     ByteSubstring(usize, bool),
     // randomly edit and replace words in text
     SpellingCorruption(f64, bool, SpellingCorruptionMode),
-    // randomly replace the language token with the given default
-    LanguageDropout(f64),
     // mark inputs with additional info
     Mark(String, String),
     // add prefix to input sequence
     Prefix(String),
+    // decode from json
+    JsonDecode(bool, bool),
     // concatenate input and target sequences with a separator
     Concatenate(String),
 }
@@ -168,12 +168,6 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 };
                 PreprocessingFnConfig::ByteSubstring(max_bytes.extract()?, use_graphemes)
             }
-            "language_dropout" => {
-                let Some(p) = d.get_item("prob")? else {
-                    return Err(py_required_key_error("prob", "language dropout config"));
-                };
-                PreprocessingFnConfig::LanguageDropout(p.extract()?)
-            }
             "spelling_corruption" => {
                 let Some(p) = d.get_item("prob")? else {
                     return Err(py_required_key_error("prob", "spelling corruption config"));
@@ -206,6 +200,19 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                     return Err(py_required_key_error("prefix", "prefix config"));
                 };
                 PreprocessingFnConfig::Prefix(prefix.extract()?)
+            }
+            "json_decode" => {
+                let decode_input = d
+                    .get_item("input")?
+                    .map(|value| value.extract())
+                    .transpose()?
+                    .unwrap_or(false);
+                let decode_target = d
+                    .get_item("target")?
+                    .map(|value| value.extract())
+                    .transpose()?
+                    .unwrap_or(false);
+                PreprocessingFnConfig::JsonDecode(decode_input, decode_target)
             }
             "concatenate" => {
                 let separator = if let Some(sep) = d.get_item("separator")? {
@@ -302,14 +309,7 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
                 ))
             }
         };
-        Ok((
-            TextData {
-                target,
-                input,
-                ..item
-            },
-            info,
-        ))
+        Ok((TextData { target, input }, info))
     })
 }
 
@@ -327,25 +327,6 @@ fn byte_substring(max_length: usize, use_graphemes: bool) -> Box<PreprocessingFn
         move |s| Ok(possible_byte_substrings(s, max_length, use_graphemes)),
         use_graphemes,
     )
-}
-
-fn language_dropout(prob: f64) -> Box<PreprocessingFn> {
-    let prob = prob.clamp(0.0, 1.0);
-    Box::new(move |item, info| {
-        let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
-        let r: f64 = rng.gen();
-        if r < prob {
-            Ok((
-                TextData {
-                    language: None,
-                    ..item
-                },
-                info,
-            ))
-        } else {
-            Ok((item, info))
-        }
-    })
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -678,12 +659,24 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
         PreprocessingFnConfig::Normalize(scheme, use_graphemes) => {
             apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
         }
-        PreprocessingFnConfig::LanguageDropout(p) => language_dropout(p),
         PreprocessingFnConfig::SpellingCorruption(p, full_del, mode) => {
             corrupt_spelling(p, full_del, mode)
         }
         PreprocessingFnConfig::Mark(key, value) => mark(key, value),
         PreprocessingFnConfig::Prefix(prefix) => apply_to_text(move |s| Ok(prefix.clone() + s)),
+        PreprocessingFnConfig::JsonDecode(decode_input, decode_target) => {
+            Box::new(move |mut item, info| {
+                if decode_input {
+                    item.input = serde_json::from_str(&item.input)
+                        .map_err(|e| anyhow!("failed to decode input text from json: {}", e))?;
+                }
+                if decode_target {
+                    item.target = serde_json::from_str(&item.target)
+                        .map_err(|e| anyhow!("failed to decode target text from json: {}", e))?;
+                }
+                Ok((item, info))
+            })
+        }
         PreprocessingFnConfig::Concatenate(separator) => concatenate(separator),
     }
 }
@@ -697,15 +690,15 @@ mod tests {
     #[test]
     fn test_corrupt_whitespace() -> anyhow::Result<()> {
         let noise_fn = corrupt_whitespace(0.0, 1.0, true);
-        let data = TextData::new("a test".to_string(), None, None);
+        let data = TextData::new("a test".to_string(), None);
         let info = TextDataInfo::default();
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.input, "atest");
         let noise_fn = corrupt_whitespace(1.0, 0.0, true);
-        let data = TextData::new("a test".to_string(), None, None);
+        let data = TextData::new("a test".to_string(), None);
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.input, "a t e s t");
-        let data = TextData::new("Ginsberǵs".to_string(), None, None);
+        let data = TextData::new("Ginsberǵs".to_string(), None);
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.input, "G i n s b e r ǵ s");
         Ok(())

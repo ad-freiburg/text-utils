@@ -4,7 +4,7 @@ import sys
 import time
 import logging
 import warnings
-from typing import Iterator, Iterable, Union, Optional, Type
+from typing import Iterator, Iterable, Union, Type
 try:
     import readline  # noqa
 except ImportError:
@@ -33,6 +33,7 @@ class TextProcessingCli:
     ) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(name, description)
         model_group = parser.add_mutually_exclusive_group()
+        default_model = cls.text_processor_cls.default_model()
         model_group.add_argument(
             "-m",
             "--model",
@@ -40,7 +41,7 @@ class TextProcessingCli:
                 model.name for model in
                 cls.text_processor_cls.available_models()
             ],
-            default=cls.text_processor_cls.default_model().name,
+            default=None if default_model is None else default_model.name,
             help=f"Name of the model to use for {cls.text_processor_cls.task}"
         )
         model_group.add_argument(
@@ -185,8 +186,8 @@ class TextProcessingCli:
     def version(self) -> str:
         raise NotImplementedError
 
-    def format_output(self, item: data.InferenceData) -> Iterable[str]:
-        return [item.text]
+    def format_output(self, output: str) -> Iterable[str]:
+        return [output]
 
     def _run_with_profiling(self, file: str) -> None:
         import cProfile
@@ -194,17 +195,16 @@ class TextProcessingCli:
 
     def process_iter(
         self,
-        text_processor: TextProcessor,
-        iter: Iterator[data.InferenceData]
-    ) -> Iterator[data.InferenceData]:
+        processor: TextProcessor,
+        iter: Iterator[str]
+    ) -> Iterator[str]:
         raise NotImplementedError
 
     def process_file(
         self,
-        text_processor: TextProcessor,
-        path: str,
-        lang: Optional[str],
-        out_file: Union[str, TextIOWrapper]
+        processor: TextProcessor,
+        input_file: str,
+        output_file: str | TextIOWrapper
     ) -> None:
         raise NotImplementedError
 
@@ -277,8 +277,7 @@ class TextProcessingCli:
         start = time.perf_counter()
         if self.args.process is not None:
             self.args.progress = False
-            ipt = data.InferenceData(self.args.process)
-            opt = next(self.process_iter(self.cor, iter([ipt])))
+            opt = next(self.process_iter(self.cor, iter([self.args.process])))
             for line in self.format_output(opt):
                 print(line)
 
@@ -290,7 +289,7 @@ class TextProcessingCli:
                 assert isinstance(self.args.out_path, str)
                 out = self.args.out_path
 
-            self.process_file(self.cor, self.args.file, self.args.lang, out)
+            self.process_file(self.cor, self.args.file, out)
 
             if self.args.report:
                 for d in self.cor.devices:
@@ -311,7 +310,7 @@ class TextProcessingCli:
                     not self.args.unsorted,
                     self.cor.devices,
                     next(self.cor.model.parameters()).dtype,
-                    batch_max_tokens=self.args.batch_max_tokens,
+                    self.args.batch_max_tokens,
                 )
                 print(report)
 
@@ -328,34 +327,19 @@ class TextProcessingCli:
                 return
 
             try:
-                if self.args.unsorted:
-                    # correct lines from stdin as they come
-                    input_it = (
-                        data.InferenceData(line.rstrip("\r\n"))
-                        for line in sys.stdin
-                    )
-                    sized_it = ProgressIterator(
-                        input_it,
-                        self.inference_data_size
-                    )
-                    outputs = self.process_iter(self.cor, sized_it)
-                    for opt in outputs:
-                        for line in self.format_output(opt):
-                            print(line)
-                else:
-                    # read stdin completely, then potentially sort and correct
-                    inputs = [
-                        data.InferenceData(line.rstrip("\r\n"))
-                        for line in sys.stdin
-                    ]
-                    sized_it = ProgressIterator(
-                        iter(inputs),
-                        self.inference_data_size
-                    )
-                    outputs = self.process_iter(self.cor, sized_it)
-                    for opt in outputs:
-                        for line in self.format_output(opt):
-                            print(line)
+                # correct lines from stdin as they come
+                input_it = (
+                    line.rstrip("\r\n")
+                    for line in sys.stdin
+                )
+                sized_it = ProgressIterator(
+                    input_it,
+                    self.inference_data_size
+                )
+                outputs = self.process_iter(self.cor, sized_it)
+                for opt in outputs:
+                    for line in self.format_output(opt):
+                        print(line)
 
                 if self.args.report:
                     for d in self.cor.devices:
@@ -373,7 +357,7 @@ class TextProcessingCli:
                         not self.args.unsorted,
                         self.cor.devices,
                         next(self.cor.model.parameters()).dtype,
-                        batch_max_tokens=self.args.batch_max_tokens,
+                        self.args.batch_max_tokens,
                     )
                     print(report)
 

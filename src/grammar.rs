@@ -116,11 +116,6 @@ impl RegexConstraint {
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn should_stop(&self) -> bool {
-        // always false for regex
-        false
-    }
-
     fn next(&self, index: usize) -> anyhow::Result<()> {
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
@@ -329,13 +324,6 @@ impl LR1Constraint {
         self.inner
             .lock()
             .map(|inner| inner.is_match)
-            .map_err(|_| anyhow!("error locking inner state"))
-    }
-
-    fn should_stop(&self) -> anyhow::Result<bool> {
-        self.inner
-            .lock()
-            .map(|inner| inner.is_match && self.constraint.only_skippable_matching(&inner.state))
             .map_err(|_| anyhow!("error locking inner state"))
     }
 

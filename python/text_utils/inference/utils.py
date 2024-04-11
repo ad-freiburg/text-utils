@@ -1,6 +1,7 @@
 from typing import Callable, Any
 import torch
 
+from text_utils.constraints import Constraint
 
 # maps from token ids, length, and other kwargs to distribution over next token id and other info
 DecodeFn = Callable[..., tuple[torch.Tensor, dict[str, Any]]]
@@ -134,6 +135,73 @@ BeamCandidateFn = Callable[
     ],
     Beam
 ]
+
+
+def constraint_logit_fn(
+    retrieve_constraint_fn: Callable[[int | Beam], Constraint | None],
+    eos_token_id: int
+) -> LogitFn:
+    def _constrain_logits(
+        logits: torch.Tensor,
+        beams_or_indices:  list[int] | list[Beam]
+    ) -> torch.Tensor:
+        zeros = torch.full_like(logits, float("-inf"))
+
+        batch_indices = []
+        constrain_indices = []
+        for i, beam_or_idx in enumerate(beams_or_indices):
+            constraint = retrieve_constraint_fn(beam_or_idx)
+
+            if constraint is None:
+                zeros[i] = logits[i]
+                continue
+
+            constrain_to, is_match = constraint.get()
+
+            batch_indices.extend([i] * len(constrain_to))
+            constrain_indices.extend(constrain_to)
+
+            if len(constrain_to) == 0 or is_match:
+                batch_indices.append(i)
+                constrain_indices.append(eos_token_id)
+
+        batch_indices = torch.tensor(batch_indices, device=logits.device)
+        constrain_indices = torch.tensor(
+            constrain_indices,
+            device=logits.device
+        )
+
+        zeros[batch_indices, constrain_indices] = logits[
+            batch_indices,
+            constrain_indices
+        ]
+
+        return zeros
+
+    return _constrain_logits
+
+
+def constraint_sample_fn(
+    retrieve_constraint_fn: Callable[[int], Constraint | None],
+    sample_fn: SampleFn,
+    eos_token_id: int
+) -> SampleFn:
+    def _constrain_sample(
+        logits: torch.Tensor,
+        indices: list[int]
+    ) -> torch.Tensor:
+        token_ids = sample_fn(logits, indices)
+        for idx, token_id in zip(indices, token_ids.tolist()):
+            if token_id == eos_token_id:
+                continue
+
+            constraint = retrieve_constraint_fn(idx)
+            if constraint is not None:
+                constraint.next(token_id)
+
+        return token_ids
+
+    return _constrain_sample
 
 
 def default_beam_candidate_fn() -> BeamCandidateFn:

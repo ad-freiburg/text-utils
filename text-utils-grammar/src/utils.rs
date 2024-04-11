@@ -102,7 +102,7 @@ impl Debug for PrefixDFA {
 pub(crate) enum PrefixMatch {
     None,
     Maybe(StateID),
-    UpTo(usize, StateID),
+    UpTo(usize),
 }
 
 impl PrefixDFA {
@@ -153,16 +153,16 @@ impl PrefixDFA {
     #[inline]
     pub(crate) fn find_prefix_match(&self, mut state: StateID, prefix: &[u8]) -> PrefixMatch {
         let mut last_match = if self.is_match_state(state) {
-            Some((0, state))
+            Some(0)
         } else {
             None
         };
         for (i, &b) in prefix.iter().enumerate() {
             state = self.dfa.next_state(state, b);
             if self.is_match_state(state) {
-                last_match = Some((i + 1, state));
+                last_match = Some(i + 1);
             } else if !self.is_maybe_match(state) {
-                return last_match.map_or(PrefixMatch::None, |(i, s)| PrefixMatch::UpTo(i, s));
+                return last_match.map_or(PrefixMatch::None, |i| PrefixMatch::UpTo(i));
             }
         }
         PrefixMatch::Maybe(state)

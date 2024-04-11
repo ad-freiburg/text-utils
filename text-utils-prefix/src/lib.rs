@@ -22,7 +22,7 @@ pub trait PrefixSearch {
 
     fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)>;
 
-    fn continuations(
+    fn iter_continuations(
         &self,
         prefix: &[u8],
     ) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_>;
@@ -63,7 +63,7 @@ pub trait ContinuationsTrie {
 
 pub struct ContinuationTrie<T> {
     pub trie: T,
-    continuations: Vec<Vec<u8>>,
+    pub continuations: Vec<Vec<u8>>,
     optimized: (Vec<usize>, Vec<usize>),
 }
 
@@ -115,11 +115,11 @@ where
         self.trie.path(prefix)
     }
 
-    fn continuations(
+    fn iter_continuations(
         &self,
         prefix: &[u8],
     ) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
-        self.trie.continuations(prefix)
+        self.trie.iter_continuations(prefix)
     }
 }
 
@@ -276,7 +276,7 @@ mod test {
         for prefix in prefixes {
             let conts: Vec<_> = vec
                 .vec
-                .continuations(prefix)
+                .iter_continuations(prefix)
                 .map(|(w, v)| (w, *v))
                 .collect();
             // check that no other words than the given conts start with the prefix
@@ -339,11 +339,11 @@ mod test {
             self.as_ref().path(prefix)
         }
 
-        fn continuations(
+        fn iter_continuations(
             &self,
             prefix: &[u8],
         ) -> Box<dyn Iterator<Item = (Vec<u8>, &Self::Value)> + '_> {
-            self.as_ref().continuations(prefix)
+            self.as_ref().iter_continuations(prefix)
         }
     }
     impl<T: ContinuationsTrie + ?Sized> ContinuationsTrie for Box<T> {
@@ -394,7 +394,10 @@ mod test {
 
         for (_, trie) in tries {
             for prefix in &prefixes {
-                let conts: Vec<_> = trie.continuations(prefix).map(|(w, v)| (w, *v)).collect();
+                let conts: Vec<_> = trie
+                    .iter_continuations(prefix)
+                    .map(|(w, v)| (w, *v))
+                    .collect();
                 // check that no other words than the given conts start with the prefix
                 assert!(words.iter().all(|w| {
                     let w = w.as_bytes();

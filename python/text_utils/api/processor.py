@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Union, Tuple, Iterator, Any
 
 from tqdm import tqdm
 import torch
-from torch import autocast, nn
+from torch import nn
 from torch.backends import cudnn, cuda
 
 from text_utils import (
@@ -40,8 +40,10 @@ class TextProcessor:
         raise NotImplementedError
 
     @classmethod
-    def default_model(cls) -> ModelInfo:
+    def default_model(cls) -> ModelInfo | None:
         available_models = cls.available_models()
+        if len(available_models) == 0:
+            return None
         for info in available_models:
             if "default" in info.tags:
                 return info
@@ -85,7 +87,10 @@ class TextProcessor:
         force_download: bool = False
     ):
         if model is None:
-            model = cls.default_model().name
+            default = cls.default_model()
+            assert default is not None, "no default model available"
+            model = default.name
+
         assert model is not None
         assert any(model == m.name for m in cls.available_models()), \
             f"model {model} does not match any of the available models:\n" \
@@ -195,7 +200,7 @@ class TextProcessor:
 
     def _get_loader(
         self,
-        inputs: Union[Tuple[List[str], Optional[List[str]]], Iterator[data.InferenceData]],
+        inputs: list[str] | Iterator[data.InferenceData],
         batch_size: int = 16,
         batch_max_tokens: Optional[int] = None,
         sort: bool = True,
@@ -229,7 +234,7 @@ class TextProcessor:
             "sort": sort
         })
         self._inference_loader_cfg.update(kwargs)
-        if isinstance(inputs, tuple):
+        if isinstance(inputs, list):
             files, languages = inputs
             loader = data.InferenceLoader.from_files(
                 files=files,
@@ -245,8 +250,8 @@ class TextProcessor:
             )
         else:
             raise ValueError(
-                f"unknown input type {type(inputs)}, must either be a tuple of "
-                f"files and languages or an iterator over sequence language pairs"
+                f"unknown input type {type(inputs)}, must either be a list of "
+                f"files and an iterator over strings"
             )
 
         return loader
@@ -274,7 +279,7 @@ class TextProcessor:
         progress_total: int,
         progress_unit: str = "seq",
         show_progress: bool = False,
-    ) -> List[data.InferenceData]:
+    ) -> list[data.InferenceData]:
         results = {}
         pbar = self._pbar(
             progress_desc,

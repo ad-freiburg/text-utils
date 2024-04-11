@@ -23,7 +23,7 @@ impl<V> Default for PrefixVec<V> {
 
 enum FindResult {
     Found(usize, usize),
-    NotFound(usize),
+    NotFound,
 }
 
 impl<V> PrefixVec<V> {
@@ -135,7 +135,7 @@ impl<V> PrefixVec<V> {
             let Some((new_left, new_right)) =
                 self.range_search(k, start_depth + depth, left, right)
             else {
-                return FindResult::NotFound(depth);
+                return FindResult::NotFound;
             };
             left = new_left;
             right = new_right;
@@ -220,14 +220,14 @@ impl<V> PrefixSearch for PrefixVec<V> {
         path
     }
 
-    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         match self.find_range(prefix, 0, self.data.len(), 0) {
             FindResult::Found(left, right) => Box::new(
                 self.data[left..right]
                     .iter()
                     .map(|(key, value)| (key.to_vec(), value)),
             ),
-            FindResult::NotFound(_) => Box::new(empty()),
+            FindResult::NotFound => Box::new(empty()),
         }
     }
 }
@@ -320,8 +320,8 @@ impl<V> PrefixSearch for ContinuationsVec<V> {
         self.vec.path(prefix)
     }
 
-    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
-        self.vec.continuations(prefix)
+    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        self.vec.iter_continuations(prefix)
     }
 }
 

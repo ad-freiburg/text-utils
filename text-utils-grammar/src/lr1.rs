@@ -181,7 +181,7 @@ fn find_token_or_matching(
         match pdfa.find_prefix_match(state, prefix) {
             PrefixMatch::None => continue,
             PrefixMatch::Maybe(state) => prefix_matches.push((pidx, state)),
-            PrefixMatch::UpTo(end, _) => {
+            PrefixMatch::UpTo(end) => {
                 if !found_token || end > len {
                     len = end;
                     token = tidx.as_ref().copied();

@@ -441,7 +441,7 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
         path
     }
 
-    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(root) = &self.root else {
             return Box::new(empty());
         };

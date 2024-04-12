@@ -71,25 +71,21 @@ impl RegexConstraint {
     }
 
     fn reset(&self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
-        let inner = self.inner.clone();
-        let constraint = self.constraint.clone();
-        let (tx, rx) = channel();
-        spawn(move || {
-            let mut inner = inner.lock().expect("error locking inner state");
-            tx.send(()).expect("failed to send on channel");
-            inner.state = constraint
-                .get_state(&prefix.unwrap_or_default())
-                .expect("failed to reset to given prefix");
-            let (indices, next_states) =
-                constraint.get_valid_continuations_with_state(&inner.state);
-            inner.indices = indices;
-            inner.next_states = next_states;
-            inner.is_match = constraint.is_match_state(&inner.state);
-        });
-        // wait until spawned thread signals that is has locked
-        // the inner state, otherwise some unexpected behavior could occurr
-        rx.recv()?;
-        Ok(())
+        let Some(state) = self.constraint.get_state(&prefix.unwrap_or_default()) else {
+            return Err(anyhow!("failed to reset to given prefix"));
+        };
+        self.inner
+            .lock()
+            .map(|mut inner| {
+                inner.state = state;
+                let (indices, next_states) = self
+                    .constraint
+                    .get_valid_continuations_with_state(&inner.state);
+                inner.indices = indices;
+                inner.next_states = next_states;
+                inner.is_match = self.constraint.is_match_state(&inner.state);
+            })
+            .map_err(|_| anyhow!("error locking inner state"))
     }
 
     fn clone(&self) -> anyhow::Result<Self> {
@@ -273,25 +269,21 @@ impl LR1Constraint {
     }
 
     fn reset(&self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
-        let inner = self.inner.clone();
-        let constraint = self.constraint.clone();
-        let (tx, rx) = channel();
-        spawn(move || {
-            let mut inner = inner.lock().expect("error locking inner state");
-            tx.send(()).expect("failed to send on channel");
-            inner.state = constraint
-                .get_state(&prefix.unwrap_or_default())
-                .expect("failed to reset to given prefix");
-            let (indices, next_states) =
-                constraint.get_valid_continuations_with_state(&inner.state);
-            inner.indices = indices;
-            inner.next_states = next_states;
-            inner.is_match = constraint.is_match_state(&inner.state);
-        });
-        // wait until spawned thread signals that is has locked
-        // the inner state, otherwise some unexpected behavior could occurr
-        rx.recv()?;
-        Ok(())
+        let Some(state) = self.constraint.get_state(&prefix.unwrap_or_default()) else {
+            return Err(anyhow!("failed to reset to given prefix"));
+        };
+        self.inner
+            .lock()
+            .map(|mut inner| {
+                inner.state = state;
+                let (indices, next_states) = self
+                    .constraint
+                    .get_valid_continuations_with_state(&inner.state);
+                inner.indices = indices;
+                inner.next_states = next_states;
+                inner.is_match = self.constraint.is_match_state(&inner.state);
+            })
+            .map_err(|_| anyhow!("error locking inner state"))
     }
 
     fn clone(&self) -> anyhow::Result<Self> {

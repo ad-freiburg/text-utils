@@ -58,7 +58,7 @@ fn load_grammar_and_pdfas(
     // get token patterns and corresponding pdfas
     let token_name = Regex::new(r"\{([A-Z][A-Z0-9_]*)\}")?;
     let fragment_token_regex = Regex::new(r"(?m)^([A-Z][A-Z0-9_]*|;)\s+(.+)$")?;
-    let sep = Regex::new("(?m)^%%$")?;
+    let sep = Regex::new("(?m)^%%\\n")?;
     let m = sep.find(lexer).ok_or("line with %% not found")?;
 
     // parse fragements

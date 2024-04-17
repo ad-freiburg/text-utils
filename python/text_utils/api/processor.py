@@ -3,7 +3,7 @@ import math
 import sys
 import os
 import pprint
-from typing import Dict, List, Optional, Union, Tuple, Iterator, Any
+from typing import Iterator, Any
 
 from tqdm import tqdm
 import torch
@@ -36,7 +36,7 @@ class TextProcessor:
         return cls.task.upper()
 
     @classmethod
-    def available_models(cls) -> List[ModelInfo]:
+    def available_models(cls) -> list[ModelInfo]:
         raise NotImplementedError
 
     @classmethod
@@ -80,10 +80,10 @@ class TextProcessor:
     @classmethod
     def from_pretrained(
         cls,
-        model: Optional[str] = None,
+        model: str | None = None,
         device: Device = "cuda",
-        download_dir: Optional[str] = None,
-        cache_dir: Optional[str] = None,
+        download_dir: str | None = None,
+        cache_dir: str | None = None,
         force_download: bool = False
     ):
         if model is None:
@@ -146,7 +146,7 @@ class TextProcessor:
     @classmethod
     def _model_from_config(
         cls,
-        cfg: Dict[str, Any],
+        cfg: dict[str, Any],
         device: Device
     ) -> nn.Module:
         raise NotImplementedError
@@ -158,7 +158,7 @@ class TextProcessor:
     def __init__(
         self,
         model: nn.Module,
-        cfg: Dict[str, Any],
+        cfg: dict[str, Any],
         device: Device = "cuda"
     ) -> None:
         self.logger = logging.get_logger(self._task_upper())
@@ -177,24 +177,26 @@ class TextProcessor:
 
         self._inference_loader_cfg = self._build_inference_loader_config()
 
-    def _build_inference_loader_config(self) -> Dict[str, Any]:
+    def _build_inference_loader_config(self) -> dict[str, Any]:
         raise NotImplementedError
 
-    def _prepare_batch(self, batch: data.InferenceBatch) -> Dict[str, Any]:
-        raise NotImplementedError
-
-    def _inference(self, inputs: Dict[str, Any]) -> list[Any]:
+    def _prepare_batch(self, batch: data.InferenceBatch) -> dict[str, Any]:
         raise NotImplementedError
 
     @torch.inference_mode()
+    def _inference(self, inputs: dict[str, Any]) -> Iterator[Any]:
+        raise NotImplementedError
+
     def _run_model(self, batch: data.InferenceBatch) -> list[Any]:
         inputs = self._prepare_batch(batch)
-        return self._inference(inputs)
+        # by default only return the last and no intermediate outputs
+        *_, last = self._inference(inputs)
+        return last
 
     def _process_results(
         self,
-        items: List[data.InferenceItem],
-        outputs: List[Any]
+        items: list[data.InferenceItem],
+        outputs: list[Any]
     ) -> data.InferenceData:
         raise NotImplementedError
 
@@ -202,9 +204,9 @@ class TextProcessor:
         self,
         inputs: list[str] | Iterator[data.InferenceData],
         batch_size: int = 16,
-        batch_max_tokens: Optional[int] = None,
+        batch_max_tokens: int | None = None,
         sort: bool = True,
-        num_threads: Optional[int] = None,
+        num_threads: int | None = None,
         **kwargs: Any
     ) -> data.InferenceLoader:
         if num_threads is None:

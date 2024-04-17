@@ -1,4 +1,4 @@
-from typing import Callable, List, Union, Dict, Any
+from typing import Callable, Iterator, Any
 
 import torch
 
@@ -29,9 +29,9 @@ def eos_stop_fn(eos_token_id: int) -> StopFn:
 
 
 def _sub_select(
-    inputs: Union[torch.Tensor, Dict[str, torch.Tensor]],
-    mask: Union[int, torch.Tensor]
-) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+    inputs: torch.Tensor | dict[str, torch.Tensor],
+    mask: int | torch.Tensor,
+) -> torch.Tensor | dict[str, torch.Tensor]:
     if isinstance(inputs, torch.Tensor):
         return inputs[mask]
     elif isinstance(inputs, dict):
@@ -55,8 +55,9 @@ def search(
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,
     return_full: bool = False,
+    yield_intermediate: bool = False,
     **kwargs: Any,
-) -> List[List[int]]:
+) -> Iterator[list[list[int]]]:
     batch_size = len(initial_token_ids)
     assert batch_size > 0, "empty inputs"
 
@@ -92,6 +93,14 @@ def search(
     non_stop_mask = torch.ones(batch_size, dtype=torch.bool)
     mask = non_stop_mask & smaller_max_length_mask
     indices = torch.arange(batch_size, dtype=torch.long)
+
+    def get_outputs() -> list[list[int]]:
+        outputs = []
+        for i in range(batch_size):
+            length = lengths[i]
+            start = 0 if return_full else initial_lengths[i]
+            outputs.append(token_ids[i][start:length].tolist())
+        return outputs
 
     # all sequences are at max length or stopped by stop_fn
     while torch.sum(mask) > 0:
@@ -161,14 +170,10 @@ def search(
             update_mask = torch.arange(b)[mask[indices_mask]]
             kwargs_update_fn(kwargs, decoder_info, update_mask)
 
-    token_ids = token_ids.tolist()
+        if yield_intermediate:
+            yield get_outputs()
 
-    outputs = []
-    for i in range(batch_size):
-        length = lengths[i]
-        start = 0 if return_full else initial_lengths[i]
-        outputs.append(token_ids[i][start:length])
-    return outputs
+    yield get_outputs()
 
 
 def log_likelihood_score(
@@ -201,8 +206,9 @@ def beam_search(
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,
     return_full: bool = False,
+    yield_intermediate: bool = False,
     **kwargs: Any
-) -> list[list[Beam]]:
+) -> Iterator[list[list[Beam]]]:
     batch_size = len(initial)
 
     score_fn = log_likelihood_score(normalize_by_length, alpha)
@@ -233,6 +239,28 @@ def beam_search(
         return indices_to_decode
 
     indices_to_decode = get_indices_to_decode()
+
+    def get_outputs() -> list[list[Beam]]:
+        out_beams = []
+        for idx, (beam_queue, active_beams) in enumerate(zip(beam_queues, current_beams)):
+            beam_queue = sorted(
+                beam_queue,
+                key=lambda b: score_fn(b),
+                reverse=True
+            )[:beam_width]
+            if len(beam_queue) < beam_width:
+                active_beams = sorted(
+                    active_beams,
+                    key=lambda b: score_fn(b),
+                    reverse=True
+                )
+                beam_queue.extend(active_beams[:beam_width - len(beam_queue)])
+            pfx = 0 if return_full else initial_lenghts[idx]
+            out_beams.append([
+                beam.truncate_prefix(pfx)
+                for beam in beam_queue
+            ])
+        return out_beams
 
     while len(indices_to_decode) > 0:
         num_beams = []
@@ -344,23 +372,7 @@ def beam_search(
                 torch.tensor(update_mask, dtype=torch.long)
             )
 
-    out_beams = []
-    for idx, (beam_queue, active_beams) in enumerate(zip(beam_queues, current_beams)):
-        beam_queue = sorted(
-            beam_queue,
-            key=lambda b: score_fn(b),
-            reverse=True
-        )[:beam_width]
-        if len(beam_queue) < beam_width:
-            active_beams = sorted(
-                active_beams,
-                key=lambda b: score_fn(b),
-                reverse=True
-            )
-            beam_queue.extend(active_beams[:beam_width - len(beam_queue)])
-        pfx = 0 if return_full else initial_lenghts[idx]
-        out_beams.append([
-            beam.truncate_prefix(pfx)
-            for beam in beam_queue
-        ])
-    return out_beams
+        if yield_intermediate:
+            yield get_outputs()
+
+    yield get_outputs()

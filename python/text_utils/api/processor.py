@@ -30,6 +30,7 @@ ModelInfo = collections.namedtuple(
 class TextProcessor:
     task: str
     pretrained: bool = False
+    devices: list[torch.device]
 
     @classmethod
     def _task_upper(cls) -> str:
@@ -161,7 +162,9 @@ class TextProcessor:
         cfg: dict[str, Any],
         device: Device = "cuda"
     ) -> None:
+        self.cfg = cfg
         self.logger = logging.get_logger(self._task_upper())
+        self.logger.debug(f"got config:\n{self.cfg}")
 
         torch.set_num_threads(len(os.sched_getaffinity(0)))
         torch.use_deterministic_algorithms(False)
@@ -169,11 +172,7 @@ class TextProcessor:
         cuda.matmul.allow_tf32 = True
 
         self.model = model
-        self.devices = get_devices(device)
         self.to(device)
-
-        self.cfg = cfg
-        self.logger.debug(f"got config:\n{self.cfg}")
 
         self._inference_loader_cfg = self._build_inference_loader_config()
 

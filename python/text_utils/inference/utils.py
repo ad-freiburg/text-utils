@@ -165,10 +165,15 @@ def constraint_logit_fn(
                 batch_indices.append(i)
                 constrain_indices.append(eos_token_id)
 
-        batch_indices = torch.tensor(batch_indices, device=logits.device)
+        batch_indices = torch.tensor(
+            batch_indices,
+            device=logits.device,
+            dtype=torch.long
+        )
         constrain_indices = torch.tensor(
             constrain_indices,
-            device=logits.device
+            device=logits.device,
+            dtype=torch.long
         )
 
         zeros[batch_indices, constrain_indices] = logits[

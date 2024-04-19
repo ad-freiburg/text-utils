@@ -1,7 +1,7 @@
 [project]
 name = "dtpu"
 description = "Utilities for text processing tasks with Deep NLP"
-version = "0.5.0"
+version = "0.5.1"
 authors = [
     { name = "Sebastian Walter", email = "swalter@cs.uni-freiburg.de" }
 ]

@@ -10,6 +10,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input-file", type=str, required=True)
     parser.add_argument("-o", "--output-file", type=str, required=True)
+    parser.add_argument("-sfx", "--common-suffix", type=str, default=None)
     return parser.parse_args()
 
 
@@ -21,7 +22,8 @@ def create(args: argparse.Namespace):
     start = time.perf_counter()
     continuations.ContinuationIndex.build_from_file(
         args.input_file,
-        args.output_file
+        args.output_file,
+        args.common_suffix
     )
     end = time.perf_counter()
     print(f"Continuations trie built in {end - start:.2f} seconds")

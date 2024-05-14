@@ -25,20 +25,23 @@ impl ContinuationIndex {
     }
 
     #[staticmethod]
-    fn build_from_file(path: &str, out: &str) -> anyhow::Result<()> {
+    fn build_from_file(path: &str, out: &str, common_suffix: Option<&str>) -> anyhow::Result<()> {
         // build patricia trie similar to prefix vec above
         let file = File::open(path)?;
+        let sfx = common_suffix.unwrap_or_default().as_bytes();
         // now loop over lines and insert them into the trie
         let mut trie = AdaptiveRadixTrie::default();
         for line in BufReader::new(file).lines() {
             let line = line?;
-            let splits: Vec<_> = line.split('\t').collect();
+            let splits: Vec<_> = line.trim_end_matches(&['\r', '\n']).split('\t').collect();
             if splits.len() < 2 {
                 return Err(anyhow!("invalid line: {}", line));
             }
             let value = splits[0];
             for s in &splits[1..] {
-                trie.insert(s.trim().as_bytes(), value.to_string());
+                let mut s = s.as_bytes().to_vec();
+                s.extend_from_slice(sfx);
+                trie.insert(&s, value.to_string());
             }
         }
         // save art to out file

@@ -3,14 +3,9 @@ use std::path::PathBuf;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::distributions::WeightedIndex;
-use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use text_utils::edit::{distance, operations};
-use text_utils::prefix::PrefixSearch;
-use text_utils::prefix_tree::Node;
-use text_utils::prefix_vec::PrefixVec;
-use text_utils::prefix_vec2::PrefixVec2;
 use text_utils::text::{clean, match_words, word_boundaries};
 use text_utils::tokenization::{
     token_groups_to_sparse_coo_matrix, BPETokenizer, BPETokenizerConfig, ByteGroups, ByteTokenizer,
@@ -19,7 +14,6 @@ use text_utils::tokenization::{
 };
 use text_utils::utils::{
     accumulate_pub, find_subsequences_of_max_size_k, run_length_decode_pub, run_length_encode_pub,
-    SerializeMsgPack,
 };
 
 const INPUT_SIZES: [usize; 4] = [16, 128, 512, 2048];
@@ -107,7 +101,6 @@ fn bench_tokenizer(c: &mut Criterion) {
             use_graphemes: true,
         },
         SpecialConfig::default(),
-        None,
     );
     let tokenize_cfg = ByteTokenizerConfig {
         use_graphemes: true,
@@ -115,10 +108,8 @@ fn bench_tokenizer(c: &mut Criterion) {
         aggregation: GroupAggregation::Mean,
         pad_to_multiple_of: None,
     };
-    let byte_tok_byte_groups =
-        ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default(), None);
-    let byte_tok_code_point_groups =
-        ByteTokenizer::new(tokenize_cfg, SpecialConfig::default(), None);
+    let byte_tok_byte_groups = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default());
+    let byte_tok_code_point_groups = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default());
     let dir = env!("CARGO_MANIFEST_DIR");
     let bpe_tok = BPETokenizer::new(
         BPETokenizerConfig {
@@ -127,7 +118,6 @@ fn bench_tokenizer(c: &mut Criterion) {
             max_vocab_size: None,
         },
         SpecialConfig::default(),
-        None,
     )
     .expect("failed to create bpe tokenizer");
     let multi30k = fs::read_to_string(PathBuf::from(dir).join("resources/test/multi30k.txt"))
@@ -139,28 +129,28 @@ fn bench_tokenizer(c: &mut Criterion) {
             BenchmarkId::new("char", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| char_tok.tokenize(str, None, None, None, true));
+                b.iter(|| char_tok.tokenize(str, true));
             },
         );
         group.bench_with_input(
             BenchmarkId::new("byte (byte groups)", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| byte_tok_byte_groups.tokenize(str, None, None, None, true));
+                b.iter(|| byte_tok_byte_groups.tokenize(str, true));
             },
         );
         group.bench_with_input(
             BenchmarkId::new("byte (code point groups)", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| byte_tok_code_point_groups.tokenize(str, None, None, None, true));
+                b.iter(|| byte_tok_code_point_groups.tokenize(str, true));
             },
         );
         group.bench_with_input(
             BenchmarkId::new("bpe", format!("{}", size)),
             str.as_str(),
             |b, str| {
-                b.iter(|| bpe_tok.tokenize(str, None, None, None, true));
+                b.iter(|| bpe_tok.tokenize(str, true));
             },
         );
 
@@ -234,123 +224,11 @@ fn bench_utils(c: &mut Criterion) {
     }
 }
 
-fn bench_prefix(c: &mut Criterion) {
-    let dir = env!("CARGO_MANIFEST_DIR");
-    let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
-        .expect("failed to read file");
-    let words: Vec<_> = index.lines().map(|s| s.as_bytes()).collect();
-    let mut rng = ChaCha8Rng::seed_from_u64(22);
-    // sample random word from all words
-    let word = *words.choose(&mut rng).unwrap();
-    println!("choose word {}", String::from_utf8_lossy(word));
-    let mut group = c.benchmark_group("prefix_search");
-
-    // benchmark prefix tree
-    let mut tree: Node<_> = words.iter().zip(0..words.len()).collect();
-    group.bench_with_input("tree_insert", word, |b, input| {
-        b.iter(|| tree.insert(input, 1));
-    });
-    group.bench_with_input("tree_get", word, |b, input| {
-        b.iter(|| tree.get(input));
-    });
-    group.bench_with_input("tree_contains", word, |b, input| {
-        b.iter(|| tree.contains(&input[..input.len().saturating_sub(3)]));
-    });
-
-    // benchmark prefix vec
-    let mut vec: PrefixVec<_> = words.iter().zip(0..words.len()).collect();
-    group.bench_with_input("vec_insert", word, |b, input| {
-        b.iter(|| vec.insert(input, 1));
-    });
-    group.bench_with_input("vec_get", word, |b, input| {
-        b.iter(|| vec.get(input));
-    });
-    group.bench_with_input("vec_contains", word, |b, input| {
-        b.iter(|| vec.contains(&input[..input.len().saturating_sub(3)]));
-    });
-    vec.compute_memo(2);
-    group.bench_with_input("vec_get_memo_2", word, |b, input| {
-        b.iter(|| vec.get(input));
-    });
-
-    // benchmark prefix vec 2
-    let mut vec2: PrefixVec2<_> = words.iter().zip(0..words.len()).collect();
-    group.bench_with_input("vec2_insert", word, |b, input| {
-        b.iter(|| vec2.insert(input, 1));
-    });
-    group.bench_with_input("vec2_get", word, |b, input| {
-        b.iter(|| vec2.get(input));
-    });
-    group.bench_with_input("vec2_contains", word, |b, input| {
-        b.iter(|| vec2.contains(&input[..input.len().saturating_sub(3)]));
-    });
-
-    // benchmark build, load, and save
-    drop(group);
-    let mut group = c.benchmark_group("prefix_io");
-    let n = 10_000;
-
-    let tree: Node<_> = words.iter().zip(0..words.len()).take(n).collect();
-    let path = PathBuf::from(dir).join("resources/test/prefix_tree.bin");
-    group.bench_with_input("tree_build", &words, |b, input| {
-        b.iter(|| {
-            input
-                .iter()
-                .zip(0..input.len())
-                .take(n)
-                .collect::<Node<_>>()
-        });
-    });
-    group.bench_with_input("tree_save", &path, |b, input| {
-        b.iter(|| tree.save(input));
-    });
-    group.bench_with_input("tree_load", &path, |b, input| {
-        b.iter(|| Node::<usize>::load(input))
-    });
-
-    let vec: PrefixVec<_> = words.iter().zip(0..words.len()).take(n).collect();
-    let path = PathBuf::from(dir).join("resources/test/prefix_vec.bin");
-    group.bench_with_input("vec_build", &words, |b, input| {
-        b.iter(|| {
-            input
-                .iter()
-                .zip(0..input.len())
-                .take(n)
-                .collect::<PrefixVec<_>>()
-        });
-    });
-    group.bench_with_input("vec_save", &path, |b, input| {
-        b.iter(|| vec.save(input));
-    });
-    group.bench_with_input("vec_load", &path, |b, input| {
-        b.iter(|| PrefixVec::<usize>::load(input))
-    });
-
-    let vec2: PrefixVec2<_> = words.iter().zip(0..words.len()).take(n).collect();
-    let path = PathBuf::from(dir).join("resources/test/prefix_vec2.bin");
-    group.bench_with_input("vec2_build", &words, |b, input| {
-        b.iter(|| {
-            input
-                .iter()
-                .zip(0..input.len())
-                .take(n)
-                .collect::<PrefixVec2<_>>()
-        });
-    });
-    group.bench_with_input("vec2_save", &path, |b, input| {
-        b.iter(|| vec2.save(input));
-    });
-    group.bench_with_input("vec2_load", &path, |b, input| {
-        b.iter(|| PrefixVec2::<usize>::load(input))
-    });
-}
-
 criterion_group!(
     benches,
     bench_edit_distance,
     bench_text,
     bench_tokenizer,
     bench_utils,
-    bench_prefix
 );
 criterion_main!(benches);

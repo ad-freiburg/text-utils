@@ -95,10 +95,10 @@ impl ContinuationIndex {
 }
 
 /// A submodule containing python implementations of a continuation trie
-pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "continuations")?;
+pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "continuations")?;
     m.add_class::<ContinuationIndex>()?;
-    parent_module.add_submodule(m)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

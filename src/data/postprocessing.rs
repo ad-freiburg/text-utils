@@ -7,21 +7,23 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Geometric};
 
-use crate::tokenization::{Tokenization, TokenizationInfo, Tokenizer};
+use crate::tokenization::{tokenizer, TokenizerConfig};
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 
 use super::utils::{chain, on_mark, switch, switch_on_mark};
-use super::{Item, Label, TextDataInfo};
+use super::{TextDataInfo, TrainItem, TrainTaskInput};
 
-pub type PostprocessingFn =
-    dyn Send + Sync + 'static + Fn(Item, TextDataInfo) -> anyhow::Result<(Item, TextDataInfo)>;
+pub type PostprocessingFn = dyn Send
+    + Sync
+    + 'static
+    + Fn(TrainItem, TextDataInfo) -> anyhow::Result<(TrainItem, TextDataInfo)>;
 
 #[derive(Debug, Clone)]
 pub enum PostprocessingFnConfig {
     None,
     Chain(Vec<PostprocessingFnConfig>),
     Switch(Vec<PostprocessingFnConfig>, Vec<f64>),
-    TokenMasking(f64, usize, f64, String),
+    TokenMasking(TokenizerConfig, f64, usize, f64, String),
     OnMark(String, String, Vec<PostprocessingFnConfig>),
     SwitchOnMark(String, Vec<String>, Vec<PostprocessingFnConfig>),
     ClipLength,
@@ -80,6 +82,9 @@ impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
                 )
             }
             "token_masking" => {
+                let Some(tokenizer_cfg) = d.get_item("tokenizer")? else {
+                    return Err(py_required_key_error("tokenizer", "token masking config"));
+                };
                 let Some(p) = d.get_item("prob")? else {
                     return Err(py_required_key_error("prob", "token masking config"));
                 };
@@ -96,6 +101,7 @@ impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
                     return Err(py_required_key_error("mask_token", "token masking config"));
                 };
                 PostprocessingFnConfig::TokenMasking(
+                    tokenizer_cfg.extract()?,
                     p.extract()?,
                     min_tokens.extract()?,
                     num_p.extract()?,
@@ -132,7 +138,12 @@ fn mask_tokens(
     Box::new(move |mut item, info| {
         let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
 
-        let token_ids = item.tokenization.token_ids.as_mut_slice();
+        let token_ids = match &mut item.input {
+            TrainTaskInput::Classification { token_ids, .. } => token_ids.as_mut_slice(),
+            TrainTaskInput::SequenceClassification { token_ids, .. } => token_ids.as_mut_slice(),
+            TrainTaskInput::Generation { token_ids, .. } => token_ids.as_mut_slice(),
+            TrainTaskInput::ConditionalGeneration { token_ids, .. } => token_ids.as_mut_slice(),
+        };
         if token_ids.len() <= 1 {
             return Ok((item, info));
         }
@@ -160,66 +171,53 @@ fn mask_tokens(
 }
 
 #[inline]
-fn clip_tokenization_info(info: TokenizationInfo) -> TokenizationInfo {
-    match info {
-        TokenizationInfo::Empty => info,
-        TokenizationInfo::TokenGroups(_) => panic!("token groups are not supported yet"),
-        TokenizationInfo::Info(infos) => TokenizationInfo::Info(
-            infos
-                .into_iter()
-                .map(|(name, info)| (name, clip_tokenization_info(info)))
-                .collect(),
-        ),
-    }
-}
-
-#[inline]
-fn clip_tokenization(mut tokenization: Tokenization, length: usize) -> Tokenization {
-    if tokenization.token_ids.len() > length {
-        tokenization.token_ids.truncate(length);
-        tokenization.info = clip_tokenization_info(tokenization.info);
-    }
-    Tokenization {
-        info: clip_tokenization_info(tokenization.info),
-        ..tokenization
-    }
-}
-
-#[inline]
-fn clip_label(mut label: Label, length: usize) -> Label {
-    match label {
-        Label::Classification(_) => (),
-        Label::SequenceClassification(ref mut labels) => {
+fn clip_input(mut input: TrainTaskInput, length: usize) -> TrainTaskInput {
+    match input {
+        TrainTaskInput::Classification {
+            ref mut token_ids, ..
+        } => {
+            token_ids.truncate(length);
+        }
+        TrainTaskInput::SequenceClassification {
+            ref mut token_ids,
+            ref mut labels,
+            ..
+        } => {
+            token_ids.truncate(length);
             labels.truncate(length);
         }
-        Label::Generation(ref mut labels, .., ref mut prefix_length) => {
+        TrainTaskInput::Generation {
+            ref mut token_ids,
+            ref mut labels,
+            ..
+        } => {
+            token_ids.truncate(length);
             labels.truncate(length);
-            *prefix_length = prefix_length.map(|l| l.min(length));
         }
-        Label::Empty => (),
+        TrainTaskInput::ConditionalGeneration {
+            ref mut token_ids,
+            ref mut target_token_ids,
+            ref mut labels,
+            ..
+        } => {
+            token_ids.truncate(length);
+            target_token_ids.truncate(length);
+            labels.truncate(length);
+        }
     };
-    label
+    input
 }
 
 pub fn clip_length(max_length: Arc<AtomicUsize>) -> Box<PostprocessingFn> {
     Box::new(move |item, info| {
         let length = max_length.load(Ordering::Relaxed);
-        let tokenization = clip_tokenization(item.tokenization, length);
-        let label = clip_label(item.label, length);
-        Ok((
-            Item {
-                tokenization,
-                label,
-                ..item
-            },
-            info,
-        ))
+        let input = clip_input(item.input, length);
+        Ok((TrainItem { input, ..item }, info))
     })
 }
 
 pub fn postprocessing(
     cfg: PostprocessingFnConfig,
-    tokenizer: &Tokenizer,
     max_length: Arc<AtomicUsize>,
 ) -> Box<PostprocessingFn> {
     match cfg {
@@ -227,34 +225,33 @@ pub fn postprocessing(
         PostprocessingFnConfig::Chain(configs) => {
             let pfns = configs
                 .into_iter()
-                .map(|cfg| postprocessing(cfg, tokenizer, max_length.clone()))
+                .map(|cfg| postprocessing(cfg, max_length.clone()))
                 .collect();
             chain(pfns)
         }
         PostprocessingFnConfig::Switch(configs, probs) => {
             let pfns = configs
                 .into_iter()
-                .map(|cfg| postprocessing(cfg, tokenizer, max_length.clone()))
+                .map(|cfg| postprocessing(cfg, max_length.clone()))
                 .collect();
             switch(pfns, probs)
         }
         PostprocessingFnConfig::OnMark(key, value, configs) => {
-            let pfn = postprocessing(
-                PostprocessingFnConfig::Chain(configs),
-                tokenizer,
-                max_length,
-            );
+            let pfn = postprocessing(PostprocessingFnConfig::Chain(configs), max_length);
             on_mark(pfn, key, value)
         }
         PostprocessingFnConfig::SwitchOnMark(key, values, configs) => {
             let pfns = configs
                 .into_iter()
-                .map(|cfg| postprocessing(cfg, tokenizer, max_length.clone()))
+                .map(|cfg| postprocessing(cfg, max_length.clone()))
                 .collect();
             switch_on_mark(pfns, key, values)
         }
         PostprocessingFnConfig::ClipLength => clip_length(max_length),
-        PostprocessingFnConfig::TokenMasking(p, min, num_p, mask_token) => {
+        PostprocessingFnConfig::TokenMasking(tokenizer_cfg, p, min, num_p, mask_token) => {
+            let Ok(tokenizer) = tokenizer(tokenizer_cfg) else {
+                panic!("failed to create tokenizer for token masking");
+            };
             let Some(mask_token_id) = tokenizer.special_token_to_id(&mask_token) else {
                 panic!("mask token {mask_token} not found in tokenizer");
             };

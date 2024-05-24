@@ -2,7 +2,7 @@ use crate::text::match_words;
 use crate::unicode::{CharString, Character, CS};
 use anyhow::anyhow;
 use pyo3::prelude::*;
-use rayon::prelude::*;
+use pyo3::pybacked::PyBackedStr;
 use std::collections::HashSet;
 
 use crate::utils::{py_invalid_type_error, Matrix};
@@ -193,8 +193,8 @@ pub fn distance(
 }
 
 pub fn distances(
-    a: &[&str],
-    b: &[&str],
+    a: &[impl AsRef<str>],
+    b: &[impl AsRef<str>],
     use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
@@ -207,12 +207,12 @@ pub fn distances(
             b.len()
         ));
     }
-    Ok(a.par_iter()
-        .zip(b.par_iter())
+    Ok(a.iter()
+        .zip(b.iter())
         .map(|(a, b)| {
             distance(
-                a,
-                b,
+                a.as_ref(),
+                b.as_ref(),
                 use_graphemes,
                 with_swap,
                 spaces_insert_delete_only,
@@ -224,8 +224,8 @@ pub fn distances(
 
 #[pyfunction(name = "distances", signature = (a, b, use_graphemes = true, with_swap = true, spaces_insert_delete_only = false, normalized = false))]
 fn distances_py(
-    a: Vec<&str>,
-    b: Vec<&str>,
+    a: Vec<PyBackedStr>,
+    b: Vec<PyBackedStr>,
     use_graphemes: bool,
     with_swap: bool,
     spaces_insert_delete_only: bool,
@@ -261,14 +261,14 @@ pub fn edited_words(a: &str, b: &str) -> (HashSet<usize>, HashSet<usize>) {
 }
 
 /// A submodule for calculating the edit distance and operations between strings.
-pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
+pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let m_name = "edit";
-    let m = PyModule::new(py, m_name)?;
-    m.add_function(wrap_pyfunction!(distance, m)?)?;
-    m.add_function(wrap_pyfunction!(distances_py, m)?)?;
-    m.add_function(wrap_pyfunction!(operations, m)?)?;
-    m.add_function(wrap_pyfunction!(edited_words, m)?)?;
-    parent_module.add_submodule(m)?;
+    let m = PyModule::new_bound(py, m_name)?;
+    m.add_function(wrap_pyfunction!(distance, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(distances_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(operations, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(edited_words, m.clone())?)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

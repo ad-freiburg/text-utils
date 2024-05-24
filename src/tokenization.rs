@@ -10,6 +10,7 @@ use log::info;
 use numpy::ndarray::{Array1, Array2};
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedStr;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use regex::{escape, Regex};
 use serde::de::DeserializeOwned;
@@ -20,6 +21,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
+use std::iter::repeat;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -250,7 +252,7 @@ pub enum TokenizeConfig {
 
 impl IntoPy<PyObject> for TokenizeConfig {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        let d: &PyDict = PyDict::new(py);
+        let d = PyDict::new_bound(py);
         let tokenizer_type = match self {
             TokenizeConfig::Character(cfg) => {
                 d.set_item("use_graphemes", cfg.use_graphemes).unwrap();
@@ -400,7 +402,7 @@ pub enum TokenGroup {
 
 impl IntoPy<PyObject> for TokenGroup {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new(py);
+        let d = PyDict::new_bound(py);
         match self {
             TokenGroup::Empty(len) => {
                 d.set_item("type", "empty").unwrap();
@@ -495,8 +497,8 @@ pub struct SparseCoo {
 impl IntoPy<PyObject> for SparseCoo {
     fn into_py(self, py: Python<'_>) -> PyObject {
         (
-            self.indices.into_pyarray(py),
-            self.values.into_pyarray(py),
+            self.indices.into_pyarray_bound(py),
+            self.values.into_pyarray_bound(py),
             self.size,
             self.group_lengths,
         )
@@ -504,22 +506,20 @@ impl IntoPy<PyObject> for SparseCoo {
     }
 }
 
-pub struct PaddingMask {
-    inner: Array2<bool>,
-}
-
-impl IntoPy<PyObject> for PaddingMask {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        self.inner.into_pyarray(py).into_py(py)
-    }
-}
+pub type PaddingMask = Array2<bool>;
 
 impl IntoPy<PyObject> for TensorizedTokenizationInfo {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new(py);
+        let d = PyDict::new_bound(py);
         if let TensorizedTokenizationInfo::TokenGroups(matrices) = self {
             for (name, (scoo, pad_mask)) in matrices {
-                let t = PyTuple::new(py, &[scoo.into_py(py), pad_mask.into_py(py)]);
+                let t = PyTuple::new_bound(
+                    py,
+                    &[
+                        scoo.into_py(py),
+                        pad_mask.into_pyarray_bound(py).into_py(py),
+                    ],
+                );
                 d.set_item(name, t).unwrap();
             }
         };
@@ -616,33 +616,29 @@ pub fn token_groups_to_sparse_coo_matrix(
     })
 }
 
-pub fn padding_mask(lengths: &[usize]) -> anyhow::Result<PaddingMask> {
+pub fn padding_mask(lengths: &[usize]) -> PaddingMask {
+    let batch_size = lengths.len();
     let max_length = lengths.iter().max().copied().unwrap_or(0);
-    let padding_mask_vec: Vec<_> = lengths
-        .iter()
-        .flat_map(|l| {
-            let mut pad = vec![false; *l];
-            pad.append(&mut vec![true; max_length - l]);
-            pad
-        })
-        .collect();
-    Ok(PaddingMask {
-        inner: Array2::from_shape_vec((lengths.len(), max_length), padding_mask_vec)?,
-    })
+    let mut mask = Vec::with_capacity(batch_size * max_length);
+    for &len in lengths {
+        mask.extend(repeat(true).take(len));
+        mask.extend(repeat(false).take(max_length - len));
+    }
+    PaddingMask::from_shape_vec((batch_size, max_length), mask).expect("should not fail")
 }
 
 impl IntoPy<PyObject> for TokenizationInfo {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new(py);
+        let d = PyDict::new_bound(py);
         let info_type = match self {
             TokenizationInfo::Empty => "empty",
             TokenizationInfo::TokenGroups(token_groups) => {
                 for (group_name, (groups, agg)) in token_groups {
-                    let l = PyList::empty(py);
+                    let l = PyList::empty_bound(py);
                     for group in groups {
                         l.append(group).unwrap();
                     }
-                    let gd = PyDict::new(py);
+                    let gd = PyDict::new_bound(py);
                     gd.set_item("groups", l).unwrap();
                     gd.set_item("aggregation", agg.into_py(py)).unwrap();
                     d.set_item(group_name, gd).unwrap();
@@ -715,19 +711,11 @@ pub trait Tokenize: BaseTokenize {
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>>;
 
-    fn tokenize(
-        &self,
-        s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-        ignore_special_tokens: bool,
-    ) -> anyhow::Result<Tokenization>;
+    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization>;
 
     fn tokenize_with_constraint(
         &self,
         s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
         ignore_special_tokens: bool,
         constraint: &TokenizationConstraint,
     ) -> anyhow::Result<Tokenization> {
@@ -745,12 +733,8 @@ pub trait Tokenize: BaseTokenize {
                     if *skip_ignore_tokens && lexeme.is_none() {
                         continue;
                     }
-                    let tokenization = self.tokenize(
-                        &s[start..start + len],
-                        prefix,
-                        suffix,
-                        ignore_special_tokens,
-                    )?;
+                    let tokenization =
+                        self.tokenize(&s[start..start + len], ignore_special_tokens)?;
                     if !matches!(tokenization.info, TokenizationInfo::Empty) {
                         return Err(anyhow!(
                             "default implementation does not support tokenization info with grammar constraint"
@@ -879,36 +863,13 @@ where
         }
     }
 
-    fn add_prefix_and_suffix(
-        &self,
-        mut token_ids: Vec<u32>,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-    ) -> anyhow::Result<Vec<u32>> {
-        let mut pfx = self.prefix_token_ids().to_vec();
-        let mut sfx = self.suffix_token_ids().to_vec();
-        // add additional prefix tokens if needed
-        if let Some(add_prefix) = prefix {
-            for &token in add_prefix {
-                let Some(token_id) = self.special_token_to_id(token) else {
-                    return Err(anyhow!("prefix token {token} is not a valid special token"));
-                };
-                pfx.push(token_id);
-            }
-        }
-        // add additional suffix tokens if needed
-        if let Some(add_suffix) = suffix {
-            for &token in add_suffix {
-                let Some(token_id) = self.special_token_to_id(token) else {
-                    return Err(anyhow!("prefix token {token} is not a valid special token"));
-                };
-                sfx.push(token_id);
-            }
-        }
-        pfx.reserve_exact(token_ids.len() + sfx.len());
-        pfx.append(&mut token_ids);
-        pfx.append(&mut sfx);
-        Ok(pfx)
+    fn add_prefix_and_suffix(&self, token_ids: Vec<u32>) -> Vec<u32> {
+        self.prefix_token_ids()
+            .iter()
+            .cloned()
+            .chain(token_ids)
+            .chain(self.suffix_token_ids().iter().cloned())
+            .collect()
     }
 }
 
@@ -1105,13 +1066,7 @@ where
         self.state.1.size() + self.special_vocab.size()
     }
 
-    fn tokenize(
-        &self,
-        s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-        ignore_special_tokens: bool,
-    ) -> anyhow::Result<Tokenization> {
+    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
         let token_input = self.split_input(s, ignore_special_tokens);
         let (tokens, tokenization_info) = self.process_token_input(token_input);
         let token_ids = tokens
@@ -1128,8 +1083,10 @@ where
                 // // }
             })
             .collect::<Vec<_>>();
-        let token_ids = self.add_prefix_and_suffix(token_ids, prefix, suffix)?;
-        Ok(Tokenization::new(token_ids, tokenization_info))
+        Ok(Tokenization::new(
+            self.add_prefix_and_suffix(token_ids),
+            tokenization_info,
+        ))
     }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
@@ -1184,13 +1141,7 @@ impl Tokenize for DummyTokenizer {
         0
     }
 
-    fn tokenize(
-        &self,
-        _: &str,
-        _: Option<&[&str]>,
-        _: Option<&[&str]>,
-        _: bool,
-    ) -> anyhow::Result<Tokenization> {
+    fn tokenize(&self, _: &str, _: bool) -> anyhow::Result<Tokenization> {
         sleep(self.config);
         Ok(Tokenization::new(vec![], TokenizationInfo::Empty))
     }
@@ -1206,7 +1157,6 @@ impl Tokenize for DummyTokenizer {
 
 pub struct HuggingfaceTokenizer {
     inner: hft::Tokenizer,
-    inner_prefix_and_suffix_length: (usize, usize),
     pad_token_id: u32,
     prefix_token_ids: Vec<u32>,
     suffix_token_ids: Vec<u32>,
@@ -1224,6 +1174,11 @@ impl HuggingfaceTokenizer {
             anyhow!("error encoding test string with huggingface tokenizer: {err}")
         })?;
         let mask = enc.get_special_tokens_mask();
+        if mask.iter().all(|m| *m > 0) {
+            return Err(anyhow!(
+                "all tokens in test string are special tokens, this is not supported"
+            ));
+        }
         let ids = enc.get_ids();
         let mut prefix_token_ids: Vec<_> = ids
             .iter()
@@ -1238,7 +1193,6 @@ impl HuggingfaceTokenizer {
             .take_while(|&(_, m)| *m > 0)
             .map(|(id, _)| *id)
             .collect();
-        let inner_prefix_and_suffix_length = (prefix_token_ids.len(), suffix_token_ids.len());
         for token in &special_config.tokens {
             if tok.token_to_id(token).is_some() {
                 continue;
@@ -1277,7 +1231,6 @@ impl HuggingfaceTokenizer {
             pad_token_id,
             prefix_token_ids,
             suffix_token_ids,
-            inner_prefix_and_suffix_length,
         })
     }
 }
@@ -1317,47 +1270,14 @@ impl Tokenize for HuggingfaceTokenizer {
         self.inner.get_vocab_size(true)
     }
 
-    fn tokenize(
-        &self,
-        s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-        _ignore_special_tokens: bool,
-    ) -> anyhow::Result<Tokenization> {
-        let enc = self.inner.encode(s, true).map_err(|e| {
+    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
+        let enc = self.inner.encode(s, !ignore_special_tokens).map_err(|e| {
             anyhow!("error encoding input {s:?} with huggingface tokenizer: {e:?}",)
         })?;
-        let pfx: Vec<_> = prefix
-            .unwrap_or(&[])
-            .iter()
-            .map(|token| {
-                self.special_token_to_id(token)
-                    .ok_or(anyhow!("prefix token {} not in vocab", token))
-            })
-            .collect::<Result<_, _>>()?;
-        let sfx: Vec<_> = suffix
-            .unwrap_or(&[])
-            .iter()
-            .map(|token| {
-                self.special_token_to_id(token)
-                    .ok_or(anyhow!("suffix token {} not in vocab", token))
-            })
-            .collect::<Result<_, _>>()?;
-        let (pfx_len, sfx_len) = self.inner_prefix_and_suffix_length;
-        let token_ids = self
-            .prefix_token_ids()
-            .iter()
-            .cloned()
-            .chain(pfx)
-            .chain(
-                enc.get_ids()[pfx_len..enc.len().saturating_sub(sfx_len)]
-                    .iter()
-                    .cloned(),
-            )
-            .chain(self.suffix_token_ids().iter().cloned())
-            .chain(sfx)
-            .collect();
-        Ok(Tokenization::new(token_ids, TokenizationInfo::Empty))
+        Ok(Tokenization::new(
+            enc.get_ids().to_vec(),
+            TokenizationInfo::Empty,
+        ))
     }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
@@ -1632,13 +1552,7 @@ impl Tokenize for BPETokenizer {
         self.state.1.len() + self.special_vocab.size()
     }
 
-    fn tokenize(
-        &self,
-        s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-        ignore_special_tokens: bool,
-    ) -> anyhow::Result<Tokenization> {
+    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
         let inputs = self.split_input(s, ignore_special_tokens);
         let mut token_ids = vec![];
         for input in inputs {
@@ -1651,8 +1565,10 @@ impl Tokenize for BPETokenizer {
                 }
             }
         }
-        let token_ids = self.add_prefix_and_suffix(token_ids, prefix, suffix)?;
-        Ok(Tokenization::new(token_ids, TokenizationInfo::Empty))
+        Ok(Tokenization::new(
+            self.add_prefix_and_suffix(token_ids),
+            TokenizationInfo::Empty,
+        ))
     }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
@@ -1881,7 +1797,7 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn train_bpe_py(
-    files: Vec<&str>,
+    files: Vec<PyBackedStr>,
     vocab_size: usize,
     num_special_tokens: usize,
     out_file: &str,
@@ -1890,6 +1806,7 @@ pub fn train_bpe_py(
     num_threads: u8,
     progress: bool,
 ) -> anyhow::Result<()> {
+    let files: Vec<&str> = files.iter().map(|s| s.as_ref()).collect();
     train_bpe(
         &files,
         vocab_size,
@@ -2076,16 +1993,7 @@ impl ByteTokenizer {
         Self::new_vocab_free_tokenizer(256, special_config, config)
     }
 
-    fn process_input(
-        &self,
-        s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-        ignore_special_tokens: bool,
-    ) -> (Vec<u32>, TokenizationInfo) {
-        let additional_prefix_tokens = prefix.map(|pfx| pfx.len()).unwrap_or(0);
-        let additional_suffix_tokens = suffix.map(|sfx| sfx.len()).unwrap_or(0);
-
+    fn process_input(&self, s: &str, ignore_special_tokens: bool) -> (Vec<u32>, TokenizationInfo) {
         let mut tokens = vec![];
         let group_name = match self.config.groups {
             ByteGroups::Bytes => "byte_groups",
@@ -2094,8 +2002,7 @@ impl ByteTokenizer {
         .to_string();
 
         // initialize groups with 1 for each prefix token
-        let mut groups =
-            vec![TokenGroup::Full(1); self.num_prefix_tokens() + additional_prefix_tokens];
+        let mut groups = vec![TokenGroup::Full(1); self.num_prefix_tokens()];
 
         for input in self.split_input(s, ignore_special_tokens) {
             match input {
@@ -2128,10 +2035,7 @@ impl ByteTokenizer {
         }
 
         // append group of length 1 for each suffix token
-        groups.append(&mut vec![
-            TokenGroup::Full(1);
-            self.num_suffix_tokens() + additional_suffix_tokens
-        ]);
+        groups.append(&mut vec![TokenGroup::Full(1); self.num_suffix_tokens()]);
         (
             tokens,
             TokenizationInfo::TokenGroups(HashMap::from([(
@@ -2147,19 +2051,9 @@ impl Tokenize for ByteTokenizer {
         256 + self.special_vocab.size()
     }
 
-    fn tokenize(
-        &self,
-        s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-        ignore_special_tokens: bool,
-    ) -> anyhow::Result<Tokenization> {
-        let (bytes, info) = self.process_input(s, prefix, suffix, ignore_special_tokens);
-
-        Ok(Tokenization::new(
-            self.add_prefix_and_suffix(bytes, prefix, suffix)?,
-            info,
-        ))
+    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
+        let (bytes, info) = self.process_input(s, ignore_special_tokens);
+        Ok(Tokenization::new(self.add_prefix_and_suffix(bytes), info))
     }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
@@ -2234,16 +2128,8 @@ impl Tokenize for ByT5Tokenizer {
         self.inner.vocab_size()
     }
 
-    fn tokenize(
-        &self,
-        s: &str,
-        prefix: Option<&[&str]>,
-        suffix: Option<&[&str]>,
-        ignore_special_tokens: bool,
-    ) -> anyhow::Result<Tokenization> {
-        let Tokenization { token_ids, info } =
-            self.inner
-                .tokenize(s, prefix, suffix, ignore_special_tokens)?;
+    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
+        let Tokenization { token_ids, info } = self.inner.tokenize(s, ignore_special_tokens)?;
         // adapt token ids to byt5 format
         // --> shift byte token_ids from 0..255 to 3..258
         // --> shift eos token
@@ -2305,29 +2191,13 @@ impl PyTokenizer {
         })
     }
 
-    #[pyo3(signature = (s, prefix = None, suffix = None, ignore_special_tokens = true))]
-    fn tokenize(
-        &self,
-        s: &str,
-        prefix: Option<Vec<&str>>,
-        suffix: Option<Vec<&str>>,
-        ignore_special_tokens: bool,
-    ) -> anyhow::Result<Tokenization> {
+    #[pyo3(signature = (s, ignore_special_tokens = false))]
+    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
         if let Some(constraint) = &self.constraint {
-            self.tokenizer.tokenize_with_constraint(
-                s,
-                prefix.as_deref(),
-                suffix.as_deref(),
-                ignore_special_tokens,
-                constraint,
-            )
+            self.tokenizer
+                .tokenize_with_constraint(s, ignore_special_tokens, constraint)
         } else {
-            self.tokenizer.tokenize(
-                s,
-                prefix.as_deref(),
-                suffix.as_deref(),
-                ignore_special_tokens,
-            )
+            self.tokenizer.tokenize(s, ignore_special_tokens)
         }
     }
 
@@ -2370,14 +2240,14 @@ impl PyTokenizer {
 /// Currently supported tokenization schemes are:
 /// - character level tokenization
 /// - byte level tokenization
-pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "tokenization")?;
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "tokenization")?;
     m.add_class::<PyTokenizer>()?;
     m.add_class::<Tokenization>()?;
     m.add_class::<SpecialTokens>()?;
     m.add_class::<LanguageTokens>()?;
-    m.add_function(wrap_pyfunction!(train_bpe_py, m)?)?;
-    parent_module.add_submodule(m)?;
+    m.add_function(wrap_pyfunction!(train_bpe_py, m.clone())?)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }
@@ -2412,13 +2282,13 @@ mod tests {
             SpecialConfig::default(),
         );
         let text = "a täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, true).unwrap();
+        let Tokenization { token_ids, .. } = tok.tokenize(text, true).unwrap();
         assert_eq!(token_ids.len(), 6);
         assert_eq!(token_ids[3], tok.unk_token_id());
         assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(tok.de_tokenize(&token_ids, false), "a t<unk>st".to_string());
         let text = "a <pad>täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, false).unwrap();
+        let Tokenization { token_ids, .. } = tok.tokenize(text, false).unwrap();
         assert_eq!(token_ids.len(), 7);
         assert_eq!(token_ids[2], tok.pad_token_id);
         assert_eq!(token_ids[4], tok.unk_token_id());
@@ -2428,7 +2298,7 @@ mod tests {
             "a <pad>t<unk>st".to_string()
         );
         let text = "a <pad>täst";
-        let Tokenization { token_ids, .. } = tok.tokenize(text, None, None, true).unwrap();
+        let Tokenization { token_ids, .. } = tok.tokenize(text, true).unwrap();
         assert_eq!(token_ids.len(), 11);
         assert_eq!(tok.de_tokenize(&token_ids, true), "a <pad>tst".to_string());
         assert_eq!(
@@ -2448,7 +2318,7 @@ mod tests {
         let tok = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default());
         assert_eq!(tok.vocab_size(), 384);
         let text = "a täst";
-        let Tokenization { token_ids, info } = tok.tokenize(text, None, None, true).unwrap();
+        let Tokenization { token_ids, info } = tok.tokenize(text, true).unwrap();
         assert_eq!(
             token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes()
@@ -2479,7 +2349,7 @@ mod tests {
         };
         let tok = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default());
         let text = "a täst";
-        let Tokenization { token_ids, info } = tok.tokenize(text, None, None, true).unwrap();
+        let Tokenization { token_ids, info } = tok.tokenize(text, true).unwrap();
         assert_eq!(
             token_ids.iter().map(|tok| *tok as u8).collect::<Vec<u8>>(),
             text.as_bytes()
@@ -2536,7 +2406,7 @@ mod tests {
         let bpe = BPETokenizer::new(bpe_config, special_config).unwrap();
         info!("loaded bpe tokenizer");
         let s = "this is a long reading couple restaurant";
-        let token_ids = bpe.tokenize(s, None, None, true).unwrap().token_ids;
+        let token_ids = bpe.tokenize(s, true).unwrap().token_ids;
         info!("token ids: {token_ids:?}");
         let tokens: Vec<_> = token_ids
             .iter()
@@ -2555,7 +2425,7 @@ mod tests {
                 .take(256)
                 .collect();
 
-            let token_ids = bpe.tokenize(&s, None, None, true).unwrap().token_ids;
+            let token_ids = bpe.tokenize(&s, true).unwrap().token_ids;
             let ds = bpe.de_tokenize(&token_ids, true);
             assert_eq!(s, ds);
         }
@@ -2571,7 +2441,7 @@ mod tests {
         };
         let tok = ByT5Tokenizer::new(tokenize_cfg);
         assert_eq!(tok.vocab_size(), 259);
-        let Tokenization { token_ids, info: _ } = tok.tokenize("a täst", None, None, true).unwrap();
+        let Tokenization { token_ids, info: _ } = tok.tokenize("a täst", true).unwrap();
         assert_eq!(token_ids, vec![100, 35, 119, 198, 167, 118, 119, 1]);
     }
 

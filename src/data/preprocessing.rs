@@ -1,7 +1,7 @@
 use crate::corrupt::{
     edit_word, DeleteEdits, EditsAndWeights, InsertEdits, ReplaceEdits, SwapEdits,
 };
-use crate::data::{TextData, TextDataInfo};
+use crate::data::{TextDataInfo, TrainData};
 use crate::dictionary::Dictionary;
 use crate::text::{self, split_words};
 use crate::text::{possible_byte_substrings, possible_character_substrings};
@@ -26,7 +26,24 @@ use super::utils::{chain, switch};
 pub type PreprocessingFn = dyn Send
     + Sync
     + 'static
-    + Fn(TextData, TextDataInfo) -> anyhow::Result<(TextData, TextDataInfo)>;
+    + Fn(TrainData, TextDataInfo) -> anyhow::Result<(TrainData, TextDataInfo)>;
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum Part {
+    Input,
+    Target,
+}
+
+impl<'a> FromPyObject<'a> for Part {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let part: String = ob.extract()?;
+        match part.as_str() {
+            "input" => Ok(Part::Input),
+            "target" => Ok(Part::Target),
+            k => Err(anyhow!("invalid part '{}', must be 'input' or 'target'", k).into()),
+        }
+    }
+}
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum PreprocessingFnConfig {
@@ -35,33 +52,33 @@ pub enum PreprocessingFnConfig {
     // apply multiple processings after each other
     Chain(Vec<PreprocessingFnConfig>),
     // clean the sequences (remove spurious whitespaces)
-    Clean(bool),
+    Clean(Part, bool),
     // normalize the sequence
     // (using a unicode normalization scheme, see https://en.wikipedia.org/wiki/Unicode_equivalence#Normalization)
-    Normalize(Normalization, bool),
+    Normalize(Part, Normalization, bool),
     // overwrite target text with input text
-    Overwrite,
+    Overwrite(Part),
     // switch between multiple preprocessing functions
     Switch(Vec<PreprocessingFnConfig>, Vec<f64>),
     // delete all whitespaces
-    NoWhitespaces(bool),
+    NoWhitespaces(Part, bool),
     // insert whitespaces between all characters
-    FullWhitespaces(bool),
+    FullWhitespaces(Part, bool),
     // delete and insert whitespaces with certain probabilities
-    WhitespaceCorruption(f64, f64, bool),
+    WhitespaceCorruption(Part, f64, f64, bool),
     // extract substrings from text
     CharSubstring(usize, bool),
     ByteSubstring(usize, bool),
     // randomly edit and replace words in text
-    SpellingCorruption(f64, bool, SpellingCorruptionMode),
-    // mark inputs with additional info
+    SpellingCorruption(Part, f64, bool, SpellingCorruptionMode),
+    // mark item with additional info
     Mark(String, String),
     // add prefix to input sequence
-    Prefix(String),
+    Prefix(Part, String),
+    // add suffix to input sequence
+    Suffix(Part, String),
     // decode from json
-    JsonDecode(bool, bool),
-    // concatenate input and target sequences with a separator
-    Concatenate(String),
+    JsonDecode(Part),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
@@ -86,8 +103,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-
-                PreprocessingFnConfig::Clean(use_graphemes)
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "clean config"));
+                };
+                PreprocessingFnConfig::Clean(part.extract()?, use_graphemes)
             }
             "normalize" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
@@ -95,20 +114,30 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-
                 let Some(scheme) = d.get_item("scheme")? else {
                     return Err(py_required_key_error("scheme", "normalization config"));
                 };
-                PreprocessingFnConfig::Normalize(scheme.extract()?, use_graphemes)
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "normalization config"));
+                };
+                PreprocessingFnConfig::Normalize(part.extract()?, scheme.extract()?, use_graphemes)
             }
-            "overwrite" => PreprocessingFnConfig::Overwrite,
+            "overwrite" => {
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "overwrite config"));
+                };
+                PreprocessingFnConfig::Overwrite(part.extract()?)
+            }
             "no_whitespaces" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
-                PreprocessingFnConfig::NoWhitespaces(use_graphemes)
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "no whitespaces config"));
+                };
+                PreprocessingFnConfig::NoWhitespaces(part.extract()?, use_graphemes)
             }
             "full_whitespaces" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
@@ -116,7 +145,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-                PreprocessingFnConfig::FullWhitespaces(use_graphemes)
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "full whitespaces config"));
+                };
+                PreprocessingFnConfig::FullWhitespaces(part.extract()?, use_graphemes)
             }
             "whitespace_corruption" => {
                 let use_graphemes = if let Some(value) = d.get_item("use_graphemes")? {
@@ -124,7 +156,6 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     true
                 };
-
                 let iw_p = if let Some(value) = d.get_item("insert_whitespace_prob")? {
                     value.extract()?
                 } else {
@@ -135,7 +166,18 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 } else {
                     0.
                 };
-                PreprocessingFnConfig::WhitespaceCorruption(iw_p, dw_p, use_graphemes)
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error(
+                        "part",
+                        "whitespace corruption config",
+                    ));
+                };
+                PreprocessingFnConfig::WhitespaceCorruption(
+                    part.extract()?,
+                    iw_p,
+                    dw_p,
+                    use_graphemes,
+                )
             }
             "switch" => {
                 let Some(configs) = d.get_item("configs")? else {
@@ -180,7 +222,11 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 let Some(mode) = d.get_item("mode")? else {
                     return Err(py_required_key_error("mode", "spelling corruption config"));
                 };
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "spelling corruption config"));
+                };
                 PreprocessingFnConfig::SpellingCorruption(
+                    part.extract()?,
                     p.extract()?,
                     full_delete,
                     mode.extract()?,
@@ -199,28 +245,16 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 let Some(prefix) = d.get_item("prefix")? else {
                     return Err(py_required_key_error("prefix", "prefix config"));
                 };
-                PreprocessingFnConfig::Prefix(prefix.extract()?)
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "prefix config"));
+                };
+                PreprocessingFnConfig::Prefix(part.extract()?, prefix.extract()?)
             }
             "json_decode" => {
-                let decode_input = d
-                    .get_item("input")?
-                    .map(|value| value.extract())
-                    .transpose()?
-                    .unwrap_or(false);
-                let decode_target = d
-                    .get_item("target")?
-                    .map(|value| value.extract())
-                    .transpose()?
-                    .unwrap_or(false);
-                PreprocessingFnConfig::JsonDecode(decode_input, decode_target)
-            }
-            "concatenate" => {
-                let separator = if let Some(sep) = d.get_item("separator")? {
-                    sep.extract()?
-                } else {
-                    "".to_string()
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "json decode config"));
                 };
-                PreprocessingFnConfig::Concatenate(separator)
+                PreprocessingFnConfig::JsonDecode(part.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing"));
@@ -230,43 +264,59 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
     }
 }
 
-fn apply_to_text<F: Fn(&str) -> anyhow::Result<String> + Send + Sync + 'static>(
-    f: F,
-) -> Box<PreprocessingFn> {
+pub trait TextFn:
+    Fn(&str, &TextDataInfo) -> anyhow::Result<String> + Send + Sync + 'static
+{
+}
+
+impl<F> TextFn for F where
+    F: Fn(&str, &TextDataInfo) -> anyhow::Result<String> + Send + Sync + 'static
+{
+}
+
+fn apply(part: Part, f: impl TextFn) -> Box<PreprocessingFn> {
     Box::new(move |item, info| {
-        Ok((
-            TextData {
-                input: f(&item.input)?,
+        let item = match part {
+            Part::Input => TrainData {
+                input: f(&item.input, &info)?,
                 ..item
             },
-            info,
-        ))
+            Part::Target => TrainData {
+                target: f(&item.target, &info)?,
+                ..item
+            },
+        };
+        Ok((item, info))
     })
 }
 
-fn overwrite_target_from_input() -> Box<PreprocessingFn> {
-    Box::new(|item, info| {
-        Ok((
-            TextData {
+fn overwrite(part: Part) -> Box<PreprocessingFn> {
+    Box::new(move |item, info| {
+        let item = match part {
+            Part::Input => TrainData {
+                input: item.target.clone(),
+                ..item
+            },
+            Part::Target => TrainData {
                 target: item.input.clone(),
                 ..item
             },
-            info,
-        ))
+        };
+        Ok((item, info))
     })
 }
 
-fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<PreprocessingFn> {
+fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<dyn TextFn> {
     let iw_p = iw_p.clamp(0., 1.);
     let dw_p = dw_p.clamp(0., 1.);
     assert!(
         iw_p > 0. || dw_p > 0.,
         "at least one of insert whitespace or delete whitespace probability must be greater 0"
     );
-    Box::new(move |item, info| {
+    Box::new(move |text, info| {
         let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
-        let cs = CS::new(&item.input, use_graphemes);
-        let input = cs
+        let cs = CS::new(text, use_graphemes);
+        let corrupted = cs
             .chars()
             .enumerate()
             .map(|(idx, c)| {
@@ -284,7 +334,7 @@ fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<Preproce
                 }
             })
             .join("");
-        Ok((TextData { input, ..item }, info))
+        Ok(corrupted)
     })
 }
 
@@ -309,7 +359,7 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
                 ))
             }
         };
-        Ok((TextData { target, input }, info))
+        Ok((TrainData { target, input }, info))
     })
 }
 
@@ -334,12 +384,6 @@ pub enum SpellingCorruptionMode {
     Artificial(f64, f64, Option<PathBuf>),
     Realistic(PathBuf),
     Mixed(f64, f64, f64, Option<PathBuf>, PathBuf),
-}
-
-impl IntoPy<PyObject> for SpellingCorruptionMode {
-    fn into_py(self, _py: Python<'_>) -> PyObject {
-        todo!()
-    }
 }
 
 impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
@@ -424,7 +468,7 @@ fn corrupt_spelling(
     prob: f64,
     allow_full_delete: bool,
     mode: SpellingCorruptionMode,
-) -> Box<PreprocessingFn> {
+) -> Box<dyn TextFn> {
     let prob = prob.clamp(0.0, 1.0);
     assert!(prob > 0.0, "corruption probability must be greater than 0");
     // extract the probabilities for each corruption mode
@@ -538,10 +582,10 @@ fn corrupt_spelling(
         }
         _ => HashMap::new(),
     };
-    Box::new(move |item, info| {
+    Box::new(move |text, info| {
         let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
-        let words = split_words(&item.input);
-        let words: Vec<_> = words
+        let words = split_words(text);
+        Ok(words
             .into_iter()
             .filter_map(|(word, parts)| {
                 let r: f64 = rng.gen();
@@ -603,27 +647,13 @@ fn corrupt_spelling(
                     Some(word)
                 }
             })
-            .collect();
-        Ok((
-            TextData {
-                input: words.join(" "),
-                ..item
-            },
-            info,
-        ))
+            .join(" "))
     })
 }
 
 pub fn mark(key: String, value: String) -> Box<PreprocessingFn> {
     Box::new(move |item, mut info| {
         info.marks.insert(key.clone(), value.clone());
-        Ok((item, info))
-    })
-}
-
-pub fn concatenate(separator: String) -> Box<PreprocessingFn> {
-    Box::new(move |mut item, info| {
-        item.input = item.input + &separator + &item.target;
         Ok((item, info))
     })
 }
@@ -635,20 +665,22 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
             let pfns = configs.into_iter().map(preprocessing).collect::<Vec<_>>();
             chain(pfns)
         }
-        PreprocessingFnConfig::Clean(use_g) => apply_to_text(move |s| Ok(text::clean(s, use_g))),
-        PreprocessingFnConfig::Overwrite => overwrite_target_from_input(),
+        PreprocessingFnConfig::Clean(part, use_g) => {
+            apply(part, move |s, _| Ok(text::clean(s, use_g)))
+        }
+        PreprocessingFnConfig::Overwrite(part) => overwrite(part),
         PreprocessingFnConfig::Switch(fns, probs) => {
             let pfns = fns.into_iter().map(preprocessing).collect::<Vec<_>>();
             switch(pfns, probs)
         }
-        PreprocessingFnConfig::WhitespaceCorruption(iw_p, dw_p, use_g) => {
-            corrupt_whitespace(iw_p, dw_p, use_g)
+        PreprocessingFnConfig::WhitespaceCorruption(part, iw_p, dw_p, use_g) => {
+            apply(part, corrupt_whitespace(iw_p, dw_p, use_g))
         }
-        PreprocessingFnConfig::NoWhitespaces(use_graphemes) => {
-            apply_to_text(move |s| Ok(remove(s, use_graphemes)))
+        PreprocessingFnConfig::NoWhitespaces(part, use_graphemes) => {
+            apply(part, move |s, _| Ok(remove(s, use_graphemes)))
         }
-        PreprocessingFnConfig::FullWhitespaces(use_graphemes) => {
-            apply_to_text(move |s| Ok(full(s, use_graphemes)))
+        PreprocessingFnConfig::FullWhitespaces(part, use_graphemes) => {
+            apply(part, move |s, _| Ok(full(s, use_graphemes)))
         }
         PreprocessingFnConfig::CharSubstring(max_chars, use_graphemes) => {
             char_substring(max_chars, use_graphemes)
@@ -656,49 +688,43 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
         PreprocessingFnConfig::ByteSubstring(max_bytes, use_graphemes) => {
             byte_substring(max_bytes, use_graphemes)
         }
-        PreprocessingFnConfig::Normalize(scheme, use_graphemes) => {
-            apply_to_text(move |s| Ok(normalize(s, scheme, use_graphemes)))
+        PreprocessingFnConfig::Normalize(part, scheme, use_graphemes) => {
+            apply(part, move |s, _| Ok(normalize(s, scheme, use_graphemes)))
         }
-        PreprocessingFnConfig::SpellingCorruption(p, full_del, mode) => {
-            corrupt_spelling(p, full_del, mode)
+        PreprocessingFnConfig::SpellingCorruption(part, p, full_del, mode) => {
+            apply(part, corrupt_spelling(p, full_del, mode))
         }
         PreprocessingFnConfig::Mark(key, value) => mark(key, value),
-        PreprocessingFnConfig::Prefix(prefix) => apply_to_text(move |s| Ok(prefix.clone() + s)),
-        PreprocessingFnConfig::JsonDecode(decode_input, decode_target) => {
-            Box::new(move |mut item, info| {
-                if decode_input {
-                    item.input = serde_json::from_str(&item.input)
-                        .map_err(|e| anyhow!("failed to decode input text from json: {}", e))?;
-                }
-                if decode_target {
-                    item.target = serde_json::from_str(&item.target)
-                        .map_err(|e| anyhow!("failed to decode target text from json: {}", e))?;
-                }
-                Ok((item, info))
-            })
+        PreprocessingFnConfig::Prefix(part, prefix) => {
+            apply(part, move |s, _| Ok(prefix.clone() + s))
         }
-        PreprocessingFnConfig::Concatenate(separator) => concatenate(separator),
+        PreprocessingFnConfig::Suffix(part, suffix) => {
+            apply(part, move |s, _| Ok(s.to_string() + &suffix))
+        }
+        PreprocessingFnConfig::JsonDecode(part) => apply(part, move |s, _| {
+            serde_json::from_str(s).map_err(|e| anyhow!("failed to decode string from json: {}", e))
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::data::{TextData, TextDataInfo};
+    use crate::data::{TextDataInfo, TrainData};
 
     use super::corrupt_whitespace;
 
     #[test]
     fn test_corrupt_whitespace() -> anyhow::Result<()> {
         let noise_fn = corrupt_whitespace(0.0, 1.0, true);
-        let data = TextData::new("a test".to_string(), None);
+        let data = TrainData::new("a test".to_string(), None);
         let info = TextDataInfo::default();
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.input, "atest");
         let noise_fn = corrupt_whitespace(1.0, 0.0, true);
-        let data = TextData::new("a test".to_string(), None);
+        let data = TrainData::new("a test".to_string(), None);
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.input, "a t e s t");
-        let data = TextData::new("Ginsberǵs".to_string(), None);
+        let data = TrainData::new("Ginsberǵs".to_string(), None);
         let (noised, _) = noise_fn(data.clone(), info.clone())?;
         assert_eq!(&noised.input, "G i n s b e r ǵ s");
         Ok(())

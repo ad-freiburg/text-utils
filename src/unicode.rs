@@ -295,10 +295,10 @@ pub fn normalize(s: &str, normalization: Normalization, use_graphemes: bool) -> 
 }
 
 /// A submodule containing functionality for handling unicode.
-pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "unicode")?;
-    m.add_function(wrap_pyfunction!(normalize, m)?)?;
-    parent_module.add_submodule(m)?;
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "unicode")?;
+    m.add_function(wrap_pyfunction!(normalize, m.clone())?)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

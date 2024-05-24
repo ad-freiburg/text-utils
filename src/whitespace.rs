@@ -173,14 +173,17 @@ pub fn find_substring_ignoring_whitespace_py(
 }
 
 /// A submodule containing functionality specific to handle whitespaces in text.
-pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "whitespace")?;
-    m.add_function(wrap_pyfunction!(find_substring_ignoring_whitespace_py, m)?)?;
-    m.add_function(wrap_pyfunction!(repair_py, m)?)?;
-    m.add_function(wrap_pyfunction!(operations, m)?)?;
-    m.add_function(wrap_pyfunction!(full, m)?)?;
-    m.add_function(wrap_pyfunction!(remove, m)?)?;
-    parent_module.add_submodule(m)?;
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "whitespace")?;
+    m.add_function(wrap_pyfunction!(
+        find_substring_ignoring_whitespace_py,
+        m.clone()
+    )?)?;
+    m.add_function(wrap_pyfunction!(repair_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(operations, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(full, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(remove, m.clone())?)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

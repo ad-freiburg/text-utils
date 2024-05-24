@@ -451,7 +451,7 @@ fn parse_into_py(
     parse: &LR1Parse<'_>,
     py: Python<'_>,
 ) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
+    let dict = PyDict::new_bound(py);
     match parse {
         LR1Parse::Empty(_) => unreachable!("empty parse should not be returned"),
         LR1Parse::Terminal(name, span) => {
@@ -464,7 +464,7 @@ fn parse_into_py(
         }
         LR1Parse::NonTerminal(name, children, span) => {
             dict.set_item("name", name)?;
-            let children = PyList::new(
+            let children = PyList::new_bound(
                 py,
                 children
                     .iter()
@@ -482,12 +482,12 @@ fn parse_into_py(
 }
 
 /// A submodule containing python implementations of regex and CFG (LR1) constraints
-pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "grammar")?;
+pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "grammar")?;
     m.add_class::<RegexConstraint>()?;
     m.add_class::<LR1Constraint>()?;
     m.add_class::<LR1Parser>()?;
-    parent_module.add_submodule(m)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

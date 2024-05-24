@@ -17,7 +17,7 @@ pub mod whitespace;
 pub mod windows;
 
 #[pymodule]
-fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn _internal(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // add submodules
     edit::add_submodule(py, m)?;
     text::add_submodule(py, m)?;
@@ -28,7 +28,6 @@ fn _internal(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     windows::add_submodule(py, m)?;
     metrics::add_submodule(py, m)?;
     unicode::add_submodule(py, m)?;
-    corrupt::add_submodule(py, m)?;
     continuations::add_submodule(py, m)?;
     grammar::add_submodule(py, m)?;
 

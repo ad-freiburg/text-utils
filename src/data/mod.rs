@@ -1,36 +1,37 @@
 use crate::data::loading::{
     inference_data_generator_from_file, inference_data_generator_from_python,
-    text_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator, DataGen,
+    train_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator, DataGen,
     ItemSize, PipelineIterator, Tensorize, TensorizedIterator, TextIterationStrategy, TextIterator,
 };
 use crate::data::preprocessing::{preprocessing, PreprocessingFnConfig};
-use crate::text::clean;
 use crate::tokenization::{
-    padding_mask, token_groups_to_sparse_coo_matrix, tokenizer, PaddingMask,
-    TensorizedTokenizationInfo, Tokenization, TokenizationInfo, Tokenizer, TokenizerConfig,
+    padding_mask, token_groups_to_sparse_coo_matrix, tokenizer, TensorizedTokenizationInfo,
+    Tokenization, TokenizationInfo, TokenizerConfig,
 };
-use crate::unicode::{normalize, Normalization, CS};
+use crate::unicode::CS;
 use crate::utils::py_required_key_error;
 use crate::windows::{windows, WindowConfig};
 use anyhow::anyhow;
+use itertools::Itertools;
 use numpy::ndarray::prelude::*;
-use numpy::{IntoPyArray, PyArray2, PyArrayDyn};
+use numpy::IntoPyArray;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
+use std::iter::repeat;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use self::labeling::{labeling, LabelingConfig};
 use self::postprocessing::{postprocessing, PostprocessingFn, PostprocessingFnConfig};
 use self::preprocessing::PreprocessingFn;
+use self::task::{train_task, TrainTaskConfig};
 
-pub mod labeling;
 pub mod loading;
 pub mod postprocessing;
 pub mod preprocessing;
+pub mod task;
 mod utils;
 
 #[derive(Default, Clone, Debug)]
@@ -42,73 +43,114 @@ pub struct TextDataInfo {
 
 #[derive(Clone, Debug)]
 #[pyclass]
-pub struct TextData {
+pub struct TrainData {
     #[pyo3(get)]
     input: String,
     #[pyo3(get)]
     target: String,
 }
 
-impl TextData {
+impl TrainData {
     pub fn new(input: String, target: Option<String>) -> Self {
         let target = target.unwrap_or_else(|| input.clone());
-        TextData { input, target }
-    }
-}
-
-pub enum TensorizedLabelInfo {
-    Empty,
-    Generation(Array2<i32>, PaddingMask, Vec<usize>, Option<Vec<usize>>),
-}
-
-impl IntoPy<PyObject> for TensorizedLabelInfo {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new(py);
-        if let TensorizedLabelInfo::Generation(token_ids, padding_mask, lengths, prefix_lengths) =
-            self
-        {
-            let token_ids: Py<PyArray2<i32>> = token_ids.into_pyarray(py).into_py(py);
-            d.set_item("token_ids", token_ids).unwrap();
-            d.set_item("padding_mask", padding_mask.into_py(py))
-                .unwrap();
-            d.set_item("lengths", lengths).unwrap();
-            if let Some(prefix_lengths) = prefix_lengths {
-                d.set_item("prefix_lengths", prefix_lengths).unwrap();
-            }
-        };
-        d.into_py(py)
+        TrainData { input, target }
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Label {
-    Classification(i32),
-    SequenceClassification(Vec<i32>),
-    Generation(Vec<i32>, u32, Option<usize>),
-    Empty,
+pub enum TrainTaskInput {
+    Classification {
+        token_ids: Vec<u32>,
+        pad_token_id: u32,
+        label: i32,
+    },
+    SequenceClassification {
+        token_ids: Vec<u32>,
+        pad_token_id: u32,
+        labels: Vec<i32>,
+    },
+    Generation {
+        token_ids: Vec<u32>,
+        pad_token_id: u32,
+        labels: Vec<i32>,
+    },
+    ConditionalGeneration {
+        token_ids: Vec<u32>,
+        pad_token_id: u32,
+        target_token_ids: Vec<u32>,
+        target_pad_token_id: u32,
+        labels: Vec<i32>,
+    },
 }
 
-impl IntoPy<PyObject> for Label {
+impl TrainTaskInput {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            TrainTaskInput::Classification { token_ids, .. } => token_ids.len(),
+            TrainTaskInput::SequenceClassification { token_ids, .. } => token_ids.len(),
+            TrainTaskInput::Generation { token_ids, .. } => token_ids.len(),
+            TrainTaskInput::ConditionalGeneration {
+                token_ids,
+                target_token_ids,
+                ..
+            } => token_ids.len() + target_token_ids.len(),
+        }
+    }
+}
+
+impl IntoPy<PyObject> for TrainTaskInput {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new(py);
+        let d = PyDict::new_bound(py);
         let label_type = match &self {
-            Label::Classification(label) => {
+            TrainTaskInput::Classification {
+                token_ids,
+                pad_token_id,
+                label,
+            } => {
+                d.set_item("token_ids", token_ids).unwrap();
+                d.set_item("pad_token_id", pad_token_id).unwrap();
                 d.set_item("label", label).unwrap();
                 "classification"
             }
-            Label::SequenceClassification(labels) => {
+            TrainTaskInput::SequenceClassification {
+                token_ids,
+                pad_token_id,
+                labels,
+            } => {
+                d.set_item("token_ids", token_ids).unwrap();
+                d.set_item("pad_token_id", pad_token_id).unwrap();
                 d.set_item("labels", labels).unwrap();
                 "sequence_classification"
             }
-            Label::Generation(labels, pad_token_id, prefix_length) => {
-                d.set_item("labels", labels).unwrap();
+            TrainTaskInput::Generation {
+                token_ids,
+                pad_token_id,
+                labels,
+            } => {
+                d.set_item("token_ids", token_ids).unwrap();
                 d.set_item("pad_token_id", pad_token_id).unwrap();
-                if let Some(prefix_length) = prefix_length {
-                    d.set_item("prefix_length", prefix_length).unwrap();
-                }
+                d.set_item("labels", labels).unwrap();
                 "generation"
             }
-            Label::Empty => "empty",
+            TrainTaskInput::ConditionalGeneration {
+                token_ids,
+                pad_token_id,
+                target_token_ids,
+                target_pad_token_id,
+                labels,
+            } => {
+                d.set_item("token_ids", token_ids).unwrap();
+                d.set_item("target_token_ids", target_token_ids).unwrap();
+                d.set_item("labels", labels).unwrap();
+                d.set_item("pad_token_id", pad_token_id).unwrap();
+                d.set_item("target_pad_token_id", target_pad_token_id)
+                    .unwrap();
+                "conditional_generation"
+            }
         };
         d.set_item("type", label_type).unwrap();
         d.into()
@@ -117,33 +159,27 @@ impl IntoPy<PyObject> for Label {
 
 #[derive(Clone, Debug)]
 #[pyclass]
-pub struct Item {
+pub struct TrainItem {
     #[pyo3(get)]
-    pub data: TextData,
+    pub data: TrainData,
     #[pyo3(get)]
-    pub tokenization: Tokenization,
-    #[pyo3(get)]
-    pub label: Label,
+    pub input: TrainTaskInput,
 }
 
-impl ItemSize for Item {
+impl ItemSize for TrainItem {
     fn size(&self) -> usize {
-        self.tokenization.token_ids.len()
+        self.input.len()
     }
 }
 
-impl Item {
-    pub fn new(data: TextData, tokenization: Tokenization, label: Label) -> Self {
-        Item {
-            data,
-            tokenization,
-            label,
-        }
+impl TrainItem {
+    pub fn new(data: TrainData, label: TrainTaskInput) -> Self {
+        TrainItem { data, input: label }
     }
 }
 
 #[pymethods]
-impl Item {
+impl TrainItem {
     fn __len__(&self) -> usize {
         self.size()
     }
@@ -252,63 +288,34 @@ impl InferenceItem {
 pub type Batch<T> = Vec<T>;
 
 #[pyclass]
-pub struct DataBatch {
+pub struct TrainBatch {
     len: usize,
-    batch: Option<Batch<Item>>,
-    tensorized: Option<<Batch<Item> as Tensorize>::Output>,
+    batch: Option<Batch<TrainItem>>,
+    tensorized: Option<<Batch<TrainItem> as Tensorize>::Output>,
 }
 
-type PyDataTensors = (
-    Py<PyArray2<i32>>,
-    PyObject,
-    Vec<usize>,
-    PyObject,
-    Py<PyArrayDyn<i32>>,
-    PyObject,
-);
-
 #[pymethods]
-impl DataBatch {
+impl TrainBatch {
     fn __len__(&self) -> usize {
         self.len
     }
 
-    fn items(&mut self) -> anyhow::Result<Batch<Item>> {
-        if self.batch.is_none() {
-            return Err(anyhow!(
-                "can only get items once, because their data is moved"
-            ));
-        }
-        Ok(self.batch.take().unwrap())
+    fn items(&mut self) -> anyhow::Result<Batch<TrainItem>> {
+        self.batch
+            .take()
+            .ok_or_else(|| anyhow!("can only get items once, because their data is moved"))
     }
 
-    fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyDataTensors> {
-        if self.tensorized.is_none() {
-            return Err(anyhow!(
-                "can only get tensors once, because their data is moved"
-            ));
-        }
-        let tensorized = self.tensorized.take().unwrap();
-        Ok((
-            tensorized.0.into_pyarray(py).into_py(py),
-            tensorized.1.into_py(py),
-            tensorized.2,
-            tensorized.3.into_py(py),
-            tensorized.4.into_pyarray(py).into_py(py),
-            tensorized.5.into_py(py),
-        ))
+    fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyObject> {
+        let tensorized = self
+            .tensorized
+            .take()
+            .ok_or_else(|| anyhow!("can only get tensors once, because their data is moved"))?;
+        tensorized.into_py(py)
     }
 }
 
-#[inline]
-fn join<T>(vectors: Vec<Vec<T>>) -> Vec<T> {
-    let mut joined = vec![];
-    for mut v in vectors {
-        joined.append(&mut v);
-    }
-    joined
-}
-
+#[allow(dead_code)]
 #[inline]
 fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> TensorizedTokenizationInfo {
     match tokenizations[0].info {
@@ -328,7 +335,7 @@ fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> Tensorize
             for (name, groupings) in all_groupings {
                 let sparse_mat = token_groups_to_sparse_coo_matrix(&groupings, lengths)
                     .expect("should not fail");
-                let pad_mask = padding_mask(&sparse_mat.group_lengths).expect("should not fail");
+                let pad_mask = padding_mask(&sparse_mat.group_lengths);
                 info.insert(name.clone(), (sparse_mat, pad_mask));
             }
             TensorizedTokenizationInfo::TokenGroups(info)
@@ -340,153 +347,177 @@ fn prepare_info(tokenizations: &[&Tokenization], lengths: &[usize]) -> Tensorize
 }
 
 #[inline]
-fn prepare_tokenization(
-    tokenizations: &[&Tokenization],
-    pad_token_id: u32,
-) -> (
-    Array2<i32>,
-    PaddingMask,
-    Vec<usize>,
-    TensorizedTokenizationInfo,
-) {
-    let batch_size = tokenizations.len();
-    let max_token_ids = tokenizations
+fn pad_ids<T: num::PrimInt>(ids: &[impl AsRef<[T]>], pad_id: T) -> (Array2<T>, Array1<usize>) {
+    let batch_size = ids.len();
+    let max_len = ids
         .iter()
-        .map(|t| t.token_ids.len())
+        .map(|t| t.as_ref().len())
         .max()
-        .unwrap_or(0);
-    let mut token_ids = Vec::with_capacity(max_token_ids * tokenizations.len());
-    let mut lengths = Vec::with_capacity(tokenizations.len());
-    for &tokenization in tokenizations {
-        let num_token_ids = tokenization.token_ids.len();
-        token_ids.append(&mut join(vec![
-            tokenization
-                .token_ids
-                .clone()
-                .into_iter()
-                .map(|t| t as i32)
-                .collect(),
-            vec![pad_token_id as i32; max_token_ids - num_token_ids],
-        ]));
-        lengths.push(num_token_ids);
+        .unwrap_or_default();
+    let mut padded_ids = Vec::with_capacity(max_len * batch_size);
+    let mut lengths = Vec::with_capacity(batch_size);
+    for id in ids {
+        padded_ids.extend(id.as_ref().iter().cloned());
+        padded_ids.extend(repeat(pad_id).take(max_len - id.as_ref().len()));
+        lengths.push(id.as_ref().len());
     }
-    let token_id_arr = Array2::from_shape_vec((batch_size, max_token_ids), token_ids).unwrap();
-    let info = prepare_info(tokenizations, &lengths);
-    let pad_mask = padding_mask(&lengths).unwrap();
-    (token_id_arr, pad_mask, lengths, info)
+    (
+        Array2::from_shape_vec((batch_size, max_len), padded_ids).expect("should not happen"),
+        Array1::from_vec(lengths),
+    )
 }
 
-#[inline]
-fn label_lengths(labels: &[&Label]) -> Vec<usize> {
-    labels
-        .iter()
-        .map(|&label| match label {
-            Label::Classification(_) => 1,
-            Label::SequenceClassification(label, ..) => label.len(),
-            Label::Generation(label, ..) => {
-                assert!(
-                    label.len() > 1,
-                    "generation label must be at least two tokens long"
-                );
-                label.len() - 1
+pub enum TensorizedTrainTaskInput {
+    Classification(Array2<u32>, Array1<usize>, Array1<i32>),
+    SequenceClassification(Array2<u32>, Array1<usize>, Array2<i32>),
+    Generation(Array2<u32>, Array1<usize>, Array2<i32>),
+    ConditionalGeneration(
+        Array2<u32>,
+        Array1<usize>,
+        Array2<u32>,
+        Array1<usize>,
+        Array2<i32>,
+    ),
+}
+
+impl TensorizedTrainTaskInput {
+    pub fn into_py(self, py: Python<'_>) -> anyhow::Result<PyObject> {
+        let d = PyDict::new_bound(py);
+        let input_type = match self {
+            TensorizedTrainTaskInput::Classification(token_ids, lengths, labels) => {
+                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
+                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
+                d.set_item("labels", labels.into_pyarray_bound(py))?;
+                "classification"
             }
-            Label::Empty => 0,
-        })
-        .collect()
-}
-
-#[inline]
-fn prepare_label_info(labels: &[&Label]) -> (TensorizedLabelInfo, Vec<usize>, usize) {
-    let label_lengths = label_lengths(labels);
-    let max_label_length = label_lengths.iter().max().copied().unwrap_or(0);
-    let label_info = match labels[0] {
-        Label::Generation(..) => {
-            let mut label_vec =
-                Vec::with_capacity(labels.len() * max_label_length.saturating_sub(1));
-            let mut prefix_lengths = Vec::with_capacity(labels.len());
-            for (idx, label) in labels.iter().enumerate() {
-                if let Label::Generation(label, pad_token_id, prefix_length) = label {
-                    label_vec.extend(label.iter().cloned().take(label.len() - 1).chain(vec![
-                                *pad_token_id as i32;
-                                max_label_length - label_lengths[idx]
-                            ]));
-                    if let Some(prefix_length) = prefix_length {
-                        prefix_lengths.push(*prefix_length);
-                    }
-                } else {
-                    unreachable!()
-                }
+            TensorizedTrainTaskInput::SequenceClassification(token_ids, lengths, labels) => {
+                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
+                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
+                d.set_item("labels", labels.into_pyarray_bound(py))?;
+                "sequence_classification"
             }
-            let label_arr = Array2::from_shape_vec((labels.len(), max_label_length), label_vec)
-                .expect("should not fail");
-            TensorizedLabelInfo::Generation(
-                label_arr,
-                padding_mask(label_lengths.as_slice()).expect("failed to create padding mask"),
-                label_lengths.clone(),
-                if prefix_lengths.is_empty() {
-                    None
-                } else {
-                    Some(prefix_lengths)
-                },
-            )
-        }
-        _ => TensorizedLabelInfo::Empty,
-    };
-    (label_info, label_lengths, max_label_length)
-}
-
-impl Tensorize for Batch<Item> {
-    type Output = (
-        Array2<i32>,                // token ids
-        PaddingMask,                // padding mask
-        Vec<usize>,                 // lengths
-        TensorizedTokenizationInfo, // additional info
-        ArrayD<i32>,                // labels
-        TensorizedLabelInfo,        // additional label info
-    );
-
-    fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
-        assert!(!self.is_empty());
-        let (token_id_arr, padding_mask, lengths, info) = prepare_tokenization(
-            &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),
-            tokenizer.pad_token_id(),
-        );
-
-        let (label_info, label_lengths, max_label_length) =
-            prepare_label_info(&self.iter().map(|i| &i.label).collect::<Vec<_>>());
-        let batch_size = self.len();
-        let mut labels = Vec::with_capacity(batch_size * max_label_length);
-        for (idx, item) in self.iter().enumerate() {
-            labels.append(&mut match &item.label {
-                Label::Classification(label) => vec![*label],
-                Label::SequenceClassification(labels) => labels
-                    .iter()
-                    .cloned()
-                    .chain(vec![-1; max_label_length - label_lengths[idx]])
-                    .collect(),
-                Label::Generation(labels, ..) => labels
-                    .iter()
-                    .cloned()
-                    .skip(1)
-                    .chain(vec![-1; max_label_length - label_lengths[idx]])
-                    .collect(),
-                Label::Empty => vec![],
-            });
-        }
-        let label_arr = match labels.len() {
-            n if n == batch_size => Array1::from_vec(labels).into_dyn(),
-            n => Array2::from_shape_vec((batch_size, n / batch_size), labels)
-                .unwrap()
-                .into_dyn(),
+            TensorizedTrainTaskInput::Generation(token_ids, lengths, labels) => {
+                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
+                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
+                d.set_item("labels", labels.into_pyarray_bound(py))?;
+                "generation"
+            }
+            TensorizedTrainTaskInput::ConditionalGeneration(
+                token_ids,
+                lengths,
+                target_token_ids,
+                target_lengths,
+                labels,
+            ) => {
+                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
+                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
+                d.set_item("labels", labels.into_pyarray_bound(py))?;
+                d.set_item("target_token_ids", target_token_ids.into_pyarray_bound(py))?;
+                d.set_item("target_lengths", target_lengths.into_pyarray_bound(py))?;
+                "conditional_generation"
+            }
         };
-        (
-            token_id_arr,
-            padding_mask,
-            lengths,
-            info,
-            label_arr,
-            label_info,
-        )
+        d.set_item("type", input_type)?;
+        Ok(d.into())
+    }
+}
+
+impl Tensorize for Batch<TrainItem> {
+    type Output = TensorizedTrainTaskInput;
+
+    fn tensorize(&self) -> Self::Output {
+        match self.first().expect("empty batch should not happen").input {
+            TrainTaskInput::Classification { pad_token_id, .. } => {
+                let (token_ids, labels): (Vec<_>, _) = self
+                    .iter()
+                    .filter_map(|item| {
+                        if let TrainTaskInput::Classification {
+                            token_ids, label, ..
+                        } = &item.input
+                        {
+                            Some((token_ids, *label))
+                        } else {
+                            None
+                        }
+                    })
+                    .unzip();
+                let (token_ids, lengths) = pad_ids(&token_ids, pad_token_id);
+                TensorizedTrainTaskInput::Classification(
+                    token_ids,
+                    lengths,
+                    Array1::from_vec(labels),
+                )
+            }
+            TrainTaskInput::SequenceClassification { pad_token_id, .. } => {
+                let (token_ids, labels): (Vec<_>, Vec<_>) = self
+                    .iter()
+                    .filter_map(|item| {
+                        if let TrainTaskInput::SequenceClassification {
+                            token_ids, labels, ..
+                        } = &item.input
+                        {
+                            Some((token_ids, labels))
+                        } else {
+                            None
+                        }
+                    })
+                    .unzip();
+                let (token_ids, lengths) = pad_ids(&token_ids, pad_token_id);
+                let (labels, _) = pad_ids(&labels, -1);
+                TensorizedTrainTaskInput::SequenceClassification(token_ids, lengths, labels)
+            }
+            TrainTaskInput::Generation { pad_token_id, .. } => {
+                let (token_ids, labels): (Vec<_>, Vec<_>) = self
+                    .iter()
+                    .filter_map(|item| {
+                        if let TrainTaskInput::Generation {
+                            token_ids, labels, ..
+                        } = &item.input
+                        {
+                            Some((token_ids, labels))
+                        } else {
+                            None
+                        }
+                    })
+                    .unzip();
+                let (token_ids, lengths) = pad_ids(&token_ids, pad_token_id);
+                let (labels, _) = pad_ids(&labels, -1);
+                TensorizedTrainTaskInput::Generation(token_ids, lengths, labels)
+            }
+            TrainTaskInput::ConditionalGeneration {
+                pad_token_id,
+                target_pad_token_id,
+                ..
+            } => {
+                let (token_ids, target_token_ids, labels): (Vec<_>, Vec<_>, Vec<_>) = self
+                    .iter()
+                    .filter_map(|item| {
+                        if let TrainTaskInput::ConditionalGeneration {
+                            token_ids,
+                            target_token_ids,
+                            labels,
+                            ..
+                        } = &item.input
+                        {
+                            Some((token_ids, target_token_ids, labels))
+                        } else {
+                            None
+                        }
+                    })
+                    .multiunzip();
+                let (token_ids, lengths) = pad_ids(&token_ids, pad_token_id);
+                let (target_token_ids, target_lengths) =
+                    pad_ids(&target_token_ids, target_pad_token_id);
+                let (labels, _) = pad_ids(&labels, -1);
+                TensorizedTrainTaskInput::ConditionalGeneration(
+                    token_ids,
+                    lengths,
+                    target_token_ids,
+                    target_lengths,
+                    labels,
+                )
+            }
+        }
     }
 }
 
@@ -494,26 +525,15 @@ impl Tensorize for Batch<Item> {
 pub struct InferenceBatch {
     len: usize,
     batch: Option<Batch<InferenceItem>>,
-    tensorized: Option<<Batch<InferenceItem> as Tensorize>::Output>,
 }
 
-type PyInferenceTensors = (Py<PyArray2<i32>>, PyObject, Vec<usize>, PyObject);
 #[pymethods]
 impl InferenceBatch {
     fn __len__(&self) -> usize {
         self.len
     }
 
-    fn data(&mut self) -> anyhow::Result<Batch<InferenceData>> {
-        self.batch
-            .as_ref()
-            .ok_or_else(|| {
-                anyhow!("can only get data before getting items, because they are moved")
-            })
-            .map(|batch| batch.iter().map(|item| item.data.clone()).collect())
-    }
-
-    fn infos(&mut self) -> anyhow::Result<Batch<Option<PyObject>>> {
+    fn infos(&self) -> anyhow::Result<Batch<Option<PyObject>>> {
         self.batch
             .as_ref()
             .ok_or_else(|| {
@@ -522,38 +542,24 @@ impl InferenceBatch {
             .map(|batch| batch.iter().map(|item| item.data.info.clone()).collect())
     }
 
+    fn token_ids(&self) -> anyhow::Result<Batch<Vec<u32>>> {
+        self.batch
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("can only get token ids before getting items, because they are moved")
+            })
+            .map(|batch| {
+                batch
+                    .iter()
+                    .map(|item| item.tokenization.token_ids.clone())
+                    .collect()
+            })
+    }
+
     fn items(&mut self) -> anyhow::Result<Batch<InferenceItem>> {
         self.batch
             .take()
             .ok_or_else(|| anyhow!("can only get items once, because their data is moved"))
-    }
-
-    fn tensors(&mut self, py: Python<'_>) -> anyhow::Result<PyInferenceTensors> {
-        let tensorized = self
-            .tensorized
-            .take()
-            .ok_or_else(|| anyhow!("can only get tensors once, because their data is moved"))?;
-        Ok((
-            tensorized.0.into_pyarray(py).into_py(py),
-            tensorized.1.into_py(py),
-            tensorized.2,
-            tensorized.3.into_py(py),
-        ))
-    }
-}
-
-impl Tensorize for Batch<InferenceItem> {
-    type Output = (
-        Array2<i32>,
-        PaddingMask,
-        Vec<usize>,
-        TensorizedTokenizationInfo,
-    );
-    fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output {
-        prepare_tokenization(
-            &self.iter().map(|i| &i.tokenization).collect::<Vec<_>>(),
-            tokenizer.pad_token_id(),
-        )
     }
 }
 
@@ -601,52 +607,48 @@ impl<'a> FromPyObject<'a> for PostprocessingConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct TextDataPipelineConfig {
+pub struct TrainPipelineConfig {
     pub preprocessing: PreprocessingConfig,
-    pub labeling: LabelingConfig,
+    pub task: TrainTaskConfig,
     pub postprocessing: PostprocessingConfig,
 }
 
-impl<'a> FromPyObject<'a> for TextDataPipelineConfig {
+impl<'a> FromPyObject<'a> for TrainPipelineConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = obj.extract()?;
         let Some(preprocessing) = d.get_item("preprocessing")? else {
-            return Err(py_required_key_error(
-                "preprocessing",
-                "preprocessing pipeline config",
-            ));
+            return Err(py_required_key_error("preprocessing", "pipeline config"));
         };
-        let Some(labeling) = d.get_item("labeling")? else {
-            return Err(py_required_key_error(
-                "labeling",
-                "preprocessing pipeline config",
-            ));
+        let Some(task) = d.get_item("task")? else {
+            return Err(py_required_key_error("task", "pipeline config"));
         };
         let Some(postprocessing) = d.get_item("postprocessing")? else {
-            return Err(py_required_key_error(
-                "postprocessing",
-                "preprocessing pipeline config",
-            ));
+            return Err(py_required_key_error("postprocessing", "pipeline config"));
         };
-        Ok(TextDataPipelineConfig {
+        Ok(TrainPipelineConfig {
             preprocessing: preprocessing.extract()?,
-            labeling: labeling.extract()?,
+            task: task.extract()?,
             postprocessing: postprocessing.extract()?,
         })
     }
+}
+
+pub enum InferenceTaskConfig {}
+
+pub struct InferencePipelineConfig {
+    pub preprocessing: PreprocessingFnConfig,
+    pub task: InferenceTaskConfig,
 }
 
 // a pipeline is a function mapping an input to an output,
 // and it also sharable across threads
 pub type Pipeline<I, O> = Arc<dyn Send + Sync + 'static + Fn(I) -> O>;
 
-pub type TextDataPipeline = Pipeline<(TextData, TextDataInfo), anyhow::Result<Item>>;
-pub fn text_data_pipeline_with_tokenizer(
-    pipeline_cfg: TextDataPipelineConfig,
-    tokenizer_cfg: TokenizerConfig,
+pub type TrainPipeline = Pipeline<(TrainData, TextDataInfo), anyhow::Result<TrainItem>>;
+pub fn train_pipeline(
+    pipeline_cfg: TrainPipelineConfig,
     max_length: usize,
-) -> anyhow::Result<(TextDataPipeline, Arc<AtomicUsize>)> {
-    let tokenizer = tokenizer(tokenizer_cfg)?;
+) -> anyhow::Result<(TrainPipeline, Arc<AtomicUsize>)> {
     let max_length = Arc::new(AtomicUsize::new(max_length));
     let preprocess_fn: Box<PreprocessingFn> = match pipeline_cfg.preprocessing {
         PreprocessingConfig::Single(cfg) => {
@@ -662,16 +664,16 @@ pub fn text_data_pipeline_with_tokenizer(
             })
         }
     };
-    let label_fn = labeling(pipeline_cfg.labeling);
+    let task_fn = train_task(pipeline_cfg.task);
     let postprocess_fn: Box<PostprocessingFn> = match pipeline_cfg.postprocessing {
         PostprocessingConfig::Single(cfg) => {
-            let postprocessing = postprocessing(cfg, &tokenizer, max_length.clone());
+            let postprocessing = postprocessing(cfg, max_length.clone());
             Box::new(postprocessing)
         }
         PostprocessingConfig::PerFile(cfgs) => {
             let postprocessings: Vec<_> = cfgs
                 .into_iter()
-                .map(|cfg| postprocessing(cfg, &tokenizer, max_length.clone()))
+                .map(|cfg| postprocessing(cfg, max_length.clone()))
                 .collect();
             Box::new(move |item, info| {
                 postprocessings.get(info.file_idx).unwrap_or_else(|| {
@@ -681,11 +683,10 @@ pub fn text_data_pipeline_with_tokenizer(
         }
     };
     Ok((
-        Arc::new(move |(data, info)| -> anyhow::Result<Item> {
+        Arc::new(move |(data, info)| -> anyhow::Result<TrainItem> {
             let (data, info) = preprocess_fn(data, info)?;
-            let item = Item {
-                tokenization: tokenizer.tokenize(&data.input, None, None, false)?,
-                label: label_fn(&data)?,
+            let item = TrainItem {
+                input: task_fn(&data)?,
                 data,
             };
             let (item, _) = postprocess_fn(item, info)?;
@@ -700,26 +701,17 @@ pub struct InferenceDataInfo {
 }
 pub type InferencePipeline =
     Pipeline<(InferenceData, InferenceDataInfo), anyhow::Result<Vec<InferenceItem>>>;
-pub fn inference_pipeline_with_windows(
-    tokenizer_cfg: TokenizerConfig,
+pub fn inference_pipeline(
     window_cfg: WindowConfig,
-    normalization: Option<Normalization>,
-    clean_text: bool,
-    use_graphemes: bool,
+    tokenizer_cfg: TokenizerConfig,
 ) -> anyhow::Result<InferencePipeline> {
     let tok = tokenizer(tokenizer_cfg)?;
-    Ok(Arc::new(move |(mut data, info)| {
-        if clean_text {
-            data.text = clean(&data.text, use_graphemes)
-        }
-        if let Some(normalization) = normalization {
-            data.text = normalize(&data.text, normalization, use_graphemes);
-        }
+    Ok(Arc::new(move |(data, info)| {
         windows(&data.text, &window_cfg)?
             .iter()
             .enumerate()
             .map(|(w_idx, w)| {
-                let tokenization = tok.tokenize(w.str, None, None, true)?;
+                let tokenization = tok.tokenize(w.str, false)?;
                 Ok(InferenceItem::new(
                     data.clone(),
                     tokenization,
@@ -733,12 +725,7 @@ pub fn inference_pipeline_with_windows(
     }))
 }
 
-type InferenceDataIter = dyn Iterator<
-        Item = (
-            Batch<InferenceItem>,
-            <Batch<InferenceItem> as Tensorize>::Output,
-        ),
-    > + Send;
+type InferenceDataIter = dyn Iterator<Item = Batch<InferenceItem>> + Send;
 #[pyclass]
 struct InferenceLoader {
     iter: Box<InferenceDataIter>,
@@ -753,11 +740,8 @@ impl InferenceLoader {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         generators: Vec<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>>,
-        tokenizer_config: TokenizerConfig,
-        window_config: WindowConfig,
-        normalization: Option<Normalization>,
-        clean_text: bool,
-        use_graphemes: bool,
+        tokenizer: TokenizerConfig,
+        window: WindowConfig,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -765,13 +749,7 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
-        let pipeline = inference_pipeline_with_windows(
-            tokenizer_config.clone(),
-            window_config,
-            normalization,
-            clean_text,
-            use_graphemes,
-        )?;
+        let pipeline = inference_pipeline(window, tokenizer)?;
         let splits: Vec<usize> = generators.iter().map(|g| g.min_len()).collect();
         let min_items = splits.iter().sum();
         let prefetch_factor = prefetch_factor.max(1);
@@ -808,7 +786,6 @@ impl InferenceLoader {
                 batch_limit_type,
                 None,
             )
-            .tensorized(tokenizer_config)?
             .buffered(buffer_size);
         Ok(InferenceLoader {
             iter: Box::new(iter),
@@ -825,11 +802,8 @@ impl InferenceLoader {
     #[staticmethod]
     #[pyo3(signature=(
         iterator,
-        tokenizer_config,
-        window_config,
-        normalization = None,
-        clean_text = false,
-        use_graphemes = true,
+        tokenizer,
+        window,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
         batch_limit = 16,
@@ -839,11 +813,8 @@ impl InferenceLoader {
     ))]
     pub fn from_iterator(
         iterator: PyObject,
-        tokenizer_config: TokenizerConfig,
-        window_config: WindowConfig,
-        normalization: Option<Normalization>,
-        clean_text: bool,
-        use_graphemes: bool,
+        tokenizer: TokenizerConfig,
+        window: WindowConfig,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -856,11 +827,8 @@ impl InferenceLoader {
         let data: Vec<anyhow::Result<_>> = inference_data_generator_from_python(iterator).collect();
         Self::new(
             vec![Box::new(data.into_iter())],
-            tokenizer_config,
-            window_config,
-            normalization,
-            clean_text,
-            use_graphemes,
+            tokenizer,
+            window,
             num_threads,
             buffer_size,
             batch_limit,
@@ -874,11 +842,8 @@ impl InferenceLoader {
     #[staticmethod]
     #[pyo3(signature=(
         files,
-        tokenizer_config,
-        window_config,
-        normalization = None,
-        clean_text = false,
-        use_graphemes = true,
+        tokenizer,
+        window,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
         batch_limit = 16,
@@ -888,11 +853,8 @@ impl InferenceLoader {
     ))]
     pub fn from_files(
         files: Vec<String>,
-        tokenizer_config: TokenizerConfig,
-        window_config: WindowConfig,
-        normalization: Option<Normalization>,
-        clean_text: bool,
-        use_graphemes: bool,
+        tokenizer: TokenizerConfig,
+        window: WindowConfig,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -910,11 +872,8 @@ impl InferenceLoader {
         }
         Self::new(
             generators,
-            tokenizer_config,
-            window_config,
-            normalization,
-            clean_text,
-            use_graphemes,
+            tokenizer,
+            window,
             num_threads,
             buffer_size,
             batch_limit,
@@ -929,14 +888,13 @@ impl InferenceLoader {
     }
 
     fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<InferenceBatch>>> {
-        if let Some((batch, tensorized)) = slf.iter.next() {
+        if let Some(batch) = slf.iter.next() {
             Ok(Some(
                 Py::new(
                     slf.py(),
                     InferenceBatch {
                         len: batch.len(),
                         batch: Some(batch),
-                        tensorized: Some(tensorized),
                     },
                 )
                 .expect("should not fail"),
@@ -952,13 +910,13 @@ impl InferenceLoader {
     }
 }
 
-type DataIter = dyn Iterator<Item = (Batch<Item>, <Batch<Item> as Tensorize>::Output)> + Send;
+type TrainIter =
+    dyn Iterator<Item = (Batch<TrainItem>, <Batch<TrainItem> as Tensorize>::Output)> + Send;
 #[pyclass]
-struct DataLoader {
-    pipeline: TextDataPipeline,
+struct TrainLoader {
+    pipeline: TrainPipeline,
     files: Vec<(String, Option<String>)>,
     strategy: TextIterationStrategy,
-    tokenizer_config: TokenizerConfig,
     num_threads: u8,
     buffer_size: usize,
     batch_limit: usize,
@@ -977,15 +935,14 @@ struct DataLoader {
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
-    iter: Option<Box<DataIter>>,
+    iter: Option<Box<TrainIter>>,
 }
 
-impl DataLoader {
+impl TrainLoader {
     #[allow(clippy::too_many_arguments)]
     fn new(
         files: Vec<(String, Option<String>)>,
-        pipeline_config: TextDataPipelineConfig,
-        tokenizer_config: TokenizerConfig,
+        pipeline: TrainPipelineConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
         buffer_size: usize,
@@ -1004,11 +961,7 @@ impl DataLoader {
             return Err(anyhow!("seed cannot be None if shuffle is true",));
         }
         let prefetch_factor = prefetch_factor.max(1);
-        let (pipeline, max_length) = text_data_pipeline_with_tokenizer(
-            pipeline_config,
-            tokenizer_config.clone(),
-            max_length,
-        )?;
+        let (pipeline, max_length) = train_pipeline(pipeline, max_length)?;
         // handle distributed arguments
         let (rank, world_size) = distributed.unwrap_or((0, 1));
         assert!(
@@ -1016,11 +969,10 @@ impl DataLoader {
             "rank {rank} is invalid given world size {world_size}"
         );
         let limit = limit.unwrap_or(usize::MAX);
-        Ok(DataLoader {
+        Ok(TrainLoader {
             pipeline,
             files,
             strategy,
-            tokenizer_config,
             num_threads,
             buffer_size,
             batch_limit,
@@ -1045,7 +997,7 @@ impl DataLoader {
         let seed = self.seed.unwrap_or(0) + self.epoch as u64;
         let mut generators = vec![];
         for (input_file, target_file) in self.files.iter() {
-            let generator = text_data_generator_from_files(input_file, target_file.as_ref())?;
+            let generator = train_data_generator_from_files(input_file, target_file.as_ref())?;
             generators.push(generator);
         }
 
@@ -1085,7 +1037,7 @@ impl DataLoader {
                 self.batch_limit_type,
                 Some(seed),
             )
-            .tensorized(self.tokenizer_config.clone())?
+            .tensorized()
             .buffered(self.buffer_size);
         self.iter = Some(Box::new(batch_iter));
         Ok(())
@@ -1093,14 +1045,12 @@ impl DataLoader {
 }
 
 #[pymethods]
-impl DataLoader {
+impl TrainLoader {
     #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     #[pyo3(signature = (
         files,
-        pipeline_config,
-        tokenizer_config,
-        languages = None,
+        pipeline,
         strategy = TextIterationStrategy::Sequential,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
@@ -1117,9 +1067,7 @@ impl DataLoader {
     ))]
     pub fn from_files(
         files: Vec<(String, Option<String>)>,
-        pipeline_config: TextDataPipelineConfig,
-        tokenizer_config: TokenizerConfig,
-        languages: Option<Vec<String>>,
+        pipeline: TrainPipelineConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
         buffer_size: usize,
@@ -1137,18 +1085,9 @@ impl DataLoader {
         if files.is_empty() {
             return Err(anyhow!("no files specified"));
         }
-        if languages.is_some() && files.len() != languages.as_ref().unwrap().len() {
-            return Err(anyhow!(
-                "there must be one language for every file if specified, but \
-                    got {} files and {} languages",
-                files.len(),
-                languages.as_ref().unwrap().len()
-            ));
-        }
         Self::new(
             files,
-            pipeline_config,
-            tokenizer_config,
+            pipeline,
             strategy,
             num_threads,
             buffer_size,
@@ -1170,7 +1109,7 @@ impl DataLoader {
         Ok(slf)
     }
 
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<DataBatch>>> {
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<TrainBatch>>> {
         if slf.iter.is_none() {
             slf.init_iter()?;
         }
@@ -1178,7 +1117,7 @@ impl DataLoader {
             Some(
                 Py::new(
                     slf.py(),
-                    DataBatch {
+                    TrainBatch {
                         len: batch.len(),
                         batch: Some(batch),
                         tensorized: Some(tensorized),
@@ -1217,17 +1156,17 @@ impl DataLoader {
 /// - single or multi-threaded preprocessing
 /// - batched loading (limited by a max batch size or a max number of tokens)
 /// - distributed loading (distribute work across multiple processes or machines)
-pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "data")?;
-    m.add_class::<DataLoader>()?;
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "data")?;
+    m.add_class::<TrainLoader>()?;
+    m.add_class::<TrainData>()?;
+    m.add_class::<TrainItem>()?;
+    m.add_class::<TrainBatch>()?;
     m.add_class::<InferenceLoader>()?;
-    m.add_class::<TextData>()?;
     m.add_class::<InferenceData>()?;
-    m.add_class::<Item>()?;
     m.add_class::<InferenceItem>()?;
-    m.add_class::<DataBatch>()?;
     m.add_class::<InferenceBatch>()?;
-    parent_module.add_submodule(m)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

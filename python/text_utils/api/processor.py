@@ -1,4 +1,5 @@
 import collections
+import copy
 import math
 import sys
 import os
@@ -174,23 +175,9 @@ class TextProcessor:
         self.model = model
         self.to(device)
 
-        self._inference_loader_cfg = self._build_inference_loader_config()
-
-    def _build_inference_loader_config(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    def _prepare_batch(self, batch: data.InferenceBatch) -> dict[str, Any]:
-        raise NotImplementedError
-
     @torch.inference_mode()
-    def _inference(self, inputs: dict[str, Any]) -> Iterator[Any]:
+    def _inference(self, batch: data.InferenceBatch) -> Iterator[Any]:
         raise NotImplementedError
-
-    def _run_model(self, batch: data.InferenceBatch) -> list[Any]:
-        inputs = self._prepare_batch(batch)
-        # by default only return the last and no intermediate outputs
-        *_, last = self._inference(inputs)
-        return last
 
     def _process_results(
         self,
@@ -226,28 +213,28 @@ class TextProcessor:
         else:
             prefetch_factor = 1
 
-        self._inference_loader_cfg.update({
+        inference_cfg = {
+            "tokenizer": self.cfg["inference"]["tokenizer"],
+            "window": self.cfg["inference"]["window"],
             "num_threads": num_threads,
             "batch_limit": batch_limit,
             "buffer_size": buffer_size,
             "prefetch_factor": prefetch_factor,
             "batch_limit_type": batch_limit_type,
             "sort": sort
-        })
-        self._inference_loader_cfg.update(kwargs)
+        }
+        inference_cfg.update(kwargs)
         if isinstance(inputs, list):
-            files, languages = inputs
             loader = data.InferenceLoader.from_files(
-                files=files,
-                languages=languages,
-                **self._inference_loader_cfg
+                inputs,
+                **inference_cfg
             )
         elif isinstance(inputs, Iterator):
             # threading currently not supported with python iterators
-            self._inference_loader_cfg["num_threads"] = 0
+            inference_cfg["num_threads"] = 0
             loader = data.InferenceLoader.from_iterator(
                 inputs,
-                **self._inference_loader_cfg
+                **inference_cfg
             )
         else:
             raise ValueError(
@@ -289,7 +276,8 @@ class TextProcessor:
             show_progress
         )
         for batch in loader:
-            outputs = self._run_model(batch)
+            # use only last output of inference iterator
+            *_, outputs = self._inference(batch)
             for item, output in zip(batch.items(), outputs):
                 if item.item_idx not in results:
                     results[item.item_idx] = {}
@@ -327,7 +315,7 @@ class TextProcessor:
             show_progress
         )
         for batch in loader:
-            outputs = self._run_model(batch)
+            *_, outputs = self._inference(batch)
             for item, output in zip(batch.items(), outputs):
                 if item.item_idx == prev_item_idx:
                     window_items.append(item)

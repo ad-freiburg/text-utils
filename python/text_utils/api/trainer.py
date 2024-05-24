@@ -139,16 +139,6 @@ training will resume from latest checkpoint."
         cuda.matmul.allow_tf32 = True
         cudnn.benchmark = True
 
-        self.input_tokenizer = tokenization.Tokenizer.from_config(
-            self.cfg["input_tokenizer"]
-        )
-        if "output_tokenizer" in self.cfg:
-            self.output_tokenizer = tokenization.Tokenizer.from_config(
-                self.cfg["output_tokenizer"]
-            )
-        else:
-            self.output_tokenizer = None
-
         model, sharding_policy = self._model_from_config(self.cfg)
 
         peft = self.cfg["train"].get("peft", None)
@@ -164,18 +154,13 @@ training will resume from latest checkpoint."
                 peft.get("use_8bit", False)
             )
 
-        precision = self.cfg["train"].get("precision", "fp32")
-        if precision == "fp32":
-            self.precision_dtype = torch.float32
-        elif precision == "fp16":
-            self.precision_dtype = torch.float16
-        elif precision == "bfp16":
-            self.precision_dtype = torch.bfloat16
+        mixed_precision = self.cfg["train"].get("mixed_precision", None)
+        if mixed_precision == "fp16":
+            self.mixed_precision = torch.float16
+        elif mixed_precision == "bfp16":
+            self.mixed_precision = torch.bfloat16
         else:
-            raise ValueError(
-                f"unknown precision {precision}, "
-                f"must be fp32, fp16 or bfp16"
-            )
+            self.mixed_precision = None
 
         compile = self.cfg["train"].get("compile", False)
         dist_cfg = self.cfg["train"].get("distributed", {})
@@ -223,9 +208,9 @@ training will resume from latest checkpoint."
                 model,
                 auto_wrap_policy=sharding_policy,
                 mixed_precision=MixedPrecision(
-                    param_dtype=self.precision_dtype,
-                    reduce_dtype=self.precision_dtype,
-                    buffer_dtype=self.precision_dtype
+                    param_dtype=self.mixed_precision,
+                    reduce_dtype=self.mixed_precision,
+                    buffer_dtype=self.mixed_precision
                 ),
                 cpu_offload=CPUOffload(offload_params=offload_params),
                 limit_all_gathers=True,
@@ -235,6 +220,10 @@ training will resume from latest checkpoint."
                 device_id=self.info.device,
                 use_orig_params=compile or (peft is not None),
             )
+            # set mixed precision to none here for FSDP to avoid autocasting
+            # later, because FSDP handles mixed precision itself
+            self.mixed_precision = None
+
             FSDP.set_state_dict_type(
                 self.model,
                 StateDictType.FULL_STATE_DICT,
@@ -274,7 +263,6 @@ training will resume from latest checkpoint."
         ) = self._data_from_config(
             self.cfg["train"]["data"],
             self.cfg["val"]["data"],
-            self.cfg["input_tokenizer"],
             num_epochs=num_epochs,
             seed=self.cfg["seed"],
             info=self.info
@@ -295,13 +283,16 @@ training will resume from latest checkpoint."
             lower,
             self.training_items
         )
+
         cooldown = self.cfg["val"].get("cooldown", 0)
         if isinstance(cooldown, float):
             cooldown_items = self.training_items * cooldown
         elif isinstance(cooldown, int):
             cooldown_items = cooldown
         else:
-            raise ValueError(f"cooldown must be a float between 0 and 1, but got {cooldown}")
+            raise ValueError(
+                f"cooldown must be a float between 0 and 1 or an int, but got {cooldown}"
+            )
         if cooldown_items > 0:
             self.cooldown_items = clamp(
                 cooldown_items,
@@ -368,7 +359,7 @@ training will resume from latest checkpoint."
                 f"Optimizer parameter groups:\n{param_group_info}"
             )
             self.logger.info(
-                f"Training with {dist_type} and {precision} precision"
+                f"Training with {dist_type} and {mixed_precision or 'no'} mixed precision"
             )
             self.logger.info(
                 f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
@@ -379,15 +370,6 @@ training will resume from latest checkpoint."
                 f"evaluating every {self.eval_interval:,} items"
                 + f", stepping every {self.step_interval:,} items" if self.lr_scheduler is not None else ""
             )
-
-            test_sentence = "This is a test sentence."
-            self.logger.info(
-                f"Testing input tokenizer:\n{self.input_tokenizer.tokenize(test_sentence).token_ids}"
-            )
-            if self.output_tokenizer is not None:
-                self.logger.info(
-                    f"Testing output tokenizer:\n{self.output_tokenizer.tokenize(test_sentence).token_ids}"
-                )
 
             self.logger.info(
                 f"Type 'tensorboard --logdir {self.directories['tensorboard']}' "
@@ -427,7 +409,7 @@ training will resume from latest checkpoint."
             )
 
         self.grad_scaler = ShardedGradScaler(
-            enabled=precision != "fp32"
+            enabled=mixed_precision != "fp32"
         )
 
     def _save_checkpoint(
@@ -539,6 +521,15 @@ training will resume from latest checkpoint."
         return None
 
     @classmethod
+    def _metric_from_config(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+        prefix: str
+    ) -> tensorboard.TensorboardMetric:
+        raise NotImplementedError("metric from config not implemented")
+
+    @classmethod
     def _copy_file_to_tmp_dir(cls, path: str, dir: str, info: distributed.DistributedInfo) -> str:
         path = os.path.abspath(path)
         _, file_name = os.path.split(path)
@@ -562,7 +553,6 @@ training will resume from latest checkpoint."
         info: distributed.DistributedInfo
     ) -> Tuple[
         List[Tuple[str, Optional[str]]],
-        List[Optional[str]],
         List[Optional[Any]],
         List[Optional[Any]],
         List[str]
@@ -570,13 +560,11 @@ training will resume from latest checkpoint."
         src_paths = []
         src_preprocessings = []
         src_postprocessings = []
-        src_langs = []
         cleanup_paths = []
         for src in sources:
             src = copy.deepcopy(src)
             src_type = src.pop("type")
             if src_type == "file":
-                lang = src.get("language")
                 preprocessing = src.get("preprocessing")
                 postprocessing = src.get("postprocessing")
                 path = src["path"]
@@ -588,9 +576,8 @@ training will resume from latest checkpoint."
                 src_preprocessings.append(preprocessing)
                 src_postprocessings.append(postprocessing)
                 src_paths.append((path, None))
-                src_langs.append(lang)
+
             elif src_type == "file_glob":
-                lang = src.get("language")
                 preprocessing = src.get("preprocessing")
                 postprocessing = src.get("postprocessing")
                 temp_dir = src.get("temp_dir")
@@ -602,9 +589,8 @@ training will resume from latest checkpoint."
                     src_preprocessings.append(preprocessing)
                     src_postprocessings.append(postprocessing)
                     src_paths.append((path, None))
-                    src_langs.append(lang)
+
             elif src_type == "file_pair":
-                lang = src.get("language")
                 preprocessing = src.get("preprocessing")
                 input_path = src["input_path"]
                 target_path = src["target_path"]
@@ -621,13 +607,13 @@ training will resume from latest checkpoint."
                     cleanup_paths.extend([input_path, target_path])
                 src_preprocessings.append(preprocessing)
                 src_paths.append((input_path, target_path))
-                src_langs.append(lang)
+
             else:
                 raise ValueError(f"unknown source type {src_type}")
+
         assert len(src_paths) > 0, "got no data sources"
         return (
             src_paths,
-            src_langs,
             src_preprocessings,
             src_postprocessings,
             cleanup_paths
@@ -638,13 +624,12 @@ training will resume from latest checkpoint."
         cls,
         train_cfg: Dict[str, Any],
         val_cfg: Union[List[Any], int],
-        tokenizer_config: Dict[str, Any],
         num_epochs: int,
         seed: Optional[int],
         info: distributed.DistributedInfo
     ) -> Tuple[
-        data.DataLoader,
-        data.DataLoader,
+        data.TrainLoader,
+        data.TrainLoader,
         int,
         int,
         int,
@@ -652,28 +637,12 @@ training will resume from latest checkpoint."
         List[str]
     ]:
         def prepare_data_loader(
-            default_language: Optional[str],
             pipeline_cfg: Dict[str, Any],
-            sources: List[Dict[str, Any]],
-            languages: List[Optional[str]],
+            sources: List[tuple[str, str | None]],
             preprocessings: List[Optional[Any]],
             postprocessings: List[Optional[Any]],
             **kwargs: Any,
-        ) -> data.DataLoader:
-            num_languages_specified = sum(
-                lang is not None for lang in languages
-            )
-            if num_languages_specified > 0 and num_languages_specified < len(languages):
-                assert default_language is not None, \
-                    "expected default_language to be specified if some, but not all " \
-                    "individual data sources specify a language"
-                languages = [
-                    default_language if lang is None else lang
-                    for lang in languages
-                ]
-            elif num_languages_specified == 0:
-                languages = None  # type: ignore
-
+        ) -> data.TrainLoader:
             pipeline_cfg = copy.deepcopy(pipeline_cfg)
             if "preprocessing" not in pipeline_cfg:
                 assert all(preproc is not None for preproc in preprocessings), \
@@ -686,11 +655,9 @@ training will resume from latest checkpoint."
                     "for pipeline"
                 pipeline_cfg["postprocessing"] = postprocessings
 
-            return data.DataLoader.from_files(
+            return data.TrainLoader.from_files(
                 sources,
                 pipeline_cfg,
-                tokenizer_config,
-                languages,
                 **kwargs
             )
 
@@ -713,7 +680,6 @@ training will resume from latest checkpoint."
             info
         )
 
-        default_language = train_cfg.pop("default_language", None)
         pipeline_cfg = train_cfg.pop("pipeline")
 
         if isinstance(val_cfg, int):
@@ -724,7 +690,6 @@ training will resume from latest checkpoint."
                     f"train limit ({train_limit:,}) cannot be smaller or " \
                     f"equal to val limit ({val_cfg:,})"
             train_loader = prepare_data_loader(
-                default_language,
                 pipeline_cfg,
                 *training,
                 skip=val_cfg,
@@ -736,7 +701,6 @@ training will resume from latest checkpoint."
             # for validation always turn off shuffling, turn on sorting, and
             # specify the val limit
             val_loader = prepare_data_loader(
-                default_language,
                 pipeline_cfg,
                 *training,
                 limit=val_cfg,
@@ -749,7 +713,6 @@ training will resume from latest checkpoint."
         elif isinstance(val_cfg, list):
             # if validation is a separate set of data sources
             train_loader = prepare_data_loader(
-                default_language,
                 pipeline_cfg,
                 *training,
                 seed=seed,
@@ -766,7 +729,6 @@ training will resume from latest checkpoint."
             )
             train_cleanup.extend(val_cleanup)
             val_loader = prepare_data_loader(
-                default_language,
                 pipeline_cfg,
                 *validation,
                 max_length=max_length,
@@ -991,31 +953,11 @@ training will resume from latest checkpoint."
             join=True
         )
 
-    def _prepare_batch(
-        self,
-        batch: data.DataBatch,
-        train: bool = True,
-    ) -> Tuple[Dict[str, Any], torch.Tensor]:
-        assert len(batch) > 0, "got empty batch"
-        token_ids_np, pad_mask_np, lengths, info, labels_np, _ = batch.tensors()
-        inputs = {
-            "token_ids": torch.from_numpy(token_ids_np).to(
-                non_blocking=True,
-                device=self.info.device
-            ),
-            "lengths": lengths,
-            "padding_mask": torch.from_numpy(pad_mask_np).to(
-                non_blocking=True,
-                device=self.info.device
-            ),
-            **api.to(info, self.info.device)
-        }
-        labels = torch.from_numpy(labels_np).to(
-            non_blocking=True,
-            dtype=torch.long,
-            device=self.info.device
-        )
-        return inputs, labels
+    def _prepare_batch(self, batch: data.TrainBatch) -> Tuple[
+        Dict[str, Any],
+        torch.Tensor
+    ]:
+        raise NotImplementedError("prepare batch not implemented")
 
     def _train_one_epoch(self):
         begin_of_epoch = time.perf_counter()
@@ -1055,16 +997,10 @@ training will resume from latest checkpoint."
             self.info.device
         )
 
-        metric_cfg = self.cfg["train"].get("metrics")
-        if metric_cfg is not None:
-            metrics = tensorboard.metrics_from_config(
-                metric_cfg,
-                self.input_tokenizer,
-                self.output_tokenizer,
-                prefix="train"
-            )
-        else:
-            metrics = []
+        metrics = []
+        for name, cfg in self.cfg["train"].get("metrics", {}).items():
+            metric = self._metric_from_config(name, cfg, "train")
+            metrics.append(metric)
 
         dist_items = torch.zeros(1, dtype=torch.long, device=self.info.device)
         start_items = self.epoch_items
@@ -1086,7 +1022,7 @@ training will resume from latest checkpoint."
                 )
 
             start_preparation = time.perf_counter()
-            inputs, labels = self._prepare_batch(batch, train=True)
+            inputs, labels = self._prepare_batch(batch)
             end_preparation = time.perf_counter()
 
             self.optimizer.zero_grad(set_to_none=True)
@@ -1094,8 +1030,8 @@ training will resume from latest checkpoint."
             start_fwdbwd = time.perf_counter()
             with torch.autocast(
                 "cuda",
-                dtype=self.precision_dtype,
-                enabled=self.precision_dtype != torch.float32
+                dtype=self.mixed_precision,
+                enabled=self.mixed_precision is not None
             ):
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
@@ -1271,8 +1207,6 @@ training will resume from latest checkpoint."
             if self.total_items >= self.eval_at:
                 # evaluation is done distributed
                 self._evaluate_and_checkpoint()
-                # benchmarking needs to be properly implemented by subclasses
-                self._benchmark_and_checkpoint()
 
                 if self.cooldown_items > 0:
                     if self.info.is_main_process:
@@ -1309,25 +1243,23 @@ training will resume from latest checkpoint."
         self.model = self.model.eval()
         self.loss_fn = self.loss_fn.eval()
 
-        metric_cfg = self.cfg["val"].get("metrics")
-        if metric_cfg is not None:
-            metrics = tensorboard.metrics_from_config(
-                metric_cfg,
-                self.input_tokenizer,
-                self.output_tokenizer,
-                prefix="val"
+        metrics = []
+        for name, cfg in self.cfg["val"].get("metrics", {}).items():
+            metric = self._metric_from_config(
+                name,
+                cfg,
+                "val"
             )
-        else:
-            metrics = []
+            metrics.append(metric)
 
         start = time.perf_counter()
         for batch_num, batch in enumerate(self.val_loader):
-            inputs, labels = self._prepare_batch(batch, train=False)
+            inputs, labels = self._prepare_batch(batch)
 
             with torch.autocast(
                 "cuda",
-                dtype=self.precision_dtype,
-                enabled=self.precision_dtype != torch.float32
+                dtype=self.mixed_precision,
+                enabled=self.mixed_precision is not None
             ), torch.no_grad():
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
@@ -1376,9 +1308,6 @@ training will resume from latest checkpoint."
 
         self.model = self.model.train()
         self.loss_fn = self.loss_fn.train()
-
-    def _benchmark_and_checkpoint(self):
-        pass
 
     def _start_cooldown(self):
         # already started

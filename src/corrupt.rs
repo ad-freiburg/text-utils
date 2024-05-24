@@ -4,7 +4,6 @@ use std::{
 };
 
 use crate::unicode::CS;
-use pyo3::prelude::*;
 use rand::Rng;
 use rand_distr::{Distribution, WeightedIndex};
 
@@ -275,14 +274,6 @@ pub fn edit_word<'s>(
         }
         _ => (cs.str.to_string(), exclude_indices),
     }
-}
-
-/// A submodule containing functions to corrupt text
-pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "corrupt")?;
-    parent_module.add_submodule(m)?;
-
-    Ok(())
 }
 
 #[cfg(test)]

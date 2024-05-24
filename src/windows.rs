@@ -7,26 +7,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 #[derive(Debug, Clone)]
-pub enum Result {
-    SequenceClassification(Vec<usize>),
-    SequenceGeneration(Vec<usize>),
-    MultiSequenceGeneration(Vec<Vec<usize>>),
-}
-
-impl IntoPy<Py<PyDict>> for Result {
-    fn into_py(self, py: Python<'_>) -> Py<PyDict> {
-        let d = PyDict::new(py);
-        d.into()
-    }
-}
-
-impl<'a> FromPyObject<'a> for Result {
-    fn extract(_: &'a PyAny) -> PyResult<Self> {
-        Ok(Result::SequenceGeneration(vec![]))
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct Window<'a> {
     ctx_start: usize,
     ctx_end: usize,
@@ -321,11 +301,11 @@ pub fn byte_windows_py(
 
 /// A submodule containing helper functions needed for splitting long strings
 /// into multiple windows (useful for text correction inference).
-pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "windows")?;
-    m.add_function(wrap_pyfunction!(byte_windows_py, m)?)?;
-    m.add_function(wrap_pyfunction!(char_windows_py, m)?)?;
-    parent_module.add_submodule(m)?;
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "windows")?;
+    m.add_function(wrap_pyfunction!(byte_windows_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(char_windows_py, m.clone())?)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

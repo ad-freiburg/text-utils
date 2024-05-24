@@ -1,5 +1,4 @@
-use crate::data::{Batch, InferenceData, Pipeline, TextData};
-use crate::tokenization::{tokenizer, Tokenizer, TokenizerConfig};
+use crate::data::{Batch, InferenceData, Pipeline, TrainData};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
 use log::debug;
@@ -119,10 +118,10 @@ where
     }
 }
 
-pub fn text_data_generator_from_files<P: AsRef<Path>>(
+pub fn train_data_generator_from_files<P: AsRef<Path>>(
     input: P,
     target: Option<P>,
-) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
+) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TrainData>>>> {
     let input_len = count_lines(input.as_ref())?;
     let input_iter = LossyUtf8Reader::new(BufReader::new(open(input.as_ref())?)).lines();
     let mut target_iter = if let Some(target) = target {
@@ -147,7 +146,7 @@ pub fn text_data_generator_from_files<P: AsRef<Path>>(
         } else {
             None
         };
-        Ok(TextData::new(input_s?, target_s))
+        Ok(TrainData::new(input_s?, target_s))
     });
     Ok(Box::new(DataGenerator {
         min_len: input_len,
@@ -167,7 +166,7 @@ pub fn inference_data_generator_from_file(
 pub fn text_data_generator_from_sequences(
     input: Vec<String>,
     target: Option<Vec<String>>,
-) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TextData>>>> {
+) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TrainData>>>> {
     let len = input.len();
     let input_iter = input.into_iter();
     let mut target_iter = if let Some(target) = target {
@@ -186,7 +185,7 @@ pub fn text_data_generator_from_sequences(
         } else {
             None
         };
-        Ok(TextData::new(input_s, target_s))
+        Ok(TrainData::new(input_s, target_s))
     });
     Ok(Box::new(DataGenerator { iter, min_len: len }))
 }
@@ -208,7 +207,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         Python::with_gil(|py| {
-            let mut it = match self.iterator.as_ref(py).iter() {
+            let mut it = match self.iterator.bind(py).iter() {
                 Err(e) => {
                     return Some(Err(anyhow!("failed to get iterator: {e}")));
                 }
@@ -755,7 +754,7 @@ impl BatchLimit {
 pub trait Tensorize {
     type Output;
 
-    fn tensorize(&self, tokenizer: &Tokenizer) -> Self::Output;
+    fn tensorize(&self) -> Self::Output;
 }
 
 pub trait TensorizedIterator<T>
@@ -763,7 +762,7 @@ where
     Self: Iterator<Item = T> + Send + 'static,
     T: Tensorize + Send + 'static,
 {
-    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> anyhow::Result<Tensorized<T>>;
+    fn tensorized(self) -> Tensorized<T>;
 }
 
 impl<I, T> TensorizedIterator<T> for I
@@ -771,8 +770,8 @@ where
     I: Iterator<Item = T> + Send + 'static,
     T: Tensorize + Send + 'static,
 {
-    fn tensorized(self, tokenizer_cfg: TokenizerConfig) -> anyhow::Result<Tensorized<T>> {
-        Ok(Tensorized::new(self, tokenizer(tokenizer_cfg)?))
+    fn tensorized(self) -> Tensorized<T> {
+        Tensorized::new(self)
     }
 }
 
@@ -781,17 +780,15 @@ where
     T: Tensorize + Send + 'static,
 {
     inner: Box<dyn Iterator<Item = T> + Send + 'static>,
-    tokenizer: Tokenizer,
 }
 
 impl<T> Tensorized<T>
 where
     T: Tensorize + Send + 'static,
 {
-    pub fn new(inner: impl Iterator<Item = T> + Send + 'static, tokenizer: Tokenizer) -> Self {
+    pub fn new(inner: impl Iterator<Item = T> + Send + 'static) -> Self {
         Self {
             inner: Box::new(inner),
-            tokenizer,
         }
     }
 }
@@ -804,7 +801,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|b| {
-            let tensorized = b.tensorize(&self.tokenizer);
+            let tensorized = b.tensorize();
             (b, tensorized)
         })
     }
@@ -870,13 +867,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::data::labeling::LabelingConfig;
     use crate::data::loading::{open, BatchLimitType, BatchedIterator};
     use crate::data::postprocessing::PostprocessingFnConfig;
     use crate::data::preprocessing::PreprocessingFnConfig;
+    use crate::data::task::TrainTaskConfig;
     use crate::data::{
-        text_data_pipeline_with_tokenizer, Item, PostprocessingConfig, PreprocessingConfig,
-        TextData, TextDataInfo, TextDataPipelineConfig,
+        train_pipeline, PostprocessingConfig, PreprocessingConfig, TextDataInfo, TrainData,
+        TrainItem, TrainPipelineConfig,
     };
     use crate::tokenization::{SpecialConfig, TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
@@ -887,7 +884,9 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use super::{text_data_generator_from_files, BufferedIterator, PipelineIterator, TextIterator};
+    use super::{
+        train_data_generator_from_files, BufferedIterator, PipelineIterator, TextIterator,
+    };
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
     const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
@@ -900,7 +899,7 @@ mod tests {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
         let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let multi30k = text_data_generator_from_files(&d, None)?;
+        let multi30k = train_data_generator_from_files(&d, None)?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -909,18 +908,18 @@ mod tests {
 
         // first check sequential lines with one file
         assert_eq!(it.min_len(), 29000);
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_FIRST.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_SECOND.to_string(),
             input: MULTI30K_SECOND.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check sequential lines with input and target
-        let multi30k = text_data_generator_from_files(&d, Some(&d2))?;
+        let multi30k = train_data_generator_from_files(&d, Some(&d2))?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -928,19 +927,19 @@ mod tests {
         )?;
 
         assert_eq!(it.min_len(), 29000);
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_REV_FIRST.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_SECOND.to_string(),
             input: MULTI30K_REV_SECOND.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check interleaved lines with two files
-        let multi30k = text_data_generator_from_files(&d, None)?;
-        let multi30k_rev = text_data_generator_from_files(&d2, None)?;
+        let multi30k = train_data_generator_from_files(&d, None)?;
+        let multi30k_rev = train_data_generator_from_files(&d2, None)?;
         let mut it = TextIterator::new(
             vec![multi30k, multi30k_rev],
             super::TextIterationStrategy::Interleaved,
@@ -948,29 +947,29 @@ mod tests {
         )?;
 
         assert_eq!(it.min_len(), 2 * 29000);
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_FIRST.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_REV_FIRST.to_string(),
             input: MULTI30K_REV_FIRST.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_SECOND.to_string(),
             input: MULTI30K_SECOND.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
-        let _data = TextData {
+        let _data = TrainData {
             target: MULTI30K_REV_SECOND.to_string(),
             input: MULTI30K_REV_SECOND.to_string(),
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
         // check weighted lines with two files
-        let multi30k = text_data_generator_from_files(&d, None)?;
-        let multi30k_rev = text_data_generator_from_files(&d2, None)?;
+        let multi30k = train_data_generator_from_files(&d, None)?;
+        let multi30k_rev = train_data_generator_from_files(&d2, None)?;
         let it = TextIterator::new(
             vec![multi30k, multi30k_rev],
             super::TextIterationStrategy::Weighted,
@@ -993,17 +992,16 @@ mod tests {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(200)),
             special: SpecialConfig::default(),
         };
-        let (pipeline, _) = text_data_pipeline_with_tokenizer(
-            TextDataPipelineConfig {
+        let (pipeline, _) = train_pipeline(
+            TrainPipelineConfig {
                 preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
-                labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
+                task: TrainTaskConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
                 postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
             },
-            tokenizer_cfg,
             512,
         )?;
         // test if it works with one worker and record the time it took
-        let multi30k = text_data_generator_from_files(&d, None)?;
+        let multi30k = train_data_generator_from_files(&d, None)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -1021,7 +1019,7 @@ mod tests {
             .pipe(pipeline.clone(), 0);
         let n: usize = 20;
         let now = Instant::now();
-        let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
+        let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
         let mut time = now.elapsed().as_secs_f64();
         info!("took {:.2}s to fetch {} items", time, n);
 
@@ -1029,7 +1027,7 @@ mod tests {
 
         // if more cpus are available, test with more workers, check that its faster
         if n_cpus >= 2 {
-            let multi30k = text_data_generator_from_files(&d, None)?;
+            let multi30k = train_data_generator_from_files(&d, None)?;
             let text_iter = TextIterator::new(
                 vec![multi30k],
                 super::TextIterationStrategy::Sequential,
@@ -1045,7 +1043,7 @@ mod tests {
                 })
                 .pipe(pipeline.clone(), 2);
             let now = Instant::now();
-            let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
+            let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
             let time2 = now.elapsed().as_secs_f64();
             info!("took {:.2}s to fetch {} items", time2, n);
             assert!(time2 < time);
@@ -1054,7 +1052,7 @@ mod tests {
 
         // test with even more workers, if available
         if n_cpus >= 4 {
-            let multi30k = text_data_generator_from_files(&d, None)?;
+            let multi30k = train_data_generator_from_files(&d, None)?;
             let text_iter = TextIterator::new(
                 vec![multi30k],
                 super::TextIterationStrategy::Sequential,
@@ -1070,7 +1068,7 @@ mod tests {
                 })
                 .pipe(pipeline.clone(), 4);
             let now = Instant::now();
-            let _: Vec<Item> = it.filter_map(|d| d.ok()).take(n).collect();
+            let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
             let time3 = now.elapsed().as_secs_f64();
             info!("took {:.2}s to fetch {} items", time3, n);
             assert!(time3 < time);
@@ -1082,16 +1080,15 @@ mod tests {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
             special: SpecialConfig::default(),
         };
-        let (pipeline, _) = text_data_pipeline_with_tokenizer(
-            TextDataPipelineConfig {
+        let (pipeline, _) = train_pipeline(
+            TrainPipelineConfig {
                 preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
-                labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
+                task: TrainTaskConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
                 postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
             },
-            tokenizer_cfg,
             512,
         )?;
-        let multi30k = text_data_generator_from_files(&d, None)?;
+        let multi30k = train_data_generator_from_files(&d, None)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -1120,7 +1117,7 @@ mod tests {
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = text_data_generator_from_files(&d, None)?;
+        let multi30k = train_data_generator_from_files(&d, None)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -1134,13 +1131,12 @@ mod tests {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
             special: SpecialConfig::default(),
         };
-        let (pipeline, _) = text_data_pipeline_with_tokenizer(
-            TextDataPipelineConfig {
+        let (pipeline, _) = train_pipeline(
+            TrainPipelineConfig {
                 preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
-                labeling: LabelingConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
+                task: TrainTaskConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
                 postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
             },
-            tokenizer_cfg,
             512,
         )?;
         let pipe_it = text_iter
@@ -1167,7 +1163,7 @@ mod tests {
         // (because some descriptions in multi30k appear twice)
         for shuffle in [true, false] {
             for sort in [true, false] {
-                let multi30k = text_data_generator_from_files(&d, None)?;
+                let multi30k = train_data_generator_from_files(&d, None)?;
                 let text_iter = TextIterator::new(
                     vec![multi30k],
                     super::TextIterationStrategy::Weighted,
@@ -1195,10 +1191,8 @@ mod tests {
                 let mut line_counter: HashMap<String, usize> =
                     lines.iter().cloned().map(|l| (l, 0)).collect();
                 for batch in pipe_it {
-                    let item_lengths: Vec<usize> = batch
-                        .iter()
-                        .map(|item| item.tokenization.token_ids.len())
-                        .collect();
+                    let item_lengths: Vec<usize> =
+                        batch.iter().map(|item| item.input.len()).collect();
                     let batch_size: usize = item_lengths.iter().sum();
                     assert!(batch.len() > 0);
                     assert!(batch_size <= 256,);

@@ -569,7 +569,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
     type Value = V;
 
     fn insert(&mut self, key: &[u8], value: V) -> Option<V> {
-        let mut key = key.iter().copied().chain(once(0));
+        let mut key = key.iter().filter(|&b| *b > 0).copied().chain(once(0));
         // empty tree
         let Some(root) = &mut self.root else {
             // insert leaf at root
@@ -633,7 +633,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
         }
 
         let mut node = root;
-        let mut key = key.iter().copied().chain(once(0));
+        let mut key = key.iter().filter(|&b| *b > 0).copied().chain(once(0));
         loop {
             let matching = node.matching(&mut key, 0);
 
@@ -673,7 +673,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
             return None;
         };
 
-        let key = key.iter().copied().chain(once(0));
+        let key = key.iter().filter(|&b| *b > 0).copied().chain(once(0));
         root.find_iter(key).and_then(|node| match &node.inner {
             NodeType::Leaf(v) => Some(v),
             _ => None,
@@ -685,7 +685,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
             return false;
         };
 
-        let key = prefix.iter().copied();
+        let key = prefix.iter().filter(|&b| *b > 0).copied();
         root.contains_prefix_iter(key, 0).is_some()
     }
 
@@ -696,7 +696,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
 
         let mut path = vec![];
         let mut node = root;
-        let mut key = prefix.iter().copied();
+        let mut key = prefix.iter().filter(|&b| *b > 0).copied();
         let mut i = 0;
         loop {
             match node.matching(&mut key, 0) {
@@ -736,7 +736,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
             return Box::new(empty());
         };
         let mut node = root;
-        let mut key = prefix.iter().copied();
+        let mut key = prefix.iter().filter(|&b| *b > 0).copied();
         let mut prefix = vec![];
         loop {
             let k = match node.matching(&mut key, 0) {
@@ -774,16 +774,15 @@ impl<V> ContinuationsTrie for AdaptiveRadixTrie<V> {
             return result;
         };
 
-        let key = prefix.iter().copied();
+        let key = prefix.iter().filter(|&b| *b > 0).copied();
         let Some((node, n)) = root.contains_prefix_iter(key, 0) else {
             return result;
         };
 
         let mut i = 0;
         while let Some(&j) = permutation.get(i) {
-            let continuation = &continuations[j];
             if node
-                .contains_prefix_iter(continuation.iter().copied(), n)
+                .contains_prefix_iter(continuations[j].iter().filter(|&b| *b > 0).copied(), n)
                 .is_some()
             {
                 result.push(j);

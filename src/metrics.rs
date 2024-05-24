@@ -7,6 +7,7 @@ use crate::whitespace::{operations, WhitespaceOperation};
 use anyhow::anyhow;
 use itertools::Itertools;
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedStr;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -58,8 +59,8 @@ pub fn mean_edit_distance(
 
 #[pyfunction(name = "mean_edit_distance", signature = (sequences, target_sequences, use_graphemes = true))]
 fn mean_edit_distance_py(
-    sequences: Vec<String>,
-    target_sequences: Vec<String>,
+    sequences: Vec<PyBackedStr>,
+    target_sequences: Vec<PyBackedStr>,
     use_graphemes: bool,
 ) -> anyhow::Result<f64> {
     mean_edit_distance(&sequences, &target_sequences, use_graphemes)
@@ -103,15 +104,7 @@ pub fn accuracy<T: Ord>(predictions: &[T], targets: &[T]) -> anyhow::Result<f64>
 }
 
 #[pyfunction(name = "accuracy", signature = (predictions, targets))]
-fn accuracy_py(predictions: Vec<&str>, targets: Vec<&str>) -> anyhow::Result<f64> {
-    let predictions: Vec<String> = predictions
-        .into_iter()
-        .map(|s| normalize(&clean(s, true), Normalization::NFKC, true))
-        .collect();
-    let targets: Vec<String> = targets
-        .into_iter()
-        .map(|s| normalize(&clean(s, true), Normalization::NFKC, true))
-        .collect();
+fn accuracy_py(predictions: Vec<String>, targets: Vec<String>) -> anyhow::Result<f64> {
     accuracy(&predictions, &targets)
 }
 
@@ -561,15 +554,18 @@ fn whitespace_correction_f1_py(
 }
 
 /// A submodule containing functions to calculate various text correction metrics.
-pub(super) fn add_submodule(py: Python<'_>, parent_module: &PyModule) -> PyResult<()> {
-    let m = PyModule::new(py, "metrics")?;
-    m.add_function(wrap_pyfunction!(mean_edit_distance_py, m)?)?;
-    m.add_function(wrap_pyfunction!(mean_normalized_edit_distance_py, m)?)?;
-    m.add_function(wrap_pyfunction!(binary_f1_py, m)?)?;
-    m.add_function(wrap_pyfunction!(accuracy_py, m)?)?;
-    m.add_function(wrap_pyfunction!(spelling_correction_f1_py, m)?)?;
-    m.add_function(wrap_pyfunction!(whitespace_correction_f1_py, m)?)?;
-    parent_module.add_submodule(m)?;
+pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let m = PyModule::new_bound(py, "metrics")?;
+    m.add_function(wrap_pyfunction!(mean_edit_distance_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(
+        mean_normalized_edit_distance_py,
+        m.clone()
+    )?)?;
+    m.add_function(wrap_pyfunction!(binary_f1_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(accuracy_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(spelling_correction_f1_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(whitespace_correction_f1_py, m.clone())?)?;
+    parent_module.add_submodule(&m)?;
 
     Ok(())
 }

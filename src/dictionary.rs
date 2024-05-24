@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use pyo3::prelude::*;
+use pyo3::{prelude::*, pybacked::PyBackedStr};
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
@@ -232,7 +232,7 @@ impl Dictionary {
         signature = (files, max_size = None, max_sequences = None, num_threads=num_cpus::get() as u8, use_characters = false, char_grams=1, show_progress=false),
     )]
     fn create_py(
-        files: Vec<&str>,
+        files: Vec<PyBackedStr>,
         max_size: Option<usize>,
         max_sequences: Option<usize>,
         num_threads: u8,
@@ -240,6 +240,7 @@ impl Dictionary {
         char_grams: u8,
         show_progress: bool,
     ) -> anyhow::Result<Self> {
+        let files: Vec<&str> = files.iter().map(|s| s.as_ref()).collect();
         Self::create(
             &files,
             max_size,
@@ -338,11 +339,11 @@ impl Dictionary {
 }
 
 /// A submodule for creating and querying dictionaries.
-pub(super) fn add_submodule(py: Python, parent_module: &PyModule) -> PyResult<()> {
+pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let m_name = "dictionary";
-    let m = PyModule::new(py, m_name)?;
+    let m = PyModule::new_bound(py, m_name)?;
     m.add_class::<Dictionary>()?;
-    parent_module.add_submodule(m)?;
+    parent_module.add_submodule(&m)?;
     Ok(())
 }
 

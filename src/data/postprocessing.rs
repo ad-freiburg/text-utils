@@ -33,7 +33,7 @@ impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
         let Some(postprocessing_type) = d.get_item("type")? else {
-            return Err(py_required_key_error("type", "postprocessing config"));
+            return Err(py_required_key_error("type", "postprocessing fn config"));
         };
         let postprocessing_type: String = postprocessing_type.extract()?;
         let postprocessing_config = match postprocessing_type.as_str() {
@@ -110,7 +110,7 @@ impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
             }
             "clip_length" => PostprocessingFnConfig::ClipLength,
             k => {
-                return Err(py_invalid_type_error(k, "postprocessing"));
+                return Err(py_invalid_type_error(k, "postprocessing fn"));
             }
         };
         Ok(postprocessing_config)

@@ -135,6 +135,12 @@ class TextProcessor:
             "checkpoints",
             "checkpoint_best.pt"
         )
+        if not os.path.exists(best_checkpoint_path):
+            best_checkpoint_path = os.path.join(
+                experiment_dir,
+                "checkpoints",
+                "checkpoint_last.pt"
+            )
         if os.path.exists(best_checkpoint_path):
             best_checkpoint = io.load_checkpoint(best_checkpoint_path)
             model.load_state_dict(best_checkpoint["model_state_dict"])

@@ -9,13 +9,12 @@ use crate::tokenization::{
     Tokenization, TokenizationInfo, TokenizerConfig,
 };
 use crate::unicode::CS;
-use crate::utils::py_required_key_error;
+use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
 use anyhow::anyhow;
 use itertools::Itertools;
 use numpy::ndarray::prelude::*;
 use numpy::IntoPyArray;
-use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
@@ -565,44 +564,65 @@ impl InferenceBatch {
 
 #[derive(Debug, Clone)]
 pub enum PreprocessingConfig {
-    Single(PreprocessingFnConfig),
-    PerFile(Vec<PreprocessingFnConfig>),
+    Global(PreprocessingFnConfig),
+    PerSource(Vec<PreprocessingFnConfig>),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
-        let mut errs = vec![];
-        match obj.extract::<PreprocessingFnConfig>() {
-            Ok(value) => return Ok(PreprocessingConfig::Single(value)),
-            Err(e) => errs.push(e),
+        let d: &PyDict = obj.extract()?;
+        let Some(preprocessing_type) = d.get_item("type")? else {
+            return Err(py_required_key_error("type", "preprocessing config"));
         };
-        match obj.extract::<Vec<PreprocessingFnConfig>>() {
-            Ok(value) => return Ok(PreprocessingConfig::PerFile(value)),
-            Err(e) => errs.push(e),
+        let preprocessing_type: String = preprocessing_type.extract()?;
+        let preprocessing_cfg = match preprocessing_type.as_str() {
+            "global" => {
+                let Some(preprocessing) = d.get_item("fn")? else {
+                    return Err(py_required_key_error("fn", "preprocessing config"));
+                };
+                PreprocessingConfig::Global(preprocessing.extract()?)
+            }
+            "per_source" => {
+                let Some(preprocessings) = d.get_item("fns")? else {
+                    return Err(py_required_key_error("fns", "preprocessing config"));
+                };
+                PreprocessingConfig::PerSource(preprocessings.extract()?)
+            }
+            k => return Err(py_invalid_type_error(k, "preprocessing config")),
         };
-        Err(PyTypeError::new_err(format!(
-            "failed to extract preprocessing config with the following errors: {errs:#?}"
-        )))
+        Ok(preprocessing_cfg)
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum PostprocessingConfig {
-    Single(PostprocessingFnConfig),
-    PerFile(Vec<PostprocessingFnConfig>),
+    Global(PostprocessingFnConfig),
+    PerSource(Vec<PostprocessingFnConfig>),
 }
 
 impl<'a> FromPyObject<'a> for PostprocessingConfig {
     fn extract(obj: &'a PyAny) -> PyResult<Self> {
-        if let Ok(value) = obj.extract::<PostprocessingFnConfig>() {
-            Ok(PostprocessingConfig::Single(value))
-        } else if let Ok(value) = obj.extract::<Vec<PostprocessingFnConfig>>() {
-            Ok(PostprocessingConfig::PerFile(value))
-        } else {
-            Err(PyTypeError::new_err(
-                "postprocessing config must be a single postprocessing function or a list of postprocessing functions",
-            ))
-        }
+        let d: &PyDict = obj.extract()?;
+        let Some(postprocessing_type) = d.get_item("type")? else {
+            return Err(py_required_key_error("type", "postprocessing config"));
+        };
+        let postprocessing_type: String = postprocessing_type.extract()?;
+        let postprocessing_cfg = match postprocessing_type.as_str() {
+            "global" => {
+                let Some(postprocessing) = d.get_item("fn")? else {
+                    return Err(py_required_key_error("fn", "postprocessing config"));
+                };
+                PostprocessingConfig::Global(postprocessing.extract()?)
+            }
+            "per_source" => {
+                let Some(postprocessings) = d.get_item("fns")? else {
+                    return Err(py_required_key_error("fns", "postprocessing config"));
+                };
+                PostprocessingConfig::PerSource(postprocessings.extract()?)
+            }
+            k => return Err(py_invalid_type_error(k, "postprocessing config")),
+        };
+        Ok(postprocessing_cfg)
     }
 }
 
@@ -651,11 +671,11 @@ pub fn train_pipeline(
 ) -> anyhow::Result<(TrainPipeline, Arc<AtomicUsize>)> {
     let max_length = Arc::new(AtomicUsize::new(max_length));
     let preprocess_fn: Box<PreprocessingFn> = match pipeline_cfg.preprocessing {
-        PreprocessingConfig::Single(cfg) => {
+        PreprocessingConfig::Global(cfg) => {
             let preprocessing = preprocessing(cfg);
             Box::new(preprocessing)
         }
-        PreprocessingConfig::PerFile(cfgs) => {
+        PreprocessingConfig::PerSource(cfgs) => {
             let preprocessings: Vec<_> = cfgs.into_iter().map(preprocessing).collect();
             Box::new(move |data, info| {
                 preprocessings.get(info.file_idx).unwrap_or_else(|| {
@@ -666,11 +686,11 @@ pub fn train_pipeline(
     };
     let task_fn = train_task(pipeline_cfg.task);
     let postprocess_fn: Box<PostprocessingFn> = match pipeline_cfg.postprocessing {
-        PostprocessingConfig::Single(cfg) => {
+        PostprocessingConfig::Global(cfg) => {
             let postprocessing = postprocessing(cfg, max_length.clone());
             Box::new(postprocessing)
         }
-        PostprocessingConfig::PerFile(cfgs) => {
+        PostprocessingConfig::PerSource(cfgs) => {
             let postprocessings: Vec<_> = cfgs
                 .into_iter()
                 .map(|cfg| postprocessing(cfg, max_length.clone()))

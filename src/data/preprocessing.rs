@@ -40,7 +40,7 @@ impl<'a> FromPyObject<'a> for Part {
         match part.as_str() {
             "input" => Ok(Part::Input),
             "target" => Ok(Part::Target),
-            k => Err(anyhow!("invalid part '{}', must be 'input' or 'target'", k).into()),
+            k => Err(py_invalid_type_error(k, "part")),
         }
     }
 }
@@ -85,7 +85,7 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let d: &PyDict = ob.extract()?;
         let Some(preprocessing_type) = d.get_item("type")? else {
-            return Err(py_required_key_error("type", "preprocessing config"));
+            return Err(py_required_key_error("type", "preprocessing fn config"));
         };
         let preprocessing_type: String = preprocessing_type.extract()?;
         let preprocessing_config = match preprocessing_type.as_str() {
@@ -250,6 +250,15 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 };
                 PreprocessingFnConfig::Prefix(part.extract()?, prefix.extract()?)
             }
+            "suffix" => {
+                let Some(suffix) = d.get_item("suffix")? else {
+                    return Err(py_required_key_error("suffix", "suffix config"));
+                };
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "suffix config"));
+                };
+                PreprocessingFnConfig::Suffix(part.extract()?, suffix.extract()?)
+            }
             "json_decode" => {
                 let Some(part) = d.get_item("part")? else {
                     return Err(py_required_key_error("part", "json decode config"));
@@ -257,7 +266,7 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 PreprocessingFnConfig::JsonDecode(part.extract()?)
             }
             k => {
-                return Err(py_invalid_type_error(k, "preprocessing"));
+                return Err(py_invalid_type_error(k, "preprocessing fn"));
             }
         };
         Ok(preprocessing_config)
@@ -709,24 +718,23 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
 
 #[cfg(test)]
 mod tests {
-    use crate::data::{TextDataInfo, TrainData};
+    use crate::data::TextDataInfo;
 
     use super::corrupt_whitespace;
 
     #[test]
     fn test_corrupt_whitespace() -> anyhow::Result<()> {
         let noise_fn = corrupt_whitespace(0.0, 1.0, true);
-        let data = TrainData::new("a test".to_string(), None);
         let info = TextDataInfo::default();
-        let (noised, _) = noise_fn(data.clone(), info.clone())?;
-        assert_eq!(&noised.input, "atest");
+        let s = "a test";
+        let noised = noise_fn(s, &info)?;
+        assert_eq!(&noised, "atest");
         let noise_fn = corrupt_whitespace(1.0, 0.0, true);
-        let data = TrainData::new("a test".to_string(), None);
-        let (noised, _) = noise_fn(data.clone(), info.clone())?;
-        assert_eq!(&noised.input, "a t e s t");
-        let data = TrainData::new("Ginsberǵs".to_string(), None);
-        let (noised, _) = noise_fn(data.clone(), info.clone())?;
-        assert_eq!(&noised.input, "G i n s b e r ǵ s");
+        let noised = noise_fn(s, &info)?;
+        assert_eq!(&noised, "a t e s t");
+        let s = "Ginsberǵs";
+        let noised = noise_fn(s, &info)?;
+        assert_eq!(&noised, "G i n s b e r ǵ s");
         Ok(())
     }
 }

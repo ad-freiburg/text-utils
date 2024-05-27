@@ -994,9 +994,9 @@ mod tests {
         };
         let (pipeline, _) = train_pipeline(
             TrainPipelineConfig {
-                preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
+                preprocessing: PreprocessingConfig::Global(PreprocessingFnConfig::None),
                 task: TrainTaskConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
-                postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
+                postprocessing: PostprocessingConfig::Global(PostprocessingFnConfig::None),
             },
             512,
         )?;
@@ -1082,9 +1082,9 @@ mod tests {
         };
         let (pipeline, _) = train_pipeline(
             TrainPipelineConfig {
-                preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
+                preprocessing: PreprocessingConfig::Global(PreprocessingFnConfig::None),
                 task: TrainTaskConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
-                postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
+                postprocessing: PostprocessingConfig::Global(PostprocessingFnConfig::None),
             },
             512,
         )?;
@@ -1133,9 +1133,9 @@ mod tests {
         };
         let (pipeline, _) = train_pipeline(
             TrainPipelineConfig {
-                preprocessing: PreprocessingConfig::Single(PreprocessingFnConfig::None),
+                preprocessing: PreprocessingConfig::Global(PreprocessingFnConfig::None),
                 task: TrainTaskConfig::WhitespaceCorrection(true, tokenizer_cfg.clone()),
-                postprocessing: PostprocessingConfig::Single(PostprocessingFnConfig::None),
+                postprocessing: PostprocessingConfig::Global(PostprocessingFnConfig::None),
             },
             512,
         )?;

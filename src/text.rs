@@ -100,7 +100,7 @@ pub fn match_words_with(
                 (d[i - 1][j], MatchOp::Delete),
                 (d[i][j - 1], MatchOp::Insert),
                 (
-                    d[i - 1][j - 1] + (matching as usize),
+                    d[i - 1][j - 1] + usize::from(matching),
                     if matching {
                         MatchOp::Match
                     } else {

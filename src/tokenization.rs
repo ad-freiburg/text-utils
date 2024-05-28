@@ -760,7 +760,8 @@ pub trait Tokenize: BaseTokenize {
         }
     }
 
-    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String;
+    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool)
+        -> anyhow::Result<String>;
 }
 
 /// A base struct for a tokenizer,
@@ -1089,7 +1090,11 @@ where
         ))
     }
 
-    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
+    fn de_tokenize(
+        &self,
+        token_ids: &[u32],
+        ignore_special_tokens: bool,
+    ) -> anyhow::Result<String> {
         let mut tokens = vec![];
         let mut parts = vec![];
         for token_id in token_ids {
@@ -1103,7 +1108,7 @@ where
                 let special_token = self
                     .special_vocab
                     .id_to_token(token_id)
-                    .expect("invalid token id in input");
+                    .ok_or_else(|| anyhow!("unknown special token id {token_id}"))?;
                 parts.push(special_token.to_string());
             };
         }
@@ -1111,7 +1116,7 @@ where
         if !tokens.is_empty() {
             parts.push(self.join_tokens(&tokens));
         }
-        self.join_parts(&parts)
+        Ok(self.join_parts(&parts))
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -1146,8 +1151,8 @@ impl Tokenize for DummyTokenizer {
         Ok(Tokenization::new(vec![], TokenizationInfo::Empty))
     }
 
-    fn de_tokenize(&self, _: &[u32], _: bool) -> String {
-        "".to_string()
+    fn de_tokenize(&self, _: &[u32], _: bool) -> anyhow::Result<String> {
+        Ok(String::default())
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -1280,14 +1285,15 @@ impl Tokenize for HuggingfaceTokenizer {
         ))
     }
 
-    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
+    fn de_tokenize(
+        &self,
+        token_ids: &[u32],
+        ignore_special_tokens: bool,
+    ) -> anyhow::Result<String> {
         self.inner
             .decode(token_ids, ignore_special_tokens)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "error decoding token ids {:?} with huggingface tokenizer: {:?}",
-                    token_ids, e
-                )
+            .map_err(|e| {
+                anyhow!("error decoding token ids {token_ids:?} with huggingface tokenizer: {e}",)
             })
     }
 
@@ -1571,7 +1577,11 @@ impl Tokenize for BPETokenizer {
         ))
     }
 
-    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
+    fn de_tokenize(
+        &self,
+        token_ids: &[u32],
+        ignore_special_tokens: bool,
+    ) -> anyhow::Result<String> {
         let mut bytes = Vec::new();
         let num_merge_ops = self.state.1.len() as u32;
         for token_id in token_ids {
@@ -1581,12 +1591,12 @@ impl Tokenize for BPETokenizer {
                 bytes.extend(
                     self.special_vocab
                         .id_to_token(token_id)
-                        .expect("invalid token id in input")
+                        .ok_or_else(|| anyhow!("unknown special token id {token_id}"))?
                         .as_bytes(),
                 );
             }
         }
-        String::from_utf8_lossy(&bytes).to_string()
+        Ok(String::from_utf8(bytes)?)
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -2056,25 +2066,29 @@ impl Tokenize for ByteTokenizer {
         Ok(Tokenization::new(self.add_prefix_and_suffix(bytes), info))
     }
 
-    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
+    fn de_tokenize(
+        &self,
+        token_ids: &[u32],
+        ignore_special_tokens: bool,
+    ) -> anyhow::Result<String> {
         let mut bytes = vec![];
         for token_id in token_ids {
             if *token_id < 256 {
-                bytes.push(*token_id as u8);
+                bytes.push(u8::try_from(*token_id)?);
             } else if !ignore_special_tokens {
                 bytes.extend(
                     self.special_vocab
                         .id_to_token(token_id)
-                        .expect("invalid token id in input")
+                        .ok_or_else(|| anyhow!("unknown special token id {token_id}"))?
                         .as_bytes(),
                 );
             }
         }
-        String::from_utf8_lossy(&bytes).to_string()
+        Ok(String::from_utf8(bytes)?)
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        let mut vocab: BTreeMap<_, _> = (0..256).map(|b| (b as u32, vec![b as u8])).collect();
+        let mut vocab: BTreeMap<_, _> = (0..=u8::MAX).map(|b| (u32::from(b), vec![b])).collect();
         for (special, &id) in &self.special_vocab.vocab {
             vocab.insert(id, special.to_bytes());
         }
@@ -2146,7 +2160,11 @@ impl Tokenize for ByT5Tokenizer {
         Ok(Tokenization::new(token_ids, info))
     }
 
-    fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool) -> String {
+    fn de_tokenize(
+        &self,
+        token_ids: &[u32],
+        ignore_special_tokens: bool,
+    ) -> anyhow::Result<String> {
         self.inner.de_tokenize(token_ids, ignore_special_tokens)
     }
 
@@ -2210,7 +2228,11 @@ impl PyTokenizer {
     }
 
     #[pyo3(signature = (token_ids, ignore_special_tokens = true))]
-    fn de_tokenize(&self, token_ids: Vec<u32>, ignore_special_tokens: bool) -> String {
+    fn de_tokenize(
+        &self,
+        token_ids: Vec<u32>,
+        ignore_special_tokens: bool,
+    ) -> anyhow::Result<String> {
         self.tokenizer
             .de_tokenize(&token_ids, ignore_special_tokens)
     }
@@ -2285,24 +2307,36 @@ mod tests {
         let Tokenization { token_ids, .. } = tok.tokenize(text, true).unwrap();
         assert_eq!(token_ids.len(), 6);
         assert_eq!(token_ids[3], tok.unk_token_id());
-        assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
-        assert_eq!(tok.de_tokenize(&token_ids, false), "a t<unk>st".to_string());
+        assert_eq!(
+            tok.de_tokenize(&token_ids, true).unwrap(),
+            "a tst".to_string()
+        );
+        assert_eq!(
+            tok.de_tokenize(&token_ids, false).unwrap(),
+            "a t<unk>st".to_string()
+        );
         let text = "a <pad>täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, false).unwrap();
         assert_eq!(token_ids.len(), 7);
         assert_eq!(token_ids[2], tok.pad_token_id);
         assert_eq!(token_ids[4], tok.unk_token_id());
-        assert_eq!(tok.de_tokenize(&token_ids, true), "a tst".to_string());
         assert_eq!(
-            tok.de_tokenize(&token_ids, false),
+            tok.de_tokenize(&token_ids, true).unwrap(),
+            "a tst".to_string()
+        );
+        assert_eq!(
+            tok.de_tokenize(&token_ids, false).unwrap(),
             "a <pad>t<unk>st".to_string()
         );
         let text = "a <pad>täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, true).unwrap();
         assert_eq!(token_ids.len(), 11);
-        assert_eq!(tok.de_tokenize(&token_ids, true), "a <pad>tst".to_string());
         assert_eq!(
-            tok.de_tokenize(&token_ids, false),
+            tok.de_tokenize(&token_ids, true).unwrap(),
+            "a <pad>tst".to_string()
+        );
+        assert_eq!(
+            tok.de_tokenize(&token_ids, false).unwrap(),
             "a <pad>t<unk>st".to_string()
         );
     }
@@ -2342,7 +2376,7 @@ mod tests {
             _ => panic!("wrong info"),
         };
         assert_eq!(token_ids.len(), 7);
-        assert_eq!(tok.de_tokenize(&token_ids, true), text.to_string());
+        assert_eq!(tok.de_tokenize(&token_ids, true).unwrap(), text.to_string());
         let tokenize_cfg = ByteTokenizerConfig {
             groups: ByteGroups::CodePoints,
             ..tokenize_cfg
@@ -2414,7 +2448,7 @@ mod tests {
             .map(|b| String::from_utf8_lossy(b).to_string())
             .collect();
         info!("tokens: {tokens:?}");
-        let ds = bpe.de_tokenize(&token_ids, true);
+        let ds = bpe.de_tokenize(&token_ids, true).unwrap();
         assert_eq!(s, ds);
         info!("de-tokenized: \"{ds}\"");
 
@@ -2426,7 +2460,7 @@ mod tests {
                 .collect();
 
             let token_ids = bpe.tokenize(&s, true).unwrap().token_ids;
-            let ds = bpe.de_tokenize(&token_ids, true);
+            let ds = bpe.de_tokenize(&token_ids, true).unwrap();
             assert_eq!(s, ds);
         }
     }

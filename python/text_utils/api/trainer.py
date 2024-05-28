@@ -47,7 +47,6 @@ from text_utils import (
     data,
     configuration,
     io,
-    tokenization,
     logging,
     api,
     tensorboard
@@ -409,7 +408,7 @@ training will resume from latest checkpoint."
             )
 
         self.grad_scaler = ShardedGradScaler(
-            enabled=mixed_precision != "fp32"
+            enabled=self.mixed_precision is not None
         )
 
     def _save_checkpoint(
@@ -968,12 +967,12 @@ training will resume from latest checkpoint."
             self.info.device,
             fmt=".2e"
         )
-        mean_fwdbwd_pass = tensorboard.DistAverageTracker(
-            "train_forward_backward_pass",
+        mean_fwdbwdupd = tensorboard.DistAverageTracker(
+            "train_forward_backward_update_time",
             self.info.device
         )
         mean_batch_load = tensorboard.DistAverageTracker(
-            "train_batch_load",
+            "train_batch_load_time",
             self.info.device
         )
         mean_step_time = tensorboard.DistAverageTracker(
@@ -981,7 +980,7 @@ training will resume from latest checkpoint."
             self.info.device
         )
         mean_batch_preparation = tensorboard.DistAverageTracker(
-            "train_batch_preparation",
+            "train_batch_preparation_time",
             self.info.device
         )
         mean_bsz = tensorboard.DistAverageTracker(
@@ -1025,9 +1024,8 @@ training will resume from latest checkpoint."
             inputs, labels = self._prepare_batch(batch)
             end_preparation = time.perf_counter()
 
+            start_fwdbwdupd = time.perf_counter()
             self.optimizer.zero_grad(set_to_none=True)
-
-            start_fwdbwd = time.perf_counter()
             with torch.autocast(
                 "cuda",
                 dtype=self.mixed_precision,
@@ -1039,7 +1037,6 @@ training will resume from latest checkpoint."
 
             mean_loss.add(loss.item())
             self.grad_scaler.scale(loss).backward()
-            end_fwdbwd = time.perf_counter()
 
             if self.clip_grad_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)
@@ -1053,11 +1050,12 @@ training will resume from latest checkpoint."
 
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
+            dist_items[0] = len(batch)
+            dist.all_reduce(dist_items, dist.ReduceOp.SUM)
+            end_fwdbwdupd = time.perf_counter()
 
             self.total_step += 1
             self.epoch_step += 1
-            dist_items[0] = len(batch)
-            dist.all_reduce(dist_items, dist.ReduceOp.SUM)
             batch_items = dist_items[0].item()
             self.epoch_items += batch_items
             self.total_items += batch_items
@@ -1076,7 +1074,7 @@ training will resume from latest checkpoint."
                     self.val_loader.set_max_length(max_length)
 
             mean_step_time.add((time.perf_counter() - start_batch) * 1000)
-            mean_fwdbwd_pass.add((end_fwdbwd - start_fwdbwd) * 1000)
+            mean_fwdbwdupd.add((end_fwdbwdupd - start_fwdbwdupd) * 1000)
             mean_bsz.add(batch_items)
             min_length = sys.maxsize
             max_length = 0
@@ -1096,7 +1094,7 @@ training will resume from latest checkpoint."
                 mean_loss.sync()
                 mean_bsz.sync()
                 mean_step_time.sync()
-                mean_fwdbwd_pass.sync()
+                mean_fwdbwdupd.sync()
                 mean_batch_load.sync()
                 mean_seq_length.sync()
                 mean_seq_length_ratio.sync()
@@ -1135,10 +1133,10 @@ training will resume from latest checkpoint."
                     mean_bsz.log_tensorboard(self.summary_writer, self.total_step)
                     mean_bsz.log_info(self.logger, self.total_step)
 
-                    mean_fwdbwd_pass.log_tensorboard(
+                    mean_fwdbwdupd.log_tensorboard(
                         self.summary_writer, self.total_step
                     )
-                    mean_fwdbwd_pass.log_info(self.logger, self.total_step)
+                    mean_fwdbwdupd.log_info(self.logger, self.total_step)
 
                     mean_batch_load.log_tensorboard(
                         self.summary_writer, self.total_step)
@@ -1194,7 +1192,7 @@ training will resume from latest checkpoint."
                 mean_loss.reset()
                 mean_bsz.reset()
                 mean_step_time.reset()
-                mean_fwdbwd_pass.reset()
+                mean_fwdbwdupd.reset()
                 mean_batch_load.reset()
                 mean_seq_length.reset()
                 mean_seq_length_ratio.reset()
@@ -1224,7 +1222,7 @@ training will resume from latest checkpoint."
                     mean_loss.reset()
                     mean_bsz.reset()
                     mean_step_time.reset()
-                    mean_fwdbwd_pass.reset()
+                    mean_fwdbwdupd.reset()
                     mean_batch_load.reset()
                     mean_seq_length.reset()
                     mean_seq_length_ratio.reset()

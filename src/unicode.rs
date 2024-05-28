@@ -28,9 +28,9 @@ pub(crate) type CS<'a> = CharString<'a>;
 impl<'a> CharString<'a> {
     pub fn new(str: &'a str, use_graphemes: bool) -> CharString {
         let cluster_lengths: Vec<usize> = if use_graphemes {
-            str.graphemes(true).map(|s| s.len()).collect()
+            str.graphemes(true).map(str::len).collect()
         } else {
-            str.chars().map(|c| c.len_utf8()).collect()
+            str.chars().map(char::len_utf8).collect()
         };
         let rle_cluster_lengths = run_length_encode(&cluster_lengths);
         CharString {
@@ -114,9 +114,9 @@ impl<'a> CharString<'a> {
 
     pub fn split(s: &str, use_graphemes: bool) -> impl Iterator<Item = &str> {
         let cluster_lengths: Vec<_> = if use_graphemes {
-            s.graphemes(true).map(|s| s.len()).collect()
+            s.graphemes(true).map(str::len).collect()
         } else {
-            s.chars().map(|c| c.len_utf8()).collect()
+            s.chars().map(char::len_utf8).collect()
         };
         cluster_lengths.into_iter().scan(0usize, |acc, l| {
             let s = &s[*acc..*acc + l];

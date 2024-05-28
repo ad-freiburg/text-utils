@@ -133,7 +133,7 @@ where
     let mut decoded = vec![];
     for (v, count) in values {
         for _ in 0..*count {
-            decoded.push(v.clone())
+            decoded.push(v.clone());
         }
     }
     decoded
@@ -159,7 +159,7 @@ where
 {
     // fast forward to first valid starting element
     let mut start = 0;
-    while start < values.len() && size_fn(&values[start..start + 1]) > k {
+    while start < values.len() && size_fn(&values[start..=start]) > k {
         start += 1;
     }
     if start >= values.len() {
@@ -175,7 +175,7 @@ where
                 if end >= values.len() {
                     subsequences.push((start, end));
                 }
-                end += 1
+                end += 1;
             }
             (true, false) => {
                 subsequences.push((start, end - 1));

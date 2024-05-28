@@ -3,7 +3,7 @@ use crate::edit::{distance, edited_words, EditOperation};
 use crate::text::{clean, match_words, word_boundaries};
 use crate::unicode::{normalize, Normalization, CS};
 use crate::utils::{as_ref_slice_to_vec, py_invalid_type_error};
-use crate::whitespace::{operations, WhitespaceOperation};
+use crate::whitespace::{operations, Operation};
 use anyhow::anyhow;
 use itertools::Itertools;
 use pyo3::prelude::*;
@@ -108,7 +108,7 @@ fn accuracy_py(predictions: Vec<String>, targets: Vec<String>) -> anyhow::Result
     accuracy(&predictions, &targets)
 }
 
-pub type WhitespaceCorrections = Vec<(usize, WhitespaceOperation)>;
+pub type WhitespaceCorrections = Vec<(usize, Operation)>;
 #[derive(Debug, PartialEq, Eq)]
 pub enum F1Info {
     Empty,
@@ -433,39 +433,36 @@ impl<'a> FromPyObject<'a> for WhitespaceCorrectionMode {
 
 #[inline]
 fn _whitespace_ops_to_set(
-    ops: &[WhitespaceOperation],
+    ops: &[Operation],
     mode: &WhitespaceCorrectionMode,
-) -> HashSet<(usize, WhitespaceOperation)> {
+) -> HashSet<(usize, Operation)> {
     ops.iter()
         .enumerate()
         .filter_map(|(idx, &op)| match (op, mode) {
             (
-                WhitespaceOperation::Insert | WhitespaceOperation::Delete,
+                Operation::Insert | Operation::Delete,
                 WhitespaceCorrectionMode::InsertionsAndDeletions,
             )
-            | (WhitespaceOperation::Insert, WhitespaceCorrectionMode::Insertions)
-            | (WhitespaceOperation::Delete, WhitespaceCorrectionMode::Deletions) => Some((idx, op)),
+            | (Operation::Insert, WhitespaceCorrectionMode::Insertions)
+            | (Operation::Delete, WhitespaceCorrectionMode::Deletions) => Some((idx, op)),
             _ => None,
         })
         .collect()
 }
 
 #[inline]
-fn _offset_operations<'a, I>(
-    iter: I,
-    ops: &[WhitespaceOperation],
-) -> Vec<(usize, WhitespaceOperation)>
+fn _offset_operations<'a, I>(iter: I, ops: &[Operation]) -> Vec<(usize, Operation)>
 where
-    I: Iterator<Item = &'a (usize, WhitespaceOperation)>,
+    I: Iterator<Item = &'a (usize, Operation)>,
 {
     let mut list = Vec::new();
     let mut offsets = vec![];
     for op in ops {
         let prev = offsets.last().unwrap_or(&0);
         let offset = match op {
-            WhitespaceOperation::Keep => 0,
-            WhitespaceOperation::Insert => 1,
-            WhitespaceOperation::Delete => -1,
+            Operation::Keep => 0,
+            Operation::Insert => 1,
+            Operation::Delete => -1,
         };
         offsets.push(prev + offset);
     }
@@ -577,7 +574,7 @@ mod tests {
             accuracy, binary_f1, mean_edit_distance, mean_normalized_edit_distance,
             spelling_correction_f1, whitespace_correction_f1, F1Info, WhitespaceCorrectionMode,
         },
-        whitespace::WhitespaceOperation,
+        whitespace::Operation,
     };
 
     const EPS: f64 = 1e-8;
@@ -681,9 +678,9 @@ mod tests {
             infos[0],
             F1Info::WhitespaceCorrectionInfo((
                 vec![
-                    (4, WhitespaceOperation::Insert),
-                    (7, WhitespaceOperation::Insert),
-                    (9, WhitespaceOperation::Insert),
+                    (4, Operation::Insert),
+                    (7, Operation::Insert),
+                    (9, Operation::Insert),
                 ],
                 vec![],
                 vec![]
@@ -691,20 +688,13 @@ mod tests {
         );
         assert_eq!(
             infos[1],
-            F1Info::WhitespaceCorrectionInfo((
-                vec![(12, WhitespaceOperation::Delete)],
-                vec![],
-                vec![]
-            ))
+            F1Info::WhitespaceCorrectionInfo((vec![(12, Operation::Delete)], vec![], vec![]))
         );
         assert_eq!(
             infos[2],
             F1Info::WhitespaceCorrectionInfo((
-                vec![
-                    (5, WhitespaceOperation::Insert),
-                    (15, WhitespaceOperation::Delete)
-                ],
-                vec![(4, WhitespaceOperation::Delete),],
+                vec![(5, Operation::Insert), (15, Operation::Delete)],
+                vec![(4, Operation::Delete),],
                 vec![]
             ))
         );

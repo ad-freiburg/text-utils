@@ -1,5 +1,5 @@
 import copy
-from typing import Dict, Any, Iterator, Tuple, List, Optional, Callable
+from typing import Dict, Any, Iterator, Tuple, Optional, Callable
 
 from torch import nn, optim
 try:
@@ -11,11 +11,11 @@ except ImportError:
 
 def _select_params_and_modules(
     modules: Iterator[Tuple[str, nn.Module]],
-    prefixes: List[str],
+    prefix: str
 ) -> Iterator[Tuple[str, nn.Module, nn.Parameter]]:
     for name, mod in modules:
         for p_name, param in mod.named_parameters(prefix=name, recurse=False):
-            if any(p_name.startswith(prefix) for prefix in prefixes):
+            if p_name.startswith(prefix):
                 yield p_name, mod, param
 
 
@@ -29,27 +29,42 @@ def optimizer_from_config(
 ) -> optim.Optimizer:
     cfg = copy.deepcopy(cfg)
     opt_type = cfg.pop("type")
-    param_groups = cfg.pop("param_groups", [{"prefix": ""}])
+    param_groups: list[dict[str, Any]] = cfg.pop("param_groups", [{"prefix": None}])
+    assert len(param_groups) > 0, "param_groups must be non-empty"
 
+    weight_decay_modules: dict[str, list[str]] = cfg.pop(
+        "weight_decay_modules",
+        {}
+    )
     all = set(name for name, p in model.named_parameters() if p.requires_grad)
     params = []
     names = set()
     for group in param_groups:
-        prefix = group.pop("prefix")
+        prefix = group.pop("prefix") or ""
         fix = group.pop("fix", False)
+
         no_decay = set()
         decay = set()
         param_dict = {}
-        for name, mod, param in _select_params_and_modules(model.named_modules(), [prefix]):
+        for name, mod, param in _select_params_and_modules(
+            model.named_modules(),
+            prefix
+        ):
             if name not in all:
-                # this should only happen for shared parameters
+                # this should only happen for shared
+                # or non-trainable parameters
                 continue
             if fix:
                 param.requires_grad = False
                 continue
             names.add(name)
             param_dict[name] = param
-            if isinstance(mod, nn.Linear) and name.endswith("weight"):
+            mod_name = mod.__class__.__name__
+            if mod_name == "Linear":
+                exit()
+            if mod_name in weight_decay_modules and any(
+                name.endswith(suffix) for suffix in weight_decay_modules[mod_name]
+            ):
                 decay.add(name)
             else:
                 no_decay.add(name)

@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedStr;
 use pyo3::types::PyDict;
 
 #[derive(Debug, Clone)]
@@ -120,10 +121,10 @@ pub fn windows<'a>(s: &'a str, config: &WindowConfig) -> anyhow::Result<Vec<Wind
     }
     match *config {
         WindowConfig::Character(max_chars, context_chars, use_graphemes) => {
-            char_windows(s, max_chars, context_chars, use_graphemes)
+            char(s, max_chars, context_chars, use_graphemes)
         }
         WindowConfig::Bytes(max_bytes, context_bytes, use_graphemes) => {
-            byte_windows(s, max_bytes, context_bytes, use_graphemes)
+            byte(s, max_bytes, context_bytes, use_graphemes)
         }
         WindowConfig::Full(use_graphemes) => {
             let cs = CS::new(s, use_graphemes);
@@ -169,7 +170,7 @@ impl<'a> From<Window<'a>> for PyWindow {
     }
 }
 
-pub fn char_windows(
+pub fn char(
     s: &str,
     max_length: usize,
     context_length: usize,
@@ -185,7 +186,7 @@ pub fn char_windows(
     let mut window_start = 0;
     let mut windows = vec![];
     while window_start < cs.len() {
-        let window_length = max_length - (1 + (window_start > 0) as usize) * context_length;
+        let window_length = max_length - (1 + usize::from(window_start > 0)) * context_length;
         let ctx_start = window_start.saturating_sub(context_length);
         let ctx_end = cs.len().min(window_start + window_length + context_length);
         let window_end = cs.len().min(window_start + window_length);
@@ -209,13 +210,13 @@ pub fn char_windows(
 }
 
 #[pyfunction(name = "char_windows", signature = (s, max_length, context_length, use_graphemes = true))]
-pub fn char_windows_py(
+pub fn char_py(
     s: String,
     max_length: usize,
     context_length: usize,
     use_graphemes: bool,
 ) -> anyhow::Result<Vec<PyWindow>> {
-    Ok(char_windows(&s, max_length, context_length, use_graphemes)?
+    Ok(char(&s, max_length, context_length, use_graphemes)?
         .into_iter()
         .map(PyWindow::from)
         .collect())
@@ -235,7 +236,7 @@ fn count_until(mut iter: impl Iterator<Item = usize>, max_length: usize, cs: &CS
     .0
 }
 
-pub fn byte_windows(
+pub fn byte(
     s: &str,
     max_bytes: usize,
     context_bytes: usize,
@@ -252,7 +253,7 @@ pub fn byte_windows(
     let mut windows = vec![];
     let mut window_start = 0;
     while window_start < cs.len() {
-        let window_length = max_bytes - (1 + (window_start > 0) as usize) * context_bytes;
+        let window_length = max_bytes - (1 + usize::from(window_start > 0)) * context_bytes;
         let window_end = window_start + count_until(window_start..cs.len(), window_length, &cs);
         if window_end <= window_start {
             return Err(anyhow!(
@@ -286,14 +287,15 @@ pub fn byte_windows(
     Ok(windows)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 #[pyfunction(name = "byte_windows", signature = (s, max_bytes, context_bytes, use_graphemes = true))]
-pub fn byte_windows_py(
-    s: String,
+pub fn byte_py(
+    s: PyBackedStr,
     max_bytes: usize,
     context_bytes: usize,
     use_graphemes: bool,
 ) -> anyhow::Result<Vec<PyWindow>> {
-    Ok(byte_windows(&s, max_bytes, context_bytes, use_graphemes)?
+    Ok(byte(s.as_ref(), max_bytes, context_bytes, use_graphemes)?
         .into_iter()
         .map(PyWindow::from)
         .collect())
@@ -303,8 +305,8 @@ pub fn byte_windows_py(
 /// into multiple windows (useful for text correction inference).
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let m = PyModule::new_bound(py, "windows")?;
-    m.add_function(wrap_pyfunction!(byte_windows_py, m.clone())?)?;
-    m.add_function(wrap_pyfunction!(char_windows_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(byte_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(char_py, m.clone())?)?;
     parent_module.add_submodule(&m)?;
 
     Ok(())

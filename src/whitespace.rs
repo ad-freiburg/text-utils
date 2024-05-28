@@ -22,28 +22,28 @@ pub fn full(s: &str, use_graphemes: bool) -> String {
 }
 
 #[derive(Debug, Clone, Copy, Hash, Ord, PartialOrd, Eq, PartialEq)]
-pub enum WhitespaceOperation {
+pub enum Operation {
     Keep,
     Insert,
     Delete,
 }
 
-impl<'a> FromPyObject<'a> for WhitespaceOperation {
+impl<'a> FromPyObject<'a> for Operation {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
         let s: PyResult<String> = ob.extract();
         let ws_op = if let Ok(s) = s {
             match s.as_str() {
-                "k" | "keep" => WhitespaceOperation::Keep,
-                "i" | "insert" => WhitespaceOperation::Insert,
-                "d" | "delete" => WhitespaceOperation::Delete,
+                "k" | "keep" => Operation::Keep,
+                "i" | "insert" => Operation::Insert,
+                "d" | "delete" => Operation::Delete,
                 k => return Err(py_invalid_type_error(k, "whitespace operation")),
             }
         } else {
             let s: u8 = ob.extract()?;
             match s {
-                0 => WhitespaceOperation::Keep,
-                1 => WhitespaceOperation::Insert,
-                2 => WhitespaceOperation::Delete,
+                0 => Operation::Keep,
+                1 => Operation::Insert,
+                2 => Operation::Delete,
                 k => return Err(py_invalid_type_error(k, "whitespace operation")),
             }
         };
@@ -51,23 +51,19 @@ impl<'a> FromPyObject<'a> for WhitespaceOperation {
     }
 }
 
-impl IntoPy<PyObject> for WhitespaceOperation {
+impl IntoPy<PyObject> for Operation {
     fn into_py(self, py: Python<'_>) -> PyObject {
         match self {
-            WhitespaceOperation::Keep => "k",
-            WhitespaceOperation::Insert => "i",
-            WhitespaceOperation::Delete => "d",
+            Operation::Keep => "k",
+            Operation::Insert => "i",
+            Operation::Delete => "d",
         }
         .into_py(py)
     }
 }
 
 #[pyfunction(signature = (from, to, use_graphemes = true))]
-pub fn operations(
-    from: &str,
-    to: &str,
-    use_graphemes: bool,
-) -> anyhow::Result<Vec<WhitespaceOperation>> {
+pub fn operations(from: &str, to: &str, use_graphemes: bool) -> anyhow::Result<Vec<Operation>> {
     let from_cs = CS::new(from, use_graphemes);
     let to_cs = CS::new(to, use_graphemes);
     let from_chars: Vec<Character> = from_cs.chars().collect();
@@ -83,13 +79,13 @@ pub fn operations(
             None
         };
         if to_char.is_some() && from_char == to_char.unwrap() {
-            operations.push(WhitespaceOperation::Keep);
+            operations.push(Operation::Keep);
             to_ptr += 1;
         } else if to_char.is_some() && to_char.unwrap().is_whitespace() {
-            operations.push(WhitespaceOperation::Insert);
+            operations.push(Operation::Insert);
             to_ptr += 2;
         } else if from_char.is_whitespace() {
-            operations.push(WhitespaceOperation::Delete);
+            operations.push(Operation::Delete);
         } else {
             return Err(anyhow!(
                 "should not happen, most likely your inputs contain multiple \
@@ -104,11 +100,7 @@ pub fn operations(
     Ok(operations)
 }
 
-pub fn repair(
-    s: &str,
-    operations: &[WhitespaceOperation],
-    use_graphemes: bool,
-) -> anyhow::Result<String> {
+pub fn repair(s: &str, operations: &[Operation], use_graphemes: bool) -> anyhow::Result<String> {
     let cs = CS::new(s, use_graphemes);
     let chars: Vec<Character> = cs.chars().collect();
     if chars.len() != operations.len() {
@@ -122,13 +114,13 @@ pub fn repair(
 
     let mut output = String::new();
     for (idx, (char, op)) in chars.iter().zip(operations.iter()).enumerate() {
-        if *op == WhitespaceOperation::Insert
+        if *op == Operation::Insert
             && !char.is_whitespace()
             && (idx == 0 || !chars[idx - 1].is_whitespace())
         {
             output.push(' ');
             output.push_str(char.str);
-        } else if *op == WhitespaceOperation::Delete && char.is_whitespace() {
+        } else if *op == Operation::Delete && char.is_whitespace() {
             continue;
         } else {
             output.push_str(char.str);
@@ -138,11 +130,7 @@ pub fn repair(
 }
 
 #[pyfunction(name = "repair", signature = (s, operations, use_graphemes = true))]
-fn repair_py(
-    s: &str,
-    operations: Vec<WhitespaceOperation>,
-    use_graphemes: bool,
-) -> anyhow::Result<String> {
+fn repair_py(s: &str, operations: Vec<Operation>, use_graphemes: bool) -> anyhow::Result<String> {
     repair(s, &operations, use_graphemes)
 }
 
@@ -191,7 +179,7 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>)
 #[cfg(test)]
 mod tests {
     use crate::whitespace::{
-        find_substring_ignoring_whitespace, full, operations, remove, repair, WhitespaceOperation,
+        find_substring_ignoring_whitespace, full, operations, remove, repair, Operation,
     };
 
     #[test]
@@ -215,11 +203,11 @@ mod tests {
         let to = "this is a test";
         assert_eq!(
             operations(from, from, true).unwrap(),
-            vec![WhitespaceOperation::Keep; from.chars().count()]
+            vec![Operation::Keep; from.chars().count()]
         );
         assert_eq!(
             operations(to, to, true).unwrap(),
-            vec![WhitespaceOperation::Keep; to.chars().count()]
+            vec![Operation::Keep; to.chars().count()]
         );
         assert_eq!(
             operations(from, to, true)
@@ -243,10 +231,7 @@ mod tests {
             repair(to, &operations(to, from, true).unwrap(), true).unwrap(),
             "t h isis a test"
         );
-        assert_eq!(
-            repair("t", &vec![WhitespaceOperation::Delete,], true,).unwrap(),
-            "t"
-        );
+        assert_eq!(repair("t", &vec![Operation::Delete,], true,).unwrap(), "t");
         assert_eq!(repair("", &vec![], true).unwrap(), "");
     }
 

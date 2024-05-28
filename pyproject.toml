@@ -21,15 +21,15 @@ classifiers = [
 ]
 
 dependencies = [
-    "torch>=2.2",
-    "einops>=0.7.0",
-    "numpy>=1.26.0",
-    "peft>=0.8.0",
+    "torch>=2.3",
+    "einops>=0.8",
+    "numpy>=1.26",
+    "peft>=0.10",
     "pyyaml>=6.0",
-    "tqdm>=4.60.0",
+    "tqdm>=4.66",
     "tensorboard>=2.16.0",
-    "flask>=2.2.0",
-    "requests>=2.30.0",
+    "flask>=3.0",
+    "requests>=2.31",
     "termcolor>=2.4.0"
 ]
 
@@ -40,7 +40,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "pytest>=8.0.0"
+    "pytest>=8.0"
 ]
 low-precision = [
     "bitsandbytes>=0.42",

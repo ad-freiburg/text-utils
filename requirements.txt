@@ -1,8 +1,0 @@
-maturin
-pytest>=6.2.0
-torch>=1.8.0
-einops>=0.3.0
-numpy>=1.19.0
-pyyaml>=5.4.0
-tqdm>=4.49.0
-requests>=2.0.0

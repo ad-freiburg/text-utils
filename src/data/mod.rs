@@ -1,7 +1,7 @@
 use crate::data::loading::{
-    inference_data_generator_from_file, inference_data_generator_from_python,
-    train_data_generator_from_files, BatchLimitType, BatchedIterator, BufferedIterator, DataGen,
-    ItemSize, PipelineIterator, Tensorize, TensorizedIterator, TextIterationStrategy, TextIterator,
+    inference_data_iterator_from_python, train_data_generator_from_files, BatchLimitType,
+    BatchedIterator, BufferedIterator, ItemSize, PipelineIterator, Tensorize, TensorizedIterator,
+    TextIterationStrategy, TextIterator,
 };
 use crate::data::preprocessing::{preprocessing, PreprocessingFnConfig};
 use crate::tokenization::{
@@ -19,7 +19,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
 use std::iter::repeat;
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -750,16 +749,12 @@ type InferenceDataIter = dyn Iterator<Item = Batch<InferenceItem>> + Send;
 struct InferenceLoader {
     iter: Box<InferenceDataIter>,
     iter_err: Arc<Mutex<Option<anyhow::Error>>>,
-    #[pyo3(get)]
-    min_items: usize,
-    #[pyo3(get)]
-    splits: Vec<usize>,
 }
 
 impl InferenceLoader {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        generators: Vec<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>>,
+        iter: impl Iterator<Item = anyhow::Result<InferenceData>> + Send + 'static,
         tokenizer: TokenizerConfig,
         window: WindowConfig,
         num_threads: u8,
@@ -770,31 +765,28 @@ impl InferenceLoader {
         sort: bool,
     ) -> anyhow::Result<Self> {
         let pipeline = inference_pipeline(window, tokenizer)?;
-        let splits: Vec<usize> = generators.iter().map(|g| g.min_len()).collect();
-        let min_items = splits.iter().sum();
         let prefetch_factor = prefetch_factor.max(1);
-        let text_iter = TextIterator::new(generators, TextIterationStrategy::Sequential, None)?;
         let iter_err = Arc::new(Mutex::new(None));
-        let text_iter_err = iter_err.clone();
-        let pipe_iter_err = iter_err.clone();
-        let iter = text_iter
-            .scan((), move |_, (data, _)| {
-                if let Err(e) = data {
-                    *text_iter_err.lock().unwrap() = Some(e);
+        let iter = iter
+            .scan(iter_err.clone(), move |err, item| match item {
+                Ok(item) => Some(item),
+                Err(e) => {
+                    if let Ok(mut lock) = err.lock() {
+                        *lock = Some(e);
+                    };
                     None
-                } else {
-                    data.ok()
                 }
             })
             .enumerate()
             .map(|(item_idx, data)| (data, InferenceDataInfo { item_idx }))
             .pipe(pipeline, num_threads)
-            .scan((), move |_, item| {
-                if let Err(e) = item {
-                    *pipe_iter_err.lock().unwrap() = Some(e);
+            .scan(iter_err.clone(), move |err, item| match item {
+                Ok(item) => Some(item),
+                Err(e) => {
+                    if let Ok(mut lock) = err.lock() {
+                        *lock = Some(e);
+                    };
                     None
-                } else {
-                    item.ok()
                 }
             })
             .flatten()
@@ -810,8 +802,6 @@ impl InferenceLoader {
         Ok(InferenceLoader {
             iter: Box::new(iter),
             iter_err,
-            min_items,
-            splits,
         })
     }
 }
@@ -842,56 +832,9 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
-        // we have to convert the full python iterator
-        // here already, because of some weird issues with pyo3 and threading
-        let data: Vec<anyhow::Result<_>> = inference_data_generator_from_python(iterator).collect();
+        let data: Vec<_> = inference_data_iterator_from_python(iterator).collect();
         Self::new(
-            vec![Box::new(data.into_iter())],
-            tokenizer,
-            window,
-            num_threads,
-            buffer_size,
-            batch_limit,
-            batch_limit_type,
-            prefetch_factor,
-            sort,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[staticmethod]
-    #[pyo3(signature=(
-        files,
-        tokenizer,
-        window,
-        num_threads = num_cpus::get() as u8,
-        buffer_size = 128,
-        batch_limit = 16,
-        batch_limit_type = BatchLimitType::BatchSize,
-        prefetch_factor = 1,
-        sort = false
-    ))]
-    pub fn from_files(
-        files: Vec<String>,
-        tokenizer: TokenizerConfig,
-        window: WindowConfig,
-        num_threads: u8,
-        buffer_size: usize,
-        batch_limit: usize,
-        batch_limit_type: BatchLimitType,
-        prefetch_factor: usize,
-        sort: bool,
-    ) -> anyhow::Result<Self> {
-        if files.is_empty() {
-            return Err(anyhow!("files is empty"));
-        }
-        let mut generators = vec![];
-        for file in &files {
-            let generator = inference_data_generator_from_file(Path::new(file))?;
-            generators.push(generator);
-        }
-        Self::new(
-            generators,
+            data.into_iter(),
             tokenizer,
             window,
             num_threads,

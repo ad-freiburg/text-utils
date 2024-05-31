@@ -105,6 +105,7 @@ where
     I: Iterator + Send,
 {
     type Item = I::Item;
+
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
     }
@@ -154,44 +155,7 @@ pub fn train_data_generator_from_files<P: AsRef<Path>>(
     }))
 }
 
-pub fn inference_data_generator_from_file(
-    path: impl AsRef<Path>,
-) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<InferenceData>>>> {
-    let iter = LossyUtf8Reader::new(BufReader::new(open(path.as_ref())?))
-        .lines()
-        .map(move |s| Ok(InferenceData::new(s?, None)));
-    Ok(Box::new(DataGenerator { min_len: 0, iter }))
-}
-
-pub fn text_data_generator_from_sequences(
-    input: Vec<String>,
-    target: Option<Vec<String>>,
-) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TrainData>>>> {
-    let len = input.len();
-    let input_iter = input.into_iter();
-    let mut target_iter = if let Some(target) = target {
-        if target.len() != len {
-            return Err(anyhow!(
-                "expect the same number of target sequences as input sequences"
-            ));
-        }
-        Some(target.into_iter())
-    } else {
-        None
-    };
-    let iter = input_iter.map(move |input_s| {
-        let target_s = if let Some(target_iter_mut) = target_iter.as_mut() {
-            target_iter_mut.next()
-        } else {
-            None
-        };
-        Ok(TrainData::new(input_s, target_s))
-    });
-    Ok(Box::new(DataGenerator { iter, min_len: len }))
-}
-
-// do not use this for now, since it causes some weird locking issues
-struct IteratorPy<T>
+struct PythonIterator<T>
 where
     T: for<'a> FromPyObject<'a>,
 {
@@ -199,7 +163,7 @@ where
     _phantom: PhantomData<T>,
 }
 
-impl<T> Iterator for IteratorPy<T>
+impl<T> Iterator for PythonIterator<T>
 where
     T: for<'a> FromPyObject<'a>,
 {
@@ -229,22 +193,12 @@ where
     }
 }
 
-pub fn inference_data_generator_from_python(
+pub fn inference_data_iterator_from_python(
     iterator: PyObject,
-) -> impl DataGen<Item = anyhow::Result<InferenceData>> {
-    let iter = IteratorPy {
+) -> impl Iterator<Item = anyhow::Result<InferenceData>> {
+    PythonIterator {
         iterator,
         _phantom: PhantomData,
-    };
-    DataGenerator { iter, min_len: 0 }
-}
-
-impl<I> DataGen for I
-where
-    I: ExactSizeIterator + Send,
-{
-    fn min_len(&self) -> usize {
-        self.len()
     }
 }
 
@@ -373,7 +327,7 @@ impl<T> Iterator for TextIterator<T> {
 
 pub trait PipelineIterator<I, O>
 where
-    Self: Iterator<Item = I> + Send + 'static + Sized,
+    Self: Iterator<Item = I> + Send + 'static,
     I: Send + 'static,
     O: Send + 'static,
 {

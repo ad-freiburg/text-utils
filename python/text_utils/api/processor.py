@@ -1,5 +1,4 @@
 import collections
-import copy
 import math
 import sys
 import os
@@ -194,7 +193,7 @@ class TextProcessor:
 
     def _get_loader(
         self,
-        inputs: list[str] | Iterator[data.InferenceData],
+        iter: Iterator[data.InferenceData],
         batch_size: int = 16,
         batch_max_tokens: int | None = None,
         sort: bool = True,
@@ -221,7 +220,7 @@ class TextProcessor:
 
         inference_cfg = {
             "tokenizer": self.cfg["inference"]["tokenizer"],
-            "window": self.cfg["inference"]["window"],
+            "window": self.cfg["inference"].get("window", {"type": "full"}),
             "num_threads": num_threads,
             "batch_limit": batch_limit,
             "buffer_size": buffer_size,
@@ -230,25 +229,10 @@ class TextProcessor:
             "sort": sort
         }
         inference_cfg.update(kwargs)
-        if isinstance(inputs, list):
-            loader = data.InferenceLoader.from_files(
-                inputs,
-                **inference_cfg
-            )
-        elif isinstance(inputs, Iterator):
-            # threading currently not supported with python iterators
-            inference_cfg["num_threads"] = 0
-            loader = data.InferenceLoader.from_iterator(
-                inputs,
-                **inference_cfg
-            )
-        else:
-            raise ValueError(
-                f"unknown input type {type(inputs)}, must either be a list of "
-                f"files and an iterator over strings"
-            )
-
-        return loader
+        return data.InferenceLoader.from_iterator(
+            iter,
+            **inference_cfg
+        )
 
     def _pbar(
         self,

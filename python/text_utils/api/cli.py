@@ -4,7 +4,7 @@ import sys
 import time
 import logging
 import warnings
-from typing import Iterator, Iterable, Union, Type
+from typing import Iterator, Iterable, Type
 try:
     import readline  # noqa
 except ImportError:
@@ -18,7 +18,7 @@ from text_utils.api.server import TextProcessingServer
 from text_utils.api.table import generate_report, generate_table
 from text_utils.api.utils import ProgressIterator
 
-from text_utils import data, text
+from text_utils import data
 
 
 class TextProcessingCli:
@@ -200,14 +200,6 @@ class TextProcessingCli:
     ) -> Iterator[str]:
         raise NotImplementedError
 
-    def process_file(
-        self,
-        processor: TextProcessor,
-        input_file: str,
-        output_file: str | TextIOWrapper
-    ) -> None:
-        raise NotImplementedError
-
     def setup(self) -> TextProcessor:
         device = self.args.device or (
             "cuda" if torch.cuda.is_available()
@@ -277,9 +269,11 @@ class TextProcessingCli:
         start = time.perf_counter()
         if self.args.process is not None:
             self.args.progress = False
-            opt = next(self.process_iter(self.cor, iter([self.args.process])))
-            for line in self.format_output(opt):
-                print(line)
+            output = next(self.process_iter(
+                self.cor, iter([self.args.process])
+            ))
+            for opt in self.format_output(output):
+                print(opt)
 
         elif self.args.file is not None:
             if self.args.out_path is None:
@@ -287,9 +281,21 @@ class TextProcessingCli:
                 assert isinstance(out, TextIOWrapper)
             else:
                 assert isinstance(self.args.out_path, str)
-                out = self.args.out_path
+                out = open(self.args.out_path, "w")
 
-            self.process_file(self.cor, self.args.file, out)
+            input_it = (
+                line.rstrip("\r\n")
+                for line in open(self.args.file)
+            )
+            sized_it = ProgressIterator(
+                input_it,
+                self.inference_data_size
+            )
+            for output in self.process_iter(self.cor, sized_it):
+                for opt in self.format_output(output):
+                    out.write(opt + "\n")
+
+            out.close()
 
             if self.args.report:
                 for d in self.cor.devices:
@@ -297,14 +303,12 @@ class TextProcessingCli:
                         torch.cuda.synchronize(d)
                 end = time.perf_counter()
 
-                num_lines, num_bytes = text.file_size(self.args.file)
-
                 report = generate_report(
                     self.cor.task,
                     self.cor.name,
                     self.cor.model,
-                    num_lines,
-                    num_bytes,
+                    sized_it.num_items,
+                    sized_it.total_size,
                     end - start,
                     self.args.batch_size,
                     not self.args.unsorted,
@@ -318,9 +322,9 @@ class TextProcessingCli:
             self.args.progress = False
             while True:
                 ipt = data.InferenceData(input(">> "))
-                opt = next(self.process_iter(self.cor, iter([ipt])))
-                for line in self.format_output(opt):
-                    print(line)
+                output = next(self.process_iter(self.cor, iter([ipt])))
+                for opt in self.format_output(output):
+                    print(opt)
 
         else:
             if sys.stdin.isatty():
@@ -336,10 +340,9 @@ class TextProcessingCli:
                     input_it,
                     self.inference_data_size
                 )
-                outputs = self.process_iter(self.cor, sized_it)
-                for opt in outputs:
-                    for line in self.format_output(opt):
-                        print(line)
+                for output in self.process_iter(self.cor, sized_it):
+                    for opt in self.format_output(output):
+                        print(opt)
 
                 if self.args.report:
                     for d in self.cor.devices:

@@ -8,7 +8,7 @@ import yaml
 import torch
 from flask import Flask, Response, cli, jsonify
 
-from text_utils.api.processor import TextProcessor
+from text_utils.api.processor import TextProcessor, ModelInfo
 from text_utils.api.utils import gpu_info, cpu_info
 from text_utils.logging import get_logger
 from text_utils import configuration
@@ -81,13 +81,13 @@ class TextProcessingServer:
             })
             return response
 
-        self.text_processors: Dict[str, TextProcessor] = {}
-        self.name_to_text_processor: Dict[str, str] = {}
+        self.text_processors: list[TextProcessor] = []
+        self.name_to_idx = {}
         self.lock = Lock()
 
-        model_duplicates = {}
         model_infos = []
-        for cfg in config["models"]:
+        assert "models" in config, "expected models in server config"
+        for i, cfg in enumerate(config["models"]):
             if "device" in cfg:
                 device = cfg["device"]
             elif self.num_gpus > 0:
@@ -97,15 +97,6 @@ class TextProcessingServer:
 
             if "name" in cfg:
                 model_name = cfg["name"]
-                org_model_name = model_name
-                self.logger.info(
-                    f"loading pretrained model {model_name} for task "
-                    f"{self.text_processor_cls.task} onto device {device}"
-                )
-                text_processor = self.text_processor_cls.from_pretrained(
-                    model_name,
-                    device
-                )
                 model_info = next(
                     filter(
                         lambda m: m.name == model_name,
@@ -117,14 +108,18 @@ class TextProcessingServer:
                     raise RuntimeError(
                         f"model {model_name} not found in available models"
                     )
-                model_description = model_info.description
-                model_name = model_info.name
-                model_tags = model_info.tags
-                model_tags.append("src::pretrained")
+                self.logger.info(
+                    f"loading pretrained model {model_info.name} for task "
+                    f"{self.text_processor_cls.task} onto device {device}"
+                )
+                text_processor = self.text_processor_cls.from_pretrained(
+                    model_name,
+                    device
+                )
+                model_info.tags.append("src::pretrained")
 
             elif "path" in cfg:
                 path = cfg["path"]
-                org_model_name = path
                 self.logger.info(
                     f"loading model for task {self.text_processor_cls.task} "
                     f"from experiment {path} onto device {device}"
@@ -133,51 +128,53 @@ class TextProcessingServer:
                     path,
                     device
                 )
-                model_name = text_processor.name
-                model_description = "loaded from custom experiment"
-                model_tags = ["src::custom"]
+
+                model_info = ModelInfo(
+                    name=text_processor.name,
+                    description="loaded from custom experiment",
+                    tags=["src::experiment"]
+                )
+
             else:
                 raise RuntimeError(
                     "expected either name or path in model config"
                 )
 
             # handle the case when two models have the same name
-            if model_name in self.text_processors:
-                dup_num = model_duplicates.get(model_name, 0) + 1
-                self.logger.warning(
-                    f"found another model with name {model_name}, "
-                    f"renaming current one to {model_name}_{dup_num}"
+            if model_info.name in self.text_processors:
+                raise RuntimeError(
+                    f"got multiple models with name '{model_info.name}', "
+                    f"second one at position {i + 1}"
                 )
-                model_duplicates[model_name] = dup_num
-                model_name = f"{model_name}_{dup_num}"
 
-            model_infos.append((model_name, model_description, model_tags))
-
-            self.text_processors[model_name] = text_processor
-            self.name_to_text_processor[org_model_name] = model_name
+            model_infos.append(model_info)
+            self.text_processors.append(text_processor)
+            self.name_to_idx[model_info.name] = i
 
         @self.server.route(f"{self.base_url}/models")
         def _models() -> Response:
             response = jsonify({
                 "task": self.text_processor_cls.task,
                 "models": [
-                    {"name": name, "description": description, "tags": tags}
-                    for name, description, tags in model_infos
+                    info._asdict()
+                    for info in model_infos
                 ]
             })
             return response
 
     @contextmanager
     def text_processor(self, model_name: str) -> Generator[Union[TextProcessor, Error], None, None]:
-        if model_name not in self.text_processors:
+        if model_name not in self.name_to_idx:
             yield Error(f"model {model_name} does not exist", 404)
             return
+
         acquired = self.lock.acquire(timeout=self.timeout)
         if not acquired:
             yield Error(f"failed to reserve model within {self.timeout}s", 503)
             return
+
         try:
-            yield self.text_processors[model_name]
+            yield self.text_processors[self.name_to_idx[model_name]]
         finally:
             self.lock.release()
 

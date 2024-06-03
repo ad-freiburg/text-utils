@@ -22,8 +22,8 @@ from text_utils.inference.utils import (
 
 
 def eos_stop_fn(eos_token_id: int) -> StopFn:
-    def _stop(token_ids: torch.Tensor, _: list[int]) -> torch.Tensor:
-        return token_ids == eos_token_id
+    def _stop(token_ids: torch.Tensor, _: int) -> bool:
+        return token_ids[-1].item() == eos_token_id
 
     return _stop
 
@@ -160,9 +160,9 @@ def search(
         max_length_indices = torch.where(lengths >= max_length)[0]
         smaller_max_length_mask[max_length_indices] = False
 
-        stop_mask = stop_fn(sel_ids.to("cpu"), batch_indices)
-        new_stop_indices = indices[mask][stop_mask]
-        non_stop_mask[new_stop_indices] = False
+        for idx in batch_indices:
+            if stop_fn(token_ids[idx, :lengths[idx]], idx):
+                non_stop_mask[idx] = False
 
         mask = non_stop_mask & smaller_max_length_mask
 

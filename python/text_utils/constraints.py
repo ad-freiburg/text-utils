@@ -1,5 +1,3 @@
-import copy
-
 from text_utils._internal import grammar
 from text_utils._internal import continuations
 
@@ -46,6 +44,7 @@ class Constraint:
         raise NotImplementedError
 
 
+
 class ContinuationConstraint(Constraint):
     """
     Constraint for only allowing certain continuations for
@@ -81,5 +80,5 @@ class ContinuationConstraint(Constraint):
             self.prefix
         )
 
-    def get_value(self) -> str | None:
+    def get_value(self) -> str:
         return self.value

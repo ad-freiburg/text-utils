@@ -60,6 +60,10 @@ impl ContinuationIndex {
             .map(|c| c.as_slice())
     }
 
+    fn get_continuations(&self) -> Vec<Vec<u8>> {
+        self.cont_trie.continuations.clone()
+    }
+
     fn get(&self, prefix: &[u8]) -> (Vec<usize>, Option<String>) {
         (
             self.cont_trie.contains_continuations(prefix),

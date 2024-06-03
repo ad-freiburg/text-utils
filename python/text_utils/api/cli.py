@@ -222,8 +222,8 @@ class TextProcessingCli:
         return cor
 
     @staticmethod
-    def inference_data_size(item: data.InferenceData) -> int:
-        return len(item.text.encode("utf8"))
+    def input_size(item: str) -> int:
+        return len(item.encode("utf8"))
 
     def run(self) -> None:
         # ignore warnings in CLI, so the user doesn't get confused
@@ -289,7 +289,7 @@ class TextProcessingCli:
             )
             sized_it = ProgressIterator(
                 input_it,
-                self.inference_data_size
+                self.input_size
             )
             for output in self.process_iter(self.cor, sized_it):
                 for opt in self.format_output(output):
@@ -338,7 +338,7 @@ class TextProcessingCli:
                 )
                 sized_it = ProgressIterator(
                     input_it,
-                    self.inference_data_size
+                    self.input_size
                 )
                 for output in self.process_iter(self.cor, sized_it):
                     for opt in self.format_output(output):

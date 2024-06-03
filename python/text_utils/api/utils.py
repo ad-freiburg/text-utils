@@ -79,13 +79,13 @@ class ProgressIterator:
 
 
 def download_zip(
-        name: str,
-        url: str,
-        download_dir: str,
-        cache_dir: str,
-        sub_cache_dir: str,
-        force_download: bool,
-        logger: logging.Logger
+    name: str,
+    url: str,
+    download_dir: str,
+    cache_dir: str,
+    sub_cache_dir: str,
+    force_download: bool,
+    logger: logging.Logger
 ) -> str:
     """
     Downloads and extracts a zip into cache dir and returns the path to the only subdirectory

@@ -91,13 +91,13 @@ SampleFn = Callable[
 # checks if decoding should be stopped
 StopFn = Callable[
     [
-        # selected token ids, shape [batch_size]
+        # token ids decoded so far
         torch.Tensor,
-        # indices of input batch elements which are checked for stopping
-        list[int]
+        # index of input batch element checked for stopping
+        int
     ],
-    # mask indicating which elements should be stopped
-    torch.Tensor
+    # bool indicating if decoding should be stopped
+    bool
 ]
 
 # takes in log probs and beam width and returns

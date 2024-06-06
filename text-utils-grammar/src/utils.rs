@@ -76,17 +76,23 @@ pub(crate) fn pattern_from_parts(
 }
 
 fn make_anchored(pat: &str) -> String {
-    let pat: String = match (pat.starts_with('^'), pat.ends_with('$')) {
-        (true, true) => return pat.to_string(),
-        (true, false) => pat.chars().skip(1).collect(),
-        (false, true) => {
-            let mut chars = pat.chars().collect::<Vec<_>>();
-            chars.pop();
-            chars.into_iter().collect()
-        }
-        (false, false) => pat.to_string(),
-    };
-    format!("^(?:{})$", pat)
+    assert!(!pat.ends_with('$'), "prefix pattern should not end with $");
+    if pat.starts_with('^') {
+        pat.to_string()
+    } else {
+        format!("^(?:{})", pat)
+    }
+    // let pat: String = match (pat.starts_with('^'), pat.ends_with('$')) {
+    //     (true, true) => return pat.to_string(),
+    //     (true, false) => pat.chars().skip(1).collect(),
+    //     (false, true) => {
+    //         let mut chars = pat.chars().collect::<Vec<_>>();
+    //         chars.pop();
+    //         chars.into_iter().collect()
+    //     }
+    //     (false, false) => pat.to_string(),
+    // };
+    // format!("^(?:{})$", pat)
 }
 
 pub(crate) struct PrefixDFA {
@@ -99,6 +105,7 @@ impl Debug for PrefixDFA {
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub(crate) enum PrefixMatch {
     None,
     Maybe(StateID),
@@ -112,9 +119,37 @@ impl PrefixDFA {
     }
 
     #[inline]
-    pub(crate) fn get_state(&self, prefix: &[u8]) -> Option<StateID> {
-        let start = self.get_start_state();
-        self.drive(start, prefix)
+    fn is_dead_or_quit(&self, state: StateID) -> bool {
+        // dead or quit state is an end state
+        self.dfa.is_dead_state(state) || self.dfa.is_quit_state(state)
+    }
+
+    #[inline]
+    fn has_continuation(&self, state: StateID) -> bool {
+        (0..=255).any(|b| !self.is_dead_or_quit(self.dfa.next_state(state, b)))
+    }
+
+    #[inline]
+    fn can_be_match(&self, state: StateID) -> bool {
+        // normally we would check for eoi only, but for a prefix dfa
+        // we also check all possible continuations / bytes
+        !self.is_dead_or_quit(self.dfa.next_eoi_state(state)) || self.has_continuation(state)
+    }
+
+    #[inline]
+    pub(crate) fn drive(&self, mut state: StateID, continuation: &[u8]) -> Option<StateID> {
+        for &b in continuation {
+            state = self.dfa.next_state(state, b);
+            // can be faster to check after each byte, experiment with this
+            // if self.is_end(state) {
+            //     return None;
+            // }
+        }
+        if self.can_be_match(state) {
+            Some(state)
+        } else {
+            None
+        }
     }
 
     #[inline]
@@ -125,47 +160,37 @@ impl PrefixDFA {
     }
 
     #[inline]
-    pub(crate) fn is_maybe_match(&self, state: StateID) -> bool {
-        // all except dead and quit states can be a match later
-        !(self.dfa.is_dead_state(state) || self.dfa.is_quit_state(state))
-    }
-
-    #[inline]
     pub(crate) fn is_match_state(&self, state: StateID) -> bool {
         self.dfa.is_match_state(self.dfa.next_eoi_state(state))
     }
 
     pub(crate) fn is_final_match_state(&self, state: StateID) -> bool {
-        self.is_match_state(state) && (0..=255).all(|b| self.drive(state, &[b]).is_none())
+        self.dfa.is_match_state(self.dfa.next_eoi_state(state))
+            && (0..=255).all(|b| !self.can_be_match(self.dfa.next_state(state, b)))
     }
 
     #[inline]
-    pub(crate) fn drive(&self, mut state: StateID, continuation: &[u8]) -> Option<StateID> {
-        for &b in continuation {
-            state = self.dfa.next_state(state, b);
-            if !self.is_maybe_match(state) {
-                return None;
-            }
-        }
-        Some(state)
+    pub(crate) fn get_state(&self, prefix: &[u8]) -> Option<StateID> {
+        let start = self.get_start_state();
+        self.drive(start, prefix)
     }
 
     #[inline]
     pub(crate) fn find_prefix_match(&self, mut state: StateID, prefix: &[u8]) -> PrefixMatch {
-        let mut last_match = if self.is_match_state(state) {
-            Some(0)
-        } else {
-            None
-        };
+        let mut last_match = None;
         for (i, &b) in prefix.iter().enumerate() {
             state = self.dfa.next_state(state, b);
-            if self.is_match_state(state) {
-                last_match = Some(i + 1);
-            } else if !self.is_maybe_match(state) {
-                return last_match.map_or(PrefixMatch::None, |i| PrefixMatch::UpTo(i));
+            if self.dfa.is_match_state(state) {
+                last_match = Some(i);
+            } else if self.is_dead_or_quit(state) {
+                return last_match.map_or(PrefixMatch::None, PrefixMatch::UpTo);
             }
         }
-        PrefixMatch::Maybe(state)
+        if self.dfa.is_match_state(self.dfa.next_eoi_state(state)) || self.has_continuation(state) {
+            PrefixMatch::Maybe(state)
+        } else {
+            last_match.map_or(PrefixMatch::None, PrefixMatch::UpTo)
+        }
     }
 }
 
@@ -201,6 +226,96 @@ mod test {
     use super::*;
 
     #[test]
+    fn test_prefix_dfa() {
+        // simple
+        let pdfa = PrefixDFA::new("ab").unwrap();
+        assert!(pdfa.get_state(b"").is_some());
+        assert!(pdfa.get_state(b"a").is_some());
+        assert!(pdfa.get_state(b"ab").is_some());
+        assert!(pdfa.get_state(b"b").is_none());
+        assert!(pdfa.get_state(b"ab ").is_none());
+        let state = pdfa.get_state(b"ab").unwrap();
+        assert!(pdfa.is_match_state(state));
+        assert!(pdfa.is_final_match_state(state));
+        assert!(pdfa.drive(pdfa.get_start_state(), b"ab").is_some());
+        assert!(pdfa.drive(pdfa.get_start_state(), b"ab ").is_none());
+
+        // simple
+        let pdfa = PrefixDFA::new("ab*").unwrap();
+        assert!(pdfa.get_state(b"").is_some());
+        assert!(pdfa.get_state(b"a").is_some());
+        assert!(pdfa.get_state(b"ab").is_some());
+        assert!(pdfa.get_state(b"b").is_none());
+        assert!(pdfa.get_state(b"ab ").is_none());
+        assert!(pdfa.get_state(b"abb").is_some());
+        let state = pdfa.get_state(b"abb").unwrap();
+        assert!(pdfa.is_match_state(state));
+        assert!(!pdfa.is_final_match_state(state));
+
+        // non-greedy
+        let pdfa = PrefixDFA::new("<a>.*?</a>").unwrap();
+        assert!(pdfa.get_state(b"<a>test</a>").is_some());
+        assert!(pdfa.get_state(b"<a>test</a>t").is_none());
+        let start = pdfa.get_state(b"<a>test</a>").unwrap();
+        assert!(!pdfa.is_dead_or_quit(start));
+        assert!(pdfa.is_match_state(start));
+        assert!(pdfa.is_final_match_state(start));
+
+        // greedy
+        let pdfa = PrefixDFA::new("<a>.*</a>").unwrap();
+        assert!(pdfa.get_state(b"<a>test</a>").is_some());
+        assert!(pdfa.get_state(b"<a>test</a>t").is_some());
+        let start = pdfa.get_state(b"<a>test</a>").unwrap();
+        assert!(!pdfa.is_dead_or_quit(start));
+        assert!(pdfa.is_match_state(start));
+        assert!(!pdfa.is_final_match_state(start));
+    }
+
+    #[test]
+    fn test_prefix_match() {
+        let pdfa = PrefixDFA::new("abcdef").unwrap();
+        let state = pdfa.get_state(b"abc").unwrap();
+        assert_eq!(
+            pdfa.find_prefix_match(pdfa.get_start_state(), b"abc"),
+            PrefixMatch::Maybe(state)
+        );
+        assert_eq!(pdfa.find_prefix_match(state, b"abc"), PrefixMatch::None);
+        assert_eq!(
+            pdfa.find_prefix_match(state, b"def"),
+            PrefixMatch::Maybe(pdfa.get_state(b"abcdef").unwrap())
+        );
+        assert_eq!(
+            pdfa.find_prefix_match(pdfa.get_start_state(), b"abcdefg"),
+            PrefixMatch::UpTo(6)
+        );
+        assert_eq!(
+            pdfa.find_prefix_match(pdfa.get_state(b"abcdef").unwrap(), b""),
+            PrefixMatch::Maybe(pdfa.get_state(b"abcdef").unwrap())
+        );
+        assert_eq!(
+            pdfa.find_prefix_match(pdfa.get_state(b"abcdef").unwrap(), b"g"),
+            PrefixMatch::UpTo(0)
+        );
+        assert_eq!(
+            pdfa.find_prefix_match(state, b""),
+            PrefixMatch::Maybe(state)
+        );
+        assert!(!pdfa.is_final_match_state(state));
+        let state = pdfa.get_state(b"abcdef").unwrap();
+        assert_eq!(
+            pdfa.find_prefix_match(pdfa.get_start_state(), b"abcdef"),
+            PrefixMatch::Maybe(state)
+        );
+        let pdfa = PrefixDFA::new("abcdef+").unwrap();
+        let state = pdfa.get_state(b"abcdefff").unwrap();
+        assert_eq!(
+            pdfa.find_prefix_match(pdfa.get_start_state(), b"abcdefff"),
+            PrefixMatch::Maybe(state)
+        );
+        assert!(!pdfa.is_final_match_state(state));
+    }
+
+    #[test]
     fn test_optimized_prefix_order() {
         let items = ["de", "a", "d", "ab", "abc", "b"];
         let (permutation, skips) = optimized_prefix_order(&items);
@@ -210,9 +325,7 @@ mod test {
 
     #[test]
     fn test_make_anchored() {
-        assert_eq!(make_anchored("a"), "^(?:a)$");
-        assert_eq!(make_anchored("^a"), "^(?:a)$");
-        assert_eq!(make_anchored("a$"), "^(?:a)$");
-        assert_eq!(make_anchored("^a$"), "^a$");
+        assert_eq!(make_anchored("a"), "^(?:a)");
+        assert_eq!(make_anchored("^a"), "^a");
     }
 }

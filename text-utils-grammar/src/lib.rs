@@ -47,6 +47,6 @@ pub trait Constraint {
 #[wasm_bindgen]
 pub fn parse(text: &str, grammar: &str, lexer: &str) -> Option<String> {
     let parser = LR1GrammarParser::new(grammar, lexer).ok()?;
-    let parse = parser.parse(text, true).ok()?;
-    Some(parse.pretty(text, true))
+    let parse = parser.parse(text, true, true).ok()?;
+    Some(parse.pretty(text, true, true))
 }

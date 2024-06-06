@@ -133,7 +133,7 @@ mod test {
             .iter()
             .map(|s| s.as_bytes().to_vec())
             .collect();
-        let re = RegularExpressionConstraint::new(r"^ab$", conts.clone()).unwrap();
+        let re = RegularExpressionConstraint::new(r"^ab", conts.clone()).unwrap();
         let (conts, states) = re.get_valid_continuations_with_state(&re.get_start_state());
         assert_eq!(conts, vec![0, 3]);
         assert!(!re.is_match_state(&states[0]));
@@ -190,6 +190,7 @@ mod test {
                 .join(file);
             let re = RegularExpressionConstraint::from_file(path, continuations.clone()).unwrap();
             for i in 0..n {
+                println!("{file} {i}");
                 let mut state = re.get_start_state();
                 let mut is_match = false;
                 let mut decoded = vec![];

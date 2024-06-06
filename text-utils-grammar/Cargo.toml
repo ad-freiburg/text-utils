@@ -9,7 +9,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 regex = "1.10"
 regex-automata = "0.4"
-itertools = "0.12"
+itertools = "0.13"
 rayon = "1.8"
 cfgrammar = { version = "0.13.4", features = ["serde"] }
 lrtable = { version = "0.13.4", features = ["serde"] }

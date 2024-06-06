@@ -24,11 +24,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let n = 1000;
     for i in 0..n {
         let start = Instant::now();
-        let parse = parser.parse(&input, false)?;
+        let parse = parser.parse(&input, false, false)?;
         let end = Instant::now();
         elapsed += end - start;
         if i == 0 {
-            println!("{}", parse.pretty(&input, true));
+            println!("{}", parse.pretty(&input, true, true));
         }
     }
     println!(

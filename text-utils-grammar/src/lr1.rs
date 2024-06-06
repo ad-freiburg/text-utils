@@ -163,7 +163,7 @@ type Spans = Vec<Span>;
 type Matching = Vec<(usize, StateID)>;
 
 enum TokenOrMatching {
-    Token(usize, Option<TIdx<u32>>),
+    Token(Option<TIdx<u32>>, usize),
     Matching(Matching),
 }
 
@@ -198,14 +198,14 @@ fn find_token_or_matching(
             let (pidx, _) = prefix_matches[0];
             let (_, token) = &pdfas[pidx];
             Some(TokenOrMatching::Token(
-                prefix.len(),
                 token.as_ref().copied(),
+                prefix.len(),
             ))
         } else {
             Some(TokenOrMatching::Matching(prefix_matches))
         }
     } else if found_token {
-        Some(TokenOrMatching::Token(len, token))
+        Some(TokenOrMatching::Token(token, len))
     } else {
         None
     }
@@ -227,7 +227,7 @@ fn prefix_lexer_with(
     // logic is that longest match wins
     while i < continuation.len() {
         match find_token_or_matching(&continuation[i..], &prefix_matches, pdfas) {
-            Some(TokenOrMatching::Token(len, token)) => {
+            Some(TokenOrMatching::Token(token, len)) => {
                 tokens.push(token);
                 spans.push((i, len));
                 i += len;
@@ -299,7 +299,7 @@ pub struct LR1GrammarParser {
 pub enum LR1Parse<'a> {
     Empty(&'a str),
     Terminal(&'a str, Span),
-    NonTerminal(&'a str, Vec<LR1Parse<'a>>, Span),
+    NonTerminal(&'a str, Vec<LR1Parse<'a>>),
 }
 
 impl LR1Parse<'_> {
@@ -309,36 +309,61 @@ impl LR1Parse<'_> {
 
     pub fn span(&self) -> Option<&Span> {
         match self {
-            LR1Parse::Empty(..) => None,
+            LR1Parse::Empty(..) | LR1Parse::NonTerminal(..) => None,
             LR1Parse::Terminal(.., span) => Some(span),
-            LR1Parse::NonTerminal(.., span) => Some(span),
         }
     }
 
-    pub fn pretty(&self, text: &str, collapse: bool) -> String {
-        fn pretty_parse(parse: &LR1Parse<'_>, indent: usize, text: &str, collapse: bool) -> String {
+    pub fn pretty(&self, text: &str, skip_empty: bool, collapse_single: bool) -> String {
+        fn pretty_parse(
+            parse: &LR1Parse<'_>,
+            indent: usize,
+            text: &str,
+            skip_empty: bool,
+            collapse_single: bool,
+        ) -> String {
             match parse {
-                LR1Parse::Empty(name) => format!("{:indent$}{name} ''", ""),
+                LR1Parse::Empty(name, ..) => {
+                    if skip_empty {
+                        "".into()
+                    } else {
+                        format!("{:indent$}{name}", "")
+                    }
+                }
                 LR1Parse::Terminal(name, (start, len)) => {
                     format!("{:indent$}{name} '{}'", "", &text[*start..*start + *len],)
                 }
                 LR1Parse::NonTerminal(name, children, ..) => {
                     assert!(!children.is_empty());
-                    if children.len() == 1 && collapse {
-                        return pretty_parse(&children[0], indent, text, collapse);
+                    if children.len() == 1 && collapse_single {
+                        return pretty_parse(
+                            &children[0],
+                            indent,
+                            text,
+                            skip_empty,
+                            collapse_single,
+                        );
                     }
                     let mut s = format!("{:indent$}{name}", "");
                     for child in children {
                         s.push('\n');
-                        s.push_str(&pretty_parse(child, indent + 2, text, collapse));
+                        s.push_str(&pretty_parse(
+                            child,
+                            indent + 2,
+                            text,
+                            skip_empty,
+                            collapse_single,
+                        ));
                     }
                     s
                 }
             }
         }
-        pretty_parse(self, 0, text, collapse)
+        pretty_parse(self, 0, text, skip_empty, collapse_single)
     }
 }
+
+pub type TokenAndSpan<'a> = (Option<&'a str>, Span);
 
 impl LR1GrammarParser {
     pub fn new(grammar: &str, tokens: &str) -> Result<Self, Box<dyn Error>> {
@@ -366,7 +391,7 @@ impl LR1GrammarParser {
         Self::new(&grammar, &tokens)
     }
 
-    pub fn lex(&self, text: &str) -> Result<Vec<(Option<&str>, Span)>, Box<dyn Error>> {
+    pub fn lex(&self, text: &str) -> Result<Vec<TokenAndSpan<'_>>, Box<dyn Error>> {
         let (tokens, spans) = lexer(text, &self.pdfas)?;
         Ok(tokens
             .into_iter()
@@ -375,7 +400,12 @@ impl LR1GrammarParser {
             .collect())
     }
 
-    pub fn parse(&self, text: &str, collapse: bool) -> Result<LR1Parse<'_>, Box<dyn Error>> {
+    pub fn parse(
+        &self,
+        text: &str,
+        skip_empty: bool,
+        collapse_single: bool,
+    ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
         let (tokens, spans) = lexer(text, &self.pdfas)?;
         let mut nlc = NewlineCache::new();
         nlc.feed(text);
@@ -410,7 +440,8 @@ impl LR1GrammarParser {
         fn node_to_lr1<'a>(
             grammar: &'a YaccGrammar,
             node: &Node<DefaultLexeme<u32>, u32>,
-            collapse: bool,
+            skip_empty: bool,
+            collapse_single: bool,
         ) -> LR1Parse<'a> {
             match node {
                 Node::Term { lexeme } => {
@@ -424,8 +455,8 @@ impl LR1GrammarParser {
                     let nodes: Vec<_> = nodes
                         .iter()
                         .filter_map(|node| {
-                            let node = node_to_lr1(grammar, node, collapse);
-                            if node.is_empty() {
+                            let node = node_to_lr1(grammar, node, skip_empty, collapse_single);
+                            if node.is_empty() && skip_empty {
                                 None
                             } else {
                                 Some(node)
@@ -433,18 +464,21 @@ impl LR1GrammarParser {
                         })
                         .collect();
                     if nodes.is_empty() {
-                        return LR1Parse::Empty(rname);
-                    } else if nodes.len() == 1 && collapse {
-                        return nodes.into_iter().next().unwrap();
+                        LR1Parse::Empty(rname)
+                    } else if nodes.len() == 1 && collapse_single {
+                        nodes.into_iter().next().unwrap()
+                    } else {
+                        LR1Parse::NonTerminal(rname, nodes)
                     }
-                    let first_span = nodes.first().unwrap().span().unwrap();
-                    let last_span = nodes.last().unwrap().span().unwrap();
-                    let span = (first_span.0, last_span.0 + last_span.1 - first_span.0);
-                    LR1Parse::NonTerminal(rname, nodes, span)
                 }
             }
         }
-        Ok(node_to_lr1(&self.grammar, &tree, collapse))
+        Ok(node_to_lr1(
+            &self.grammar,
+            &tree,
+            skip_empty,
+            collapse_single,
+        ))
     }
 }
 
@@ -1162,9 +1196,6 @@ mod test {
                 let output2 = prefix_lexer_with(&text[i..], &pdfas, output1.2.clone()).unwrap();
                 let (combined_lexemes, combined_spans, combined_matching, combined_last_span) =
                     combine_prefix_lexer_outputs(output1, output2);
-                println!("text: {:?}", String::from_utf8_lossy(text));
-                println!("text1: {:?}", String::from_utf8_lossy(&text[..i]));
-                println!("text2: {:?}", String::from_utf8_lossy(&text[i..]));
                 assert_eq!(lexemes, combined_lexemes);
                 assert_eq!(matching, combined_matching);
                 assert_eq!(spans, combined_spans);
@@ -1280,10 +1311,10 @@ mod test {
     fn test_lrk_parser() {
         let (grammar, lexer, _) = load_lrk_grammar("calc");
         let lrk = LR1GrammarParser::from_files(grammar, lexer).unwrap();
-        assert!(lrk.parse("2 - 1", false).is_err());
+        assert!(lrk.parse("2 - 1", false, false).is_err());
         let text = "(1 + 28)*\n3";
-        let parse = lrk.parse(text, false).unwrap();
-        println!("{}", parse.pretty(text, true));
+        let parse = lrk.parse(text, false, false).unwrap();
+        println!("{}", parse.pretty(text, true, true));
     }
 
     fn drive_with_tokens(

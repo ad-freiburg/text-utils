@@ -233,19 +233,10 @@ def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = Fa
 
 
 def get_peft_config(peft: Dict[str, Any]) -> PeftConfig:
-    assert peft["type"] in {"lora", "ia3"}, \
-        "only lora and ia3 are supported for now"
-    if peft["type"] == "lora":
-        peft_cfg = LoraConfig(
-            r=peft["r"],
-            lora_alpha=peft.get("alpha", peft["r"]),
-            lora_dropout=peft.get("dropout", 0.0),
-            bias="none",
-            target_modules=peft["target_modules"],
-        )
+    typ = peft.pop("type")
+    if typ == "lora":
+        return LoraConfig(**peft) 
+    elif typ == "ia3":
+        return IA3Config(**peft)
     else:
-        peft_cfg = IA3Config(
-            target_modules=peft["target_modules"],
-            feedforward_modules=peft.get("feedforward_modules", []),
-        )
-    return peft_cfg
+        raise ValueError(f"unknown peft type: {typ}")

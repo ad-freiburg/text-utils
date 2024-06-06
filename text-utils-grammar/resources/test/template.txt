@@ -1,0 +1,6 @@
+// this regex will make sure the output follows the given template
+%%
+<name>[a-z]{10}</name>
+<age>[1-9]?[0-9]</age>
+<email>[a-z]{10}@[a-z]{5}\.(com|de|org)</email>
+<disease>(cancer|diabetes|asthma|none)</disease>

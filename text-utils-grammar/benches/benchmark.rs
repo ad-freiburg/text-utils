@@ -180,14 +180,14 @@ fn bench_lr1_parser(c: &mut Criterion) {
     )
     .unwrap();
     c.bench_function("lr1_parse_numbers", |b| {
-        b.iter(|| parser.parse(&input, false))
+        b.iter(|| parser.parse(&input, false, false))
     });
     let input = read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("grammars/json/examples/example1.json"),
     )
     .unwrap();
     c.bench_function("lr1_parse_example1", |b| {
-        b.iter(|| parser.parse(&input, false))
+        b.iter(|| parser.parse(&input, false, false))
     });
 }
 

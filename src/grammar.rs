@@ -2,7 +2,6 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rayon::spawn;
@@ -385,97 +384,58 @@ impl LR1Parser {
         Ok(Self { inner })
     }
 
-    #[pyo3(signature = (input, collapse=false))]
-    fn parse_pretty(&self, input: &str, collapse: bool) -> anyhow::Result<String> {
+    #[pyo3(signature = (input, skip_empty = false, collapse_single=false))]
+    fn parse_pretty(
+        &self,
+        input: &str,
+        skip_empty: bool,
+        collapse_single: bool,
+    ) -> anyhow::Result<String> {
         let parse = self
             .inner
-            .parse(input, collapse)
+            .parse(input, skip_empty, collapse_single)
             .map_err(|e| anyhow!("failed to parse input: {e}"))?;
-        Ok(parse.pretty(input, collapse))
+        Ok(parse.pretty(input, skip_empty, collapse_single))
     }
 
-    #[pyo3(signature = (input, collapse=false))]
+    #[pyo3(signature = (input, skip_empty = false, collapse_single=false))]
     fn parse(
         slf: PyRef<'_, Self>,
         py: Python<'_>,
         input: &str,
-        collapse: bool,
+        skip_empty: bool,
+        collapse_single: bool,
     ) -> anyhow::Result<PyObject> {
         let parse = slf
             .inner
-            .parse(input, collapse)
+            .parse(input, skip_empty, collapse_single)
             .map_err(|e| anyhow!("failed to parse input: {e}"))?;
-        let chars: Vec<_> = input.chars().collect();
-        Ok(parse_into_py(input, &chars, &parse, py)?)
+        Ok(parse_into_py(input, &parse, py)?)
     }
 }
 
-fn byte_range_to_char_range(
-    s: &str,
-    chars: &[char],
-    byte_start: usize,
-    byte_end: usize,
-) -> Option<(usize, usize)> {
-    if byte_start >= byte_end || byte_end > s.len() {
-        return None;
-    }
-    let mut char_start = None;
-    let mut char_end = None;
-
-    let mut curr_byte_index = 0;
-
-    for (i, char) in chars.iter().enumerate() {
-        let char_bytes = char.len_utf8();
-
-        if curr_byte_index == byte_start {
-            char_start = Some(i);
-        }
-
-        curr_byte_index += char_bytes;
-
-        if curr_byte_index == byte_end {
-            char_end = Some(i + 1);
-            break;
-        }
-    }
-
-    match (char_start, char_end) {
-        (Some(start), Some(end)) => Some((start, end)),
-        _ => None, // Invalid byte range
-    }
-}
-
-fn parse_into_py(
-    text: &str,
-    chars: &[char],
-    parse: &LR1Parse<'_>,
-    py: Python<'_>,
-) -> PyResult<PyObject> {
+fn parse_into_py(text: &str, parse: &LR1Parse<'_>, py: Python<'_>) -> PyResult<PyObject> {
     let dict = PyDict::new_bound(py);
     match parse {
-        LR1Parse::Empty(_) => unreachable!("empty parse should not be returned"),
+        LR1Parse::Empty(name) => {
+            dict.set_item("name", name)?;
+        }
         LR1Parse::Terminal(name, span) => {
             dict.set_item("name", name)?;
             let &(start, len) = span;
             dict.set_item("value", &text[start..start + len])?;
-            let (start, end) = byte_range_to_char_range(text, chars, start, start + len)
-                .ok_or_else(|| PyErr::new::<PyValueError, _>("invalid byte range"))?;
-            dict.set_item("span", (start, end))?;
+            dict.set_item("byte_span", (start, start + len))?;
         }
-        LR1Parse::NonTerminal(name, children, span) => {
+        LR1Parse::NonTerminal(name, children) => {
             dict.set_item("name", name)?;
             let children = PyList::new_bound(
                 py,
                 children
                     .iter()
-                    .map(|c| parse_into_py(text, chars, c, py))
+                    .map(|c| parse_into_py(text, c, py))
                     .collect::<PyResult<Vec<_>>>()?,
             );
             dict.set_item("children", children)?;
-            let &(start, len) = span;
-            let (start, end) = byte_range_to_char_range(text, chars, start, start + len)
-                .ok_or_else(|| PyErr::new::<PyValueError, _>("invalid byte range"))?;
-            dict.set_item("span", (start, end))?;
         }
     };
     Ok(dict.into())

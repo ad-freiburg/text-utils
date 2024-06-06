@@ -1,0 +1,9 @@
+// although JSON itself is context free, a specific JSON template is regular
+// so we can use a regular expression to describe it
+%%
+\{
+    "name": "[a-z]{10}",
+    "age": "[1-9]?[0-9]",
+    "email": "[a-z]{10}@[a-z]{5}\.(com|de|org)",
+    "disease": "(cancer|diabetes|asthma|none)"
+\}

@@ -71,7 +71,7 @@ impl Constraint for RegularExpressionConstraint {
     }
 
     fn is_match_state(&self, state: &Self::State) -> bool {
-        self.pdfa.is_match_state(*state)
+        self.pdfa.is_eoi_match(*state)
     }
 
     fn get_valid_continuations_with_state(
@@ -133,7 +133,7 @@ mod test {
             .iter()
             .map(|s| s.as_bytes().to_vec())
             .collect();
-        let re = RegularExpressionConstraint::new(r"^ab$", conts.clone()).unwrap();
+        let re = RegularExpressionConstraint::new(r"^ab", conts.clone()).unwrap();
         let (conts, states) = re.get_valid_continuations_with_state(&re.get_start_state());
         assert_eq!(conts, vec![0, 3]);
         assert!(!re.is_match_state(&states[0]));

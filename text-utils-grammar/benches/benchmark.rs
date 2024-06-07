@@ -63,17 +63,14 @@ fn bench_re_constraint(c: &mut Criterion) {
     let dir = env!("CARGO_MANIFEST_DIR");
     let files = ["json.txt", "template.txt", "rdf_triples.txt"];
     let prefixes = [
-        r#"
-{
+        r#"{
     "name": "irableirny",
     "age": "60",
     "email": "strvir"#,
-        r#"
-<name>irableirny</name>
+        r#"<name>irableirny</name>
 <age>60</age>
 <email>strvir"#,
-        r#"
-<bos>obiernobpb</eos>
+        r#"<bos>obiernobpb</eos>
 <bop>aseimarbar</eop>
 <boo>positorybo<eoo>
 .

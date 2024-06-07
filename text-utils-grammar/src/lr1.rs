@@ -118,7 +118,7 @@ fn load_grammar_and_pdfas(
     for (name, parts) in tokens.iter() {
         let pattern = pattern_from_parts(name, parts, &token_name, &fragments, &tokens)?;
         let pdfa = PrefixDFA::new(&pattern)?;
-        if pdfa.is_match_state(pdfa.get_start_state()) {
+        if pdfa.is_eoi_match(pdfa.get_start_state()) {
             return Err(format!("token pattern {pattern} for {name} matches empty string").into());
         };
         pdfas.push((pdfa, grammar.token_idx(name)));
@@ -146,7 +146,7 @@ fn load_grammar_and_pdfas(
     for parts in &ignore_tokens {
         let pattern = pattern_from_parts("ignore token", parts, &token_name, &fragments, &tokens)?;
         let pdfa = PrefixDFA::new(&pattern)?;
-        if pdfa.is_match_state(pdfa.get_start_state()) {
+        if pdfa.is_eoi_match(pdfa.get_start_state()) {
             return Err(
                 format!("token pattern {pattern} for ignore token matches empty string").into(),
             );
@@ -180,8 +180,9 @@ fn find_token_or_matching(
         let (pdfa, tidx) = &pdfas[pidx];
         match pdfa.find_prefix_match(state, prefix) {
             PrefixMatch::None => continue,
-            PrefixMatch::Maybe(state) => prefix_matches.push((pidx, state)),
+            PrefixMatch::Full(state) => prefix_matches.push((pidx, state)),
             PrefixMatch::UpTo(end) => {
+                // longest match wins
                 if !found_token || end > len {
                     len = end;
                     token = tidx.as_ref().copied();
@@ -191,19 +192,7 @@ fn find_token_or_matching(
         };
     }
     if !prefix_matches.is_empty() {
-        if prefix_matches.iter().all(|(pidx, state)| {
-            let (pdfa, _) = &pdfas[*pidx];
-            pdfa.is_final_match_state(*state)
-        }) {
-            let (pidx, _) = prefix_matches[0];
-            let (_, token) = &pdfas[pidx];
-            Some(TokenOrMatching::Token(
-                token.as_ref().copied(),
-                prefix.len(),
-            ))
-        } else {
-            Some(TokenOrMatching::Matching(prefix_matches))
-        }
+        Some(TokenOrMatching::Matching(prefix_matches))
     } else if found_token {
         Some(TokenOrMatching::Token(token, len))
     } else {
@@ -273,7 +262,7 @@ fn lexer(
     let (mut tokens, mut spans, last_matches, last_span) = prefix_lexer(text.as_bytes(), pdfas)?;
     if let Some(&token) = last_matches.iter().find_map(|&(pidx, state)| {
         let (pdfa, token) = &pdfas[pidx];
-        if pdfa.is_match_state(state) {
+        if pdfa.is_eoi_match(state) {
             Some(token)
         } else {
             None
@@ -491,6 +480,7 @@ pub struct ExactLR1GrammarConstraint {
     skips: Vec<usize>,
 }
 
+#[derive(Debug)]
 enum LR1Action {
     ShiftReduce(usize, Vec<StIdx<u32>>),
     Accept,
@@ -527,8 +517,11 @@ fn shift_reduce(
                     // if we find a rule with empty production
                     // the stack len would increase, so run a proper drive
                     // as backup
-                    return drive(grammar, table, stack.to_vec(), &[Some(token)])
-                        .map_or(LR1Action::None, |stack| LR1Action::ShiftReduce(0, stack));
+                    return match drive(grammar, table, stack.to_vec(), &[Some(token)]) {
+                        Drive::Stack(stack) => LR1Action::ShiftReduce(0, stack),
+                        Drive::Accept => LR1Action::Accept,
+                        Drive::Error => LR1Action::None,
+                    };
                 } else {
                     stack_end -= rlen - 1;
                 }
@@ -594,15 +587,23 @@ fn filter_matching(
     })
 }
 
+enum Drive {
+    Stack(Vec<StIdx<u32>>),
+    Accept,
+    Error,
+}
+
 fn drive(
     grammar: &YaccGrammar,
     table: &StateTable<u32>,
     mut stack: Vec<StIdx<u32>>,
     tokens: &[Option<TIdx<u32>>],
-) -> Option<Vec<StIdx<u32>>> {
+) -> Drive {
     let mut idx = 0;
     while idx < tokens.len() {
-        let stidx = stack.last()?;
+        let Some(stidx) = stack.last() else {
+            return Drive::Error;
+        };
         let Some(tidx) = tokens[idx] else {
             idx += 1;
             continue;
@@ -616,14 +617,21 @@ fn drive(
                 let ridx = grammar.prod_to_rule(pidx);
                 let keep = stack.len() - grammar.prod(pidx).len();
                 stack.truncate(keep);
-                let stidx = table.goto(*stack.last()?, ridx)?;
+                let Some(stidx) = stack.last().copied() else {
+                    return Drive::Error;
+                };
+                let Some(stidx) = table.goto(stidx, ridx) else {
+                    return Drive::Error;
+                };
                 stack.push(stidx);
             }
-            Action::Accept => return Some(stack),
-            Action::Error => return None,
+            Action::Accept => {
+                return Drive::Accept;
+            }
+            Action::Error => return Drive::Error,
         }
     }
-    Some(stack)
+    Drive::Stack(stack)
 }
 
 fn only_skippable_matching(matching: &Matching, pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> bool {
@@ -631,7 +639,7 @@ fn only_skippable_matching(matching: &Matching, pdfas: &[(PrefixDFA, Option<TIdx
         let (pdfa, None) = &pdfas[pidx] else {
             return false;
         };
-        pdfa.is_match_state(pdfa_state)
+        pdfa.is_eoi_match(pdfa_state)
     })
 }
 
@@ -648,23 +656,22 @@ fn is_match_state(
     pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
     state: &LR1State,
 ) -> bool {
-    is_accept_state(grammar, table, &state.stack)
-        || state.matching.iter().any(|&(pidx, pdfa_state)| {
-            let (pdfa, Some(token)) = &pdfas[pidx] else {
+    state.matching.iter().any(|&(pidx, pdfa_state)| {
+        let (pdfa, Some(token)) = &pdfas[pidx] else {
                 return false;
             };
-            if !pdfa.is_match_state(pdfa_state) {
-                return false;
-            }
-            let LR1Action::ShiftReduce(keep, stidx) =
+        if !pdfa.is_eoi_match(pdfa_state) {
+            return false;
+        }
+        let LR1Action::ShiftReduce(keep, stidx) =
                 shift_reduce(grammar, table, &state.stack, *token)
             else {
                 return false;
             };
-            let mut stack = state.stack[..keep].to_vec();
-            stack.extend(stidx);
-            is_accept_state(grammar, table, &stack)
-        })
+        let mut stack = state.stack[..keep].to_vec();
+        stack.extend(stidx);
+        is_accept_state(grammar, table, &stack)
+    })
 }
 
 impl ExactLR1GrammarConstraint {
@@ -736,12 +743,14 @@ impl Constraint for ExactLR1GrammarConstraint {
 
     fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
         let (tokens, _, mut matching, _) = prefix_lexer(prefix, &self.pdfas).ok()?;
-        let stack = drive(
+        let Drive::Stack(stack) = drive(
             &self.grammar,
             &self.table,
             vec![self.table.start_state()],
             &tokens,
-        )?;
+        ) else {
+            return None;
+        };
         // the matching returned by prefix lexer is not a matching
         // that adheres to the grammar, so we need to filter it
         // further to only contain pdfas that are allowed to match
@@ -790,7 +799,7 @@ impl Constraint for ExactLR1GrammarConstraint {
                 let (pdfa, Some(tidx)) = &self.pdfas[pidx] else {
                     return None;
                 };
-                if pdfa.is_match_state(pdfa_state) {
+                if pdfa.is_eoi_match(pdfa_state) {
                     Some(tidx)
                 } else {
                     None
@@ -954,12 +963,14 @@ impl Constraint for LR1GrammarConstraint {
 
     fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
         let (tokens, _, mut matching, _) = prefix_lexer(prefix, &self.pdfas).ok()?;
-        let stack = drive(
+        let Drive::Stack(stack) = drive(
             &self.grammar,
             &self.table,
             vec![self.table.start_state()],
             &tokens,
-        )?;
+        ) else {
+            return None;
+        };
         filter_matching(
             &mut matching,
             &self.grammar,
@@ -1002,12 +1013,11 @@ impl Constraint for LR1GrammarConstraint {
                 continue;
             };
 
-            let Some(next_stack) = drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
+            let Drive::Stack(next_stack) = drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
             else {
                 i += skip;
                 continue;
             };
-
             filter_matching(
                 &mut next_matching,
                 &self.grammar,
@@ -1236,7 +1246,7 @@ mod test {
         assert_eq!(idx, 4);
         let (pdfa, tidx) = &pdfas[idx];
         assert_eq!(map[tidx.as_ref().unwrap()], "INT");
-        assert!(pdfa.is_match_state(state));
+        assert!(pdfa.is_eoi_match(state));
 
         let (lexemes, spans, matching, last_span) = prefix_lexer(b"", &pdfas).unwrap();
         assert!(lexemes.is_empty());
@@ -1252,10 +1262,10 @@ mod test {
         assert_eq!(last_span, (0, 0));
 
         let (lexemes, spans, matching, last_span) = prefix_lexer(b"    (", &pdfas).unwrap();
-        assert_eq!(lexemes.into_iter().filter(|tidx| tidx.is_some()).count(), 1);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(matching.len(), 7);
-        assert_eq!(last_span, (5, 0));
+        assert_eq!(lexemes.into_iter().filter(|tidx| tidx.is_some()).count(), 0);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(matching.len(), 1);
+        assert_eq!(last_span, (4, 1));
 
         let (pdfas, map) = get_ab_pdfas();
         let (lexemes, spans, matching, last_span) = prefix_lexer(b"aabb", &pdfas).unwrap();
@@ -1264,11 +1274,11 @@ mod test {
                 .into_iter()
                 .filter_map(|tidx| tidx.map(|tidx| map[&tidx]))
                 .collect_vec(),
-            vec!["AA", "BB"]
+            vec!["AA"]
         );
-        assert_eq!(spans, vec![(0, 2), (2, 2)]);
-        assert_eq!(matching.len(), 8);
-        assert_eq!(last_span, (4, 0));
+        assert_eq!(spans, vec![(0, 2)]);
+        assert_eq!(matching.len(), 1);
+        assert_eq!(last_span, (2, 2));
 
         let (lexemes, spans, matching, last_span) = prefix_lexer(b"aab", &pdfas).unwrap();
         assert_eq!(
@@ -1284,13 +1294,13 @@ mod test {
         assert_eq!(idx, 3);
         let (pdfa, tidx) = &pdfas[idx];
         assert_eq!(map[tidx.as_ref().unwrap()], "B");
-        assert!(pdfa.is_match_state(state));
+        assert!(pdfa.is_eoi_match(state));
         assert_eq!(last_span, (2, 1));
         let (idx, state) = matching[1];
         assert_eq!(idx, 4);
         let (pdfa, tidx) = &pdfas[idx];
         assert_eq!(map[tidx.as_ref().unwrap()], "BB");
-        assert!(!pdfa.is_match_state(state));
+        assert!(!pdfa.is_eoi_match(state));
     }
 
     fn load_lrk_grammar(name: &str) -> (PathBuf, PathBuf, Vec<PathBuf>) {
@@ -1322,7 +1332,10 @@ mod test {
         table: &StateTable<u32>,
         tokens: &[Option<TIdx<u32>>],
     ) -> bool {
-        drive(grammar, table, vec![table.start_state()], tokens).is_some()
+        !matches!(
+            drive(grammar, table, vec![table.start_state()], tokens),
+            Drive::Error
+        )
     }
 
     fn check_continuations(

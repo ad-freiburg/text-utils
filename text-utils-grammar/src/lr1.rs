@@ -658,16 +658,16 @@ fn is_match_state(
 ) -> bool {
     state.matching.iter().any(|&(pidx, pdfa_state)| {
         let (pdfa, Some(token)) = &pdfas[pidx] else {
-                return false;
-            };
+            return false;
+        };
         if !pdfa.is_eoi_match(pdfa_state) {
             return false;
         }
         let LR1Action::ShiftReduce(keep, stidx) =
-                shift_reduce(grammar, table, &state.stack, *token)
-            else {
-                return false;
-            };
+            shift_reduce(grammar, table, &state.stack, *token)
+        else {
+            return false;
+        };
         let mut stack = state.stack[..keep].to_vec();
         stack.extend(stidx);
         is_accept_state(grammar, table, &stack)
@@ -1013,7 +1013,8 @@ impl Constraint for LR1GrammarConstraint {
                 continue;
             };
 
-            let Drive::Stack(next_stack) = drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
+            let Drive::Stack(next_stack) =
+                drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
             else {
                 i += skip;
                 continue;

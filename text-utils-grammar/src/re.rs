@@ -190,6 +190,7 @@ mod test {
                 .join(file);
             let re = RegularExpressionConstraint::from_file(path, continuations.clone()).unwrap();
             for i in 0..n {
+                println!("{file} {i}");
                 let mut state = re.get_start_state();
                 let mut is_match = false;
                 let mut decoded = vec![];

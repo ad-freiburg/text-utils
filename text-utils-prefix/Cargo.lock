@@ -405,9 +405,9 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
 dependencies = [
  "either",
 ]
@@ -734,12 +734,11 @@ version = "0.1.0"
 dependencies = [
  "art-tree",
  "criterion",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "patricia_tree",
  "rand",
  "rand_chacha",
  "rand_distr",
- "rayon",
  "serde",
  "serde_json",
  "serde_with",

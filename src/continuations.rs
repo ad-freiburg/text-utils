@@ -53,6 +53,18 @@ impl ContinuationIndex {
         self.cont_trie.get(key).cloned()
     }
 
+    fn insert_value(&mut self, key: &[u8], value: String) -> Option<String> {
+        self.cont_trie.insert(key, value)
+    }
+
+    fn delete_value(&mut self, key: &[u8]) -> Option<String> {
+        self.cont_trie.delete(key)
+    }
+
+    fn save(&self, path: &str) -> anyhow::Result<()> {
+        self.cont_trie.trie.save(path)
+    }
+
     fn get_continuation(&self, index: usize) -> Option<&[u8]> {
         self.cont_trie
             .continuations
@@ -68,32 +80,6 @@ impl ContinuationIndex {
         (
             self.cont_trie.contains_continuations(prefix),
             self.cont_trie.get(prefix).cloned(),
-        )
-    }
-
-    fn batch_continuation_indices(
-        &self,
-        prefixes: Vec<Vec<u8>>,
-    ) -> (ContinuationIndices, Vec<Option<String>>) {
-        (
-            self.cont_trie
-                .batch_contains_continuations(&prefixes)
-                .into_iter()
-                .enumerate()
-                .fold(
-                    (vec![], vec![]),
-                    |(mut batch_indices, mut cont_indices), (i, cont)| {
-                        for c in cont {
-                            batch_indices.push(i);
-                            cont_indices.push(c);
-                        }
-                        (batch_indices, cont_indices)
-                    },
-                ),
-            prefixes
-                .iter()
-                .map(|prefix| self.cont_trie.get(prefix).cloned())
-                .collect(),
         )
     }
 }

@@ -1,5 +1,3 @@
-use rayon::prelude::*;
-
 pub mod art;
 pub mod patricia;
 pub mod utils;
@@ -30,25 +28,6 @@ pub trait PrefixSearch {
 
 pub trait ContinuationSearch {
     fn contains_continuations(&self, prefix: &[u8]) -> Vec<usize>;
-
-    #[inline]
-    fn batch_contains_continuations(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>> {
-        prefixes
-            .iter()
-            .map(|prefix| self.contains_continuations(prefix))
-            .collect()
-    }
-
-    #[inline]
-    fn batch_contains_continuations_parallel(&self, prefixes: &[Vec<u8>]) -> Vec<Vec<usize>>
-    where
-        Self: Sync,
-    {
-        prefixes
-            .par_iter()
-            .map(|prefix| self.contains_continuations(prefix))
-            .collect()
-    }
 }
 
 pub trait ContinuationsTrie {
@@ -175,7 +154,13 @@ mod test {
         serde_json::from_slice::<Vec<String>>(&continuations_json)
             .unwrap()
             .into_iter()
-            .map(|c| c.as_bytes().to_vec())
+            .map(|c| {
+                c.as_bytes()
+                    .into_iter()
+                    .filter(|&b| *b > 0)
+                    .copied()
+                    .collect()
+            })
             .collect()
     }
 

@@ -616,9 +616,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
     }
 
     fn delete(&mut self, key: &[u8]) -> Option<V> {
-        let Some(root) = &mut self.root else {
-            return None;
-        };
+        let root = self.root.as_mut()?;
 
         // handle special case where root is leaf
         if root.is_leaf() {
@@ -669,9 +667,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
     }
 
     fn get(&self, key: &[u8]) -> Option<&V> {
-        let Some(root) = &self.root else {
-            return None;
-        };
+        let root = &self.root.as_ref()?;
 
         let key = key.iter().filter(|&b| *b > 0).copied().chain(once(0));
         root.find_iter(key).and_then(|node| match &node.inner {

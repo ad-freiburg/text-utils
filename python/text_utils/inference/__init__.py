@@ -222,6 +222,8 @@ def beam_search(
         if isinstance(init, Beam):
             current_beams.append([init])
             continue
+        assert initial_lenghts[-1] <= max_length, \
+        "initial token ids or beams cannot be longer than max length"
         beam = Beam(init, [0.0] * len(init))
         current_beams.append([beam])
 

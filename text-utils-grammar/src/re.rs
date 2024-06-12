@@ -197,14 +197,14 @@ mod test {
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
-                    let (conts, states) = re.get_valid_continuations_and_next_states(&state);
+                    let conts = re.get_valid_continuations(&state);
                     // random sample index between 0 and conts.len()
                     let Some(idx) = (0..conts.len()).choose(&mut rng) else {
                         break;
                     };
                     let cont = conts[idx];
                     decoded.extend(continuations[cont].iter().copied());
-                    state = states[idx];
+                    state = re.get_next_state(&state, cont).unwrap();
                     is_match = re.is_match_state(&state);
                 }
                 assert!(is_match);

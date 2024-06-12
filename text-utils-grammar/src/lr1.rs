@@ -388,6 +388,15 @@ impl LR1GrammarParser {
             .collect())
     }
 
+    pub fn prefix_lex(&self, prefix: &[u8]) -> Result<Vec<TokenAndSpan<'_>>, Box<dyn Error>> {
+        let (tokens, spans, ..) = prefix_lexer(prefix, &self.pdfas)?;
+        Ok(tokens
+            .into_iter()
+            .zip(spans)
+            .map(|(tidx, span)| (tidx.and_then(|tidx| self.grammar.token_name(tidx)), span))
+            .collect())
+    }
+
     pub fn parse(
         &self,
         text: &str,
@@ -528,8 +537,8 @@ fn shift_reduce(
             }
             Action::Reduce(pidx) => {
                 let ridx = grammar.prod_to_rule(pidx);
-                let rlen = grammar.prod(pidx).len();
-                if rlen == 0 {
+                let plen = grammar.prod(pidx).len();
+                if plen == 0 {
                     // if we find a rule with empty production
                     // the stack len would increase, so run a proper drive
                     // as backup
@@ -539,7 +548,7 @@ fn shift_reduce(
                         Drive::Error => LR1Action::Error,
                     };
                 } else {
-                    stack_end -= rlen - 1;
+                    stack_end -= plen - 1;
                 }
                 let Some(new_stidx) = table.goto(stack[stack_end - 1], ridx) else {
                     return LR1Action::Error;

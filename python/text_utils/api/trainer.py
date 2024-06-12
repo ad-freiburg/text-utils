@@ -10,7 +10,6 @@ import shutil
 import time
 import zipfile
 from typing import Dict, Optional, Tuple, Any, List, Callable, Union
-from text_utils.api.utils import get_peft_config
 
 import torch
 from torch.backends import cuda, cudnn
@@ -33,7 +32,6 @@ from torch.distributed.fsdp.api import (
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from torch.utils.tensorboard.writer import SummaryWriter
-from peft import PeftConfig
 import yaml
 
 from text_utils.modules.loss import loss_from_config
@@ -149,8 +147,7 @@ training will resume from latest checkpoint."
                 )
             model = self._prepare_peft(
                 model,
-                get_peft_config(peft),
-                peft.get("use_8bit", False)
+                peft
             )
 
         mixed_precision = self.cfg["train"].get("mixed_precision", None)
@@ -248,7 +245,10 @@ training will resume from latest checkpoint."
             additional_optimizer_fn=self._additional_optimizer_fn()
         )
 
-        self.clip_grad_norm: Optional[float] = self.cfg["train"].get("clip_grad_norm", None)
+        self.clip_grad_norm: float | None = self.cfg["train"].get(
+            "clip_grad_norm",
+            None
+        )
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (
@@ -340,7 +340,8 @@ training will resume from latest checkpoint."
             )
 
             self.logger.info(f"Using model:\n{self.model}")
-            self.logger.info(f"Model parameters: {api.num_parameters(self.model)}")
+            self.logger.info(
+                f"Model parameters: {api.num_parameters(self.model)}")
             num_params = 0
             param_group_infos = []
             for i, param_group in enumerate(self.optimizer.param_groups):
@@ -348,7 +349,8 @@ training will resume from latest checkpoint."
                     p.numel()
                     for p in param_group["params"]
                 )
-                group_cfg = {k: v for k, v in param_group.items() if k != "params"}
+                group_cfg = {k: v for k, v in param_group.items()
+                             if k != "params"}
                 param_group_infos.append(
                     f"{i+1}. group: {group_num_params:,} params, other: {group_cfg}"
                 )
@@ -447,13 +449,14 @@ training will resume from latest checkpoint."
 
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
-        distributed.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
+        distributed.unwrap_model(self.model).load_state_dict(
+            checkpoint["model_state_dict"])
         optim_state_dict = checkpoint["optimizer_state_dict"]
         if isinstance(self.model, FSDP):
             optim_state_dict = FSDP.optim_state_dict_to_load(
-                optim_state_dict,
                 self.model,
                 self.optimizer,
+                optim_state_dict,
             )
         self.optimizer.load_state_dict(optim_state_dict)
         if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
@@ -480,9 +483,12 @@ training will resume from latest checkpoint."
         self.train_loader.set_fast_forward(self.epoch_items)
 
         # reset eval, log, and step counters
-        self.log_at = math.ceil(self.total_items / self.log_interval) * self.log_interval
-        self.eval_at = math.ceil(self.total_items / self.eval_interval) * self.eval_interval
-        self.step_at = math.ceil(self.total_items / self.step_interval) * self.step_interval
+        self.log_at = math.ceil(
+            self.total_items / self.log_interval) * self.log_interval
+        self.eval_at = math.ceil(
+            self.total_items / self.eval_interval) * self.eval_interval
+        self.step_at = math.ceil(
+            self.total_items / self.step_interval) * self.step_interval
 
         # wait until everyone loaded the checkpoint
         dist.barrier()
@@ -491,8 +497,7 @@ training will resume from latest checkpoint."
     def _prepare_peft(
         cls,
         model: nn.Module,
-        peft_cfg: PeftConfig,
-        use_8bit: bool = False
+        cfg: dict[str, Any],
     ) -> nn.Module:
         raise NotImplementedError
 
@@ -664,7 +669,8 @@ training will resume from latest checkpoint."
 
         # adapt config to multi gpu usage
         assert "batch_limit" in train_cfg, "batch_limit must be in data config"
-        train_cfg["batch_limit"] = max(1, train_cfg["batch_limit"] // info.world_size)
+        train_cfg["batch_limit"] = max(
+            1, train_cfg["batch_limit"] // info.world_size)
 
         # pop some configs not used by the dataloader
         max_length = train_cfg.pop("max_length")
@@ -1127,10 +1133,12 @@ training will resume from latest checkpoint."
                                 f"[step {self.total_step}] train_lr_{i}: {lr:.8f}"
                             )
 
-                    mean_loss.log_tensorboard(self.summary_writer, self.total_step)
+                    mean_loss.log_tensorboard(
+                        self.summary_writer, self.total_step)
                     mean_loss.log_info(self.logger, self.total_step)
 
-                    mean_bsz.log_tensorboard(self.summary_writer, self.total_step)
+                    mean_bsz.log_tensorboard(
+                        self.summary_writer, self.total_step)
                     mean_bsz.log_info(self.logger, self.total_step)
 
                     mean_fwdbwdupd.log_tensorboard(
@@ -1149,7 +1157,8 @@ training will resume from latest checkpoint."
                     mean_batch_preparation.log_tensorboard(
                         self.summary_writer, self.total_step
                     )
-                    mean_batch_preparation.log_info(self.logger, self.total_step)
+                    mean_batch_preparation.log_info(
+                        self.logger, self.total_step)
 
                     mean_seq_length.log_tensorboard(
                         self.summary_writer, self.total_step)
@@ -1158,7 +1167,8 @@ training will resume from latest checkpoint."
                     mean_seq_length_ratio.log_tensorboard(
                         self.summary_writer, self.total_step
                     )
-                    mean_seq_length_ratio.log_info(self.logger, self.total_step)
+                    mean_seq_length_ratio.log_info(
+                        self.logger, self.total_step)
 
                     items = batch.items()
                     for metric in metrics:
@@ -1314,10 +1324,12 @@ training will resume from latest checkpoint."
         # cooldown scheduler linearly decays lr from
         # current value to 0
         if self.lr_scheduler is not None:
-            factor = self.lr_scheduler.get_last_lr()[0] / self.cfg["train"]["optimizer"]["lr"]
+            factor = self.lr_scheduler.get_last_lr(
+            )[0] / self.cfg["train"]["optimizer"]["lr"]
         else:
             factor = 1.0
-        steps = max(1, min(self.cooldown_items, self.eval_at - self.total_items) // self.step_interval)
+        steps = max(1, min(self.cooldown_items, self.eval_at -
+                    self.total_items) // self.step_interval)
         self.cooldown_scheduler = lr_scheduler.LambdaLR(
             self.optimizer,
             lambda step: (1 - (min(step, steps) / steps)) * factor

@@ -60,8 +60,6 @@ def optimizer_from_config(
             names.add(name)
             param_dict[name] = param
             mod_name = mod.__class__.__name__
-            if mod_name == "Linear":
-                exit()
             if mod_name in weight_decay_modules and any(
                 name.endswith(suffix) for suffix in weight_decay_modules[mod_name]
             ):

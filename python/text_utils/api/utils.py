@@ -7,7 +7,6 @@ import zipfile
 import subprocess
 from pathlib import Path
 from typing import Union, Dict, List, Any, Optional, Iterator, Callable
-from peft import PeftConfig, LoraConfig, IA3Config
 
 import requests
 import numpy as np
@@ -230,13 +229,3 @@ def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = Fa
         unit_scale=True,
         unit_divisor=1000
     )
-
-
-def get_peft_config(peft: Dict[str, Any]) -> PeftConfig:
-    typ = peft.pop("type")
-    if typ == "lora":
-        return LoraConfig(**peft) 
-    elif typ == "ia3":
-        return IA3Config(**peft)
-    else:
-        raise ValueError(f"unknown peft type: {typ}")

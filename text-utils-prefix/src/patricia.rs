@@ -3,7 +3,7 @@ use std::{
     iter::{empty, once},
 };
 
-use crate::{ContinuationsTrie, PrefixSearch};
+use crate::PrefixSearch;
 
 #[derive(Debug)]
 enum NodeType<V> {
@@ -22,9 +22,10 @@ pub struct PatriciaTrie<V> {
     root: Option<Node<V>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PatriciaTrieStats {
-    pub depth: usize,
+    pub max_depth: usize,
+    pub avg_depth: f32,
     pub num_nodes: usize,
     pub num_keys: usize,
     pub node_info: HashMap<String, (usize, f32)>,
@@ -35,29 +36,29 @@ impl<V> PatriciaTrie<V> {
         let mut dist =
             HashMap::from_iter(["leaf", "inner"].iter().map(|&s| (s.to_string(), (0, 0.0))));
         let Some(root) = &self.root else {
-            return PatriciaTrieStats {
-                depth: 0,
-                num_nodes: 0,
-                num_keys: 0,
-                node_info: dist,
-            };
+            return PatriciaTrieStats::default();
         };
         let mut stack = vec![(root, 0)];
         let mut max_depth = 0;
+        let mut avg_depth = (0, 0.0);
         while let Some((node, depth)) = stack.pop() {
             max_depth = max_depth.max(depth);
             let name = match &node.inner {
                 NodeType::Leaf(_) => "leaf",
                 NodeType::Inner(..) => "inner",
             };
-            let val = dist.get_mut(name).unwrap();
+            let val = dist.get_mut(name).expect("should not happen");
             val.0 += 1;
             let n = val.0 as f32;
             val.1 = (val.1 * (n - 1.0) + node.prefix.len() as f32) / n;
+            avg_depth.0 += 1;
+            let n = avg_depth.0 as f32;
+            avg_depth.1 = (avg_depth.1 * (n - 1.0) + depth as f32) / n;
             stack.extend(node.children().map(|(_, child)| (child, depth + 1)));
         }
         PatriciaTrieStats {
-            depth: max_depth,
+            max_depth,
+            avg_depth: avg_depth.1,
             num_nodes: dist.iter().map(|(_, (n, _))| n).sum(),
             num_keys: dist["leaf"].0,
             node_info: dist,
@@ -68,19 +69,6 @@ impl<V> PatriciaTrie<V> {
 impl<V> Default for PatriciaTrie<V> {
     fn default() -> Self {
         Self { root: None }
-    }
-}
-
-impl<K, V> FromIterator<(K, V)> for PatriciaTrie<V>
-where
-    K: AsRef<[u8]>,
-{
-    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let mut trie = Self::default();
-        for (k, v) in iter {
-            trie.insert(k.as_ref(), v);
-        }
-        trie
     }
 }
 
@@ -237,19 +225,17 @@ impl<V> Node<V> {
     }
 
     #[inline]
-    fn leaves_recursive(
-        &self,
-        mut prefix: Vec<u8>,
-    ) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
-        prefix.extend(self.prefix.iter().copied());
+    fn leaves(&self, mut path: Vec<u8>) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+        path.extend(self.prefix.iter().copied());
         if let NodeType::Leaf(value) = &self.inner {
-            prefix.pop();
-            return Box::new(once((prefix, value)));
+            // dont keep last element (null byte) for full paths
+            path.pop();
+            return Box::new(once((path, value)));
         }
         Box::new(self.children().flat_map(move |(k, child)| {
-            let mut key = prefix.clone();
+            let mut key = path.clone();
             key.push(k);
-            child.leaves_recursive(key)
+            child.leaves(key)
         }))
     }
 }
@@ -386,7 +372,7 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
         })
     }
 
-    fn contains_prefix(&self, prefix: &[u8]) -> bool {
+    fn contains(&self, prefix: &[u8]) -> bool {
         let Some(root) = &self.root else {
             return false;
         };
@@ -395,7 +381,7 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
         root.contains_prefix_iter(key, 0).is_some()
     }
 
-    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
+    fn values_along_path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
         let Some(root) = &self.root else {
             return vec![];
         };
@@ -437,7 +423,7 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
         path
     }
 
-    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(root) = &self.root else {
             return Box::new(empty());
         };
@@ -463,42 +449,19 @@ impl<V> PrefixSearch for PatriciaTrie<V> {
             node = child;
         }
 
-        node.leaves_recursive(prefix)
+        node.leaves(prefix)
     }
 }
 
-impl<V> ContinuationsTrie for PatriciaTrie<V> {
-    fn contains_continuations(
-        &self,
-        prefix: &[u8],
-        continuations: &[Vec<u8>],
-        permutation: &[usize],
-        skips: &[usize],
-    ) -> Vec<usize> {
-        let mut result = vec![];
-        let Some(root) = &self.root else {
-            return result;
-        };
-
-        let key = prefix.iter().copied();
-        let Some((node, n)) = root.contains_prefix_iter(key, 0) else {
-            return result;
-        };
-
-        let mut i = 0;
-        while let Some(&j) = permutation.get(i) {
-            let continuation = &continuations[j];
-            if node
-                .contains_prefix_iter(continuation.iter().copied(), n)
-                .is_some()
-            {
-                result.push(j);
-            } else {
-                i += skips[i];
-            }
-            i += 1;
+impl<K, V> FromIterator<(K, V)> for PatriciaTrie<V>
+where
+    K: AsRef<[u8]>,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let mut trie = PatriciaTrie::default();
+        for (key, value) in iter {
+            trie.insert(key.as_ref(), value);
         }
-
-        result
+        trie
     }
 }

@@ -1,13 +1,20 @@
 use itertools::Itertools;
-use std::{cmp::Ordering, iter::empty};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeSet, HashMap},
+    hash::Hash,
+    iter::empty,
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ContinuationSearch, PrefixSearch};
+use crate::{utils, PrefixSearch};
 
 #[derive(Serialize, Deserialize)]
-pub struct PrefixVec<V> {
-    data: Vec<(Box<[u8]>, V)>,
+pub struct PrefixVec<V: Hash + Eq> {
+    data: Vec<(Box<[u8]>, Arc<V>)>,
+    values: HashMap<Arc<V>, Vec<usize>>,
 }
 
 #[derive(Debug)]
@@ -15,9 +22,12 @@ pub struct PrefixVecStats {
     pub num_keys: usize,
 }
 
-impl<V> Default for PrefixVec<V> {
+impl<V: Hash + Eq> Default for PrefixVec<V> {
     fn default() -> Self {
-        Self { data: vec![] }
+        Self {
+            data: vec![],
+            values: HashMap::new(),
+        }
     }
 }
 
@@ -26,7 +36,7 @@ enum FindResult {
     NotFound,
 }
 
-impl<V> PrefixVec<V> {
+impl<V: Hash + Eq> PrefixVec<V> {
     pub fn stats(&self) -> PrefixVecStats {
         PrefixVecStats {
             num_keys: self.data.len(),
@@ -144,22 +154,36 @@ impl<V> PrefixVec<V> {
     }
 }
 
-impl<V> PrefixSearch for PrefixVec<V> {
+impl<V: Hash + Eq> PrefixSearch for PrefixVec<V> {
     type Value = V;
 
     #[inline]
     fn insert(&mut self, key: &[u8], value: V) -> Option<V> {
-        match self
+        let value = Arc::new(value);
+        let (idx, old) = match self
             .data
             .binary_search_by(|(prefix, _)| prefix.as_ref().cmp(key))
         {
-            Ok(idx) => Some(std::mem::replace(&mut self.data[idx].1, value)),
+            Ok(idx) => {
+                let old = std::mem::replace(&mut self.data[idx].1, value.clone());
+                (idx, Arc::into_inner(old))
+            }
             Err(idx) => {
                 self.data
-                    .insert(idx, (key.to_vec().into_boxed_slice(), value));
-                None
+                    .insert(idx, (key.to_vec().into_boxed_slice(), value.clone()));
+                (idx, None)
+            }
+        };
+        if let Some(old) = old.as_ref() {
+            let mut indices = self.values.remove(old).expect("should not happen");
+            indices.retain(|&i| i != idx);
+            if !indices.is_empty() {
+                let val = self.data[indices[0]].1.clone();
+                self.values.insert(val, indices);
             }
         }
+        self.values.entry(value).or_default().push(idx);
+        old
     }
 
     fn delete(&mut self, key: &[u8]) -> Option<Self::Value> {
@@ -169,8 +193,14 @@ impl<V> PrefixSearch for PrefixVec<V> {
         else {
             return None;
         };
-        let (_, value) = self.data.remove(idx);
-        Some(value)
+        let (_, old) = self.data.remove(idx);
+        let mut indices = self.values.remove(&old).expect("should not happen");
+        indices.retain(|&i| i != idx);
+        if !indices.is_empty() {
+            let val = self.data[indices[0]].1.clone();
+            self.values.insert(val, indices);
+        }
+        Arc::into_inner(old)
     }
 
     #[inline]
@@ -189,18 +219,18 @@ impl<V> PrefixSearch for PrefixVec<V> {
     }
 
     #[inline]
-    fn contains_prefix(&self, prefix: &[u8]) -> bool {
+    fn contains(&self, prefix: &[u8]) -> bool {
         matches!(self.find_range(prefix, 0, self.data.len(), 0), FindResult::Found(left, _) if left < self.data.len())
     }
 
-    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
+    fn values_along_path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
         let mut left = 0;
         let mut right = self.data.len();
         let mut path = vec![];
         // empty path explicitly
         match self.data.first() {
             Some((key, value)) if key.is_empty() => {
-                path.push((0, value));
+                path.push((0, value.as_ref()));
             }
             _ => (),
         }
@@ -220,19 +250,19 @@ impl<V> PrefixSearch for PrefixVec<V> {
         path
     }
 
-    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         match self.find_range(prefix, 0, self.data.len(), 0) {
             FindResult::Found(left, right) => Box::new(
                 self.data[left..right]
                     .iter()
-                    .map(|(key, value)| (key.to_vec(), value)),
+                    .map(|(key, value)| (key.to_vec(), value.as_ref())),
             ),
             FindResult::NotFound => Box::new(empty()),
         }
     }
 }
 
-impl<K, V> FromIterator<(K, V)> for PrefixVec<V>
+impl<K, V: Hash + Eq> FromIterator<(K, V)> for PrefixVec<V>
 where
     K: AsRef<[u8]>,
 {
@@ -244,14 +274,30 @@ where
             .sorted_by(|(k1, _), (k2, _)| k1.as_ref().cmp(k2.as_ref()))
         {
             let key = key.as_ref();
+            let value = Arc::new(value);
+            let len = pfx.data.len();
             match pfx.data.last_mut() {
                 None => {
+                    pfx.values.entry(value.clone()).or_default().push(len);
                     pfx.data.push((key.to_vec().into_boxed_slice(), value));
                 }
                 Some((k, _)) if k.as_ref() != key => {
+                    pfx.values.entry(value.clone()).or_default().push(len);
                     pfx.data.push((key.to_vec().into_boxed_slice(), value));
                 }
-                Some((_, v)) => *v = value,
+                Some((_, v)) if v.as_ref() != value.as_ref() => {
+                    // delete index from old value
+                    let mut indices = pfx.values.remove(v).expect("should not happen");
+                    indices.retain(|&i| i != len - 1);
+                    if !indices.is_empty() {
+                        pfx.values.insert(v.clone(), indices);
+                    }
+                    // add index to new value
+                    pfx.values.entry(value.clone()).or_default().push(len - 1);
+                    *v = value
+                }
+                // ignore duplicates
+                Some(_) => (),
             }
         }
         pfx
@@ -272,12 +318,15 @@ impl Default for Node {
     }
 }
 
-pub struct ContinuationsVec<V> {
+pub struct PrefixContinuationVec<V: Hash + Eq> {
     pub(crate) vec: PrefixVec<V>,
-    pub(crate) continuation_trie: Node,
+    continuation_trie: Node,
+    continuations: Vec<Vec<u8>>,
+    optimized: (Vec<usize>, Vec<usize>),
+    memo: HashMap<Vec<u8>, Vec<usize>>,
 }
 
-impl<V> ContinuationsVec<V> {
+impl<V: Hash + Eq> PrefixContinuationVec<V> {
     pub fn new<C>(vec: PrefixVec<V>, continuations: &[C]) -> Self
     where
         C: AsRef<[u8]>,
@@ -290,65 +339,68 @@ impl<V> ContinuationsVec<V> {
             }
             node.indices.push(i);
         }
-        Self {
+        let optimized = utils::optimized_continuation_permutation(continuations);
+        let mut pfx = Self {
             vec,
             continuation_trie,
+            continuations: continuations.iter().map(|c| c.as_ref().to_vec()).collect(),
+            optimized,
+            memo: HashMap::new(),
+        };
+        let initial = pfx.continuation_indices(&[]);
+        pfx.memo.insert(vec![], initial);
+        pfx
+    }
+
+    pub fn continuation_indices(&self, prefix: &[u8]) -> Vec<usize> {
+        if self.memo.contains_key(prefix) {
+            return self.memo[prefix].clone();
         }
-    }
-}
 
-impl<V> PrefixSearch for ContinuationsVec<V> {
-    type Value = V;
-
-    fn insert(&mut self, key: &[u8], value: V) -> Option<V> {
-        self.vec.insert(key, value)
-    }
-
-    fn delete(&mut self, key: &[u8]) -> Option<Self::Value> {
-        self.vec.delete(key)
-    }
-
-    fn get(&self, prefix: &[u8]) -> Option<&V> {
-        self.vec.get(prefix)
-    }
-
-    fn contains_prefix(&self, prefix: &[u8]) -> bool {
-        self.vec.contains_prefix(prefix)
-    }
-
-    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
-        self.vec.path(prefix)
-    }
-
-    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
-        self.vec.iter_continuations(prefix)
-    }
-}
-
-impl<V> ContinuationSearch for ContinuationsVec<V> {
-    fn contains_continuations(&self, prefix: &[u8]) -> Vec<usize> {
         let FindResult::Found(left, right) = self.vec.find_range(prefix, 0, self.vec.data.len(), 0)
         else {
             return vec![];
         };
 
-        self.vec.data[left..right]
-            .iter()
-            .flat_map(|(value, _)| {
-                let mut indices = vec![];
-                let mut node = &self.continuation_trie;
-                indices.extend(node.indices.iter().copied());
-                for byte in &value[prefix.len()..] {
-                    if let Some(child) = &node.children[*byte as usize] {
-                        node = child;
-                        indices.extend(node.indices.iter().copied());
-                    } else {
-                        break;
+        if right - left < self.continuations.len() {
+            // loop over data elements
+            self.vec.data[left..right]
+                .iter()
+                .fold(BTreeSet::new(), |mut set, (value, _)| {
+                    let mut node = &self.continuation_trie;
+                    set.extend(node.indices.iter().copied());
+                    for byte in &value[prefix.len()..] {
+                        if let Some(child) = &node.children[*byte as usize] {
+                            node = child;
+                            set.extend(node.indices.iter().copied());
+                        } else {
+                            break;
+                        }
                     }
+                    set
+                })
+                .into_iter()
+                .collect()
+        } else {
+            // loop over optimized continuation indices
+            let (permutation, skips) = &self.optimized;
+            let mut i = 0;
+            let mut result = vec![];
+            while let Some(&j) = permutation.get(i) {
+                let cont = &self.continuations[j];
+                let is_continuation = matches!(
+                    self.vec.find_range(cont, left, right, prefix.len()),
+                    FindResult::Found(..)
+                );
+                if is_continuation {
+                    result.push(j);
+                } else {
+                    i += skips[i];
                 }
-                indices
-            })
-            .unique()
-            .collect()
+                i += 1;
+            }
+            result.sort();
+            result
+        }
     }
 }

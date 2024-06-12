@@ -1,4 +1,5 @@
 from typing import Callable, Any
+
 import torch
 
 from text_utils.constraints import Constraint
@@ -39,6 +40,7 @@ class Beam:
         return Beam(
             other.token_ids + [token_id],
             other.log_probs + [log_p],
+            {k: v for k, v in other.info.items()}
         )
 
     def truncate_prefix(
@@ -48,6 +50,7 @@ class Beam:
         return Beam(
             self.token_ids[length:],
             self.log_probs[length:],
+            {k: v for k, v in self.info.items()}
         )
 
     @property
@@ -141,14 +144,17 @@ def constraint_logit_fn(
     retrieve_constraint_fn: Callable[[int | Beam], Constraint | None],
     eos_token_id: int
 ) -> LogitFn:
+    import time
+
+    times = []
+
     def _constrain_logits(
         logits: torch.Tensor,
         beams_or_indices:  list[int] | list[Beam]
     ) -> torch.Tensor:
+        nonlocal times
         zeros = torch.full_like(logits, float("-inf"))
 
-        batch_indices = []
-        constrain_indices = []
         for i, beam_or_idx in enumerate(beams_or_indices):
             constraint = retrieve_constraint_fn(beam_or_idx)
 
@@ -157,29 +163,11 @@ def constraint_logit_fn(
                 continue
 
             constrain_to, is_match = constraint.get()
-
-            batch_indices.extend([i] * len(constrain_to))
-            constrain_indices.extend(constrain_to)
+            constrain_to = torch.from_numpy(constrain_to).to(torch.long)
+            zeros[i, constrain_to] = logits[i, constrain_to]
 
             if len(constrain_to) == 0 or is_match:
-                batch_indices.append(i)
-                constrain_indices.append(eos_token_id)
-
-        batch_indices = torch.tensor(
-            batch_indices,
-            device=logits.device,
-            dtype=torch.long
-        )
-        constrain_indices = torch.tensor(
-            constrain_indices,
-            device=logits.device,
-            dtype=torch.long
-        )
-
-        zeros[batch_indices, constrain_indices] = logits[
-            batch_indices,
-            constrain_indices
-        ]
+                zeros[i, eos_token_id] = logits[i, eos_token_id]
 
         return zeros
 

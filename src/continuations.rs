@@ -4,23 +4,30 @@ use std::{
 };
 
 use crate::utils::SerializeMsgPack;
-use anyhow::anyhow;
-use pyo3::prelude::*;
-use text_utils_prefix::{AdaptiveRadixTrie, ContinuationSearch, ContinuationTrie, PrefixSearch};
+use anyhow::{anyhow, Result};
+use numpy::{ndarray::Array1, IntoPyArray};
+use pyo3::{prelude::*, pybacked::PyBackedStr};
+use text_utils_prefix::{optimized_continuation_permutation, AdaptiveRadixContinuationTrie};
 
 #[pyclass]
 pub struct ContinuationIndex {
-    cont_trie: ContinuationTrie<AdaptiveRadixTrie<String>>,
+    trie: AdaptiveRadixContinuationTrie<String>,
+    continuations: Vec<Vec<u8>>,
+    permutation: Vec<usize>,
+    skips: Vec<usize>,
 }
 
-pub type ContinuationIndices = (Vec<usize>, Vec<usize>);
 #[pymethods]
 impl ContinuationIndex {
     #[staticmethod]
     fn load_with_continuations(file: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
-        let trie = AdaptiveRadixTrie::load(file)?;
+        let trie = AdaptiveRadixContinuationTrie::load(file)?;
+        let (permutation, skips) = optimized_continuation_permutation(&continuations);
         Ok(Self {
-            cont_trie: ContinuationTrie::new(trie, continuations),
+            trie,
+            continuations,
+            permutation,
+            skips,
         })
     }
 
@@ -30,57 +37,66 @@ impl ContinuationIndex {
         let file = File::open(path)?;
         let sfx = common_suffix.unwrap_or_default().as_bytes();
         // now loop over lines and insert them into the trie
-        let mut trie = AdaptiveRadixTrie::default();
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            let splits: Vec<_> = line.trim_end_matches(&['\r', '\n']).split('\t').collect();
-            if splits.len() < 2 {
-                return Err(anyhow!("invalid line: {}", line));
-            }
-            let value = splits[0];
-            for s in &splits[1..] {
-                let mut s = s.as_bytes().to_vec();
-                s.extend_from_slice(sfx);
-                trie.insert(&s, value.to_string());
-            }
-        }
+        let trie: AdaptiveRadixContinuationTrie<_> = BufReader::new(file)
+            .lines()
+            .flat_map(|line| {
+                let Ok(line) = line else {
+                    return vec![Err(anyhow!("failed to read line"))];
+                };
+                let splits: Vec<_> = line.trim_end_matches(&['\r', '\n']).split('\t').collect();
+                if splits.len() < 2 {
+                    return vec![Err(anyhow!("invalid line: {}", line))];
+                }
+                let value = splits[0];
+                splits[1..]
+                    .iter()
+                    .map(move |s| {
+                        let mut s = s.as_bytes().to_vec();
+                        s.extend_from_slice(sfx);
+                        Ok((s, value.to_string()))
+                    })
+                    .collect()
+            })
+            .collect::<Result<_>>()?;
         // save art to out file
         trie.save(out)?;
         Ok(())
     }
 
-    fn get_value(&self, key: &[u8]) -> Option<String> {
-        self.cont_trie.get(key).cloned()
-    }
-
-    fn insert_value(&mut self, key: &[u8], value: String) -> Option<String> {
-        self.cont_trie.insert(key, value)
-    }
-
-    fn delete_value(&mut self, key: &[u8]) -> Option<String> {
-        self.cont_trie.delete(key)
-    }
-
-    fn save(&self, path: &str) -> anyhow::Result<()> {
-        self.cont_trie.trie.save(path)
-    }
-
-    fn get_continuation(&self, index: usize) -> Option<&[u8]> {
-        self.cont_trie
-            .continuations
-            .get(index)
-            .map(|c| c.as_slice())
-    }
-
-    fn get_continuations(&self) -> Vec<Vec<u8>> {
-        self.cont_trie.continuations.clone()
-    }
-
-    fn get(&self, prefix: &[u8]) -> (Vec<usize>, Option<String>) {
+    fn get(&self, py: Python<'_>, prefix: &[u8]) -> (PyObject, Option<String>) {
         (
-            self.cont_trie.contains_continuations(prefix),
-            self.cont_trie.get(prefix).cloned(),
+            Array1::from_vec(self.trie.continuation_indices(
+                prefix,
+                &self.continuations,
+                &self.permutation,
+                &self.skips,
+            ))
+            .into_pyarray_bound(py)
+            .into_py(py),
+            self.trie.get(prefix).cloned(),
         )
+    }
+
+    fn sub_index_by_values(&self, values: Vec<PyBackedStr>) -> Self {
+        let sub_trie = self
+            .trie
+            .sub_index_by_values(values.iter().map(|v| -> &str { v.as_ref() }));
+        Self {
+            trie: sub_trie,
+            continuations: self.continuations.clone(),
+            permutation: self.permutation.clone(),
+            skips: self.skips.clone(),
+        }
+    }
+
+    fn continuation_at(&self, index: usize) -> anyhow::Result<Vec<u8>> {
+        self.continuations.get(index).cloned().ok_or_else(|| {
+            anyhow!(
+                "index out of bounds: {} (continuations length: {})",
+                index,
+                self.continuations.len()
+            )
+        })
     }
 }
 

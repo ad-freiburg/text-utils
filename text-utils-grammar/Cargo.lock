@@ -821,7 +821,6 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rand_distr",
- "rayon",
  "regex",
  "regex-automata",
  "serde",

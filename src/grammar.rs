@@ -1,21 +1,24 @@
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
+// use std::time::Instant;
 
 use anyhow::anyhow;
+use numpy::ndarray::Array1;
+use numpy::IntoPyArray;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rayon::spawn;
+use text_utils_grammar::lr1::TokenAndSpan;
 use text_utils_grammar::{
-    Constraint, ExactLR1GrammarConstraint, LR1GrammarConstraint, LR1GrammarParser, LR1NextState,
-    LR1Parse, LR1State, RegularExpressionConstraint, RegularExpressionState,
+    Constraint, ExactLR1GrammarConstraint, LR1GrammarConstraint, LR1GrammarParser, LR1Parse,
+    LR1State, RegularExpressionConstraint, RegularExpressionState,
 };
 
 #[derive(Clone)]
 struct RegexInner {
     state: RegularExpressionState,
-    indices: Vec<usize>,
+    indices: Array1<usize>,
     is_match: bool,
-    next_states: Vec<RegularExpressionState>,
 }
 
 #[pyclass]
@@ -27,7 +30,7 @@ struct RegexConstraint {
 impl RegexConstraint {
     fn init(constraint: RegularExpressionConstraint) -> Self {
         let state = constraint.get_start_state();
-        let (indices, next_states) = constraint.get_valid_continuations_with_state(&state);
+        let indices = constraint.get_valid_continuations(&state).into();
         let is_match = constraint.is_match_state(&state);
         Self {
             constraint: Arc::new(constraint),
@@ -35,7 +38,6 @@ impl RegexConstraint {
                 state,
                 indices,
                 is_match,
-                next_states,
             })),
         }
     }
@@ -77,11 +79,8 @@ impl RegexConstraint {
             .lock()
             .map(|mut inner| {
                 inner.state = state;
-                let (indices, next_states) = self
-                    .constraint
-                    .get_valid_continuations_with_state(&inner.state);
-                inner.indices = indices;
-                inner.next_states = next_states;
+                let indices = self.constraint.get_valid_continuations(&inner.state);
+                inner.indices = indices.into();
                 inner.is_match = self.constraint.is_match_state(&inner.state);
             })
             .map_err(|_| anyhow!("error locking inner state"))
@@ -97,10 +96,15 @@ impl RegexConstraint {
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn get(&self) -> anyhow::Result<(Vec<usize>, bool)> {
+    fn get(&self, py: Python<'_>) -> anyhow::Result<(PyObject, bool)> {
         self.inner
             .lock()
-            .map(|inner| (inner.indices.clone(), inner.is_match))
+            .map(|inner| {
+                (
+                    inner.indices.clone().into_pyarray_bound(py).into_py(py),
+                    inner.is_match,
+                )
+            })
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
@@ -118,15 +122,12 @@ impl RegexConstraint {
         spawn(move || {
             let mut inner = inner.lock().expect("error locking inner state");
             tx.send(()).expect("failed to send on channel");
-            let idx = inner
-                .indices
-                .binary_search(&index)
-                .map_err(|e| format!("could not find index {e} in {:?}", inner.indices))
-                .expect("invalid index");
-            inner.state = inner.next_states[idx];
-            let (indices, states) = constraint.get_valid_continuations_with_state(&inner.state);
-            inner.indices = indices;
-            inner.next_states = states;
+            let next_state = constraint
+                .get_next_state(&inner.state, index)
+                .expect("invalid continuation");
+            inner.state = next_state;
+            let indices = constraint.get_valid_continuations(&inner.state);
+            inner.indices = indices.into();
             inner.is_match = constraint.is_match_state(&inner.state);
         });
         // wait until spawned thread signals that is has locked
@@ -142,17 +143,10 @@ enum LR1Type {
 }
 
 #[derive(Clone)]
-enum LR1NextStates {
-    Exact(Vec<LR1NextState>),
-    Regular(Vec<LR1State>),
-}
-
-#[derive(Clone)]
 struct LR1Inner {
     state: LR1State,
-    indices: Vec<usize>,
+    indices: Array1<usize>,
     is_match: bool,
-    next_states: LR1NextStates,
 }
 
 #[pyclass]
@@ -176,16 +170,18 @@ impl LR1Type {
         }
     }
 
-    fn get_valid_continuations_with_state(&self, state: &LR1State) -> (Vec<usize>, LR1NextStates) {
+    fn get_valid_continuations(&self, state: &LR1State) -> Array1<usize> {
         match self {
-            LR1Type::Exact(inner) => {
-                let (indices, next_states) = inner.get_valid_continuations_with_state(state);
-                (indices, LR1NextStates::Exact(next_states))
-            }
-            LR1Type::Regular(inner) => {
-                let (indices, next_states) = inner.get_valid_continuations_with_state(state);
-                (indices, LR1NextStates::Regular(next_states))
-            }
+            LR1Type::Exact(inner) => inner.get_valid_continuations(state),
+            LR1Type::Regular(inner) => inner.get_valid_continuations(state),
+        }
+        .into()
+    }
+
+    fn get_next_state(&self, state: &LR1State, continuation: usize) -> Option<LR1State> {
+        match self {
+            LR1Type::Exact(inner) => inner.get_next_state(state, continuation),
+            LR1Type::Regular(inner) => inner.get_next_state(state, continuation),
         }
     }
 
@@ -207,7 +203,7 @@ impl LR1Type {
 impl LR1Constraint {
     fn init(constraint: LR1Type) -> Self {
         let state = constraint.get_start_state();
-        let (indices, next_states) = constraint.get_valid_continuations_with_state(&state);
+        let indices = constraint.get_valid_continuations(&state);
         let is_match = constraint.is_match_state(&state);
         Self {
             constraint: Arc::new(constraint),
@@ -215,7 +211,6 @@ impl LR1Constraint {
                 state,
                 indices,
                 is_match,
-                next_states,
             })),
         }
     }
@@ -275,11 +270,8 @@ impl LR1Constraint {
             .lock()
             .map(|mut inner| {
                 inner.state = state;
-                let (indices, next_states) = self
-                    .constraint
-                    .get_valid_continuations_with_state(&inner.state);
+                let indices = self.constraint.get_valid_continuations(&inner.state);
                 inner.indices = indices;
-                inner.next_states = next_states;
                 inner.is_match = self.constraint.is_match_state(&inner.state);
             })
             .map_err(|_| anyhow!("error locking inner state"))
@@ -295,17 +287,19 @@ impl LR1Constraint {
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn get(&self) -> anyhow::Result<(Vec<usize>, bool)> {
+    fn get(&self, py: Python<'_>) -> anyhow::Result<(PyObject, bool)> {
         self.inner
             .lock()
             .map(|inner| {
                 let indices =
                     if inner.is_match && self.constraint.only_skippable_matching(&inner.state) {
                         // should stop, return empty indices
-                        vec![]
+                        vec![].into()
                     } else {
                         inner.indices.clone()
-                    };
+                    }
+                    .into_pyarray_bound(py)
+                    .into_py(py);
                 (indices, inner.is_match)
             })
             .map_err(|_| anyhow!("error locking inner state"))
@@ -319,34 +313,33 @@ impl LR1Constraint {
     }
 
     fn next(&self, index: usize) -> anyhow::Result<()> {
+        // let start = Instant::now();
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
         let (tx, rx) = channel();
         spawn(move || {
+            // let start = Instant::now();
             let mut inner = inner.lock().expect("error locking inner state");
             tx.send(()).expect("failed to send on channel");
-            let idx = inner
-                .indices
-                .binary_search(&index)
-                .map_err(|e| format!("could not find index {e} in {:?}", inner.indices))
-                .expect("invalid index");
-            match &mut inner.next_states {
-                LR1NextStates::Exact(states) => {
-                    let next = std::mem::take(&mut states[idx]);
-                    inner.state.next(next);
-                }
-                LR1NextStates::Regular(states) => {
-                    inner.state = std::mem::take(&mut states[idx]);
-                }
-            }
-            let (indices, states) = constraint.get_valid_continuations_with_state(&inner.state);
+
+            inner.state = constraint
+                .get_next_state(&inner.state, index)
+                .expect("invalid continuation");
+            let indices = constraint.get_valid_continuations(&inner.state);
             inner.indices = indices;
-            inner.next_states = states;
             inner.is_match = constraint.is_match_state(&inner.state);
+            // println!(
+            //     "next took: {:.2}ms",
+            //     start.elapsed().as_micros() as f32 / 1_000.0
+            // );
         });
         // wait until spawned thread signals that is has locked
         // the inner state, otherwise some unexpected behavior could occurr
         rx.recv()?;
+        // println!(
+        //     "spawning next took: {:.2}ms",
+        //     start.elapsed().as_micros() as f32 / 1_000.0
+        // );
         Ok(())
     }
 }
@@ -411,6 +404,12 @@ impl LR1Parser {
             .parse(input, skip_empty, collapse_single)
             .map_err(|e| anyhow!("failed to parse input: {e}"))?;
         Ok(parse_into_py(input, &parse, py)?)
+    }
+
+    fn lex(&self, input: &str) -> anyhow::Result<Vec<TokenAndSpan>> {
+        self.inner
+            .lex(input)
+            .map_err(|e| anyhow!("failed to lex input: {e}"))
     }
 }
 

@@ -27,7 +27,6 @@ unicode-normalization = "0.1"
 num = "0.4"
 anyhow = "1.0"
 num_cpus = "1.14"
-bitvec = "1"
 numpy = "0.21"
 clap = { version = "4", features = ["derive"] }
 tokenizers = "0.19"

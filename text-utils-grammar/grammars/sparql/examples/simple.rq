@@ -1,5 +1,0 @@
-SELECT * WHERE {
-    ?s ?p ?o .
-    <te st> <test2> <test3> .
-    ?s <test> ?o .
-}

@@ -1,17 +1,11 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    error::Error,
-    fs::File,
-    io::read_to_string,
-    path::Path,
-};
+use std::{collections::HashMap, error::Error, fs::File, io::read_to_string, path::Path};
 
 use cfgrammar::{
     yacc::{YaccGrammar, YaccGrammarError, YaccKind, YaccOriginalActionKind},
     NewlineCache, Spanned, TIdx,
 };
 use indexmap::IndexMap;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use lrlex::{DefaultLexeme, DefaultLexerTypes, LRNonStreamingLexer};
 use lrpar::{Lexeme, Node, RTParserBuilder};
 use lrtable::{Action, Minimiser, StIdx, StateTable};
@@ -238,12 +232,17 @@ fn prefix_lexer_with(
     Ok((tokens, spans, prefix_matches, (i, continuation.len() - i)))
 }
 
-fn initial_prefix_matches(pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> Matching {
+fn initial_prefix_match_iter(
+    pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
+) -> impl Iterator<Item = (usize, StateID)> + '_ {
     pdfas
         .iter()
         .enumerate()
         .map(|(pidx, (pdfa, _))| (pidx, pdfa.get_start_state()))
-        .collect()
+}
+
+fn initial_prefix_matches(pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> Matching {
+    initial_prefix_match_iter(pdfas).collect()
 }
 
 fn prefix_lexer(
@@ -484,7 +483,24 @@ pub struct ExactLR1GrammarConstraint {
 enum LR1Action {
     ShiftReduce(usize, Vec<StIdx<u32>>),
     Accept,
-    None,
+    Error,
+}
+
+impl LR1Action {
+    #[allow(dead_code)]
+    pub fn is_accept(&self) -> bool {
+        matches!(self, LR1Action::Accept)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_error(&self) -> bool {
+        matches!(self, LR1Action::Error)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_shift_reduce(&self) -> bool {
+        matches!(self, LR1Action::ShiftReduce(..))
+    }
 }
 
 fn shift_reduce(
@@ -494,7 +510,7 @@ fn shift_reduce(
     token: TIdx<u32>,
 ) -> LR1Action {
     let Some(mut stidx) = stack.last().copied() else {
-        return LR1Action::None;
+        return LR1Action::Error;
     };
     // perform actions until the next shift,
     // can be implemented without actually
@@ -520,70 +536,62 @@ fn shift_reduce(
                     return match drive(grammar, table, stack.to_vec(), &[Some(token)]) {
                         Drive::Stack(stack) => LR1Action::ShiftReduce(0, stack),
                         Drive::Accept => LR1Action::Accept,
-                        Drive::Error => LR1Action::None,
+                        Drive::Error => LR1Action::Error,
                     };
                 } else {
                     stack_end -= rlen - 1;
                 }
                 let Some(new_stidx) = table.goto(stack[stack_end - 1], ridx) else {
-                    return LR1Action::None;
+                    return LR1Action::Error;
                 };
                 stidx = new_stidx;
             }
             Action::Accept => return LR1Action::Accept,
-            Action::Error => return LR1Action::None,
+            Action::Error => return LR1Action::Error,
         };
     }
     LR1Action::ShiftReduce(stack_end + 1, vec![stidx])
 }
 
-fn matchable_pdfas<'pdfa>(
-    grammar: &YaccGrammar,
-    table: &StateTable<u32>,
-    pdfas: &'pdfa [(PrefixDFA, Option<TIdx<u32>>)],
-    stack: &[StIdx<u32>],
-) -> Vec<(usize, &'pdfa PrefixDFA)> {
-    let Some(&last) = stack.last() else {
-        return vec![];
-    };
-    let state_actions: Vec<_> = table.state_actions(last).collect();
-    pdfas
-        .iter()
-        .enumerate()
-        .filter_map(|(i, (pdfa, tidx))| {
-            if let Some(tidx) = tidx {
-                if !state_actions.contains(tidx)
-                    || !matches!(
-                        shift_reduce(grammar, table, stack, *tidx),
-                        LR1Action::ShiftReduce(..)
-                    )
-                {
-                    return None;
-                }
-            }
-            Some((i, pdfa))
-        })
-        .collect()
-}
-
-fn filter_matching(
-    matching: &mut Matching,
+#[inline]
+fn partition_matching(
+    matching: impl IntoIterator<Item = (usize, StateID)>,
     grammar: &YaccGrammar,
     table: &StateTable<u32>,
     pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
     stack: &[StIdx<u32>],
-) {
-    matching.retain(|&(pidx, _)| {
-        let (_, token) = &pdfas[pidx];
-        if let Some(token) = token {
-            if !matches!(
-                shift_reduce(grammar, table, stack, *token),
-                LR1Action::ShiftReduce(..)
-            ) {
-                return false;
+) -> (Vec<usize>, Vec<usize>) {
+    // parition matching into valid and invalid
+    matching.into_iter().partition_map(|(pidx, _)| {
+        let (_, tidx) = &pdfas[pidx];
+        if let Some(&tidx) = tidx.as_ref() {
+            if tidx != grammar.eof_token_idx()
+                && !shift_reduce(grammar, table, stack, tidx).is_error()
+            {
+                Either::Left(pidx)
+            } else {
+                Either::Right(pidx)
             }
+        } else {
+            Either::Left(pidx)
         }
-        true
+    })
+}
+
+fn is_valid_matching(
+    matching: impl IntoIterator<Item = (usize, StateID)>,
+    grammar: &YaccGrammar,
+    table: &StateTable<u32>,
+    pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
+    stack: &[StIdx<u32>],
+) -> bool {
+    matching.into_iter().any(|(pidx, _)| {
+        let (_, tidx) = &pdfas[pidx];
+        if let Some(&tidx) = tidx.as_ref() {
+            tidx != grammar.eof_token_idx() && !shift_reduce(grammar, table, stack, tidx).is_error()
+        } else {
+            true
+        }
     })
 }
 
@@ -644,10 +652,7 @@ fn only_skippable_matching(matching: &Matching, pdfas: &[(PrefixDFA, Option<TIdx
 }
 
 fn is_accept_state(grammar: &YaccGrammar, table: &StateTable<u32>, stack: &[StIdx<u32>]) -> bool {
-    matches!(
-        shift_reduce(grammar, table, stack, grammar.eof_token_idx()),
-        LR1Action::Accept
-    )
+    shift_reduce(grammar, table, stack, grammar.eof_token_idx()).is_accept()
 }
 
 fn is_match_state(
@@ -733,16 +738,15 @@ impl LR1State {
 
 #[derive(Clone, Default)]
 pub struct LR1NextState {
-    action: Option<(usize, Vec<StIdx<u32>>, String)>,
+    action: Option<(usize, Vec<StIdx<u32>>)>,
     matching: Matching,
 }
 
 impl Constraint for ExactLR1GrammarConstraint {
     type State = LR1State;
-    type NextState = LR1NextState;
 
     fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
-        let (tokens, _, mut matching, _) = prefix_lexer(prefix, &self.pdfas).ok()?;
+        let (tokens, _, matching, _) = prefix_lexer(prefix, &self.pdfas).ok()?;
         let Drive::Stack(stack) = drive(
             &self.grammar,
             &self.table,
@@ -751,18 +755,13 @@ impl Constraint for ExactLR1GrammarConstraint {
         ) else {
             return None;
         };
-        // the matching returned by prefix lexer is not a matching
-        // that adheres to the grammar, so we need to filter it
-        // further to only contain pdfas that are allowed to match
-        // according to the grammar
-        filter_matching(
-            &mut matching,
+        if !is_valid_matching(
+            matching.iter().copied(),
             &self.grammar,
             &self.table,
             &self.pdfas,
             &stack,
-        );
-        if matching.is_empty() {
+        ) {
             return None;
         }
         Some(Self::State { stack, matching })
@@ -776,57 +775,28 @@ impl Constraint for ExactLR1GrammarConstraint {
         is_match_state(&self.grammar, &self.table, &self.pdfas, state)
     }
 
-    fn get_valid_continuations_with_state(
-        &self,
-        state: &Self::State,
-    ) -> (Vec<usize>, Vec<Self::NextState>) {
-        assert!(!state.matching.is_empty());
-        let mut conts = BTreeMap::new();
+    fn get_valid_continuations(&self, state: &Self::State) -> Vec<usize> {
+        let mut conts = vec![];
 
-        // in case no pdfa is still matching for a continuation
-        // we do the following:
-        // 1. find all unskippable pdfas that are currently in matching state
-        //    --> if there are none, skip
-        // 2. select the one with the lowest index, as that would
-        //    be the one picked by the lexer (length of match is the same
-        //    for all pdfas)
-        // 3. step with the corresponding token and return the action
-        //    --> the action will later be used to create the next state
-        let next = if let Some((LR1Action::ShiftReduce(keep, next_stidx), tidx)) = state
-            .matching
-            .iter()
-            .find_map(|&(pidx, pdfa_state)| {
-                let (pdfa, Some(tidx)) = &self.pdfas[pidx] else {
+        let next = state.matching.iter().find_map(|(pidx, pdfa_state)| {
+            let (pdfa, tidx) = &self.pdfas[*pidx];
+            if !pdfa.is_eoi_match(*pdfa_state) {
+                return None;
+            }
+            let next_stack = if let Some(&tidx) = tidx.as_ref() {
+                let LR1Action::ShiftReduce(keep, stidx) =
+                    shift_reduce(&self.grammar, &self.table, &state.stack, tidx)
+                else {
                     return None;
                 };
-                if pdfa.is_eoi_match(pdfa_state) {
-                    Some(tidx)
-                } else {
-                    None
-                }
-            })
-            .map(|&tidx| {
-                (
-                    shift_reduce(&self.grammar, &self.table, &state.stack, tidx),
-                    tidx,
-                )
-            }) {
-            let mut next_stack = state.stack[..keep].to_vec();
-            next_stack.extend(next_stidx.clone());
-            let next_matchable_pdfas =
-                matchable_pdfas(&self.grammar, &self.table, &self.pdfas, &next_stack);
-            let token_name = self.grammar.token_name(tidx).unwrap();
-            Some((
-                (keep, next_stidx, token_name.to_string()),
-                next_matchable_pdfas,
-            ))
-        } else {
-            None
-        };
-
-        let only_skippable_matching = only_skippable_matching(&state.matching, &self.pdfas);
-        let matchable_pdfas =
-            matchable_pdfas(&self.grammar, &self.table, &self.pdfas, &state.stack);
+                let mut next_stack = state.stack[..keep].to_vec();
+                next_stack.extend(stidx.clone());
+                next_stack
+            } else {
+                state.stack.clone()
+            };
+            Some(next_stack)
+        });
 
         // now check all continuations
         let mut i = 0;
@@ -836,75 +806,96 @@ impl Constraint for ExactLR1GrammarConstraint {
             let cont = &self.continuations[j];
             i += 1;
 
-            // get all pdfas that are still matching
-            let mut still_matching: Vec<_> = vec![];
-            for &(pidx, pdfa_state) in &state.matching {
-                let (pdfa, _) = &self.pdfas[pidx];
-                if let Some(state) = pdfa.drive(pdfa_state, cont) {
-                    still_matching.push((pidx, state));
-                }
-            }
-
-            // if we have some pdfas that are still matching, use
-            // them in the next state; this corresponds the
-            // longest matching rule in the lexer
+            let (pdfa_matching, mut not_matching): (Vec<_>, Vec<_>) =
+                state.matching.iter().partition_map(|&(pidx, pdfa_state)| {
+                    let (pdfa, _) = &self.pdfas[pidx];
+                    if let Some(state) = pdfa.drive(pdfa_state, cont) {
+                        Either::Left((pidx, state))
+                    } else {
+                        Either::Right(pidx)
+                    }
+                });
+            let (still_matching, matching_but_invalid) = partition_matching(
+                pdfa_matching.clone(),
+                &self.grammar,
+                &self.table,
+                &self.pdfas,
+                &state.stack,
+            );
             if !still_matching.is_empty() {
-                conts.insert(
-                    j,
-                    LR1NextState {
-                        action: None,
-                        matching: still_matching,
-                    },
-                );
-            } else if only_skippable_matching {
-                // if no pdfas are still matching, check the ones who
-                // are matchable in the current state and stay in that state
-                let matching: Vec<_> = matchable_pdfas
-                    .iter()
-                    .filter_map(|&(i, pdfa)| {
-                        pdfa.drive(pdfa.get_start_state(), cont)
-                            .map(|state| (i, state))
-                    })
-                    .collect();
-
-                if matching.is_empty() {
-                    i += skip;
+                conts.push(j);
+                continue;
+            } else if let Some(next_stack) = &next {
+                not_matching.extend(matching_but_invalid);
+                if is_valid_matching(
+                    self.pdfas
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(pidx, (pdfa, _))| {
+                            if not_matching.binary_search(&pidx).is_ok() {
+                                return None;
+                            }
+                            pdfa.drive(pdfa.get_start_state(), cont)
+                                .map(|state| (pidx, state))
+                        }),
+                    &self.grammar,
+                    &self.table,
+                    &self.pdfas,
+                    next_stack,
+                ) {
+                    conts.push(j);
                     continue;
                 }
-
-                conts.insert(
-                    j,
-                    LR1NextState {
-                        action: None,
-                        matching,
-                    },
-                );
-            } else if let Some((next_action, next_matchable_pdfas)) = &next {
-                // if there are no pdfas still matching and no skippable pdfas matching,
-                // check the matchable pdfas for the next state
-                let next_matching: Vec<_> = next_matchable_pdfas
-                    .iter()
-                    .filter_map(|&(i, pdfa)| {
-                        pdfa.drive(pdfa.get_start_state(), cont)
-                            .map(|state| (i, state))
-                    })
-                    .collect();
-
-                if next_matching.is_empty() {
-                    i += skip;
-                    continue;
-                }
-
-                conts.insert(
-                    j,
-                    LR1NextState {
-                        action: Some(next_action.clone()),
-                        matching: next_matching,
-                    },
-                );
             }
+            i += skip;
         }
-        conts.into_iter().unzip()
+        conts.sort();
+        conts
+    }
+
+    fn get_next_state(&self, state: &Self::State, continuation: usize) -> Option<Self::State> {
+        let cont = self.continuations.get(continuation)?;
+        let (tokens, _, next_matching, _) =
+            prefix_lexer_with(cont, &self.pdfas, state.matching.clone()).ok()?;
+        // should never happen in exact lr1 grammar constraint
+        if tokens.len() > 1 {
+            None
+        } else if tokens.is_empty() || tokens[0].is_none() {
+            if !is_valid_matching(
+                next_matching.iter().copied(),
+                &self.grammar,
+                &self.table,
+                &self.pdfas,
+                &state.stack,
+            ) {
+                return None;
+            }
+            Some(Self::State {
+                stack: state.stack.clone(),
+                matching: next_matching,
+            })
+        } else {
+            let LR1Action::ShiftReduce(keep, stidx) =
+                shift_reduce(&self.grammar, &self.table, &state.stack, tokens[0].unwrap())
+            else {
+                return None;
+            };
+            let mut next_stack = state.stack[..keep].to_vec();
+            next_stack.extend(stidx.clone());
+            if !is_valid_matching(
+                next_matching.iter().copied(),
+                &self.grammar,
+                &self.table,
+                &self.pdfas,
+                &next_stack,
+            ) {
+                return None;
+            }
+            Some(Self::State {
+                stack: next_stack,
+                matching: next_matching,
+            })
+        }
     }
 }
 
@@ -959,10 +950,9 @@ impl LR1GrammarConstraint {
 
 impl Constraint for LR1GrammarConstraint {
     type State = LR1State;
-    type NextState = LR1State;
 
     fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
-        let (tokens, _, mut matching, _) = prefix_lexer(prefix, &self.pdfas).ok()?;
+        let (tokens, _, matching, _) = prefix_lexer(prefix, &self.pdfas).ok()?;
         let Drive::Stack(stack) = drive(
             &self.grammar,
             &self.table,
@@ -971,14 +961,13 @@ impl Constraint for LR1GrammarConstraint {
         ) else {
             return None;
         };
-        filter_matching(
-            &mut matching,
+        if !is_valid_matching(
+            matching.iter().copied(),
             &self.grammar,
             &self.table,
             &self.pdfas,
             &stack,
-        );
-        if matching.is_empty() {
+        ) {
             return None;
         }
         Some(Self::State { stack, matching })
@@ -992,11 +981,8 @@ impl Constraint for LR1GrammarConstraint {
         is_match_state(&self.grammar, &self.table, &self.pdfas, state)
     }
 
-    fn get_valid_continuations_with_state(
-        &self,
-        state: &Self::State,
-    ) -> (Vec<usize>, Vec<Self::NextState>) {
-        let mut conts = BTreeMap::new();
+    fn get_valid_continuations(&self, state: &Self::State) -> Vec<usize> {
+        let mut conts = vec![];
 
         // now check all continuations
         let mut i = 0;
@@ -1006,41 +992,57 @@ impl Constraint for LR1GrammarConstraint {
             let cont = &self.continuations[j];
             i += 1;
 
-            let Ok((tokens, _, mut next_matching, _)) =
+            let Ok((tokens, _, next_matching, _)) =
                 prefix_lexer_with(cont, &self.pdfas, state.matching.clone())
             else {
                 i += skip;
                 continue;
             };
-
             let Drive::Stack(next_stack) =
                 drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
             else {
                 i += skip;
                 continue;
             };
-            filter_matching(
-                &mut next_matching,
+            if !is_valid_matching(
+                next_matching.iter().copied(),
                 &self.grammar,
                 &self.table,
                 &self.pdfas,
                 &next_stack,
-            );
-            if next_matching.is_empty() {
+            ) {
                 i += skip;
                 continue;
             }
 
-            conts.insert(
-                j,
-                LR1State {
-                    stack: next_stack,
-                    matching: next_matching,
-                },
-            );
+            conts.push(j);
         }
+        conts.sort();
+        conts
+    }
 
-        conts.into_iter().unzip()
+    fn get_next_state(&self, state: &Self::State, continuation: usize) -> Option<Self::State> {
+        let cont = &self.continuations.get(continuation)?;
+        let (tokens, _, next_matching, _) =
+            prefix_lexer_with(cont, &self.pdfas, state.matching.clone()).ok()?;
+        let Drive::Stack(next_stack) =
+            drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
+        else {
+            return None;
+        };
+        if !is_valid_matching(
+            next_matching.iter().copied(),
+            &self.grammar,
+            &self.table,
+            &self.pdfas,
+            &next_stack,
+        ) {
+            return None;
+        }
+        Some(Self::State {
+            stack: next_stack,
+            matching: next_matching,
+        })
     }
 }
 
@@ -1216,6 +1218,45 @@ mod test {
     }
 
     #[test]
+    fn test_prefix_lexer_sparql() {
+        let (y, l, _) = load_lrk_grammar("sparql", "constraint");
+        let lrk = LR1GrammarParser::from_files(y, l).unwrap();
+        let prefix = b"PREFIX:#";
+        let (tokens, spans, ..) = prefix_lexer(prefix, &lrk.pdfas).unwrap();
+        println!(
+            "{:?}\n{:?}",
+            tokens
+                .iter()
+                .map(|t| t.map(|t| lrk.grammar.token_name(t).unwrap()).unwrap_or(""))
+                .collect_vec(),
+            spans
+                .iter()
+                .map(|(s, l)| (String::from_utf8_lossy(&prefix[*s..*s + *l])))
+                .collect_vec()
+        );
+        let (tokens, .., matching, _) = prefix_lexer(b"PREFIX", &lrk.pdfas).unwrap();
+        assert!(tokens.is_empty());
+        println!("{:?}", matching);
+        let empty = !is_valid_matching(
+            matching.iter().copied(),
+            &lrk.grammar,
+            &lrk.table,
+            &lrk.pdfas,
+            &[lrk.table.start_state()],
+        );
+        println!("{:?}", empty);
+        println!("{:?}", matching);
+        let (tokens, ..) = prefix_lexer_with(b":#", &lrk.pdfas, matching).unwrap();
+        println!(
+            "{:?}",
+            tokens
+                .iter()
+                .map(|t| t.map(|t| lrk.grammar.token_name(t).unwrap()).unwrap_or(""))
+                .collect_vec(),
+        );
+    }
+
+    #[test]
     fn test_prefix_lexer() {
         let (pdfas, map) = get_calc_pfdas();
         let (lexemes, spans, matching, last_span) = prefix_lexer(b"(1 + 28)*\n3", &pdfas).unwrap();
@@ -1304,14 +1345,14 @@ mod test {
         assert!(!pdfa.is_eoi_match(state));
     }
 
-    fn load_lrk_grammar(name: &str) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+    fn load_lrk_grammar(name: &str, example_dir: &str) -> (PathBuf, PathBuf, Vec<PathBuf>) {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("grammars")
             .join(name);
         let grammar = dir.as_path().join(format!("{name}.y"));
         let lexer = dir.as_path().join(format!("{name}.l"));
         // load all examples from grammars/<name>/examples/
-        let examples = fs::read_dir(dir.as_path().join("examples"))
+        let examples = fs::read_dir(dir.as_path().join(example_dir))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect();
@@ -1320,7 +1361,7 @@ mod test {
 
     #[test]
     fn test_lrk_parser() {
-        let (grammar, lexer, _) = load_lrk_grammar("calc");
+        let (grammar, lexer, _) = load_lrk_grammar("calc", "parser");
         let lrk = LR1GrammarParser::from_files(grammar, lexer).unwrap();
         assert!(lrk.parse("2 - 1", false, false).is_err());
         let text = "(1 + 28)*\n3";
@@ -1345,13 +1386,14 @@ mod test {
         continuations: &[Vec<u8>],
     ) -> LR1State {
         let state = lrk.get_state(prefix).unwrap();
-        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        let cont_indices = lrk.get_valid_continuations(&state);
         println!(
-            "matching {}, {} conts: {:#?}",
+            "matching {}, {} conts: {:?}",
             lrk.is_match_state(&state),
             cont_indices.len(),
             cont_indices
                 .iter()
+                .take(10)
                 .map(|i| String::from_utf8_lossy(&continuations[*i]))
                 .collect_vec()
         );
@@ -1361,17 +1403,79 @@ mod test {
                 .copied()
                 .chain(continuations[i].clone())
                 .collect();
-            let (tokens, ..) = prefix_lexer(&full, &lrk.pdfas).unwrap();
-            assert!(drive_with_tokens(&lrk.grammar, &lrk.table, &tokens));
+            let (tokens, spans, ..) = prefix_lexer(&full, &lrk.pdfas).unwrap();
+            assert!(
+                drive_with_tokens(&lrk.grammar, &lrk.table, &tokens),
+                "failed to drive with tokens {:?} corresponding to {:?} for continuation {:?} at {i} and full prefix {:?}",
+                tokens
+                    .iter()
+                    .map(|tidx| (if let Some(&tidx) = tidx.as_ref() {
+                        lrk.grammar.token_name(tidx).unwrap().to_string()
+                    } else {
+                        format!("{:?}", tidx)
+                    }, tidx))
+                    .collect_vec(),
+                spans
+                    .iter()
+                    .map(|(start, len)| String::from_utf8_lossy(&full[*start..*start + *len]))
+                    .collect_vec(),
+                String::from_utf8_lossy(&continuations[i]),
+                String::from_utf8_lossy(&full)
+            );
         }
         state
     }
 
+    fn check_continuations_exact(
+        lrk: &ExactLR1GrammarConstraint,
+        prefix: &[u8],
+        continuations: &[Vec<u8>],
+    ) {
+        let state = lrk.get_state(prefix).unwrap();
+        let cont_indices = lrk.get_valid_continuations(&state);
+        println!(
+            "matching {}, {} conts: {:#?}",
+            lrk.is_match_state(&state),
+            cont_indices.len(),
+            cont_indices
+                .iter()
+                .take(10)
+                .map(|i| String::from_utf8_lossy(&continuations[*i]))
+                .collect_vec()
+        );
+        for i in cont_indices {
+            let full: Vec<_> = prefix
+                .iter()
+                .copied()
+                .chain(continuations[i].clone())
+                .collect();
+            let (tokens, spans, ..) = prefix_lexer(&full, &lrk.pdfas).expect(&format!(
+                "failed to lex full prefix {:?} for continuation {:?} at {i:?}",
+                String::from_utf8_lossy(&full),
+                String::from_utf8_lossy(&continuations[i])
+            ));
+            assert!(
+                drive_with_tokens(&lrk.grammar, &lrk.table, &tokens),
+                "failed to drive with tokens {:?} corresponding to {:?} for continuation {:?} at {i} and full prefix {:?}",
+                tokens
+                    .iter()
+                    .map(|tidx| (if let Some(&tidx) = tidx.as_ref() {
+                        lrk.grammar.token_name(tidx).unwrap().to_string()
+                    } else {
+                        format!("{:?}", tidx)
+                    }, tidx))
+                    .collect_vec(),
+                spans.iter().map(|(start, len)| String::from_utf8_lossy(&full[*start..*start + *len])).collect_vec(),
+                String::from_utf8_lossy(&continuations[i]),
+                String::from_utf8_lossy(&full)
+            );
+        }
+    }
     #[test]
     fn test_lrk_constraint() {
         let conts = load_continuations();
 
-        let (grammar, lexer, _) = load_lrk_grammar("json");
+        let (grammar, lexer, _) = load_lrk_grammar("json", "constraint");
         let lrk = LR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
         assert!(lrk.get_state(b"\"id\": \"1\"").is_none());
         assert!(lrk.get_state(b"{\"id\": \"1\"}}").is_none());
@@ -1381,10 +1485,18 @@ mod test {
         let state = check_continuations(&lrk, b"{\"id\": \"1\"}", &conts);
         assert!(lrk.is_match_state(&state));
 
-        let (grammar, lexer, _) = load_lrk_grammar("calc");
+        let (grammar, lexer, _) = load_lrk_grammar("sparql", "constraint");
+        let lrk = LR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
+        check_continuations(&lrk, b"PREFIX", &conts);
+
+        let (grammar, lexer, _) = load_lrk_grammar("sparql", "constraint");
+        let lrk = ExactLR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
+        check_continuations_exact(&lrk, b"PREFIX", &conts);
+
+        let (grammar, lexer, _) = load_lrk_grammar("calc", "constraint");
         let lrk = ExactLR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
         let state = lrk.get_start_state();
-        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        let cont_indices = lrk.get_valid_continuations(&state);
         println!(
             "matching {}, {} conts: {:#?}",
             lrk.is_match_state(&state),
@@ -1395,7 +1507,7 @@ mod test {
                 .collect_vec()
         );
         let state = lrk.get_state(b"1").unwrap();
-        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        let cont_indices = lrk.get_valid_continuations(&state);
         println!(
             "matching {}, {} conts: {:#?}",
             lrk.is_match_state(&state),
@@ -1407,10 +1519,10 @@ mod test {
                 .collect_vec()
         );
 
-        let (grammar, lexer, _) = load_lrk_grammar("test");
+        let (grammar, lexer, _) = load_lrk_grammar("sparql", "constraint");
         let lrk = LR1GrammarConstraint::from_files(grammar, lexer, conts.clone()).unwrap();
-        let state = lrk.get_state(b"  SELECT  TEST").unwrap();
-        let (cont_indices, _) = lrk.get_valid_continuations_with_state(&state);
+        let state = lrk.get_state(b"  SELECT  ?x ").unwrap();
+        let cont_indices = lrk.get_valid_continuations(&state);
         println!(
             "matching {}, {} conts: {:#?}",
             lrk.is_match_state(&state),

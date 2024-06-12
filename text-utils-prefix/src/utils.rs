@@ -1,6 +1,6 @@
 use itertools::Itertools;
 
-pub fn optimized_prefix_order<C>(continuations: &[C]) -> (Vec<usize>, Vec<usize>)
+pub fn optimized_continuation_permutation<C>(continuations: &[C]) -> (Vec<usize>, Vec<usize>)
 where
     C: AsRef<[u8]>,
 {
@@ -29,12 +29,12 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::utils::optimized_prefix_order;
+    use crate::utils::optimized_continuation_permutation;
 
     #[test]
-    fn test_optimized_prefix_order() {
+    fn test_optimized_continuation_permutation() {
         let items = ["de", "a", "d", "ab", "abc", "b"];
-        let (permutation, skips) = optimized_prefix_order(&items);
+        let (permutation, skips) = optimized_continuation_permutation(&items);
         assert_eq!(permutation, vec![1, 3, 4, 5, 2, 0]);
         assert_eq!(skips, vec![2, 1, 0, 0, 1, 0]);
     }

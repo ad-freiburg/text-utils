@@ -852,16 +852,13 @@ impl InferenceLoader {
 
     fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<InferenceBatch>>> {
         if let Some(batch) = slf.iter.next() {
-            Ok(Some(
-                Py::new(
-                    slf.py(),
-                    InferenceBatch {
-                        len: batch.len(),
-                        batch: Some(batch),
-                    },
-                )
-                .expect("should not fail"),
-            ))
+            Ok(Some(Py::new(
+                slf.py(),
+                InferenceBatch {
+                    len: batch.len(),
+                    batch: Some(batch),
+                },
+            )?))
         } else {
             // check if batch is None because iterator is stopped,
             // or because an error was encountered

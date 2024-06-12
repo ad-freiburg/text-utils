@@ -1,5 +1,0 @@
-PREFIX : <http://example.com>
-
-SELECT ?x WHERE {
-	?x :name "Test"@ca-ES .
-}

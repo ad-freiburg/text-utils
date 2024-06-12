@@ -1,12 +1,14 @@
 use std::{
     collections::HashMap,
+    hash::Hash,
     iter::{empty, once},
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::{ContinuationsTrie, PrefixSearch};
+use crate::PrefixSearch;
 
 type Index<const N: usize> = Box<[u8; N]>;
 type Children<V, const N: usize> = Box<[Option<Box<Node<V>>>; N]>;
@@ -38,14 +40,21 @@ struct Node<V> {
     inner: NodeType<V>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathType {
+    Key,
+    Full,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdaptiveRadixTrie<V> {
     root: Option<Node<V>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct AdaptiveRadixTrieStats {
-    pub depth: usize,
+    pub max_depth: usize,
+    pub avg_depth: f32,
     pub num_nodes: usize,
     pub num_keys: usize,
     pub node_info: HashMap<String, (usize, f32)>,
@@ -59,19 +68,15 @@ impl<V> AdaptiveRadixTrie<V> {
                 .map(|&s| (s.to_string(), (0, 0.0))),
         );
         let Some(root) = &self.root else {
-            return AdaptiveRadixTrieStats {
-                depth: 0,
-                num_nodes: 0,
-                num_keys: 0,
-                node_info: dist,
-            };
+            return AdaptiveRadixTrieStats::default();
         };
         let mut stack = vec![(root, 0)];
         let mut max_depth = 0;
+        let mut avg_depth = (0, 0.0);
         while let Some((node, depth)) = stack.pop() {
             max_depth = max_depth.max(depth);
             let name = match &node.inner {
-                NodeType::Leaf(_) => "leaf",
+                NodeType::Leaf(..) => "leaf",
                 NodeType::N4(..) => "n4",
                 NodeType::N16(..) => "n16",
                 NodeType::N48 { .. } => "n48",
@@ -81,10 +86,14 @@ impl<V> AdaptiveRadixTrie<V> {
             val.0 += 1;
             let n = val.0 as f32;
             val.1 = (val.1 * (n - 1.0) + node.prefix.len() as f32) / n;
+            avg_depth.0 += 1;
+            let n = avg_depth.0 as f32;
+            avg_depth.1 = (avg_depth.1 * (n - 1.0) + depth as f32) / n;
             stack.extend(node.children().map(|(_, child)| (child, depth + 1)));
         }
         AdaptiveRadixTrieStats {
-            depth: max_depth,
+            max_depth,
+            avg_depth: avg_depth.1,
             num_nodes: dist.iter().map(|(_, (n, _))| n).sum(),
             num_keys: dist["leaf"].0,
             node_info: dist,
@@ -95,19 +104,6 @@ impl<V> AdaptiveRadixTrie<V> {
 impl<V> Default for AdaptiveRadixTrie<V> {
     fn default() -> Self {
         Self { root: None }
-    }
-}
-
-impl<K, V> FromIterator<(K, V)> for AdaptiveRadixTrie<V>
-where
-    K: AsRef<[u8]>,
-{
-    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let mut trie = Self::default();
-        for (k, v) in iter {
-            trie.insert(k.as_ref(), v);
-        }
-        trie
     }
 }
 
@@ -371,7 +367,7 @@ impl<V> Node<V> {
     #[inline]
     fn find_child(&self, key: u8) -> Option<&Self> {
         match &self.inner {
-            NodeType::Leaf(_) => None,
+            NodeType::Leaf(..) => None,
             NodeType::N4(keys, children, num_children) => {
                 for i in 0..*num_children {
                     let i = i as usize;
@@ -548,19 +544,25 @@ impl<V> Node<V> {
     }
 
     #[inline]
-    fn leaves_recursive(
+    fn leaves(
         &self,
-        mut prefix: Vec<u8>,
+        mut path: Vec<u8>,
+        path_type: PathType,
     ) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
-        prefix.extend(self.prefix.iter().copied());
+        if path_type == PathType::Full {
+            path.extend(self.prefix.iter().copied());
+        }
         if let NodeType::Leaf(value) = &self.inner {
-            prefix.pop();
-            return Box::new(once((prefix, value)));
+            if path_type == PathType::Full {
+                // dont keep last element (null byte) for full paths
+                path.pop();
+            }
+            return Box::new(once((path, value)));
         }
         Box::new(self.children().flat_map(move |(k, child)| {
-            let mut key = prefix.clone();
+            let mut key = path.clone();
             key.push(k);
-            child.leaves_recursive(key)
+            child.leaves(key, path_type)
         }))
     }
 }
@@ -676,7 +678,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
         })
     }
 
-    fn contains_prefix(&self, prefix: &[u8]) -> bool {
+    fn contains(&self, prefix: &[u8]) -> bool {
         let Some(root) = &self.root else {
             return false;
         };
@@ -685,7 +687,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
         root.contains_prefix_iter(key, 0).is_some()
     }
 
-    fn path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
+    fn values_along_path(&self, prefix: &[u8]) -> Vec<(usize, &Self::Value)> {
         let Some(root) = &self.root else {
             return vec![];
         };
@@ -727,7 +729,7 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
         path
     }
 
-    fn iter_continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
+    fn continuations(&self, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, &V)> + '_> {
         let Some(root) = &self.root else {
             return Box::new(empty());
         };
@@ -753,12 +755,12 @@ impl<V> PrefixSearch for AdaptiveRadixTrie<V> {
             node = child;
         }
 
-        node.leaves_recursive(prefix)
+        node.leaves(prefix, PathType::Full)
     }
 }
 
-impl<V> ContinuationsTrie for AdaptiveRadixTrie<V> {
-    fn contains_continuations(
+impl<V> AdaptiveRadixTrie<V> {
+    fn continuation_indices(
         &self,
         prefix: &[u8],
         continuations: &[Vec<u8>],
@@ -767,7 +769,7 @@ impl<V> ContinuationsTrie for AdaptiveRadixTrie<V> {
     ) -> Vec<usize> {
         let mut result = vec![];
         let Some(root) = &self.root else {
-            return result;
+            return vec![];
         };
 
         let key = prefix.iter().filter(|&b| *b > 0).copied();
@@ -788,6 +790,133 @@ impl<V> ContinuationsTrie for AdaptiveRadixTrie<V> {
             i += 1;
         }
 
+        result.sort();
         result
+    }
+
+    fn paths(&self) -> impl Iterator<Item = (Vec<u8>, &V)> {
+        match &self.root {
+            Some(root) => {
+                Box::new(root.leaves(vec![], PathType::Key)) as Box<dyn Iterator<Item = _>>
+            }
+            None => Box::new(empty()),
+        }
+    }
+
+    #[inline]
+    fn key_from_path(&self, path: &[u8]) -> Option<Vec<u8>> {
+        let mut node = self.root.as_ref()?;
+        let mut key: Vec<_> = node.prefix.iter().copied().collect();
+        for &k in path {
+            let Some(child) = node.find_child(k) else {
+                return None;
+            };
+            key.push(k);
+            key.extend(child.prefix.iter().copied());
+            node = child;
+        }
+        if node.is_leaf() && key.last() == Some(&0) {
+            key.pop();
+            Some(key)
+        } else {
+            None
+        }
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for AdaptiveRadixTrie<V>
+where
+    K: AsRef<[u8]>,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let mut trie = AdaptiveRadixTrie::default();
+        for (key, value) in iter {
+            trie.insert(key.as_ref(), value);
+        }
+        trie
+    }
+}
+
+pub type Paths = Box<[Box<[u8]>]>;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AdaptiveRadixContinuationTrie<V>
+where
+    V: Hash + Eq,
+{
+    pub(crate) trie: AdaptiveRadixTrie<Arc<V>>,
+    value_paths: HashMap<Arc<V>, Paths>,
+}
+
+impl<V> AdaptiveRadixContinuationTrie<V>
+where
+    V: Hash + Eq,
+{
+    fn value_paths(trie: &AdaptiveRadixTrie<Arc<V>>) -> HashMap<Arc<V>, Paths> {
+        let mut value_paths: HashMap<Arc<V>, Vec<Box<[u8]>>> = HashMap::new();
+        for (path, value) in trie.paths() {
+            if let Some(paths) = value_paths.get_mut(value) {
+                paths.push(path.into_boxed_slice());
+            } else {
+                value_paths.insert(value.clone(), vec![path.into_boxed_slice()]);
+            }
+        }
+        value_paths
+            .into_iter()
+            .map(|(k, v)| (k, v.into_boxed_slice()))
+            .collect()
+    }
+
+    pub fn new<K: AsRef<[u8]>>(data: impl IntoIterator<Item = (K, V)>) -> Self {
+        let trie = data.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
+        let value_paths = Self::value_paths(&trie);
+        Self { trie, value_paths }
+    }
+
+    pub fn continuation_indices(
+        &self,
+        prefix: &[u8],
+        continuations: &[Vec<u8>],
+        permutation: &[usize],
+        skips: &[usize],
+    ) -> Vec<usize> {
+        self.trie
+            .continuation_indices(prefix, continuations, permutation, skips)
+    }
+
+    pub fn get(&self, prefix: &[u8]) -> Option<&V> {
+        self.trie.get(prefix).map(Arc::as_ref)
+    }
+
+    pub fn sub_index_by_values<Val>(&self, values: impl IntoIterator<Item = Val>) -> Self
+    where
+        V: From<Val>,
+    {
+        let trie = values
+            .into_iter()
+            .map(|v| v.into())
+            .filter_map(|v| self.value_paths.get(&v).map(|path| (v, path)))
+            .flat_map(|(value, paths)| {
+                let value: Arc<V> = Arc::new(value);
+                paths.iter().filter_map(move |path| {
+                    let key = self.trie.key_from_path(path)?;
+                    Some((key, value.clone()))
+                })
+            })
+            .collect();
+        Self {
+            value_paths: Self::value_paths(&trie),
+            trie,
+        }
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for AdaptiveRadixContinuationTrie<V>
+where
+    K: AsRef<[u8]>,
+    V: Hash + Eq,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        Self::new(iter)
     }
 }

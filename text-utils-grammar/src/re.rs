@@ -64,7 +64,10 @@ impl RegularExpressionConstraint {
 
 impl Constraint for RegularExpressionConstraint {
     type State = StateID;
-    type NextState = StateID;
+
+    fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
+        self.pdfa.get_state(prefix)
+    }
 
     fn get_start_state(&self) -> Self::State {
         self.pdfa.get_start_state()
@@ -74,24 +77,23 @@ impl Constraint for RegularExpressionConstraint {
         self.pdfa.is_eoi_match(*state)
     }
 
-    fn get_valid_continuations_with_state(
-        &self,
-        state: &Self::State,
-    ) -> (Vec<usize>, Vec<Self::NextState>) {
-        self.continuations.iter().enumerate().fold(
-            (vec![], vec![]),
-            |(mut indices, mut states), (i, cont)| {
-                if let Some(state) = self.pdfa.drive(*state, cont) {
-                    indices.push(i);
-                    states.push(state);
+    fn get_valid_continuations(&self, state: &Self::State) -> Vec<usize> {
+        self.continuations
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cont)| {
+                if self.pdfa.drive(*state, cont).is_some() {
+                    Some(i)
+                } else {
+                    None
                 }
-                (indices, states)
-            },
-        )
+            })
+            .collect()
     }
 
-    fn get_state(&self, prefix: &[u8]) -> Option<Self::State> {
-        self.pdfa.get_state(prefix)
+    fn get_next_state(&self, state: &Self::State, continuation: usize) -> Option<Self::State> {
+        self.pdfa
+            .drive(*state, self.continuations.get(continuation)?)
     }
 }
 
@@ -134,18 +136,18 @@ mod test {
             .map(|s| s.as_bytes().to_vec())
             .collect();
         let re = RegularExpressionConstraint::new(r"^ab", conts.clone()).unwrap();
-        let (conts, states) = re.get_valid_continuations_with_state(&re.get_start_state());
+        let state = re.get_start_state();
+        let conts = re.get_valid_continuations(&state);
         assert_eq!(conts, vec![0, 3]);
-        assert!(!re.is_match_state(&states[0]));
-        let (conts, states) = re.get_valid_continuations_with_state(&states[0]);
+        let state = re.get_next_state(&state, 0).unwrap();
+        assert!(!re.is_match_state(&state));
+        let conts = re.get_valid_continuations(&state);
         assert_eq!(conts, vec![1]);
-        assert!(re
-            .get_valid_continuations_with_state(&states[0])
-            .0
-            .is_empty());
-        assert!(re.is_match_state(&states[0]));
+        let state = re.get_next_state(&state, 1).unwrap();
+        assert!(re.get_valid_continuations(&state).is_empty());
+        assert!(re.is_match_state(&state));
         let state = re.pdfa.get_state(b"a").unwrap();
-        let (conts, _) = re.get_valid_continuations_with_state(&state);
+        let conts = re.get_valid_continuations(&state);
         assert_eq!(conts, vec![1]);
         assert!(re.pdfa.get_state(b"c").is_none());
     }
@@ -162,14 +164,14 @@ mod test {
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
-                    let (conts, states) = re.get_valid_continuations_with_state(&state);
+                    let conts = re.get_valid_continuations(&state);
                     // random sample index between 0 and conts.len()
                     let Some(idx) = (0..conts.len()).choose(&mut rng) else {
                         break;
                     };
                     let cont = conts[idx];
                     decoded.extend(continuations[cont].iter().copied());
-                    state = states[idx];
+                    state = re.get_next_state(&state, cont).unwrap();
                     is_match = re.is_match_state(&state);
                 }
                 assert!(is_match);
@@ -195,7 +197,7 @@ mod test {
                 let mut is_match = false;
                 let mut decoded = vec![];
                 while !is_match {
-                    let (conts, states) = re.get_valid_continuations_with_state(&state);
+                    let (conts, states) = re.get_valid_continuations_and_next_states(&state);
                     // random sample index between 0 and conts.len()
                     let Some(idx) = (0..conts.len()).choose(&mut rng) else {
                         break;

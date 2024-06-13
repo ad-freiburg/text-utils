@@ -1,6 +1,7 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
+    sync::Arc,
 };
 
 use crate::utils::SerializeMsgPack;
@@ -11,7 +12,7 @@ use text_utils_prefix::{optimized_continuation_permutation, AdaptiveRadixContinu
 
 #[pyclass]
 pub struct ContinuationIndex {
-    trie: AdaptiveRadixContinuationTrie<String>,
+    trie: Arc<AdaptiveRadixContinuationTrie<String>>,
     continuations: Vec<Vec<u8>>,
     permutation: Vec<usize>,
     skips: Vec<usize>,
@@ -20,8 +21,19 @@ pub struct ContinuationIndex {
 #[pymethods]
 impl ContinuationIndex {
     #[staticmethod]
+    fn load(file: &str) -> anyhow::Result<Self> {
+        let trie = Arc::new(AdaptiveRadixContinuationTrie::load(file)?);
+        Ok(Self {
+            trie,
+            continuations: vec![],
+            permutation: vec![],
+            skips: vec![],
+        })
+    }
+
+    #[staticmethod]
     fn load_with_continuations(file: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
-        let trie = AdaptiveRadixContinuationTrie::load(file)?;
+        let trie = Arc::new(AdaptiveRadixContinuationTrie::load(file)?);
         let (permutation, skips) = optimized_continuation_permutation(&continuations);
         Ok(Self {
             trie,
@@ -63,6 +75,23 @@ impl ContinuationIndex {
         Ok(())
     }
 
+    fn clone_with_continuations(&self, continuations: Vec<Vec<u8>>) -> Self {
+        let (permutation, skips) = optimized_continuation_permutation(&continuations);
+        Self {
+            trie: self.trie.clone(),
+            continuations,
+            permutation,
+            skips,
+        }
+    }
+
+    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
+        let (permutation, skips) = optimized_continuation_permutation(&continuations);
+        self.continuations = continuations;
+        self.permutation = permutation;
+        self.skips = skips;
+    }
+
     fn get(&self, py: Python<'_>, prefix: &[u8]) -> (PyObject, Option<String>) {
         (
             Array1::from_vec(self.trie.continuation_indices(
@@ -82,7 +111,7 @@ impl ContinuationIndex {
             .trie
             .sub_index_by_values(values.iter().map(|v| -> &str { v.as_ref() }));
         Self {
-            trie: sub_trie,
+            trie: Arc::new(sub_trie),
             continuations: self.continuations.clone(),
             permutation: self.permutation.clone(),
             skips: self.skips.clone(),

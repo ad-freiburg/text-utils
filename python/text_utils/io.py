@@ -1,11 +1,11 @@
 import glob
 import os.path
-from typing import List, Optional, Any, Dict
+from typing import Any
 
 import torch
 
 
-def glob_safe(pattern: str, error_on_empty: bool = True) -> List[str]:
+def glob_safe(pattern: str, error_on_empty: bool = True) -> list[str]:
     """
     Safe version of glob.glob in the sense that it errors when
     no files are found with the glob pattern.
@@ -21,16 +21,16 @@ def glob_safe(pattern: str, error_on_empty: bool = True) -> List[str]:
 
 def save_checkpoint(
     checkpoint_path: str,
-    model_state_dict: Dict[str, Any],
+    model_state_dict: dict[str, Any],
     step: int,
     epoch: int,
     epoch_step: int,
     epoch_items: int,
     total_items: int,
     val_loss: float,
-    optimizer_state_dict: Optional[Dict[str, Any]] = None,
-    lr_scheduler_state_dict: Optional[Dict[str, Any]] = None,
-    loss_fn_state_dict: Optional[Dict[str, Any]] = None,
+    optimizer_state_dict: dict[str, Any] | None = None,
+    lr_scheduler_state_dict: dict[str, Any] | None = None,
+    loss_fn_state_dict: dict[str, Any] | None = None,
     **kwargs: Any
 ) -> None:
     """
@@ -40,13 +40,14 @@ def save_checkpoint(
     :param step: global step
     :param epoch: global epoch
     :param epoch_step: step within epoch
-    :param epoch_items: the number of items (batch elements) seen during this epoch, if a fixed batch size is used this would be batch_size * epoch_step
-    :param total_items: the number of items (batch elements) seen during training, if a fixed batch size is used this would be batch_size * epoch_step
+    :param epoch_items: the number of items (batch elements) seen during this epoch,
+        if a fixed batch size is used this would be batch_size * epoch_step
+    :param total_items: the number of items (batch elements) seen during training,
+        if a fixed batch size is used this would be batch_size * epoch_step
     :param val_loss: Validation loss achieved by this checkpoint
     :param optimizer: Pytorch optimizer
     :param lr_scheduler: Pytorch learning rate scheduler,
     :param loss_fn: Pytorch module computing the loss,
-    :param grad_scaler: Pytorch gradient scaler
     """
     checkpoint_dir = os.path.dirname(checkpoint_path)
     if checkpoint_dir != "":
@@ -70,15 +71,15 @@ def save_checkpoint(
 def load_checkpoint(
     checkpoint_path: str,
     device: torch.device = torch.device("cpu")
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return torch.load(checkpoint_path, map_location=device)
 
 
 def load_text_file(
     path: str
-) -> List[str]:
+) -> list[str]:
     text = []
     with open(path, "r", encoding="utf8") as inf:
         for line in inf:
-            text.append(line.strip())
+            text.append(line.rstrip("\r\n"))
     return text

@@ -43,7 +43,7 @@ class DistributedInfo:
             f"device={self.device})"
 
 
-def unwrap_model(model: Union[nn.Module, FSDP, DDP]) -> nn.Module:
+def unwrap_model(model: nn.Module | FSDP | DDP) -> nn.Module:
     unwrapped = model
     while isinstance(unwrapped, DDP):
         unwrapped = unwrapped.module
@@ -51,9 +51,9 @@ def unwrap_model(model: Union[nn.Module, FSDP, DDP]) -> nn.Module:
 
 
 def get_optimizer_state_dict(
-    model: Union[nn.Module, FSDP, DDP],
+    model: nn.Module | FSDP | DDP,
     optimizer: optim.Optimizer
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if isinstance(model, FSDP):
         return FSDP.optim_state_dict(
             model,

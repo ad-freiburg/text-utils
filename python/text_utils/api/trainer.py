@@ -420,6 +420,8 @@ training will resume from latest checkpoint."
         full: bool = True,
         **kwargs: Any
     ):
+        # need to call this on all processes because model and optimizer
+        # might be distributed across processes
         save = {
             "checkpoint_path": path,
             "model_state_dict": distributed.unwrap_model(self.model).state_dict(),
@@ -450,7 +452,8 @@ training will resume from latest checkpoint."
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
         distributed.unwrap_model(self.model).load_state_dict(
-            checkpoint["model_state_dict"])
+            checkpoint["model_state_dict"]
+        )
         optim_state_dict = checkpoint["optimizer_state_dict"]
         if isinstance(self.model, FSDP):
             optim_state_dict = FSDP.optim_state_dict_to_load(

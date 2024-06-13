@@ -298,6 +298,15 @@ impl TrainBatch {
         self.len
     }
 
+    fn sizes(&self) -> anyhow::Result<Vec<usize>> {
+        self.batch
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("can only get sizes before getting items, because they are moved")
+            })
+            .map(|batch| batch.iter().map(|item| item.size()).collect())
+    }
+
     fn items(&mut self) -> anyhow::Result<Batch<TrainItem>> {
         self.batch
             .take()
@@ -529,6 +538,15 @@ pub struct InferenceBatch {
 impl InferenceBatch {
     fn __len__(&self) -> usize {
         self.len
+    }
+
+    fn sizes(&self) -> anyhow::Result<Vec<usize>> {
+        self.batch
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("can only get sizes before getting items, because they are moved")
+            })
+            .map(|batch| batch.iter().map(|item| item.size()).collect())
     }
 
     fn infos(&self) -> anyhow::Result<Batch<Option<PyObject>>> {

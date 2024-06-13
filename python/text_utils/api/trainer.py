@@ -996,12 +996,12 @@ training will resume from latest checkpoint."
             "train_batch_size",
             self.info.device,
         )
-        mean_seq_length = tensorboard.DistAverageTracker(
-            "train_sequence_length",
+        mean_item_size = tensorboard.DistAverageTracker(
+            "train_item_size",
             self.info.device
         )
-        mean_seq_length_ratio = tensorboard.DistAverageTracker(
-            "train_sequence_length_ratio",
+        mean_item_size_ratio = tensorboard.DistAverageTracker(
+            "train_item_size_ratio",
             self.info.device
         )
 
@@ -1085,19 +1085,19 @@ training will resume from latest checkpoint."
             mean_step_time.add((time.perf_counter() - start_batch) * 1000)
             mean_fwdbwdupd.add((end_fwdbwdupd - start_fwdbwdupd) * 1000)
             mean_bsz.add(batch_items)
-            min_length = sys.maxsize
-            max_length = 0
-            for length in inputs["lengths"]:
-                mean_seq_length.add(length)
-                if length < min_length:
-                    min_length = length
-                if length > max_length:
-                    max_length = length
+            min_size = sys.maxsize
+            max_size = 0
+            for size in batch.sizes():
+                mean_item_size.add(size)
+                if size < min_size:
+                    min_size = size
+                if size > max_size:
+                    max_size = size
             mean_batch_load.add((end_batch - start_batch) * 1000)
             mean_batch_preparation.add(
                 (end_preparation - start_preparation) * 1000
             )
-            mean_seq_length_ratio.add(max_length / max(1, min_length))
+            mean_item_size_ratio.add(max_size / max(1, min_size))
 
             if self.total_items >= self.log_at:
                 mean_loss.sync()
@@ -1105,8 +1105,8 @@ training will resume from latest checkpoint."
                 mean_step_time.sync()
                 mean_fwdbwdupd.sync()
                 mean_batch_load.sync()
-                mean_seq_length.sync()
-                mean_seq_length_ratio.sync()
+                mean_item_size.sync()
+                mean_item_size_ratio.sync()
                 mean_batch_preparation.sync()
                 end = time.perf_counter()
 
@@ -1163,14 +1163,14 @@ training will resume from latest checkpoint."
                     mean_batch_preparation.log_info(
                         self.logger, self.total_step)
 
-                    mean_seq_length.log_tensorboard(
+                    mean_item_size.log_tensorboard(
                         self.summary_writer, self.total_step)
-                    mean_seq_length.log_info(self.logger, self.total_step)
+                    mean_item_size.log_info(self.logger, self.total_step)
 
-                    mean_seq_length_ratio.log_tensorboard(
+                    mean_item_size_ratio.log_tensorboard(
                         self.summary_writer, self.total_step
                     )
-                    mean_seq_length_ratio.log_info(
+                    mean_item_size_ratio.log_info(
                         self.logger, self.total_step)
 
                     items = batch.items()
@@ -1207,8 +1207,8 @@ training will resume from latest checkpoint."
                 mean_step_time.reset()
                 mean_fwdbwdupd.reset()
                 mean_batch_load.reset()
-                mean_seq_length.reset()
-                mean_seq_length_ratio.reset()
+                mean_item_size.reset()
+                mean_item_size_ratio.reset()
                 mean_batch_preparation.reset()
                 self.log_at += self.log_interval
 
@@ -1237,8 +1237,8 @@ training will resume from latest checkpoint."
                     mean_step_time.reset()
                     mean_fwdbwdupd.reset()
                     mean_batch_load.reset()
-                    mean_seq_length.reset()
-                    mean_seq_length_ratio.reset()
+                    mean_item_size.reset()
+                    mean_item_size_ratio.reset()
                     mean_batch_preparation.reset()
                     start = time.perf_counter()
 

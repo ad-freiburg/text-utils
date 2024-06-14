@@ -47,7 +47,6 @@ class TextProcessingServer:
         )
         self.server.config["MAX_CONTENT_LENGTH"] = max_content_length
         self.max_models_per_gpu = max(1, config.get("max_models_per_gpu", 3))
-        self.base_url = config.get("base_url", "")
         self.allow_origin = config.get("allow_origin", "*")
         self.timeout = float(config.get("timeout", 10.0))
         logging.getLogger("werkzeug").disabled = True
@@ -72,7 +71,7 @@ class TextProcessingServer:
             )
             return response
 
-        @self.server.route(f"{self.base_url}/info")
+        @self.server.route("/info")
         def _info() -> Response:
             response = jsonify({
                 "gpu": [gpu_info(i) for i in range(self.num_gpus)],
@@ -151,7 +150,7 @@ class TextProcessingServer:
             self.text_processors.append(text_processor)
             self.name_to_idx[model_info.name] = i
 
-        @self.server.route(f"{self.base_url}/models")
+        @self.server.route("/models")
         def _models() -> Response:
             response = jsonify({
                 "task": self.text_processor_cls.task,
@@ -179,4 +178,9 @@ class TextProcessingServer:
             self.lock.release()
 
     def run(self):
-        self.server.run("0.0.0.0", self.port, debug=False, use_reloader=False)
+        self.server.run(
+            "0.0.0.0",
+            self.port,
+            debug=False,
+            use_reloader=False
+        )

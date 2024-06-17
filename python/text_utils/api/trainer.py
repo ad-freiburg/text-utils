@@ -233,7 +233,7 @@ training will resume from latest checkpoint."
                 )
             )
 
-        self.model: Union[DDP, FSDP] = torch.compile(
+        self.model: DDP | FSDP = torch.compile(
             self.model,
             fullgraph=True,
             disable=not compile
@@ -249,6 +249,10 @@ training will resume from latest checkpoint."
             "clip_grad_norm",
             None
         )
+        self.grad_accumulation = max(1, self.cfg["train"].get(
+            "grad_accumulation",
+            1
+        ))
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (
@@ -976,10 +980,6 @@ training will resume from latest checkpoint."
             self.info.device,
             fmt=".2e"
         )
-        mean_fwdbwdupd = tensorboard.DistAverageTracker(
-            "train_forward_backward_update_time",
-            self.info.device
-        )
         mean_batch_load = tensorboard.DistAverageTracker(
             "train_batch_load_time",
             self.info.device
@@ -992,7 +992,7 @@ training will resume from latest checkpoint."
             "train_batch_preparation_time",
             self.info.device
         )
-        mean_bsz = tensorboard.DistAverageTracker(
+        mean_batch_size = tensorboard.DistAverageTracker(
             "train_batch_size",
             self.info.device,
         )
@@ -1004,48 +1004,92 @@ training will resume from latest checkpoint."
             "train_item_size_ratio",
             self.info.device
         )
+        batch_size = tensorboard.DistAverageTracker(
+            "batch_size",
+            self.info.device,
+            output_op="sum"
+        )
 
         metrics = []
         for name, cfg in self.cfg["train"].get("metrics", {}).items():
             metric = self._metric_from_config(name, cfg, "train")
             metrics.append(metric)
 
-        dist_items = torch.zeros(1, dtype=torch.long, device=self.info.device)
         start_items = self.epoch_items
         self.model = self.model.train()
 
         train_iter = iter(self.train_loader)
         while True:
+            # reset stuff for training step
+            start_step = time.perf_counter()
+            self.optimizer.zero_grad(set_to_none=True)
+
             start_batch = time.perf_counter()
-            batch = next(train_iter, None)
+            batch_size.reset()
+            min_size = sys.maxsize
+            max_size = 0
+            batches = []
+            for i in range(self.grad_accumulation):
+                batch = next(train_iter, None)
+                if batch is None:
+                    break
+                elif len(batch) == 0:  # type: ignore
+                    raise RuntimeError(
+                        "got empty batch, this should not happen during training"
+                    )
+
+                for size in batch.sizes():
+                    mean_item_size.add(size)
+                    if size < min_size:
+                        min_size = size
+                    if size > max_size:
+                        max_size = size
+
+                batches.append(batch)
+
             end_batch = time.perf_counter()
-            if batch is None:
+
+            if len(batches) == 0:
                 self.logger.info(
                     f"[rank {self.info.rank}] finished epoch {self.epoch + 1}"
                 )
                 break
-            elif len(batch) == 0:
-                raise RuntimeError(
-                    "got empty batch, this should not happen during training"
+
+            batch_size.add(sum(len(batch) for batch in batches))
+            mean_batch_load.add((end_batch - start_batch) * 1000)
+            mean_item_size_ratio.add(max_size / max(1, min_size))
+
+            first_outputs = None
+            losses = []
+            for i, batch in enumerate(batches):
+                start_preparation = time.perf_counter()
+                inputs, labels = self._prepare_batch(batch)
+                end_preparation = time.perf_counter()
+                mean_batch_preparation.add(
+                    (end_preparation - start_preparation) * 1000
                 )
 
-            start_preparation = time.perf_counter()
-            inputs, labels = self._prepare_batch(batch)
-            end_preparation = time.perf_counter()
+                with torch.autocast(
+                    "cuda",
+                    dtype=self.mixed_precision,
+                    enabled=self.mixed_precision is not None
+                ):
+                    if i < len(batches) - 1:
+                        with self.model.no_sync():
+                            outputs, loss_dict = self.model(**inputs)
+                            loss = self.loss_fn(outputs, labels)
+                            loss = loss + sum(loss_dict.values())
+                            self.grad_scaler.scale(loss).backward()
+                    else:
+                        # synchronize gradients for the last batch
+                        outputs, loss_dict = self.model(**inputs)
+                        loss = self.loss_fn(outputs, labels)
+                        loss = loss + sum(loss_dict.values())
+                        self.grad_scaler.scale(loss).backward()
 
-            start_fwdbwdupd = time.perf_counter()
-            self.optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(
-                "cuda",
-                dtype=self.mixed_precision,
-                enabled=self.mixed_precision is not None
-            ):
-                outputs, loss_dict = self.model(**inputs)
-                loss = self.loss_fn(outputs, labels)
-                loss = loss + sum(loss_dict.values())
-
-            mean_loss.add(loss.item())
-            self.grad_scaler.scale(loss).backward()
+                losses.append(loss.item())
+                if first_outputs is None:
+                    first_outputs = outputs.detach()
 
             if self.clip_grad_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)
@@ -1059,15 +1103,16 @@ training will resume from latest checkpoint."
 
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
-            dist_items[0] = len(batch)
-            dist.all_reduce(dist_items, dist.ReduceOp.SUM)
-            end_fwdbwdupd = time.perf_counter()
 
             self.total_step += 1
             self.epoch_step += 1
-            batch_items = dist_items[0].item()
-            self.epoch_items += batch_items
-            self.total_items += batch_items
+
+            batch_size.sync()
+            batch_items = batch_size.value
+            self.epoch_items += round(batch_items)
+            self.total_items += round(batch_items)
+
+            mean_loss.add(sum(losses) / len(losses))
 
             if self.total_items >= self.step_at:
                 lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
@@ -1082,28 +1127,13 @@ training will resume from latest checkpoint."
                     self.train_loader.set_max_length(max_length)
                     self.val_loader.set_max_length(max_length)
 
-            mean_step_time.add((time.perf_counter() - start_batch) * 1000)
-            mean_fwdbwdupd.add((end_fwdbwdupd - start_fwdbwdupd) * 1000)
-            mean_bsz.add(batch_items)
-            min_size = sys.maxsize
-            max_size = 0
-            for size in batch.sizes():
-                mean_item_size.add(size)
-                if size < min_size:
-                    min_size = size
-                if size > max_size:
-                    max_size = size
-            mean_batch_load.add((end_batch - start_batch) * 1000)
-            mean_batch_preparation.add(
-                (end_preparation - start_preparation) * 1000
-            )
-            mean_item_size_ratio.add(max_size / max(1, min_size))
+            mean_step_time.add((time.perf_counter() - start_step) * 1000)
+            mean_batch_size.add(batch_items)
 
             if self.total_items >= self.log_at:
                 mean_loss.sync()
-                mean_bsz.sync()
+                mean_batch_size.sync()
                 mean_step_time.sync()
-                mean_fwdbwdupd.sync()
                 mean_batch_load.sync()
                 mean_item_size.sync()
                 mean_item_size_ratio.sync()
@@ -1140,14 +1170,9 @@ training will resume from latest checkpoint."
                         self.summary_writer, self.total_step)
                     mean_loss.log_info(self.logger, self.total_step)
 
-                    mean_bsz.log_tensorboard(
+                    mean_batch_size.log_tensorboard(
                         self.summary_writer, self.total_step)
-                    mean_bsz.log_info(self.logger, self.total_step)
-
-                    mean_fwdbwdupd.log_tensorboard(
-                        self.summary_writer, self.total_step
-                    )
-                    mean_fwdbwdupd.log_info(self.logger, self.total_step)
+                    mean_batch_size.log_info(self.logger, self.total_step)
 
                     mean_batch_load.log_tensorboard(
                         self.summary_writer, self.total_step)
@@ -1170,12 +1195,11 @@ training will resume from latest checkpoint."
                     mean_item_size_ratio.log_tensorboard(
                         self.summary_writer, self.total_step
                     )
-                    mean_item_size_ratio.log_info(
-                        self.logger, self.total_step)
+                    mean_item_size_ratio.log_info(self.logger, self.total_step)
 
-                    items = batch.items()
+                    items = batches[0].items()
                     for metric in metrics:
-                        metric.set_values(items, outputs)
+                        metric.set_values(items, first_outputs)
                         metric.log_tensorboard(
                             self.summary_writer,
                             self.total_step
@@ -1203,9 +1227,8 @@ training will resume from latest checkpoint."
 
                 start = end
                 mean_loss.reset()
-                mean_bsz.reset()
+                mean_batch_size.reset()
                 mean_step_time.reset()
-                mean_fwdbwdupd.reset()
                 mean_batch_load.reset()
                 mean_item_size.reset()
                 mean_item_size_ratio.reset()
@@ -1233,9 +1256,8 @@ training will resume from latest checkpoint."
 
                     # reset the statistics
                     mean_loss.reset()
-                    mean_bsz.reset()
+                    mean_batch_size.reset()
                     mean_step_time.reset()
-                    mean_fwdbwdupd.reset()
                     mean_batch_load.reset()
                     mean_item_size.reset()
                     mean_item_size_ratio.reset()
@@ -1332,7 +1354,7 @@ training will resume from latest checkpoint."
         else:
             factor = 1.0
         steps = max(1, min(self.cooldown_items, self.eval_at -
-                    self.total_items) // self.step_interval)
+                           self.total_items) // self.step_interval)
         self.cooldown_scheduler = lr_scheduler.LambdaLR(
             self.optimizer,
             lambda step: (1 - (min(step, steps) / steps)) * factor

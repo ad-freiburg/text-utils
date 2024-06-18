@@ -3,7 +3,7 @@ pub mod patricia;
 pub mod utils;
 pub mod vec;
 
-pub use art::{AdaptiveRadixContinuationTrie, AdaptiveRadixTrie};
+pub use art::{AdaptiveRadixTrie, ArtContinuationTrie, ArtMmapContinuationTrie};
 pub use patricia::PatriciaTrie;
 pub use utils::optimized_continuation_permutation;
 pub use vec::{PrefixContinuationVec, PrefixVec};
@@ -35,8 +35,8 @@ mod test {
     use rand::{seq::SliceRandom, Rng};
 
     use crate::{
-        utils, AdaptiveRadixContinuationTrie, AdaptiveRadixTrie, PatriciaTrie,
-        PrefixContinuationVec, PrefixSearch, PrefixVec,
+        utils, AdaptiveRadixTrie, ArtContinuationTrie, PatriciaTrie, PrefixContinuationVec,
+        PrefixSearch, PrefixVec,
     };
 
     fn get_prefix_searchers() -> Vec<(&'static str, Box<dyn PrefixSearch<Value = usize>>)> {
@@ -238,7 +238,7 @@ mod test {
         let continuations = load_continuations();
         let (perm, skip) = utils::optimized_continuation_permutation(&continuations);
 
-        let trie = AdaptiveRadixContinuationTrie::new(
+        let trie = ArtContinuationTrie::new(
             words
                 .iter()
                 .map(|s| s.as_bytes().to_vec())

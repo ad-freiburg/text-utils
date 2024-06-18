@@ -1,10 +1,17 @@
 use std::{
+    borrow::Borrow,
     collections::HashMap,
-    hash::Hash,
+    fs::{create_dir_all, File},
+    hash::{DefaultHasher, Hash, Hasher},
+    io::{BufRead, BufReader, Seek, Write},
     iter::{empty, once},
+    path::Path,
     sync::Arc,
 };
 
+use anyhow::anyhow;
+use memmap2::{Mmap, MmapOptions};
+use odht::{Config, FxHashFn, HashTable, HashTableOwned};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -806,11 +813,9 @@ impl<V> AdaptiveRadixTrie<V> {
     #[inline]
     fn key_from_path(&self, path: &[u8]) -> Option<Vec<u8>> {
         let mut node = self.root.as_ref()?;
-        let mut key: Vec<_> = node.prefix.iter().copied().collect();
+        let mut key: Vec<_> = node.prefix.to_vec();
         for &k in path {
-            let Some(child) = node.find_child(k) else {
-                return None;
-            };
+            let child = node.find_child(k)?;
             key.push(k);
             key.extend(child.prefix.iter().copied());
             node = child;
@@ -840,7 +845,7 @@ where
 pub type Paths = Box<[Box<[u8]>]>;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct AdaptiveRadixContinuationTrie<V>
+pub struct ArtContinuationTrie<V>
 where
     V: Hash + Eq,
 {
@@ -848,7 +853,7 @@ where
     value_paths: HashMap<Arc<V>, Paths>,
 }
 
-impl<V> AdaptiveRadixContinuationTrie<V>
+impl<V> ArtContinuationTrie<V>
 where
     V: Hash + Eq,
 {
@@ -911,12 +916,262 @@ where
     }
 }
 
-impl<K, V> FromIterator<(K, V)> for AdaptiveRadixContinuationTrie<V>
+impl<K, V> FromIterator<(K, V)> for ArtContinuationTrie<V>
 where
     K: AsRef<[u8]>,
     V: Hash + Eq,
 {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         Self::new(iter)
+    }
+}
+
+struct ArtMmapConfig {}
+
+impl Config for ArtMmapConfig {
+    type Key = u64;
+    type Value = (u64, u16);
+
+    type EncodedKey = [u8; 8];
+    type EncodedValue = [u8; 10];
+
+    type H = FxHashFn;
+
+    fn encode_key(k: &Self::Key) -> Self::EncodedKey {
+        k.to_le_bytes()
+    }
+
+    fn encode_value(v: &Self::Value) -> Self::EncodedValue {
+        let (start, len) = v;
+        let mut buf = [0; 10];
+        buf[..8].copy_from_slice(&start.to_le_bytes());
+        buf[8..].copy_from_slice(&len.to_le_bytes());
+        buf
+    }
+
+    fn decode_key(k: &Self::EncodedKey) -> Self::Key {
+        u64::from_le_bytes(*k)
+    }
+
+    fn decode_value(v: &Self::EncodedValue) -> Self::Value {
+        let mut start = [0; 8];
+        let mut len = [0; 2];
+        start.copy_from_slice(&v[..8]);
+        len.copy_from_slice(&v[8..]);
+        (u64::from_le_bytes(start), u16::from_le_bytes(len))
+    }
+}
+
+struct BorrowedMmap {
+    mmap: Mmap,
+}
+
+impl Borrow<[u8]> for BorrowedMmap {
+    fn borrow(&self) -> &[u8] {
+        self.mmap.as_ref()
+    }
+}
+
+pub struct ArtMmapContinuationTrie {
+    trie: AdaptiveRadixTrie<(u64, u16)>,
+    data: Arc<Mmap>,
+    value_to_keys: Arc<HashTable<ArtMmapConfig, BorrowedMmap>>,
+    common_suffix: Option<Box<[u8]>>,
+}
+
+fn num_lines<P: AsRef<Path>>(path: P) -> anyhow::Result<usize> {
+    let file = File::open(path.borrow())?;
+    let reader = BufReader::new(file);
+    let mut count = 0;
+    for line in reader.lines() {
+        if let Err(e) = line {
+            return Err(e.into());
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+impl ArtMmapContinuationTrie {
+    pub fn load<D: AsRef<Path>, P: AsRef<Path>>(
+        data: P,
+        dir: D,
+        common_suffix: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let dir = dir.as_ref();
+        let trie_file = File::open(dir.join("trie.bin"))?;
+        let trie_reader = BufReader::new(trie_file);
+        let trie = rmp_serde::from_read(trie_reader)?;
+        let values_file = File::open(dir.join("values.bin"))?;
+        let mmap = unsafe { MmapOptions::new().map(&values_file)? };
+        let value_to_keys = Arc::new(
+            HashTable::from_raw_bytes(BorrowedMmap { mmap })
+                .map_err(|e| anyhow::anyhow!("failed to load value to keys map: {}", e))?,
+        );
+        let data_file = File::open(data.as_ref())?;
+        let data = Arc::new(unsafe { MmapOptions::new().map(&data_file)? });
+        Ok(Self {
+            trie,
+            data,
+            value_to_keys,
+            common_suffix: common_suffix.map(|s| s.as_bytes().to_vec().into_boxed_slice()),
+        })
+    }
+
+    pub fn build<P: AsRef<Path>, D: AsRef<Path>>(
+        data: P,
+        output_dir: D,
+        common_suffix: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let file = File::open(data.borrow())?;
+        let mut reader = BufReader::new(file);
+        let mut pos = reader.stream_position()?;
+        let mut line = String::new();
+        let mut trie: AdaptiveRadixTrie<(u64, u16)> = AdaptiveRadixTrie::default();
+        let max_item_count = num_lines(data)?;
+        let mut value_to_keys = HashTableOwned::<ArtMmapConfig>::with_capacity(max_item_count, 80);
+        let common_suffix = common_suffix.map(|s| s.as_bytes().to_vec());
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line)?;
+            if n == 0 {
+                break;
+            }
+            let line = line.trim_end_matches(&['\r', '\n']);
+            let parts: Vec<_> = line.split('\t').collect();
+            if parts.len() < 2 {
+                return Err(anyhow!("invalid line: {line}"));
+            }
+            let value_start = pos;
+            let value_len = u16::try_from(parts[0].len()).map_err(|_| anyhow!("value too long"))?;
+            let mut hasher = DefaultHasher::new();
+            parts[0].as_bytes().hash(&mut hasher);
+            let value_hash = hasher.finish();
+            let line_length = u16::try_from(line.len()).map_err(|_| anyhow!("line too long"))?;
+            value_to_keys.insert(&value_hash, &(value_start, line_length));
+            for part in &parts[1..] {
+                if let Some(sfx) = common_suffix.as_ref() {
+                    let mut part = part.as_bytes().to_vec();
+                    part.extend(sfx);
+                    trie.insert(&part, (value_start, value_len));
+                } else {
+                    trie.insert(part.as_bytes(), (value_start, value_len));
+                }
+            }
+            let end = reader.stream_position()?;
+            pos = end;
+        }
+        // create dir if not exists
+        let output_dir = output_dir.as_ref();
+        if !output_dir.exists() {
+            create_dir_all(output_dir)?;
+        }
+        // save trie to dir/trie.bin
+        let mut trie_file = File::create(output_dir.join("trie.bin"))?;
+        let trie_bytes = rmp_serde::to_vec(&trie)?;
+        trie_file.write_all(&trie_bytes)?;
+        // save value map to dir/values.bin
+        let mut values_file = File::create(output_dir.join("values.bin"))?;
+        values_file.write_all(value_to_keys.raw_bytes())?;
+        Ok(())
+    }
+
+    pub fn continuation_indices(
+        &self,
+        prefix: &[u8],
+        continuations: &[Vec<u8>],
+        permutation: &[usize],
+        skips: &[usize],
+    ) -> Vec<usize> {
+        self.trie
+            .continuation_indices(prefix, continuations, permutation, skips)
+    }
+
+    pub fn get(&self, prefix: &[u8]) -> Option<&[u8]> {
+        self.trie.get(prefix).and_then(|&(start, len)| {
+            let start = usize::try_from(start).ok()?;
+            let len = usize::from(len);
+            Some(&self.data[start..start + len])
+        })
+    }
+
+    pub fn sub_index_by_values<V>(&self, values: impl IntoIterator<Item = V>) -> Self
+    where
+        V: AsRef<[u8]>,
+    {
+        let trie = values
+            .into_iter()
+            .filter_map(|v| {
+                let v = v.as_ref();
+                let mut hasher = DefaultHasher::new();
+                v.as_ref().hash(&mut hasher);
+                let hash = hasher.finish();
+                let (start, len) = self.value_to_keys.get(&hash)?;
+                let start_u = usize::try_from(start).ok()?;
+                let len_u = usize::from(len);
+                let data = &self.data[start_u..start_u + len_u];
+                let mut split = data.split(|&b| b == b'\t');
+                if let Some(value) = split.next() {
+                    if value == v {
+                        let value_len = u16::try_from(value.len()).ok()?;
+                        return Some((start, value_len, split));
+                    }
+                }
+                None
+            })
+            .flat_map(|(start, len, keys)| {
+                keys.map(move |s| {
+                    if let Some(sfx) = &self.common_suffix {
+                        let mut s = s.to_vec();
+                        s.extend(sfx.as_ref());
+                        (s, (start, len))
+                    } else {
+                        (s.to_vec(), (start, len))
+                    }
+                })
+            })
+            .collect();
+        Self {
+            trie,
+            data: self.data.clone(),
+            value_to_keys: self.value_to_keys.clone(),
+            common_suffix: self.common_suffix.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{path::PathBuf, str::FromStr};
+
+    use crate::ArtMmapContinuationTrie;
+
+    #[test]
+    fn test_mmap_art_index() {
+        let dir = PathBuf::from_str(env!("CARGO_MANIFEST_DIR")).unwrap();
+        ArtMmapContinuationTrie::build(
+            dir.join("resources/test/test.tsv"),
+            dir.join("resources/test/index"),
+            Some("</kge>"),
+        )
+        .unwrap();
+        let idx = ArtMmapContinuationTrie::load(
+            dir.join("resources/test/test.tsv"),
+            dir.join("resources/test/index"),
+            Some("</kge>"),
+        )
+        .unwrap();
+        let val1 = idx.get(b"Ben Johnson (1946-)</kge>").unwrap();
+        println!("value: {:?}", String::from_utf8_lossy(val1));
+        let val2 = idx.get(b"Rolki</kge>").unwrap();
+        println!("value: {:?}", String::from_utf8_lossy(val2));
+        let val3 = idx.get(b"Volksschule Oberroning</kge>").unwrap();
+        println!("value: {:?}", String::from_utf8_lossy(val3));
+        let sub_idx = idx.sub_index_by_values(vec![val1, val2]);
+        assert!(sub_idx.get(b"Volksschule Oberroning</kge>").is_none());
+        let val1 = sub_idx.get(b"Ben Johnson (1946-)</kge>").unwrap();
+        println!("value: {:?}", String::from_utf8_lossy(val1));
+        let val2 = sub_idx.get(b"Rolki</kge>").unwrap();
+        println!("value: {:?}", String::from_utf8_lossy(val2));
     }
 }

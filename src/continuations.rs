@@ -8,11 +8,13 @@ use crate::utils::SerializeMsgPack;
 use anyhow::{anyhow, Result};
 use numpy::{ndarray::Array1, IntoPyArray};
 use pyo3::{prelude::*, pybacked::PyBackedStr};
-use text_utils_prefix::{optimized_continuation_permutation, AdaptiveRadixContinuationTrie};
+use text_utils_prefix::{
+    optimized_continuation_permutation, ArtContinuationTrie, ArtMmapContinuationTrie,
+};
 
 #[pyclass]
 pub struct ContinuationIndex {
-    trie: Arc<AdaptiveRadixContinuationTrie<String>>,
+    trie: Arc<ArtContinuationTrie<String>>,
     continuations: Vec<Vec<u8>>,
     permutation: Vec<usize>,
     skips: Vec<usize>,
@@ -22,7 +24,7 @@ pub struct ContinuationIndex {
 impl ContinuationIndex {
     #[staticmethod]
     fn load(file: &str) -> anyhow::Result<Self> {
-        let trie = Arc::new(AdaptiveRadixContinuationTrie::load(file)?);
+        let trie = Arc::new(ArtContinuationTrie::load(file)?);
         Ok(Self {
             trie,
             continuations: vec![],
@@ -33,7 +35,7 @@ impl ContinuationIndex {
 
     #[staticmethod]
     fn load_with_continuations(file: &str, continuations: Vec<Vec<u8>>) -> anyhow::Result<Self> {
-        let trie = Arc::new(AdaptiveRadixContinuationTrie::load(file)?);
+        let trie = Arc::new(ArtContinuationTrie::load(file)?);
         let (permutation, skips) = optimized_continuation_permutation(&continuations);
         Ok(Self {
             trie,
@@ -49,7 +51,7 @@ impl ContinuationIndex {
         let file = File::open(path)?;
         let sfx = common_suffix.unwrap_or_default().as_bytes();
         // now loop over lines and insert them into the trie
-        let trie: AdaptiveRadixContinuationTrie<_> = BufReader::new(file)
+        let trie: ArtContinuationTrie<_> = BufReader::new(file)
             .lines()
             .flat_map(|line| {
                 let Ok(line) = line else {
@@ -129,10 +131,114 @@ impl ContinuationIndex {
     }
 }
 
+#[pyclass]
+pub struct MmapContinuationIndex {
+    trie: Arc<ArtMmapContinuationTrie>,
+    continuations: Vec<Vec<u8>>,
+    permutation: Vec<usize>,
+    skips: Vec<usize>,
+}
+
+#[pymethods]
+impl MmapContinuationIndex {
+    #[staticmethod]
+    fn load(data: &str, dir: &str, common_suffix: Option<&str>) -> anyhow::Result<Self> {
+        let trie = Arc::new(ArtMmapContinuationTrie::load(data, dir, common_suffix)?);
+        Ok(Self {
+            trie,
+            continuations: vec![],
+            permutation: vec![],
+            skips: vec![],
+        })
+    }
+
+    #[staticmethod]
+    fn load_with_continuations(
+        data: &str,
+        dir: &str,
+        continuations: Vec<Vec<u8>>,
+        common_suffix: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let trie = Arc::new(ArtMmapContinuationTrie::load(data, dir, common_suffix)?);
+        let (permutation, skips) = optimized_continuation_permutation(&continuations);
+        Ok(Self {
+            trie,
+            continuations,
+            permutation,
+            skips,
+        })
+    }
+
+    #[staticmethod]
+    fn build_from_file(
+        data: &str,
+        output_dir: &str,
+        common_suffix: Option<&str>,
+    ) -> anyhow::Result<()> {
+        ArtMmapContinuationTrie::build(data, output_dir, common_suffix)
+    }
+
+    fn clone_with_continuations(&self, continuations: Vec<Vec<u8>>) -> Self {
+        let (permutation, skips) = optimized_continuation_permutation(&continuations);
+        Self {
+            trie: self.trie.clone(),
+            continuations,
+            permutation,
+            skips,
+        }
+    }
+
+    fn set_continuations(&mut self, continuations: Vec<Vec<u8>>) {
+        let (permutation, skips) = optimized_continuation_permutation(&continuations);
+        self.continuations = continuations;
+        self.permutation = permutation;
+        self.skips = skips;
+    }
+
+    fn get(&self, py: Python<'_>, prefix: &[u8]) -> (PyObject, Option<String>) {
+        (
+            Array1::from_vec(self.trie.continuation_indices(
+                prefix,
+                &self.continuations,
+                &self.permutation,
+                &self.skips,
+            ))
+            .into_pyarray_bound(py)
+            .into_py(py),
+            self.trie
+                .get(prefix)
+                .map(|s| String::from_utf8_lossy(s).to_string()),
+        )
+    }
+
+    fn sub_index_by_values(&self, values: Vec<PyBackedStr>) -> Self {
+        let sub_trie = self
+            .trie
+            .sub_index_by_values(values.iter().map(|v| -> &str { v.as_ref() }));
+        Self {
+            trie: Arc::new(sub_trie),
+            continuations: self.continuations.clone(),
+            permutation: self.permutation.clone(),
+            skips: self.skips.clone(),
+        }
+    }
+
+    fn continuation_at(&self, index: usize) -> anyhow::Result<Vec<u8>> {
+        self.continuations.get(index).cloned().ok_or_else(|| {
+            anyhow!(
+                "index out of bounds: {} (continuations length: {})",
+                index,
+                self.continuations.len()
+            )
+        })
+    }
+}
+
 /// A submodule containing python implementations of a continuation trie
 pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let m = PyModule::new_bound(py, "continuations")?;
     m.add_class::<ContinuationIndex>()?;
+    m.add_class::<MmapContinuationIndex>()?;
     parent_module.add_submodule(&m)?;
 
     Ok(())

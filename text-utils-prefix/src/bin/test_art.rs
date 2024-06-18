@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use text_utils_prefix::{AdaptiveRadixContinuationTrie, AdaptiveRadixTrie};
+use text_utils_prefix::{AdaptiveRadixTrie, ArtContinuationTrie};
 
 fn main() {
     let dir = env!("CARGO_MANIFEST_DIR");
@@ -17,7 +17,7 @@ fn main() {
     let stats = art.stats();
     println!("{stats:#?}");
 
-    let cont: AdaptiveRadixContinuationTrie<_> = index
+    let cont: ArtContinuationTrie<_> = index
         .lines()
         .enumerate()
         .map(|(i, s)| (s.as_bytes().to_vec(), i))

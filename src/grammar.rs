@@ -313,33 +313,22 @@ impl LR1Constraint {
     }
 
     fn next(&self, index: usize) -> anyhow::Result<()> {
-        // let start = Instant::now();
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
         let (tx, rx) = channel();
         spawn(move || {
-            // let start = Instant::now();
             let mut inner = inner.lock().expect("error locking inner state");
             tx.send(()).expect("failed to send on channel");
-
             inner.state = constraint
                 .get_next_state(&inner.state, index)
                 .expect("invalid continuation");
             let indices = constraint.get_valid_continuations(&inner.state);
             inner.indices = indices;
             inner.is_match = constraint.is_match_state(&inner.state);
-            // println!(
-            //     "next took: {:.2}ms",
-            //     start.elapsed().as_micros() as f32 / 1_000.0
-            // );
         });
         // wait until spawned thread signals that is has locked
         // the inner state, otherwise some unexpected behavior could occurr
         rx.recv()?;
-        // println!(
-        //     "spawning next took: {:.2}ms",
-        //     start.elapsed().as_micros() as f32 / 1_000.0
-        // );
         Ok(())
     }
 }

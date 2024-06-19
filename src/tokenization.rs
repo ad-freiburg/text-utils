@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 use text_utils_grammar::LR1GrammarParser;
-use tokenizers as hft;
+use tokenizers::{self as hft, Decoder};
 
 pub const UNK: &str = "<unk>";
 pub const BOS: &str = "<bos>";
@@ -1298,45 +1298,34 @@ impl Tokenize for HuggingfaceTokenizer {
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        let decode_fn = match self.inner.get_model() {
-            hft::ModelWrapper::BPE(bpe) => {
-                let special = bpe
-                    .get_unk_token()
-                    .clone()
-                    .or_else(|| self.inner.id_to_token(self.pad_token_id()))
-                    .expect("neither unknown nor pad token available");
-                let special_id = self.inner.token_to_id(&special).expect("should not happen");
-                fn is_byte_fallback(token: &str) -> bool {
-                    token.len() == 6 && token.starts_with("<0x") && token.ends_with('>')
-                }
-                move |token: &str, id: &u32| -> Vec<u8> {
-                    if bpe.byte_fallback && is_byte_fallback(token) {
-                        let byte = u8::from_str_radix(&token[3..5], 16)
-                            .expect("failed to convert byte fallback token into bytes");
-                        return vec![byte];
-                    }
-                    let decoded = self
-                        .inner
-                        .decode(&[special_id, *id, special_id], false)
-                        .expect("failed to decode with BPE tokenizer");
-                    decoded[special.len()..decoded.len() - special.len()]
-                        .as_bytes()
-                        .to_vec()
-                }
-            }
-            _ => {
-                return Err(anyhow!(
-                    "get vocab for models other than BPE not implemented"
-                ))
+        let decode_fn = |token: String, _: u32| -> anyhow::Result<Vec<u8>> {
+            if let Some(dec) = self.inner.get_decoder() {
+                dec.decode(vec![token])
+                    .map(|s| s.as_bytes().to_vec())
+                    .map_err(|e| anyhow!("{e}"))
+            } else {
+                // used in many hf tokenizers, use this as fallback
+                // in case the decoder is not available
+                Ok(token.replace(['Ġ', '▁'], " ").as_bytes().to_vec())
             }
         };
-        Ok(self
-            .inner
+        let is_byte_fallback = |token: &str| -> bool {
+            token.len() == 6 && token.starts_with("<0x") && token.ends_with('>')
+        };
+        self.inner
             .get_vocab(true)
             .into_iter()
             .sorted_by_key(|(_, id)| *id)
-            .map(|(k, v)| decode_fn(&k, &v))
-            .collect())
+            .map(|(k, v)| match self.inner.get_model() {
+                hft::ModelWrapper::BPE(bpe) => {
+                    if bpe.byte_fallback && is_byte_fallback(&k) {
+                        return Ok(u8::from_str_radix(&k[3..5], 16).map(|b| vec![b])?);
+                    }
+                    decode_fn(k, v)
+                }
+                _ => decode_fn(k, v),
+            })
+            .collect()
     }
 }
 

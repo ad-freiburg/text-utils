@@ -702,14 +702,18 @@ pub trait BaseTokenize: Send + Sync + 'static {
     fn suffix_token_ids(&self) -> &[u32];
 
     fn pad_token_id(&self) -> u32;
-
-    fn special_token_to_id(&self, token: &str) -> Option<u32>;
 }
 
 pub trait Tokenize: BaseTokenize {
     fn vocab_size(&self) -> usize;
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>>;
+
+    fn get_continuations(&self, initial: bool) -> anyhow::Result<Vec<Vec<u8>>>;
+
+    fn token_to_id(&self, token: &str) -> Option<u32>;
+
+    fn id_to_token(&self, id: u32) -> Option<Vec<u8>>;
 
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization>;
 
@@ -790,10 +794,6 @@ where
 
     fn pad_token_id(&self) -> u32 {
         self.pad_token_id
-    }
-
-    fn special_token_to_id(&self, token: &str) -> Option<u32> {
-        self.special_vocab.token_to_id(token)
     }
 }
 
@@ -1038,10 +1038,25 @@ pub trait ToBytes {
     fn to_bytes(&self) -> Vec<u8>;
 }
 
+pub trait FromBytes: Sized {
+    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self>;
+}
+
 impl ToBytes for char {
     fn to_bytes(&self) -> Vec<u8> {
         let mut buf = [0; 4];
         self.encode_utf8(&mut buf).as_bytes().to_vec()
+    }
+}
+
+impl FromBytes for char {
+    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        let s = String::from_utf8(bytes.to_vec())?;
+        let chars: Vec<_> = s.chars().collect();
+        if chars.len() != 1 {
+            return Err(anyhow!("expected a single char, but got {}", chars.len()));
+        }
+        Ok(chars[0])
     }
 }
 
@@ -1051,20 +1066,65 @@ impl ToBytes for String {
     }
 }
 
+impl FromBytes for String {
+    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        Ok(String::from_utf8(bytes.to_vec())?)
+    }
+}
+
 impl ToBytes for Vec<u8> {
     fn to_bytes(&self) -> Vec<u8> {
         self.clone()
     }
 }
 
+impl FromBytes for Vec<u8> {
+    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        Ok(bytes.to_vec())
+    }
+}
+
 impl<Token, Config> Tokenize for VocabTokenizer<Token, Config>
 where
-    Token: PartialEq + Eq + Hash + Send + Sync + Clone + ToBytes + 'static,
+    Token: PartialEq + Eq + Hash + Send + Sync + Clone + FromBytes + ToBytes + 'static,
     Config: Send + Sync + 'static,
     Self: VocabTokenize<Token>,
 {
     fn vocab_size(&self) -> usize {
         self.state.1.size() + self.special_vocab.size()
+    }
+
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
+        let mut vocab = BTreeMap::new();
+        for (token, &id) in &self.state.1.vocab {
+            assert!(vocab.insert(id, token.to_bytes()).is_none());
+        }
+        for (special, &id) in &self.special_vocab.vocab {
+            assert!(vocab.insert(id, special.to_bytes()).is_none());
+        }
+        Ok(vocab.into_values().collect())
+    }
+
+    fn get_continuations(&self, _: bool) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.get_vocab()
+    }
+
+    fn token_to_id(&self, token: &str) -> Option<u32> {
+        if let Some(id) = self.special_vocab.token_to_id(token) {
+            Some(id)
+        } else {
+            let token = Token::from_bytes(token.as_bytes()).ok()?;
+            self.state.1.token_to_id(&token)
+        }
+    }
+
+    fn id_to_token(&self, id: u32) -> Option<Vec<u8>> {
+        if let Some(token) = self.special_vocab.id_to_token(&id) {
+            Some(token.to_bytes())
+        } else {
+            let token = self.state.1.id_to_token(&id)?;
+            Some(token.to_bytes())
+        }
     }
 
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
@@ -1118,17 +1178,6 @@ where
         }
         Ok(self.join_parts(&parts))
     }
-
-    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        let mut vocab = BTreeMap::new();
-        for (token, &id) in &self.state.1.vocab {
-            assert!(vocab.insert(id, token.to_bytes()).is_none());
-        }
-        for (special, &id) in &self.special_vocab.vocab {
-            assert!(vocab.insert(id, special.to_bytes()).is_none());
-        }
-        Ok(vocab.into_values().collect())
-    }
 }
 
 /// Dummy tokenizer that just waits a specified time in its tokenize function.
@@ -1146,6 +1195,22 @@ impl Tokenize for DummyTokenizer {
         0
     }
 
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
+        Err(anyhow!("dummy tokenizer does not have a vocab"))
+    }
+
+    fn get_continuations(&self, _: bool) -> anyhow::Result<Vec<Vec<u8>>> {
+        Err(anyhow!("dummy tokenizer does not have continuations"))
+    }
+
+    fn token_to_id(&self, _: &str) -> Option<u32> {
+        None
+    }
+
+    fn id_to_token(&self, _: u32) -> Option<Vec<u8>> {
+        None
+    }
+
     fn tokenize(&self, _: &str, _: bool) -> anyhow::Result<Tokenization> {
         sleep(self.config);
         Ok(Tokenization::new(vec![], TokenizationInfo::Empty))
@@ -1153,10 +1218,6 @@ impl Tokenize for DummyTokenizer {
 
     fn de_tokenize(&self, _: &[u32], _: bool) -> anyhow::Result<String> {
         Ok(String::default())
-    }
-
-    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        Ok(vec![])
     }
 }
 
@@ -1253,10 +1314,6 @@ impl BaseTokenize for HuggingfaceTokenizer {
         self.pad_token_id
     }
 
-    fn special_token_to_id(&self, token: &str) -> Option<u32> {
-        self.inner.token_to_id(token)
-    }
-
     fn normalize(&self, s: &str) -> String {
         if let Some(normalizer) = self.inner.get_normalizer() {
             let mut normalized = NormalizedString::from(s);
@@ -1265,14 +1322,73 @@ impl BaseTokenize for HuggingfaceTokenizer {
                 .expect("huggingface tokenizer failed during normalization");
             normalized.get().to_string()
         } else {
-            unicode::normalize(s, Normalization::NFKC, true)
+            s.to_string()
         }
     }
 }
 
-impl Tokenize for HuggingfaceTokenizer {
+impl Tokenize for HuggingfaceTokenizer
+where
+    Self: BaseTokenize,
+{
     fn vocab_size(&self) -> usize {
         self.inner.get_vocab_size(true)
+    }
+
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .inner
+            .get_vocab(true)
+            .into_iter()
+            .sorted_by_key(|(_, id)| *id)
+            .map(|(k, _)| k.into_bytes())
+            .collect())
+    }
+
+    fn get_continuations(&self, initial: bool) -> anyhow::Result<Vec<Vec<u8>>> {
+        let pad_token = self
+            .id_to_token(self.pad_token_id())
+            .ok_or_else(|| {
+                anyhow!(
+                    "pad token id {} not found in huggingface tokenizer",
+                    self.pad_token_id()
+                )
+            })
+            .and_then(|t| Ok(String::from_utf8(t)?))?;
+        let decode_fn = |token: String| -> anyhow::Result<Vec<u8>> {
+            if let Some(dec) = self.inner.get_decoder() {
+                if initial {
+                    dec.decode(vec![token])
+                        .map(|s| s.into_bytes())
+                        .map_err(|e| anyhow!("{e}"))
+                } else {
+                    dec.decode(vec![pad_token.clone(), token, pad_token.clone()])
+                        .map(|s| {
+                            let mut bytes = s.into_bytes();
+                            bytes.truncate(bytes.len() - pad_token.len());
+                            // split off padding bytes
+                            bytes.split_off(pad_token.len())
+                        })
+                        .map_err(|e| anyhow!("{e}"))
+                }
+            } else {
+                Ok(token.into_bytes())
+            }
+        };
+        self.inner
+            .get_vocab(true)
+            .into_iter()
+            .sorted_by_key(|(_, id)| *id)
+            .map(|(k, _)| decode_fn(k))
+            .collect()
+    }
+
+    fn token_to_id(&self, token: &str) -> Option<u32> {
+        self.inner.token_to_id(token)
+    }
+
+    fn id_to_token(&self, id: u32) -> Option<Vec<u8>> {
+        self.inner.id_to_token(id).map(|s| s.into_bytes())
     }
 
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
@@ -1295,37 +1411,6 @@ impl Tokenize for HuggingfaceTokenizer {
             .map_err(|e| {
                 anyhow!("error decoding token ids {token_ids:?} with huggingface tokenizer: {e}",)
             })
-    }
-
-    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        let decode_fn = |token: String, _: u32| -> anyhow::Result<Vec<u8>> {
-            if let Some(dec) = self.inner.get_decoder() {
-                dec.decode(vec![token])
-                    .map(|s| s.as_bytes().to_vec())
-                    .map_err(|e| anyhow!("{e}"))
-            } else {
-                // used in many hf tokenizers, use this as fallback
-                // in case the decoder is not available
-                Ok(token.replace(['Ġ', '▁'], " ").as_bytes().to_vec())
-            }
-        };
-        let is_byte_fallback = |token: &str| -> bool {
-            token.len() == 6 && token.starts_with("<0x") && token.ends_with('>')
-        };
-        self.inner
-            .get_vocab(true)
-            .into_iter()
-            .sorted_by_key(|(_, id)| *id)
-            .map(|(k, v)| match self.inner.get_model() {
-                hft::ModelWrapper::BPE(bpe) => {
-                    if bpe.byte_fallback && is_byte_fallback(&k) {
-                        return Ok(u8::from_str_radix(&k[3..5], 16).map(|b| vec![b])?);
-                    }
-                    decode_fn(k, v)
-                }
-                _ => decode_fn(k, v),
-            })
-            .collect()
     }
 }
 
@@ -1547,6 +1632,45 @@ impl Tokenize for BPETokenizer {
         self.state.1.len() + self.special_vocab.size()
     }
 
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
+        let mut vocab: BTreeMap<_, _> = (0..256).map(|b| (b as u32, vec![b as u8])).collect();
+        for (merge, id) in &self.state.0 {
+            assert!(vocab.insert(256 + id, merge.clone()).is_none());
+        }
+        for (special, &id) in &self.special_vocab.vocab {
+            assert!(vocab.insert(id, special.to_bytes()).is_none());
+        }
+        Ok(vocab.into_values().collect())
+    }
+
+    fn get_continuations(&self, _: bool) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.get_vocab()
+    }
+
+    fn token_to_id(&self, token: &str) -> Option<u32> {
+        if let Some(id) = self.special_vocab.token_to_id(token) {
+            Some(id)
+        } else {
+            let bytes = token.as_bytes();
+            if bytes.len() == 1 {
+                Some(bytes[0] as u32)
+            } else {
+                let merge_id = self.state.0.get(bytes)?;
+                Some(256 + *merge_id)
+            }
+        }
+    }
+
+    fn id_to_token(&self, id: u32) -> Option<Vec<u8>> {
+        if id < 256 {
+            Some(vec![id as u8])
+        } else if id < 256 + u32::try_from(self.state.1.len()).ok()? {
+            Some(self.state.1[usize::try_from(id - 256).ok()?].clone())
+        } else {
+            self.special_vocab.id_to_token(&id).map(|s| s.to_bytes())
+        }
+    }
+
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
         let inputs = self.split_input(s, ignore_special_tokens);
         let mut token_ids = vec![];
@@ -1586,17 +1710,6 @@ impl Tokenize for BPETokenizer {
             }
         }
         Ok(String::from_utf8(bytes)?)
-    }
-
-    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        let mut vocab: BTreeMap<_, _> = (0..256).map(|b| (b as u32, vec![b as u8])).collect();
-        for (merge, id) in &self.state.0 {
-            assert!(vocab.insert(256 + id, merge.clone()).is_none());
-        }
-        for (special, &id) in &self.special_vocab.vocab {
-            assert!(vocab.insert(id, special.to_bytes()).is_none());
-        }
-        Ok(vocab.into_values().collect())
     }
 }
 
@@ -2050,6 +2163,35 @@ impl Tokenize for ByteTokenizer {
         256 + self.special_vocab.size()
     }
 
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
+        let mut vocab: BTreeMap<_, _> = (0..=u8::MAX).map(|b| (u32::from(b), vec![b])).collect();
+        for (special, &id) in &self.special_vocab.vocab {
+            vocab.insert(id, special.to_bytes());
+        }
+        Ok(vocab.into_values().collect())
+    }
+
+    fn get_continuations(&self, _: bool) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.get_vocab()
+    }
+
+    fn token_to_id(&self, token: &str) -> Option<u32> {
+        match token.as_bytes() {
+            [b] => Some(u32::from(*b)),
+            _ => self.special_vocab.token_to_id(token),
+        }
+    }
+
+    fn id_to_token(&self, id: u32) -> Option<Vec<u8>> {
+        if id < 256 {
+            Some(vec![id as u8])
+        } else {
+            self.special_vocab
+                .id_to_token(&id)
+                .map(|s| s.as_bytes().to_vec())
+        }
+    }
+
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
         let (bytes, info) = self.process_input(s, ignore_special_tokens);
         Ok(Tokenization::new(self.add_prefix_and_suffix(bytes), info))
@@ -2074,14 +2216,6 @@ impl Tokenize for ByteTokenizer {
             }
         }
         Ok(String::from_utf8(bytes)?)
-    }
-
-    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        let mut vocab: BTreeMap<_, _> = (0..=u8::MAX).map(|b| (u32::from(b), vec![b])).collect();
-        for (special, &id) in &self.special_vocab.vocab {
-            vocab.insert(id, special.to_bytes());
-        }
-        Ok(vocab.into_values().collect())
     }
 }
 
@@ -2117,10 +2251,6 @@ impl BaseTokenize for ByT5Tokenizer {
         self.inner.suffix_token_ids()
     }
 
-    fn special_token_to_id(&self, token: &str) -> Option<u32> {
-        self.inner.special_token_to_id(token)
-    }
-
     fn pad_token_id(&self) -> u32 {
         self.inner.pad_token_id()
     }
@@ -2129,6 +2259,22 @@ impl BaseTokenize for ByT5Tokenizer {
 impl Tokenize for ByT5Tokenizer {
     fn vocab_size(&self) -> usize {
         self.inner.vocab_size()
+    }
+
+    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.inner.get_vocab()
+    }
+
+    fn get_continuations(&self, initial: bool) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.inner.get_continuations(initial)
+    }
+
+    fn token_to_id(&self, token: &str) -> Option<u32> {
+        self.inner.token_to_id(token)
+    }
+
+    fn id_to_token(&self, id: u32) -> Option<Vec<u8>> {
+        self.inner.id_to_token(id)
     }
 
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
@@ -2155,10 +2301,6 @@ impl Tokenize for ByT5Tokenizer {
         ignore_special_tokens: bool,
     ) -> anyhow::Result<String> {
         self.inner.de_tokenize(token_ids, ignore_special_tokens)
-    }
-
-    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        self.inner.get_vocab()
     }
 }
 
@@ -2208,8 +2350,12 @@ impl PyTokenizer {
         }
     }
 
-    fn special_token_to_id(&self, token: &str) -> Option<u32> {
-        self.tokenizer.special_token_to_id(token)
+    fn token_to_id(&self, token: &str) -> Option<u32> {
+        self.tokenizer.token_to_id(token)
+    }
+
+    fn id_to_token(&self, id: u32) -> Option<Vec<u8>> {
+        self.tokenizer.id_to_token(id)
     }
 
     fn normalize(&self, s: &str) -> String {
@@ -2244,6 +2390,10 @@ impl PyTokenizer {
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
         self.tokenizer.get_vocab()
+    }
+
+    fn get_continuations(&self, initial: bool) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.tokenizer.get_continuations(initial)
     }
 }
 

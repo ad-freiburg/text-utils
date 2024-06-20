@@ -23,8 +23,9 @@ pub enum TrainTaskConfig {
     ConstrainedGeneration(
         bool,
         TokenizerConfig,
-        Option<String>,
         TokenizationConstraintConfig,
+        Option<String>,
+        Option<String>,
     ),
     // conditional generation aka text-to-text
     ConditionalGeneration(TokenizerConfig, TokenizerConfig),
@@ -97,11 +98,16 @@ impl<'a> FromPyObject<'a> for TrainTaskConfig {
                     .get_item("separator")?
                     .map(|item| item.extract())
                     .transpose()?;
+                let suffix = d
+                    .get_item("suffix")?
+                    .map(|item| item.extract())
+                    .transpose()?;
                 TrainTaskConfig::ConstrainedGeneration(
                     mask_input,
                     tokenizer_config.extract()?,
-                    separator,
                     constraint_config.extract()?,
+                    separator,
+                    suffix,
                 )
             }
             "conditional_generation" => {
@@ -155,34 +161,49 @@ fn whitespace_correction_input(use_graphemes: bool, tokenizer_cfg: TokenizerConf
 fn generation_input(
     mask_prefix: bool,
     tokenizer_cfg: TokenizerConfig,
-    separator: Option<String>,
     constraint: Option<TokenizationConstraintConfig>,
+    separator: Option<String>,
+    suffix: Option<String>,
 ) -> Box<TaskFn> {
     let tokenizer =
         tokenizer(tokenizer_cfg).expect("failed to create tokenizer for generation input function");
-    let separator = separator.unwrap_or_default();
     let constraint = constraint
         .map(TokenizationConstraint::from_config)
         .transpose()
         .expect("failed to create tokenization constraint for generation input function");
     Box::new(move |item| {
         let mask_len = if mask_prefix {
-            let prefix = format!("{}{}", item.input, separator);
-            tokenizer.tokenize(&prefix, false)?.token_ids.len()
+            let pfx = format!("{}{}", item.input, separator.as_deref().unwrap_or_default());
+            tokenizer.tokenize(&pfx, false)?.token_ids.len()
         } else {
             0
         };
         let mut token_ids = if let Some(constraint) = &constraint {
             let mut token_ids = tokenizer
-                .tokenize(&format!("{}{}", item.input, separator), false)?
+                .tokenize(
+                    &format!("{}{}", item.input, separator.as_deref().unwrap_or_default()),
+                    false,
+                )?
                 .token_ids;
+            if let Err(e) = tokenizer.tokenize_with_constraint(&item.target, false, constraint) {
+                println!("Failed to tokenize with constraint: {e}");
+            };
             let constrained_token_ids = tokenizer
                 .tokenize_with_constraint(&item.target, false, constraint)?
                 .token_ids;
             token_ids.extend(constrained_token_ids);
+            if let Some(suffix) = suffix.as_ref() {
+                token_ids.extend(tokenizer.tokenize(suffix, false)?.token_ids);
+            }
             token_ids
         } else {
-            let joined = format!("{}{}{}", item.input, separator, item.target);
+            let joined = format!(
+                "{}{}{}{}",
+                item.input,
+                separator.as_deref().unwrap_or_default(),
+                item.target,
+                suffix.as_deref().unwrap_or_default()
+            );
             tokenizer.tokenize(&joined, false)?.token_ids
         };
         // for n tokens, 1..n-1 are input, 2..n are labels
@@ -229,14 +250,21 @@ pub fn train_task(task: TrainTaskConfig) -> Box<TaskFn> {
             whitespace_correction_input(use_graphemes, tokenizer)
         }
         TrainTaskConfig::Generation(mask_input, tokenizer_cfg, separator) => {
-            generation_input(mask_input, tokenizer_cfg, separator, None)
+            generation_input(mask_input, tokenizer_cfg, None, separator, None)
         }
         TrainTaskConfig::ConstrainedGeneration(
             mask_input,
             tokenizer_cfg,
-            separator,
             constraint,
-        ) => generation_input(mask_input, tokenizer_cfg, separator, Some(constraint)),
+            separator,
+            suffix,
+        ) => generation_input(
+            mask_input,
+            tokenizer_cfg,
+            Some(constraint),
+            separator,
+            suffix,
+        ),
         TrainTaskConfig::ConditionalGeneration(input_tokenizer, target_tokenizer) => {
             conditional_generation_input(input_tokenizer, target_tokenizer)
         }

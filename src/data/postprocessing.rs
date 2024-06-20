@@ -252,7 +252,7 @@ pub fn postprocessing(
             let Ok(tokenizer) = tokenizer(tokenizer_cfg) else {
                 panic!("failed to create tokenizer for token masking");
             };
-            let Some(mask_token_id) = tokenizer.special_token_to_id(&mask_token) else {
+            let Some(mask_token_id) = tokenizer.token_to_id(&mask_token) else {
                 panic!("mask token {mask_token} not found in tokenizer");
             };
             mask_tokens(

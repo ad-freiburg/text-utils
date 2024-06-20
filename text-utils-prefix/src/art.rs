@@ -786,10 +786,20 @@ impl<V> AdaptiveRadixTrie<V> {
 
         let mut i = 0;
         while let Some(&j) = permutation.get(i) {
-            if node
-                .contains_prefix_iter(continuations[j].iter().filter(|&b| *b > 0).copied(), n)
-                .is_some()
-            {
+            let cont = &continuations[j];
+            if cont.is_empty() {
+                // empty continuations are always a match
+                result.push(j);
+                i += 1;
+                continue;
+            }
+            let mut cont = cont.iter().filter(|&b| *b > 0).copied().peekable();
+            if cont.peek().is_none() {
+                // continuations with only null bytes are never a match
+                i += 1;
+                continue;
+            }
+            if node.contains_prefix_iter(cont, n).is_some() {
                 result.push(j);
             } else {
                 i += skips[i];

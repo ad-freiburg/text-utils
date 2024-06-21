@@ -1393,7 +1393,7 @@ where
                     } else {
                         is_byte_fallback(&k)
                             .map(|b| vec![b])
-                            .ok_or_else(|| anyhow!("token {k} is not a valid byte"))
+                            .ok_or_else(|| decode_fn(k))
                     }
                 }
                 _ => decode_fn(k),

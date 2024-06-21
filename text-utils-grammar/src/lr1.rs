@@ -246,19 +246,19 @@ fn initial_prefix_matches(pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> Matching 
 }
 
 fn prefix_lexer(
-    prefix: &[u8],
+    prefix: impl AsRef<[u8]>,
     pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
 ) -> Result<PrefixLexerOutput, Box<dyn Error>> {
     // initially all pdfas are in the potential prefix matches, the start state
     let prefix_matches = initial_prefix_matches(pdfas);
-    prefix_lexer_with(prefix, pdfas, prefix_matches)
+    prefix_lexer_with(prefix.as_ref(), pdfas, prefix_matches)
 }
 
 fn lexer(
-    text: &str,
+    text: impl AsRef<[u8]>,
     pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
 ) -> Result<(Tokens, Spans), Box<dyn Error>> {
-    let (mut tokens, mut spans, last_matches, last_span) = prefix_lexer(text.as_bytes(), pdfas)?;
+    let (mut tokens, mut spans, last_matches, last_span) = prefix_lexer(text.as_ref(), pdfas)?;
     if let Some(&token) = last_matches.iter().find_map(|&(pidx, state)| {
         let (pdfa, token) = &pdfas[pidx];
         if pdfa.is_eoi_match(state) {
@@ -333,7 +333,7 @@ impl LR1Parse<'_> {
                         );
                     }
                     let mut s = format!("{:indent$}{name}", "");
-                    for child in children {
+                    for child in children.iter().filter(|child| !child.is_empty()) {
                         s.push('\n');
                         s.push_str(&pretty_parse(
                             child,
@@ -397,17 +397,23 @@ impl LR1GrammarParser {
             .collect())
     }
 
-    pub fn parse(
+    #[allow(clippy::type_complexity)]
+    fn parse_tree(
         &self,
-        text: &str,
-        skip_empty: bool,
-        collapse_single: bool,
-    ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
-        let (tokens, spans) = lexer(text, &self.pdfas)?;
+        input: impl AsRef<[u8]>,
+    ) -> Result<
+        (
+            Option<Node<DefaultLexeme<u32>, u32>>,
+            Option<Box<dyn Error>>,
+        ),
+        Box<dyn Error>,
+    > {
+        let text = String::from_utf8_lossy(input.as_ref()).into_owned();
+        let (tokens, spans) = lexer(input, &self.pdfas)?;
         let mut nlc = NewlineCache::new();
-        nlc.feed(text);
+        nlc.feed(&text);
         let lexer = LRNonStreamingLexer::new(
-            text,
+            &text,
             tokens
                 .into_iter()
                 .zip(spans)
@@ -420,57 +426,93 @@ impl LR1GrammarParser {
         let parser: RTParserBuilder<'_, u32, DefaultLexerTypes> =
             RTParserBuilder::new(&self.grammar, &self.table);
         let (tree, errors) = parser.parse_generictree(&lexer);
-        if !errors.is_empty() {
-            return Err(format!(
-                "errors parsing input:\n{}",
-                errors
-                    .iter()
-                    .map(|e| e.pp(&lexer, &|tidx| self.grammar.token_epp(tidx)))
-                    .join("\n")
+        let error = if errors.is_empty() {
+            None
+        } else {
+            Some(
+                format!(
+                    "errors parsing input:\n{}",
+                    errors
+                        .iter()
+                        .map(|e| e.pp(&lexer, &|tidx| self.grammar.token_epp(tidx)))
+                        .join("\n")
+                )
+                .into(),
             )
-            .into());
+        };
+        Ok((tree, error))
+    }
+
+    fn node_to_lr1<'a>(
+        grammar: &'a YaccGrammar,
+        node: &Node<DefaultLexeme<u32>, u32>,
+        skip_empty: bool,
+        collapse_single: bool,
+    ) -> LR1Parse<'a> {
+        match node {
+            Node::Term { lexeme } => {
+                let span = lexeme.span();
+                let tidx = lexeme.tok_id();
+                let tname = grammar.token_name(TIdx(tidx)).unwrap();
+                LR1Parse::Terminal(tname, (span.start(), span.len()))
+            }
+            Node::Nonterm { ridx, nodes } => {
+                let rname = grammar.rule_name_str(*ridx);
+                let nodes: Vec<_> = nodes
+                    .iter()
+                    .filter_map(|node| {
+                        let node = Self::node_to_lr1(grammar, node, skip_empty, collapse_single);
+                        if node.is_empty() && skip_empty {
+                            None
+                        } else {
+                            Some(node)
+                        }
+                    })
+                    .collect();
+                if nodes.is_empty() {
+                    LR1Parse::Empty(rname)
+                } else if nodes.len() == 1 && collapse_single {
+                    nodes.into_iter().next().unwrap()
+                } else {
+                    LR1Parse::NonTerminal(rname, nodes)
+                }
+            }
+        }
+    }
+
+    pub fn prefix_parse(
+        &self,
+        prefix: &[u8],
+        skip_empty: bool,
+        collapse_single: bool,
+    ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
+        let (tree, error) = self.parse_tree(prefix)?;
+        if let Some(tree) = tree {
+            Ok(Self::node_to_lr1(
+                &self.grammar,
+                &tree,
+                skip_empty,
+                collapse_single,
+            ))
+        } else {
+            Err(error.unwrap_or_else(|| "failed to parse input".into()))
+        }
+    }
+
+    pub fn parse(
+        &self,
+        text: &str,
+        skip_empty: bool,
+        collapse_single: bool,
+    ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
+        let (tree, error) = self.parse_tree(text)?;
+        if let Some(error) = error {
+            return Err(error);
         }
         let Some(tree) = tree else {
             return Err("failed to parse input".into());
         };
-        // convert tree to lr1 parse
-        fn node_to_lr1<'a>(
-            grammar: &'a YaccGrammar,
-            node: &Node<DefaultLexeme<u32>, u32>,
-            skip_empty: bool,
-            collapse_single: bool,
-        ) -> LR1Parse<'a> {
-            match node {
-                Node::Term { lexeme } => {
-                    let span = lexeme.span();
-                    let tidx = lexeme.tok_id();
-                    let tname = grammar.token_name(TIdx(tidx)).unwrap();
-                    LR1Parse::Terminal(tname, (span.start(), span.len()))
-                }
-                Node::Nonterm { ridx, nodes } => {
-                    let rname = grammar.rule_name_str(*ridx);
-                    let nodes: Vec<_> = nodes
-                        .iter()
-                        .filter_map(|node| {
-                            let node = node_to_lr1(grammar, node, skip_empty, collapse_single);
-                            if node.is_empty() && skip_empty {
-                                None
-                            } else {
-                                Some(node)
-                            }
-                        })
-                        .collect();
-                    if nodes.is_empty() {
-                        LR1Parse::Empty(rname)
-                    } else if nodes.len() == 1 && collapse_single {
-                        nodes.into_iter().next().unwrap()
-                    } else {
-                        LR1Parse::NonTerminal(rname, nodes)
-                    }
-                }
-            }
-        }
-        Ok(node_to_lr1(
+        Ok(Self::node_to_lr1(
             &self.grammar,
             &tree,
             skip_empty,

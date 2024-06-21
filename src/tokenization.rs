@@ -1355,6 +1355,13 @@ where
                 )
             })
             .and_then(|t| Ok(String::from_utf8(t)?))?;
+        let is_byte_fallback = |token: &str| -> Option<u8> {
+            if token.len() == 6 && token.starts_with("<0x") && token.ends_with('>') {
+                u8::from_str_radix(&token[3..5], 16).ok()
+            } else {
+                None
+            }
+        };
         let decode_fn = |token: String| -> anyhow::Result<Vec<u8>> {
             if let Some(dec) = self.inner.get_decoder() {
                 if initial {
@@ -1379,7 +1386,18 @@ where
             .get_vocab(true)
             .into_iter()
             .sorted_by_key(|(_, id)| *id)
-            .map(|(k, _)| decode_fn(k))
+            .map(|(k, _)| match self.inner.get_model() {
+                hft::ModelWrapper::BPE(bpe) => {
+                    if !bpe.byte_fallback {
+                        decode_fn(k)
+                    } else {
+                        is_byte_fallback(&k)
+                            .map(|b| vec![b])
+                            .ok_or_else(|| anyhow!("token {k} is not a valid byte"))
+                    }
+                }
+                _ => decode_fn(k),
+            })
             .collect()
     }
 

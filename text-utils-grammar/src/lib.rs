@@ -7,6 +7,9 @@ pub mod utils;
 pub use re::RegularExpressionConstraint;
 pub use regex_automata::util::primitives::StateID as RegularExpressionState;
 
+pub use lrlex;
+pub use lrpar;
+
 pub use lr1::{
     ExactLR1GrammarConstraint, LR1GrammarConstraint, LR1GrammarParser, LR1NextState, LR1Parse,
     LR1State,

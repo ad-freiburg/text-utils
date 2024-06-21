@@ -366,21 +366,22 @@ impl LR1Parser {
         Ok(Self { inner })
     }
 
-    #[pyo3(signature = (input, skip_empty = false, collapse_single=false))]
-    fn parse_pretty(
-        &self,
-        input: &str,
+    #[pyo3(signature = (input, skip_empty = false, collapse_single = false))]
+    fn prefix_parse(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        input: &[u8],
         skip_empty: bool,
         collapse_single: bool,
-    ) -> anyhow::Result<String> {
-        let parse = self
+    ) -> anyhow::Result<PyObject> {
+        let parse = slf
             .inner
-            .parse(input, skip_empty, collapse_single)
+            .prefix_parse(input, skip_empty, collapse_single)
             .map_err(|e| anyhow!("failed to parse input: {e}"))?;
-        Ok(parse.pretty(input, skip_empty, collapse_single))
+        Ok(parse_into_py(std::str::from_utf8(input)?, &parse, py)?)
     }
 
-    #[pyo3(signature = (input, skip_empty = false, collapse_single=false))]
+    #[pyo3(signature = (input, skip_empty = false, collapse_single = false))]
     fn parse(
         slf: PyRef<'_, Self>,
         py: Python<'_>,
@@ -402,8 +403,13 @@ impl LR1Parser {
     }
 }
 
-fn parse_into_py(text: &str, parse: &LR1Parse<'_>, py: Python<'_>) -> PyResult<PyObject> {
+fn parse_into_py(
+    text: impl AsRef<[u8]>,
+    parse: &LR1Parse<'_>,
+    py: Python<'_>,
+) -> PyResult<PyObject> {
     let dict = PyDict::new_bound(py);
+    let bytes = text.as_ref();
     match parse {
         LR1Parse::Empty(name) => {
             dict.set_item("name", name)?;
@@ -411,7 +417,7 @@ fn parse_into_py(text: &str, parse: &LR1Parse<'_>, py: Python<'_>) -> PyResult<P
         LR1Parse::Terminal(name, span) => {
             dict.set_item("name", name)?;
             let &(start, len) = span;
-            dict.set_item("value", &text[start..start + len])?;
+            dict.set_item("value", String::from_utf8_lossy(&bytes[start..start + len]))?;
             dict.set_item("byte_span", (start, start + len))?;
         }
         LR1Parse::NonTerminal(name, children) => {
@@ -420,7 +426,7 @@ fn parse_into_py(text: &str, parse: &LR1Parse<'_>, py: Python<'_>) -> PyResult<P
                 py,
                 children
                     .iter()
-                    .map(|c| parse_into_py(text, c, py))
+                    .map(|c| parse_into_py(bytes, c, py))
                     .collect::<PyResult<Vec<_>>>()?,
             );
             dict.set_item("children", children)?;

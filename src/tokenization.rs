@@ -1390,10 +1390,10 @@ where
                 hft::ModelWrapper::BPE(bpe) => {
                     if !bpe.byte_fallback {
                         decode_fn(k)
+                    } else if let Some(b) = is_byte_fallback(&k) {
+                        Ok(vec![b])
                     } else {
-                        is_byte_fallback(&k)
-                            .map(|b| vec![b])
-                            .ok_or_else(|| decode_fn(k))
+                        decode_fn(k)
                     }
                 }
                 _ => decode_fn(k),

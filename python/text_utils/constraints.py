@@ -14,10 +14,9 @@ class Constraint:
     Base class for constraints.
     """
 
-    def get(self) -> tuple[np.ndarray, bool]:
+    def get(self) -> np.ndarray:
         """
-        Returns the current constraint indices and whether we
-        are in a state that matches the constraint.
+        Returns the current constraint indices.
         """
         raise NotImplementedError
 
@@ -38,6 +37,16 @@ class Constraint:
         Returns whether the current state matches the constraint.
         """
         raise NotImplementedError
+
+    def is_invalid(self) -> bool:
+        """
+        Returns whether the current state is invalid.
+        This must be true iff get() returns an empty list of indices in
+        a non-match state.
+        We have a separate function for that because depending on the constraint
+        this can be implemented more efficiently.
+        """
+        return not self.is_match() and len(self.get()) == 0
 
     def clone(self) -> 'Constraint':
         """
@@ -61,8 +70,8 @@ class ContinuationConstraint(Constraint):
         self.indices, self.value = cont_index.get(self.prefix)
         self.cont_index = cont_index
 
-    def get(self) -> tuple[np.ndarray, bool]:
-        return self.indices, self.is_match()
+    def get(self) -> np.ndarray:
+        return self.indices
 
     def reset(self, input: bytes | None = None) -> None:
         self.prefix = input or bytes()

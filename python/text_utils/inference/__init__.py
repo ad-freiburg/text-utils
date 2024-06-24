@@ -13,6 +13,7 @@ from text_utils.inference.utils import (
     StopFn,
     Beam,
     BeamSampleFn,
+    BeamWidthFn,
     BeamCandidateFn,
     BeamStopFn,
     beam_greedy,
@@ -199,7 +200,7 @@ def beam_search(
     device: torch.device,
     normalize_by_length: bool,
     alpha: float,
-    beam_width: int,
+    beam_width: int | BeamWidthFn,
     sample_fn: BeamSampleFn = beam_greedy(),
     candidate_fn: BeamCandidateFn = default_beam_candidate_fn(),
     logit_fns: list[LogitFn] | None = None,
@@ -215,16 +216,24 @@ def beam_search(
 
     beam_queues: list[list[Beam]] = [[] for _ in range(batch_size)]
 
+    beam_widths: list[int] = []
     current_beams: list[list[Beam]] = []
-    initial_lenghts = []
+    initial_lengths = []
     for init in initial:
-        initial_lenghts.append(len(init))
         if isinstance(init, Beam):
-            current_beams.append([init])
-            continue
-        assert initial_lenghts[-1] <= max_length, \
-            "initial token ids or beams cannot be longer than max length"
-        beam = Beam(init, [0.0] * len(init))
+            beam = init
+        else:
+            beam = Beam(init, [0.0] * len(init))
+
+        initial_lengths.append(len(beam))
+        assert initial_lengths[-1] <= max_length, \
+            "initial beam cannot be longer than max length"
+
+        if isinstance(beam_width, int):
+            beam_widths.append(beam_width)
+        else:
+            beam_widths.append(beam_width(beam))
+
         current_beams.append([beam])
 
     stop_mask = [False for _ in range(batch_size)]
@@ -244,20 +253,24 @@ def beam_search(
 
     def get_outputs() -> list[list[Beam]]:
         out_beams = []
-        for idx, (beam_queue, active_beams) in enumerate(zip(beam_queues, current_beams)):
+        for idx, (beam_queue, active_beams, n) in enumerate(zip(
+            beam_queues,
+            current_beams,
+            beam_widths
+        )):
             beam_queue = sorted(
                 beam_queue,
                 key=lambda b: score_fn(b),
                 reverse=True
-            )[:beam_width]
-            if len(beam_queue) < beam_width:
+            )[:n]
+            if len(beam_queue) < n:
                 active_beams = sorted(
                     active_beams,
                     key=lambda b: score_fn(b),
                     reverse=True
                 )
-                beam_queue.extend(active_beams[:beam_width - len(beam_queue)])
-            pfx = 0 if return_full else initial_lenghts[idx]
+                beam_queue.extend(active_beams[:n - len(beam_queue)])
+            pfx = 0 if return_full else initial_lengths[idx]
             out_beams.append([
                 beam.truncate_prefix(pfx)
                 for beam in beam_queue
@@ -326,9 +339,10 @@ def beam_search(
             indices_to_decode,
             torch.split(log_probs, num_beams)
         )):
+            n = beam_widths[idx]
             candidates: list[tuple[Beam, int, float]] = []
             for beam_idx, beam in enumerate(current_beams[idx]):
-                for token_id in sample_fn(log_probs[beam_idx], beam_width).tolist():
+                for token_id in sample_fn(log_probs[beam_idx], n).tolist():
                     candidates.append((
                         beam,
                         token_id,
@@ -343,9 +357,12 @@ def beam_search(
             )):
                 # update candidates
                 candidate = candidate_fn(beam, token_id, log_prob)
+                if candidate is None:
+                    # skip invalid candidates
+                    continue
                 # only consider eos beams if they are in top beam_width beams
                 stop = stop_fn(candidate)
-                if num < beam_width and stop:
+                if num < n and stop:
                     # we record all stop beams, but only stop when the top beam should stop
                     # (because then we are sure there is no better candidate left to decode)
                     beam_queues[idx].append(candidate)
@@ -353,7 +370,7 @@ def beam_search(
                 elif not stop:
                     new_beams.append(candidate)
 
-                if len(new_beams) >= beam_width:
+                if len(new_beams) >= n:
                     break
 
             current_beams[idx] = new_beams

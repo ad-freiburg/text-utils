@@ -79,8 +79,7 @@ impl RegexConstraint {
             .lock()
             .map(|mut inner| {
                 inner.state = state;
-                let indices = self.constraint.get_valid_continuations(&inner.state);
-                inner.indices = indices.into();
+                inner.indices = self.constraint.get_valid_continuations(&inner.state).into();
                 inner.is_match = self.constraint.is_match_state(&inner.state);
             })
             .map_err(|_| anyhow!("error locking inner state"))
@@ -96,15 +95,17 @@ impl RegexConstraint {
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn get(&self, py: Python<'_>) -> anyhow::Result<(PyObject, bool)> {
+    fn get(&self, py: Python<'_>) -> anyhow::Result<PyObject> {
         self.inner
             .lock()
-            .map(|inner| {
-                (
-                    inner.indices.clone().into_pyarray_bound(py).into_py(py),
-                    inner.is_match,
-                )
-            })
+            .map(|inner| inner.indices.clone().into_pyarray_bound(py).into_py(py))
+            .map_err(|_| anyhow!("error locking inner state"))
+    }
+
+    fn is_invalid(&self) -> anyhow::Result<bool> {
+        self.inner
+            .lock()
+            .map(|inner| inner.indices.is_empty() && !inner.is_match)
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
@@ -126,8 +127,7 @@ impl RegexConstraint {
                 .get_next_state(&inner.state, index)
                 .expect("invalid continuation");
             inner.state = next_state;
-            let indices = constraint.get_valid_continuations(&inner.state);
-            inner.indices = indices.into();
+            inner.indices = constraint.get_valid_continuations(&inner.state).into();
             inner.is_match = constraint.is_match_state(&inner.state);
         });
         // wait until spawned thread signals that is has locked
@@ -270,8 +270,7 @@ impl LR1Constraint {
             .lock()
             .map(|mut inner| {
                 inner.state = state;
-                let indices = self.constraint.get_valid_continuations(&inner.state);
-                inner.indices = indices;
+                inner.indices = self.constraint.get_valid_continuations(&inner.state);
                 inner.is_match = self.constraint.is_match_state(&inner.state);
             })
             .map_err(|_| anyhow!("error locking inner state"))
@@ -287,21 +286,26 @@ impl LR1Constraint {
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
-    fn get(&self, py: Python<'_>) -> anyhow::Result<(PyObject, bool)> {
+    fn get(&self, py: Python<'_>) -> anyhow::Result<PyObject> {
         self.inner
             .lock()
             .map(|inner| {
-                let indices =
-                    if inner.is_match && self.constraint.only_skippable_matching(&inner.state) {
-                        // should stop, return empty indices
-                        vec![].into()
-                    } else {
-                        inner.indices.clone()
-                    }
-                    .into_pyarray_bound(py)
-                    .into_py(py);
-                (indices, inner.is_match)
+                if inner.is_match && self.constraint.only_skippable_matching(&inner.state) {
+                    // should stop, return empty indices
+                    vec![].into()
+                } else {
+                    inner.indices.clone()
+                }
+                .into_pyarray_bound(py)
+                .into_py(py)
             })
+            .map_err(|_| anyhow!("error locking inner state"))
+    }
+
+    fn is_invalid(&self) -> anyhow::Result<bool> {
+        self.inner
+            .lock()
+            .map(|inner| inner.indices.is_empty() && !inner.is_match)
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
@@ -322,8 +326,7 @@ impl LR1Constraint {
             inner.state = constraint
                 .get_next_state(&inner.state, index)
                 .expect("invalid continuation");
-            let indices = constraint.get_valid_continuations(&inner.state);
-            inner.indices = indices;
+            inner.indices = constraint.get_valid_continuations(&inner.state);
             inner.is_match = constraint.is_match_state(&inner.state);
         });
         // wait until spawned thread signals that is has locked

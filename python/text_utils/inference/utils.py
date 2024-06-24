@@ -136,7 +136,17 @@ BeamCandidateFn = Callable[
         int,
         float
     ],
-    Beam
+    Beam | None
+]
+
+
+BeamWidthFn = Callable[
+    [
+        # beam to calculate beam width from
+        Beam
+    ],
+    # beam width
+    int
 ]
 
 
@@ -144,30 +154,25 @@ def constraint_logit_fn(
     retrieve_constraint_fn: Callable[[int | Beam], Constraint | None],
     eos_token_id: int
 ) -> LogitFn:
-    import time
-
-    times = []
-
     def _constrain_logits(
         logits: torch.Tensor,
         beams_or_indices:  list[int] | list[Beam]
     ) -> torch.Tensor:
-        nonlocal times
         zeros = torch.full_like(logits, float("-inf"))
 
         for i, beam_or_idx in enumerate(beams_or_indices):
             constraint = retrieve_constraint_fn(beam_or_idx)
 
-            if constraint is None:
+            if constraint is None or constraint.is_invalid():
                 zeros[i] = logits[i]
                 continue
 
-            constrain_to, is_match = constraint.get()
+            constrain_to = constraint.get()
+            if constraint.is_match():
+                zeros[i, eos_token_id] = logits[i, eos_token_id]
+
             constrain_to = torch.from_numpy(constrain_to).to(torch.long)
             zeros[i, constrain_to] = logits[i, constrain_to]
-
-            if len(constrain_to) == 0 or is_match:
-                zeros[i, eos_token_id] = logits[i, eos_token_id]
 
         return zeros
 
@@ -189,8 +194,10 @@ def constraint_sample_fn(
                 continue
 
             constraint = retrieve_constraint_fn(idx)
-            if constraint is not None:
-                constraint.next(token_id)
+            if constraint is None or constraint.is_invalid():
+                continue
+
+            constraint.next(token_id)
 
         return token_ids
 

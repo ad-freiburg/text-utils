@@ -169,9 +169,6 @@ training will resume from latest checkpoint."
                 model.to(self.info.device),
                 static_graph=compile
             )
-            self.grad_scaler = GradScaler(
-                enabled=self.mixed_precision is not None
-            )
         else:
             offload_params = dist_cfg.get("offload", False)
             prefetch = dist_cfg.get("prefetch", True)
@@ -236,10 +233,6 @@ training will resume from latest checkpoint."
                 )
             )
 
-            self.grad_scaler = ShardedGradScaler(
-                enabled=self.mixed_precision is not None
-            )
-
         self.model: DDP | FSDP = torch.compile(
             self.model,
             fullgraph=True,
@@ -260,6 +253,9 @@ training will resume from latest checkpoint."
             "gradient_accumulation",
             1
         ))
+        self.grad_scaler = ShardedGradScaler(
+            enabled=self.mixed_precision == torch.float16,
+        )
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (

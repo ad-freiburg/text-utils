@@ -245,12 +245,12 @@ training will resume from latest checkpoint."
             additional_optimizer_fn=self._additional_optimizer_fn()
         )
 
-        self.clip_grad_norm: float | None = self.cfg["train"].get(
-            "clip_grad_norm",
+        self.clip_gradient_norm: float | None = self.cfg["train"].get(
+            "clip_gradient_norm",
             None
         )
-        self.grad_accumulation = max(1, self.cfg["train"].get(
-            "grad_accumulation",
+        self.gradient_accumulation = max(1, self.cfg["train"].get(
+            "gradient_accumulation",
             1
         ))
 
@@ -1029,7 +1029,7 @@ training will resume from latest checkpoint."
             min_size = sys.maxsize
             max_size = 0
             batches = []
-            for i in range(self.grad_accumulation):
+            for i in range(self.gradient_accumulation):
                 batch = next(train_iter, None)
                 if batch is None:
                     break
@@ -1091,14 +1091,14 @@ training will resume from latest checkpoint."
                 if first_outputs is None:
                     first_outputs = outputs.detach()
 
-            if self.clip_grad_norm is not None:
+            if self.clip_gradient_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)
                 if isinstance(self.model, FSDP):
-                    self.model.clip_grad_norm_(self.clip_grad_norm)
+                    self.model.clip_grad_norm_(self.clip_gradient_norm)
                 else:
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(),
-                        self.clip_grad_norm
+                        self.clip_gradient_norm
                     )
 
             self.grad_scaler.step(self.optimizer)

@@ -7,7 +7,7 @@ use numpy::ndarray::Array1;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rayon::spawn;
+use rayon::spawn_fifo;
 use text_utils_grammar::lr1::TokenAndSpan;
 use text_utils_grammar::{
     Constraint, ExactLR1GrammarConstraint, LR1GrammarConstraint, LR1GrammarParser, LR1Parse,
@@ -19,6 +19,7 @@ struct RegexInner {
     state: RegularExpressionState,
     indices: Array1<usize>,
     is_match: bool,
+    is_invalid: bool,
 }
 
 #[pyclass]
@@ -38,6 +39,7 @@ impl RegexConstraint {
                 state,
                 indices,
                 is_match,
+                is_invalid: false,
             })),
         }
     }
@@ -81,6 +83,7 @@ impl RegexConstraint {
                 inner.state = state;
                 inner.indices = self.constraint.get_valid_continuations(&inner.state).into();
                 inner.is_match = self.constraint.is_match_state(&inner.state);
+                inner.is_invalid = false;
             })
             .map_err(|_| anyhow!("error locking inner state"))
     }
@@ -105,7 +108,7 @@ impl RegexConstraint {
     fn is_invalid(&self) -> anyhow::Result<bool> {
         self.inner
             .lock()
-            .map(|inner| inner.indices.is_empty() && !inner.is_match)
+            .map(|inner| inner.is_invalid || (inner.indices.is_empty() && !inner.is_match))
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
@@ -120,12 +123,13 @@ impl RegexConstraint {
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
         let (tx, rx) = channel();
-        spawn(move || {
+        spawn_fifo(move || {
             let mut inner = inner.lock().expect("error locking inner state");
             tx.send(()).expect("failed to send on channel");
-            let next_state = constraint
-                .get_next_state(&inner.state, index)
-                .expect("invalid continuation");
+            let Some(next_state) = constraint.get_next_state(&inner.state, index) else {
+                inner.is_invalid = true;
+                return;
+            };
             inner.state = next_state;
             inner.indices = constraint.get_valid_continuations(&inner.state).into();
             inner.is_match = constraint.is_match_state(&inner.state);
@@ -147,6 +151,7 @@ struct LR1Inner {
     state: LR1State,
     indices: Array1<usize>,
     is_match: bool,
+    is_invalid: bool,
 }
 
 #[pyclass]
@@ -211,6 +216,7 @@ impl LR1Constraint {
                 state,
                 indices,
                 is_match,
+                is_invalid: false,
             })),
         }
     }
@@ -272,6 +278,7 @@ impl LR1Constraint {
                 inner.state = state;
                 inner.indices = self.constraint.get_valid_continuations(&inner.state);
                 inner.is_match = self.constraint.is_match_state(&inner.state);
+                inner.is_invalid = false;
             })
             .map_err(|_| anyhow!("error locking inner state"))
     }
@@ -305,7 +312,7 @@ impl LR1Constraint {
     fn is_invalid(&self) -> anyhow::Result<bool> {
         self.inner
             .lock()
-            .map(|inner| inner.indices.is_empty() && !inner.is_match)
+            .map(|inner| inner.is_invalid || (inner.indices.is_empty() && !inner.is_match))
             .map_err(|_| anyhow!("error locking inner state"))
     }
 
@@ -320,12 +327,14 @@ impl LR1Constraint {
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
         let (tx, rx) = channel();
-        spawn(move || {
+        spawn_fifo(move || {
             let mut inner = inner.lock().expect("error locking inner state");
             tx.send(()).expect("failed to send on channel");
-            inner.state = constraint
-                .get_next_state(&inner.state, index)
-                .expect("invalid continuation");
+            let Some(next_state) = constraint.get_next_state(&inner.state, index) else {
+                inner.is_invalid = true;
+                return;
+            };
+            inner.state = next_state;
             inner.indices = constraint.get_valid_continuations(&inner.state);
             inner.is_match = constraint.is_match_state(&inner.state);
         });

@@ -63,7 +63,7 @@ class ContinuationConstraint(Constraint):
 
     def __init__(
         self,
-        cont_index: continuations.ContinuationIndex,
+        cont_index: continuations.MmapContinuationIndex,
         prefix: bytes | None = None
     ):
         self.prefix = prefix or bytes()

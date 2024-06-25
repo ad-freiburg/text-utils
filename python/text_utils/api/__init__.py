@@ -5,7 +5,8 @@ from text_utils.api.trainer import Trainer
 from text_utils.api.utils import (
     to,
     byte_progress_bar,
-    sequence_progress_bar,
+    item_progress_bar,
+    progress_bar,
     cpu_info,
     gpu_info,
     device_info,

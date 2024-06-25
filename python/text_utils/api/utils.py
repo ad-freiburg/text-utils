@@ -205,20 +205,17 @@ def num_parameters(module: nn.Module) -> Dict[str, int]:
     return {"trainable": trainable, "fixed": fixed, "total": trainable + fixed}
 
 
-def sequence_progress_bar(desc: str, total: int, disable: bool = False) -> tqdm:
+def item_progress_bar(desc: str, total: int | None = None, disable: bool = False) -> tqdm:
     return tqdm(
         desc=desc,
         total=total,
         disable=disable,
         ascii=True,
         leave=False,
-        unit="Seq",
-        unit_scale=True,
-        unit_divisor=1000
     )
 
 
-def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = False) -> tqdm:
+def byte_progress_bar(desc: str, total: int | None = None, disable: bool = False) -> tqdm:
     return tqdm(
         desc=desc,
         total=total,
@@ -227,5 +224,20 @@ def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = Fa
         leave=False,
         unit="B",
         unit_scale=True,
-        unit_divisor=1000
     )
+
+
+def progress_bar(
+    desc: str,
+    total: int | None = None,
+    progress_unit: str = "it",
+    show_progress: bool = False,
+) -> tqdm:
+    if progress_unit == "it":
+        return item_progress_bar(desc, total, not show_progress)
+    elif progress_unit == "byte":
+        return byte_progress_bar(desc, total, not show_progress)
+    else:
+        raise ValueError(
+            f"unknown progress unit {progress_unit}, must be either 'it' or 'byte'"
+        )

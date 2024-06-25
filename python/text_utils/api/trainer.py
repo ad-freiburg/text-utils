@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple, Any, List, Callable, Union
 
 import torch
 from torch.backends import cuda, cudnn
-from torch import distributed as dist
+from torch import GradScaler, distributed as dist
 from torch import multiprocessing as mp
 from torch import nn
 from torch.optim import lr_scheduler
@@ -169,6 +169,9 @@ training will resume from latest checkpoint."
                 model.to(self.info.device),
                 static_graph=compile
             )
+            self.grad_scaler = GradScaler(
+                enabled=self.mixed_precision is not None
+            )
         else:
             offload_params = dist_cfg.get("offload", False)
             prefetch = dist_cfg.get("prefetch", True)
@@ -231,6 +234,10 @@ training will resume from latest checkpoint."
                     offload_to_cpu=offload_state_dict,
                     rank0_only=offload_state_dict
                 )
+            )
+
+            self.grad_scaler = ShardedGradScaler(
+                enabled=self.mixed_precision is not None
             )
 
         self.model: DDP | FSDP = torch.compile(
@@ -412,10 +419,6 @@ training will resume from latest checkpoint."
                 f"initializing model from checkpoint \"{load_checkpoint}\" "
                 f"(missing keys: {wrong_keys.missing_keys})"
             )
-
-        self.grad_scaler = ShardedGradScaler(
-            enabled=self.mixed_precision is not None
-        )
 
     def _save_checkpoint(
         self,

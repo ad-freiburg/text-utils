@@ -1094,8 +1094,6 @@ training will resume from latest checkpoint."
                     (end_preparation - start_preparation) * 1000
                 )
 
-                print(len(batch), rank_batch_size)
-
                 with torch.autocast(
                     "cuda",
                     dtype=self.mixed_precision,

@@ -327,10 +327,11 @@ training will resume from latest checkpoint."
 
         self.cooldown_scheduler: lr_scheduler.LambdaLR | None = None
 
-        if "lr_scheduler" in self.cfg["train"]:
+        lr_scheduler_cfg = self.cfg["train"].get("lr_scheduler", None)
+        if lr_scheduler_cfg is not None:
             self.step_interval = clamp(
                 self.training_items *
-                self.cfg["train"].get("step_interval", 0.001),
+                lr_scheduler_cfg.pop("step_interval", 0.001),
                 lower,
                 self.training_items
             )
@@ -339,7 +340,7 @@ training will resume from latest checkpoint."
                 self.optimizer,
                 steps,
                 self.info.world_size,
-                self.cfg["train"]["lr_scheduler"],
+                lr_scheduler_cfg,
                 additional_lr_scheduler_fn=self._additional_lr_scheduler_fn()
             )
         else:
@@ -1137,11 +1138,11 @@ training will resume from latest checkpoint."
             self.epoch_step += 1
 
             batch_size.sync()
-            batch_items = batch_size.value
-            self.epoch_items += round(batch_items)
-            self.total_items += round(batch_items)
+            total_batch_size = batch_size.value
+            self.epoch_items += round(total_batch_size)
+            self.total_items += round(total_batch_size)
 
-            mean_loss.add(sum(losses) / len(losses))
+            mean_loss.add(sum(losses))
 
             if self.total_items >= self.step_at:
                 lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
@@ -1157,7 +1158,7 @@ training will resume from latest checkpoint."
                     self.val_loader.set_max_length(max_length)
 
             mean_step_time.add((time.perf_counter() - start_step) * 1000)
-            mean_batch_size.add(batch_items)
+            mean_batch_size.add(total_batch_size)
 
             if self.total_items >= self.log_at:
                 mean_loss.sync()
@@ -1382,8 +1383,13 @@ training will resume from latest checkpoint."
             )[0] / self.cfg["train"]["optimizer"]["lr"]
         else:
             factor = 1.0
-        steps = max(1, min(self.cooldown_items, self.eval_at -
-                           self.total_items) // self.step_interval)
+        steps = max(
+            1,
+            min(
+                self.cooldown_items,
+                self.eval_at - self.total_items
+            ) // self.step_interval
+        )
         self.cooldown_scheduler = lr_scheduler.LambdaLR(
             self.optimizer,
             lambda step: (1 - (min(step, steps) / steps)) * factor

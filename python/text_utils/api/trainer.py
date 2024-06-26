@@ -1036,6 +1036,7 @@ training will resume from latest checkpoint."
             self.info.device,
             output_op="sum"
         )
+        min_num_batches = torch.zeros(1, dtype=torch.long, device=self.info.device)
 
         metrics = []
         for name, cfg in self.cfg["train"].get("metrics", {}).items():
@@ -1075,6 +1076,10 @@ training will resume from latest checkpoint."
                 batches.append(batch)
 
             end_batch = time.perf_counter()
+            min_num_batches[0] = len(batches)
+            dist.all_reduce(min_num_batches, op=dist.ReduceOp.MIN)
+            batches = batches[:min_num_batches.item()]
+            min_num_batches[0] = 0
 
             if len(batches) == 0:
                 self.logger.info(
@@ -1122,6 +1127,8 @@ training will resume from latest checkpoint."
                 losses.append(loss.item())
                 if first_outputs is None:
                     first_outputs = outputs.detach()
+
+                dist.barrier()
 
             if self.clip_gradient_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)

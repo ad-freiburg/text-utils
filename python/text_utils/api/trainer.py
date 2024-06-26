@@ -1183,7 +1183,7 @@ training will resume from latest checkpoint."
                     self.logger.info(
                         f"[step {self.total_step}] "
                         f"train_progress: {progress:.2f}%, "
-                        f"{self.total_items:,} / {self.training_items:,} items on this rank"
+                        f"{self.total_items:,} / {self.training_items:,} items"
                     )
 
                     lr_scheduler = self.cooldown_scheduler or self.lr_scheduler

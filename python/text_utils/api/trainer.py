@@ -291,6 +291,8 @@ training will resume from latest checkpoint."
         lower = self.cfg["train"]["data"]["batch_limit"]
         if self.cfg["train"]["data"]["batch_limit_type"] != "batch_size":
             lower = lower // self.cfg["train"]["data"]["max_length"]
+        lower = lower * self.gradient_accumulation_steps
+
         self.log_interval = clamp(
             self.training_items *
             self.cfg["train"].get("log_interval", 0.001),

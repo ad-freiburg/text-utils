@@ -251,10 +251,22 @@ training will resume from latest checkpoint."
             "clip_gradient_norm",
             None
         )
-        self.gradient_accumulation = max(1, self.cfg["train"].get(
+        gradient_accumulation_cfg = self.cfg["train"].get(
             "gradient_accumulation",
+            {}
+        )
+        self.gradient_accumulation_steps = gradient_accumulation_cfg.get(
+            "steps",
             1
-        ))
+        )
+        self.gradient_accumulation_reduction = gradient_accumulation_cfg.get(
+            "reduction",
+            "mean"
+        )
+        assert self.gradient_accumulation_reduction in {"mean", "sum"}, \
+            "gradient accumulation reduction must be either mean or sum, " \
+            f"but got {self.gradient_accumulation_reduction}"
+
         self.grad_scaler = ShardedGradScaler(
             enabled=self.mixed_precision == torch.float16,
         )
@@ -1041,7 +1053,7 @@ training will resume from latest checkpoint."
             min_size = sys.maxsize
             max_size = 0
             batches = []
-            for i in range(self.gradient_accumulation):
+            for i in range(self.gradient_accumulation_steps):
                 batch = next(train_iter, None)
                 if batch is None:
                     break
@@ -1067,7 +1079,8 @@ training will resume from latest checkpoint."
                 )
                 break
 
-            batch_size.add(sum(len(batch) for batch in batches))
+            rank_batch_size = sum(len(batch) for batch in batches)
+            batch_size.add(rank_batch_size)
             mean_batch_load.add((end_batch - start_batch) * 1000)
             mean_item_size_ratio.add(max_size / max(1, min_size))
 
@@ -1081,6 +1094,8 @@ training will resume from latest checkpoint."
                     (end_preparation - start_preparation) * 1000
                 )
 
+                print(len(batch), rank_batch_size)
+
                 with torch.autocast(
                     "cuda",
                     dtype=self.mixed_precision,
@@ -1091,12 +1106,16 @@ training will resume from latest checkpoint."
                             outputs, loss_dict = self.model(**inputs)
                             loss = self.loss_fn(outputs, labels)
                             loss = loss + sum(loss_dict.values())
+                            if self.gradient_accumulation_reduction == "mean":
+                                loss = loss * len(batch) / rank_batch_size
                             self.grad_scaler.scale(loss).backward()
                     else:
                         # synchronize gradients for the last batch
                         outputs, loss_dict = self.model(**inputs)
                         loss = self.loss_fn(outputs, labels)
-                        loss = loss + sum(loss_dict.values())
+                        loss = (loss + sum(loss_dict.values()))
+                        if self.gradient_accumulation_reduction == "mean":
+                            loss = loss * len(batch) / rank_batch_size
                         self.grad_scaler.scale(loss).backward()
 
                 losses.append(loss.item())

@@ -208,7 +208,7 @@ training will resume from latest checkpoint."
                 auto_wrap_policy=sharding_policy,
                 mixed_precision=MixedPrecision(
                     param_dtype=self.mixed_precision,
-                    reduce_dtype=self.mixed_precision,
+                    reduce_dtype=self.mixed_precision
                 ),
                 cpu_offload=CPUOffload(offload_params=offload_params),
                 limit_all_gathers=True,
@@ -1105,6 +1105,8 @@ training will resume from latest checkpoint."
                     "cuda",
                     dtype=self.mixed_precision,
                     enabled=self.mixed_precision is not None
+                ), torch.autograd.set_detect_anomaly(
+                    os.environ.get("TORCH_SET_DETECT_ANOMALY", "") != ""
                 ):
                     if i < len(batches) - 1:
                         with self.model.no_sync():

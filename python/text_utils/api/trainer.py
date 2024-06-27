@@ -221,17 +221,16 @@ training will resume from latest checkpoint."
             # later, because FSDP handles mixed precision itself
             self.mixed_precision = None
 
-            offload_state_dict = self.info.world_size > 1
             FSDP.set_state_dict_type(
                 self.model,
                 StateDictType.FULL_STATE_DICT,
                 FullStateDictConfig(
-                    offload_to_cpu=offload_state_dict,
-                    rank0_only=offload_state_dict
+                    offload_to_cpu=True,
+                    rank0_only=True
                 ),
                 FullOptimStateDictConfig(
-                    offload_to_cpu=offload_state_dict,
-                    rank0_only=offload_state_dict
+                    offload_to_cpu=True,
+                    rank0_only=True
                 )
             )
 

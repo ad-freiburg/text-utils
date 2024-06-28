@@ -9,9 +9,13 @@ import yaml
 
 def _replace_env(s: str, _: str) -> str:
     env_regex = re.compile(r"env\(([A-Z0-9_]+):?(.*?)\)")
+    matches = list(env_regex.finditer(s))
+    if len(matches) == 0:
+        return s
+
     org_length = len(s)
     length_change = 0
-    for match in env_regex.finditer(s):
+    for match in matches:
         env_var, env_default = match.group(1), match.group(2)
         if env_var not in os.environ:
             if env_default == "":

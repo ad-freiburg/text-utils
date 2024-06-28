@@ -174,7 +174,7 @@ fn generation_input(
     Box::new(move |item| {
         let mask_len = if mask_prefix {
             let pfx = format!("{}{}", item.input, separator.as_deref().unwrap_or_default());
-            tokenizer.tokenize(&pfx, false)?.token_ids.len()
+            tokenizer.tokenize(&pfx, false)?.token_ids.len() - tokenizer.num_suffix_tokens()
         } else {
             0
         };

@@ -167,12 +167,11 @@ def constraint_logit_fn(
                 zeros[i] = logits[i]
                 continue
 
-            constrain_to = constraint.get()
+            indices = torch.from_numpy(constraint.get()).to(torch.long)
+            zeros[i, indices] = logits[i, indices]
+
             if constraint.is_match():
                 zeros[i, eos_token_id] = logits[i, eos_token_id]
-
-            constrain_to = torch.from_numpy(constrain_to).to(torch.long)
-            zeros[i, constrain_to] = logits[i, constrain_to]
 
         return zeros
 

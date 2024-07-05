@@ -263,6 +263,7 @@ def beam_search(
                 key=lambda b: score_fn(b),
                 reverse=True
             )[:n]
+
             if len(beam_queue) < n:
                 active_beams = sorted(
                     active_beams,
@@ -270,11 +271,13 @@ def beam_search(
                     reverse=True
                 )
                 beam_queue.extend(active_beams[:n - len(beam_queue)])
+
             pfx = 0 if return_full else initial_lengths[idx]
             out_beams.append([
                 beam.truncate_prefix(pfx)
                 for beam in beam_queue
             ])
+
         return out_beams
 
     while len(indices_to_decode) > 0:
@@ -373,8 +376,11 @@ def beam_search(
                 if len(new_beams) >= n:
                     break
 
-            current_beams[idx] = new_beams
-            update_info[idx] = (i, len(new_beams))
+            if len(new_beams) == 0:
+                stop_mask[idx] = True
+            else:
+                current_beams[idx] = new_beams
+                update_info[idx] = (i, len(new_beams))
 
         indices_to_decode = get_indices_to_decode()
 

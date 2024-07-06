@@ -741,6 +741,7 @@ pub type InferencePipeline =
 pub fn inference_pipeline(
     window_cfg: WindowConfig,
     tokenizer_cfg: TokenizerConfig,
+    ignore_special_tokens: bool,
 ) -> anyhow::Result<InferencePipeline> {
     let tok = tokenizer(tokenizer_cfg)?;
     Ok(Arc::new(move |(data, info)| {
@@ -748,7 +749,7 @@ pub fn inference_pipeline(
             .iter()
             .enumerate()
             .map(|(w_idx, w)| {
-                let tokenization = tok.tokenize(w.str, false)?;
+                let tokenization = tok.tokenize(w.str, ignore_special_tokens)?;
                 Ok(InferenceItem::new(
                     data.clone(),
                     tokenization,
@@ -774,6 +775,7 @@ impl InferenceLoader {
     pub fn new(
         iter: impl Iterator<Item = anyhow::Result<InferenceData>> + Send + 'static,
         tokenizer: TokenizerConfig,
+        ignore_special_tokens: bool,
         window: WindowConfig,
         num_threads: u8,
         buffer_size: usize,
@@ -782,7 +784,7 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
-        let pipeline = inference_pipeline(window, tokenizer)?;
+        let pipeline = inference_pipeline(window, tokenizer, ignore_special_tokens)?;
         let prefetch_factor = prefetch_factor.max(1);
         let iter_err = Arc::new(Mutex::new(None));
         let iter = iter
@@ -832,6 +834,7 @@ impl InferenceLoader {
         iterator,
         tokenizer,
         window,
+        ignore_special_tokens = false,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
         batch_limit = 16,
@@ -843,6 +846,7 @@ impl InferenceLoader {
         iterator: PyObject,
         tokenizer: TokenizerConfig,
         window: WindowConfig,
+        ignore_special_tokens: bool,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -854,6 +858,7 @@ impl InferenceLoader {
         Self::new(
             data.into_iter(),
             tokenizer,
+            ignore_special_tokens,
             window,
             num_threads,
             buffer_size,

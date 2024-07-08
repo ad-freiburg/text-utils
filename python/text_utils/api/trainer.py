@@ -1039,11 +1039,7 @@ training will resume from latest checkpoint."
             "train_item_size_ratio",
             self.info.device
         )
-        batch_size = tensorboard.DistAverageTracker(
-            "batch_size",
-            self.info.device,
-            output_op="sum"
-        )
+        total_batch_size = torch.zeros(1, dtype=torch.long, device=self.info.device)
         min_num_batches = torch.zeros(1, dtype=torch.long, device=self.info.device)
 
         metrics = []
@@ -1054,6 +1050,24 @@ training will resume from latest checkpoint."
         start_items = self.epoch_items
         self.model = self.model.train()
 
+        def step(
+            batch: data.TrainBatch,
+            rank_batch_size: int,
+            inputs: dict[str, Any],
+            labels: torch.Tensor
+        ) -> tuple[torch.Tensor, float]:
+            outputs, loss_dict = self.model(**inputs)
+            loss = self.loss_fn(outputs, labels)
+            loss = loss + sum(loss_dict.values())
+            if self.gradient_accumulation_reduction == "mean":
+                loss = loss * len(batch) / rank_batch_size
+            if loss.isnan():
+                # nans typically from ce loss with all labels
+                # ignored, not from training issues
+                loss.fill_(0.0)
+            self.grad_scaler.scale(loss).backward()
+            return outputs.detach(), loss.item()
+
         train_iter = iter(self.train_loader)
         while True:
             # reset stuff for training step
@@ -1061,7 +1075,6 @@ training will resume from latest checkpoint."
             self.optimizer.zero_grad(set_to_none=True)
 
             start_batch = time.perf_counter()
-            batch_size.reset()
             min_size = sys.maxsize
             max_size = 0
             batches = []
@@ -1085,9 +1098,8 @@ training will resume from latest checkpoint."
 
             end_batch = time.perf_counter()
             min_num_batches[0] = len(batches)
-            dist.all_reduce(min_num_batches, op=dist.ReduceOp.MIN)
+            dist.all_reduce(min_num_batches, dist.ReduceOp.MIN)
             batches = batches[:min_num_batches.item()]
-            min_num_batches[0] = 0
 
             if len(batches) == 0:
                 self.logger.info(
@@ -1096,24 +1108,9 @@ training will resume from latest checkpoint."
                 break
 
             rank_batch_size = sum(len(batch) for batch in batches)
-            batch_size.add(rank_batch_size)
+            total_batch_size[0] = rank_batch_size
             mean_batch_load.add((end_batch - start_batch) * 1000)
             mean_item_size_ratio.add(max_size / max(1, min_size))
-
-            def step(
-                batch: data.TrainBatch,
-                inputs: dict[str, Any],
-                labels: torch.Tensor
-            ) -> tuple[torch.Tensor, float]:
-                outputs, loss_dict = self.model(**inputs)
-                loss = self.loss_fn(outputs, labels)
-                loss = loss + sum(loss_dict.values())
-                if self.gradient_accumulation_reduction == "mean":
-                    loss = loss * len(batch) / rank_batch_size
-                if loss.isnan():
-                    loss = torch.zeros_like(loss, requires_grad=True)
-                self.grad_scaler.scale(loss).backward()
-                return outputs.detach(), loss.item()
 
             first_outputs = None
             losses = []
@@ -1134,16 +1131,19 @@ training will resume from latest checkpoint."
                 ):
                     if i < len(batches) - 1:
                         with self.model.no_sync():
-                            outputs, loss = step(batch, inputs, labels)
+                            outputs, loss = step(
+                                batch,
+                                rank_batch_size,
+                                inputs,
+                                labels
+                            )
                     else:
                         # synchronize gradients for the last batch
-                        outputs, loss = step(batch, inputs, labels)
+                        outputs, loss = step(batch, rank_batch_size, inputs, labels)
 
                 losses.append(loss)
                 if first_outputs is None:
                     first_outputs = outputs
-
-                dist.barrier()
 
             if self.clip_gradient_norm is not None:
                 self.grad_scaler.unscale_(self.optimizer)
@@ -1161,10 +1161,11 @@ training will resume from latest checkpoint."
             self.total_step += 1
             self.epoch_step += 1
 
-            batch_size.sync()
-            total_batch_size = batch_size.value
-            self.epoch_items += round(total_batch_size)
-            self.total_items += round(total_batch_size)
+            dist.all_reduce(total_batch_size, dist.ReduceOp.SUM)
+            batch_items = total_batch_size.item()
+            self.epoch_items += batch_items
+            self.total_items += batch_items
+            mean_batch_size.add(batch_items)
 
             mean_loss.add(sum(losses))
 
@@ -1182,7 +1183,6 @@ training will resume from latest checkpoint."
                     self.val_loader.set_max_length(max_length)
 
             mean_step_time.add((time.perf_counter() - start_step) * 1000)
-            mean_batch_size.add(total_batch_size)
 
             if self.total_items >= self.log_at:
                 mean_loss.sync()

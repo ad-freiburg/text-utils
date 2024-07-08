@@ -1100,6 +1100,21 @@ training will resume from latest checkpoint."
             mean_batch_load.add((end_batch - start_batch) * 1000)
             mean_item_size_ratio.add(max_size / max(1, min_size))
 
+            def step(
+                batch: data.TrainBatch,
+                inputs: dict[str, Any],
+                labels: torch.Tensor
+            ) -> tuple[torch.Tensor, float]:
+                outputs, loss_dict = self.model(**inputs)
+                loss = self.loss_fn(outputs, labels)
+                loss = loss + sum(loss_dict.values())
+                if self.gradient_accumulation_reduction == "mean":
+                    loss = loss * len(batch) / rank_batch_size
+                if loss.isnan():
+                    loss = torch.zeros_like(loss, requires_grad=True)
+                self.grad_scaler.scale(loss).backward()
+                return outputs.detach(), loss.item()
+
             first_outputs = None
             losses = []
             for i, batch in enumerate(batches):
@@ -1119,24 +1134,14 @@ training will resume from latest checkpoint."
                 ):
                     if i < len(batches) - 1:
                         with self.model.no_sync():
-                            outputs, loss_dict = self.model(**inputs)
-                            loss = self.loss_fn(outputs, labels)
-                            loss = loss + sum(loss_dict.values())
-                            if self.gradient_accumulation_reduction == "mean":
-                                loss = loss * len(batch) / rank_batch_size
-                            self.grad_scaler.scale(loss).backward()
+                            outputs, loss = step(batch, inputs, labels)
                     else:
                         # synchronize gradients for the last batch
-                        outputs, loss_dict = self.model(**inputs)
-                        loss = self.loss_fn(outputs, labels)
-                        loss = loss + sum(loss_dict.values())
-                        if self.gradient_accumulation_reduction == "mean":
-                            loss = loss * len(batch) / rank_batch_size
-                        self.grad_scaler.scale(loss).backward()
+                        outputs, loss = step(batch, inputs, labels)
 
-                losses.append(loss.item())
+                losses.append(loss)
                 if first_outputs is None:
-                    first_outputs = outputs.detach()
+                    first_outputs = outputs
 
                 dist.barrier()
 
@@ -1374,6 +1379,8 @@ training will resume from latest checkpoint."
                     loss = self.loss_fn(outputs, labels)
 
                 loss = loss + sum(loss_dict.values())
+                if loss.isnan():
+                    loss = torch.zeros_like(loss)
                 if self.gradient_accumulation_reduction == "mean":
                     loss = loss * len(batch) / rank_batch_size
 

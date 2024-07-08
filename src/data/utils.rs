@@ -1,10 +1,13 @@
-use std::ops::Sub;
+use std::{collections::HashMap, ops::Sub};
 
+use anyhow::anyhow;
 use itertools::Itertools;
+use pyo3::{prelude::*, types::PyDict};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use serde::{Deserialize, Serialize};
 
-use crate::utils::accumulate;
+use crate::utils::{accumulate, py_required_key_error};
 
 use super::TextDataInfo;
 
@@ -100,4 +103,87 @@ pub fn on_mark<I: 'static>(
             _ => Ok((input, info)),
         }
     })
+}
+
+pub type Chat = Vec<ChatMessage>;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ChatMessage {
+    pub text: String,
+    pub role: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatTemplate {
+    pub start: Option<String>,
+    pub roles: HashMap<String, String>,
+    pub end: Option<String>,
+}
+
+impl ChatTemplate {
+    pub fn apply(&self, chat: &[ChatMessage]) -> anyhow::Result<String> {
+        let mut text = String::new();
+        if let Some(start) = &self.start {
+            text.push_str(start);
+        }
+        for msg in chat {
+            let role_template = self
+                .roles
+                .get(&msg.role)
+                .ok_or_else(|| anyhow!("role {} not found in template", &msg.role))?;
+            let formatted = role_template.replace("{text}", &msg.text);
+            text.push_str(&formatted);
+        }
+        if let Some(end) = &self.end {
+            text.push_str(end);
+        }
+        Ok(text)
+    }
+}
+
+impl<'a> FromPyObject<'a> for ChatTemplate {
+    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+        let d: &PyDict = ob.extract()?;
+
+        let Some(roles) = d.get_item("roles")? else {
+            return Err(py_required_key_error("roles", "chat template"));
+        };
+
+        Ok(ChatTemplate {
+            start: d.get_item("start")?.map(|s| s.extract()).transpose()?,
+            roles: roles.extract()?,
+            end: d.get_item("end")?.map(|s| s.extract()).transpose()?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::data::utils::{ChatMessage, ChatTemplate};
+
+    #[test]
+    fn test_chat_template() {
+        let template = ChatTemplate {
+            start: Some("<start>".to_string()),
+            roles: vec![("user", "User: {text}\n"), ("bot", "Bot: {text}")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            end: Some("<end>".to_string()),
+        };
+        let chat = vec![
+            ChatMessage {
+                text: "Hello".to_string(),
+                role: "user".to_string(),
+            },
+            ChatMessage {
+                text: "Hi".to_string(),
+                role: "bot".to_string(),
+            },
+        ];
+        assert_eq!(
+            template.apply(&chat).unwrap(),
+            "<start>User: Hello\nBot: Hi<end>"
+        );
+    }
 }

@@ -21,7 +21,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 
-use super::utils::{chain, switch};
+use super::utils::{chain, switch, Chat, ChatTemplate};
 
 pub type PreprocessingFn = dyn Send
     + Sync
@@ -77,8 +77,10 @@ pub enum PreprocessingFnConfig {
     Prefix(Part, String),
     // add suffix to input sequence
     Suffix(Part, String),
-    // decode from json
+    // decode from json string
     JsonDecode(Part),
+    // decode from json chat
+    ChatDecode(Part, Option<String>, Option<ChatTemplate>),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
@@ -264,6 +266,14 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                     return Err(py_required_key_error("part", "json decode config"));
                 };
                 PreprocessingFnConfig::JsonDecode(part.extract()?)
+            }
+            "chat_decode" => {
+                let Some(part) = d.get_item("part")? else {
+                    return Err(py_required_key_error("part", "chat decode config"));
+                };
+                let separator = d.get_item("separator")?.map(|s| s.extract()).transpose()?;
+                let template = d.get_item("template")?.map(|t| t.extract()).transpose()?;
+                PreprocessingFnConfig::ChatDecode(part.extract()?, separator, template)
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing fn"));
@@ -713,14 +723,28 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
         PreprocessingFnConfig::JsonDecode(part) => apply(part, move |s, _| {
             serde_json::from_str(s).map_err(|e| anyhow!("failed to decode string from json: {}", e))
         }),
+        PreprocessingFnConfig::ChatDecode(part, separator, template) => apply(part, move |s, _| {
+            let chat = serde_json::from_str::<Chat>(s)
+                .map_err(|e| anyhow!("failed to decode chat from json: {}", e))?;
+
+            if let Some(template) = &template {
+                let text = template.apply(&chat)?;
+                Ok(text)
+            } else {
+                Ok(chat
+                    .into_iter()
+                    .map(|m| m.text)
+                    .join(separator.as_deref().unwrap_or_default()))
+            }
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::data::TextDataInfo;
+    use crate::data::{utils::ChatTemplate, TextDataInfo, TrainData};
 
-    use super::corrupt_whitespace;
+    use super::{corrupt_whitespace, preprocessing, Part, PreprocessingFnConfig};
 
     #[test]
     fn test_corrupt_whitespace() -> anyhow::Result<()> {
@@ -736,5 +760,39 @@ mod tests {
         let noised = noise_fn(s, &info)?;
         assert_eq!(&noised, "G i n s b e r ǵ s");
         Ok(())
+    }
+
+    #[test]
+    fn test_chat_decode() {
+        let chat = r#"[{"role": "user", "text": "Hello"}, {"role": "bot", "text": "Hi"}]"#;
+        let data = TrainData {
+            input: chat.to_string(),
+            target: "".to_string(),
+        };
+        let chat_fn = preprocessing(PreprocessingFnConfig::ChatDecode(
+            Part::Input,
+            Some("\n".to_string()),
+            None,
+        ));
+        let (data, _) = chat_fn(data, TextDataInfo::default()).unwrap();
+        assert_eq!(data.input, "Hello\nHi");
+        let data = TrainData {
+            input: chat.to_string(),
+            target: "".to_string(),
+        };
+        let chat_fn = preprocessing(PreprocessingFnConfig::ChatDecode(
+            Part::Input,
+            None,
+            Some(ChatTemplate {
+                start: Some("<start>".to_string()),
+                roles: vec![("user", "User: {text}\n"), ("bot", "Bot: {text}")]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                end: Some("<end>".to_string()),
+            }),
+        ));
+        let (data, _) = chat_fn(data, TextDataInfo::default()).unwrap();
+        assert_eq!(data.input, "<start>User: Hello\nBot: Hi<end>");
     }
 }

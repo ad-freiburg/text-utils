@@ -1129,7 +1129,7 @@ training will resume from latest checkpoint."
                         # synchronize gradients for the last batch
                         outputs, loss_dict = self.model(**inputs)
                         loss = self.loss_fn(outputs, labels)
-                        loss = (loss + sum(loss_dict.values()))
+                        loss = loss + sum(loss_dict.values())
                         if self.gradient_accumulation_reduction == "mean":
                             loss = loss * len(batch) / rank_batch_size
                         self.grad_scaler.scale(loss).backward()
@@ -1335,29 +1335,65 @@ training will resume from latest checkpoint."
             metrics.append(metric)
 
         start = time.perf_counter()
-        for batch_num, batch in enumerate(self.val_loader):
-            inputs, labels = self._prepare_batch(batch)
-
-            with torch.autocast(
-                "cuda",
-                dtype=self.mixed_precision,
-                enabled=self.mixed_precision is not None
-            ), torch.no_grad():
-                outputs, loss_dict = self.model(**inputs)
-                loss = self.loss_fn(outputs, labels)
-                loss = loss + sum(loss_dict.values())
-
-            mean_loss.add(loss.item())
-
-            if batch_num == 0 and self.info.is_main_process:
-                items = batch.items()
-                for metric in metrics:
-                    metric.set_values(items, outputs)
-                    metric.log_tensorboard(
-                        self.summary_writer,
-                        self.total_step
+        val_iter = iter(self.val_loader)
+        min_num_batches = torch.zeros(1, dtype=torch.long, device=self.info.device)
+        logged = False
+        while True:
+            batches = []
+            for _ in range(self.gradient_accumulation_steps):
+                batch = next(val_iter, None)
+                if batch is None:
+                    break
+                elif len(batch) == 0:  # type: ignore
+                    raise RuntimeError(
+                        "got empty batch, this should not happen during evaluation"
                     )
-                    metric.log_info(self.logger, self.total_step)
+
+                batches.append(batch)
+
+            min_num_batches[0] = len(batches)
+            dist.all_reduce(min_num_batches, op=dist.ReduceOp.MIN)
+            batches = batches[:min_num_batches.item()]
+            min_num_batches[0] = 0
+
+            if len(batches) == 0:
+                break
+
+            rank_batch_size = sum(len(batch) for batch in batches)
+            all_outputs = []
+            losses = []
+            for batch in batches:
+                inputs, labels = self._prepare_batch(batch)
+
+                with torch.autocast(
+                    "cuda",
+                    dtype=self.mixed_precision,
+                    enabled=self.mixed_precision is not None
+                ), torch.no_grad():
+                    outputs, loss_dict = self.model(**inputs)
+                    loss = self.loss_fn(outputs, labels)
+
+                loss = loss + sum(loss_dict.values())
+                if self.gradient_accumulation_reduction == "mean":
+                    loss = loss * len(batch) / rank_batch_size
+
+                losses.append(loss.item())
+                dist.barrier()
+                if not logged:
+                    all_outputs.append((batch.items(), outputs))
+
+            mean_loss.add(sum(losses))
+
+            if self.info.is_main_process:
+                for items, outputs in all_outputs:
+                    for metric in metrics:
+                        metric.set_values(items, outputs)
+                        metric.log_tensorboard(
+                            self.summary_writer,
+                            self.total_step
+                        )
+                        metric.log_info(self.logger, self.total_step)
+                logged = True
 
         end = time.perf_counter()
         mean_loss.sync()

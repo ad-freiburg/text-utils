@@ -272,7 +272,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                     return Err(py_required_key_error("part", "chat decode config"));
                 };
                 let separator = d.get_item("separator")?.map(|s| s.extract()).transpose()?;
-                let template = d.get_item("template")?.map(|t| t.extract()).transpose()?;
+                let template = d
+                    .get_item("chat_template")?
+                    .map(|t| t.extract())
+                    .transpose()?;
                 PreprocessingFnConfig::ChatDecode(part.extract()?, separator, template)
             }
             k => {
@@ -728,8 +731,7 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
                 .map_err(|e| anyhow!("failed to decode chat from json: {}", e))?;
 
             if let Some(template) = &template {
-                let text = template.apply(&chat)?;
-                Ok(text)
+                template.format(&chat)
             } else {
                 Ok(chat
                     .into_iter()

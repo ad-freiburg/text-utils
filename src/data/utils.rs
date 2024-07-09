@@ -121,7 +121,7 @@ pub struct ChatTemplate {
 }
 
 impl ChatTemplate {
-    pub fn apply(&self, chat: &[ChatMessage]) -> anyhow::Result<String> {
+    pub fn format(&self, chat: &[ChatMessage]) -> anyhow::Result<String> {
         let mut text = String::new();
         if let Some(start) = &self.start {
             text.push_str(start);
@@ -182,7 +182,7 @@ mod test {
             },
         ];
         assert_eq!(
-            template.apply(&chat).unwrap(),
+            template.format(&chat).unwrap(),
             "<start>User: Hello\nBot: Hi<end>"
         );
     }

@@ -1044,8 +1044,8 @@ training will resume from latest checkpoint."
             1, dtype=torch.long, device=self.info.device)
 
         metrics = []
-        for name, cfg in self.cfg["train"].get("metrics", {}).items():
-            metric = self._metric_from_config(name, cfg, "train")
+        for metric_cfg in self.cfg["train"].get("metrics", []):
+            metric = self._metric_from_config(metric_cfg, "train")
             metrics.append(metric)
 
         start_items = self.epoch_items
@@ -1333,10 +1333,9 @@ training will resume from latest checkpoint."
         self.loss_fn = self.loss_fn.eval()
 
         metrics = []
-        for name, cfg in self.cfg["val"].get("metrics", {}).items():
+        for metric_cfg in self.cfg["val"].get("metrics", []):
             metric = self._metric_from_config(
-                name,
-                cfg,
+                metric_cfg,
                 "val"
             )
             metrics.append(metric)

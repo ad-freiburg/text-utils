@@ -1,10 +1,9 @@
 import logging
-from typing import Optional, Union, Dict, Any, List, Tuple, Callable
 
 import torch
 from torch import distributed as dist
 from torch.utils.tensorboard import SummaryWriter
-from text_utils import data, whitespace, tokenization
+from text_utils import data
 
 
 class TensorboardLogger:
@@ -69,5 +68,5 @@ class DistAverageTracker(TensorboardLogger):
 
 
 class TensorboardMetric(TensorboardLogger):
-    def set_values(self, items: List[data.TrainItem], outputs: torch.Tensor):
+    def set_values(self, items: list[data.TrainItem], outputs: torch.Tensor):
         raise NotImplementedError

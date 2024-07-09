@@ -558,7 +558,6 @@ training will resume from latest checkpoint."
     @classmethod
     def _metric_from_config(
         cls,
-        name: str,
         cfg: dict[str, Any],
         prefix: str
     ) -> tensorboard.TensorboardMetric:
@@ -1039,8 +1038,10 @@ training will resume from latest checkpoint."
             "train_item_size_ratio",
             self.info.device
         )
-        total_batch_size = torch.zeros(1, dtype=torch.long, device=self.info.device)
-        min_num_batches = torch.zeros(1, dtype=torch.long, device=self.info.device)
+        total_batch_size = torch.zeros(
+            1, dtype=torch.long, device=self.info.device)
+        min_num_batches = torch.zeros(
+            1, dtype=torch.long, device=self.info.device)
 
         metrics = []
         for name, cfg in self.cfg["train"].get("metrics", {}).items():
@@ -1139,7 +1140,8 @@ training will resume from latest checkpoint."
                             )
                     else:
                         # synchronize gradients for the last batch
-                        outputs, loss = step(batch, rank_batch_size, inputs, labels)
+                        outputs, loss = step(
+                            batch, rank_batch_size, inputs, labels)
 
                 losses.append(loss)
                 if first_outputs is None:
@@ -1341,7 +1343,8 @@ training will resume from latest checkpoint."
 
         start = time.perf_counter()
         val_iter = iter(self.val_loader)
-        min_num_batches = torch.zeros(1, dtype=torch.long, device=self.info.device)
+        min_num_batches = torch.zeros(
+            1, dtype=torch.long, device=self.info.device)
         logged = False
         while True:
             batches = []

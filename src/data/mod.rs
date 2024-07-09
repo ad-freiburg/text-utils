@@ -670,13 +670,6 @@ impl<'a> FromPyObject<'a> for TrainPipelineConfig {
     }
 }
 
-pub enum InferenceTaskConfig {}
-
-pub struct InferencePipelineConfig {
-    pub preprocessing: PreprocessingFnConfig,
-    pub task: InferenceTaskConfig,
-}
-
 // a pipeline is a function mapping an input to an output,
 // and it also sharable across threads
 pub type Pipeline<I, O> = Arc<dyn Send + Sync + 'static + Fn(I) -> O>;

@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 use std::collections::HashSet;
 
-use crate::utils::{py_invalid_type_error, Matrix};
+use crate::utils::py_invalid_type_error;
 
 #[derive(Copy, Clone, Debug)]
 enum EditOp {
@@ -23,20 +23,22 @@ fn _calculate_edit_matrices(
     b: CharString,
     with_swap: bool,
     spaces_insert_delete_only: bool,
-) -> (Matrix<usize>, Matrix<EditOp>) {
-    let mut d: Matrix<usize> = vec![vec![0; b.len() + 1]; a.len() + 1];
-    let mut ops: Matrix<EditOp> = vec![vec![EditOp::None; b.len() + 1]; a.len() + 1];
+) -> (Vec<usize>, Vec<EditOp>) {
+    let rows = a.len() + 1;
+    let cols = b.len() + 1;
+    let mut d = vec![0; rows * cols];
+    let mut ops = vec![EditOp::None; rows * cols];
 
     // initialize matrices
-    ops[0][0] = EditOp::Keep;
-    d[0][0] = 0;
+    d[0] = 0;
+    ops[0] = EditOp::Keep;
     for i in 1..=a.len() {
-        d[i][0] = i;
-        ops[i][0] = EditOp::Delete;
+        d[i * cols] = i;
+        ops[i * cols] = EditOp::Delete;
     }
     for j in 1..=b.len() {
-        d[0][j] = j;
-        ops[0][j] = EditOp::Insert;
+        d[j] = j;
+        ops[j] = EditOp::Insert;
     }
     let a_chars: Vec<Character> = a.chars().collect();
     let b_chars: Vec<Character> = b.chars().collect();
@@ -47,18 +49,18 @@ fn _calculate_edit_matrices(
             let j = b_idx + 1;
 
             let mut costs = vec![
-                (d[i - 1][j] + 1, EditOp::Delete),
-                (d[i][j - 1] + 1, EditOp::Insert),
+                (d[(i - 1) * cols + j] + 1, EditOp::Delete),
+                (d[i * cols + j - 1] + 1, EditOp::Insert),
             ];
             if a_char == b_char {
-                costs.push((d[i - 1][j - 1], EditOp::Keep));
+                costs.push((d[(i - 1) * cols + j - 1], EditOp::Keep));
             } else {
                 // chars are not equal, only allow replacement if no space is involved
                 // or we are allowed to replace spaces
                 if !spaces_insert_delete_only
                     || (!a_char.is_whitespace() && !b_char.is_whitespace())
                 {
-                    costs.push((d[i - 1][j - 1] + 1, EditOp::Replace));
+                    costs.push((d[(i - 1) * cols + j - 1] + 1, EditOp::Replace));
                 }
             }
             // check if we can swap chars, that is if we are allowed to swap
@@ -70,7 +72,7 @@ fn _calculate_edit_matrices(
                 if !spaces_insert_delete_only
                     || (!a_char.is_whitespace() && !a_chars[i - 2].is_whitespace())
                 {
-                    costs.push((d[i - 2][j - 2] + 1, EditOp::Swap));
+                    costs.push((d[(i - 2) * cols + j - 2] + 1, EditOp::Swap));
                 }
             }
 
@@ -78,8 +80,8 @@ fn _calculate_edit_matrices(
                 .iter()
                 .min_by(|(cost_1, _), (cost_2, _)| cost_1.cmp(cost_2))
                 .expect("should not happen");
-            d[i][j] = *min_cost;
-            ops[i][j] = *min_op;
+            d[i * cols + j] = *min_cost;
+            ops[i * cols + j] = *min_op;
         }
     }
     (d, ops)
@@ -127,19 +129,17 @@ pub fn operations(
     with_swap: bool,
     spaces_insert_delete_only: bool,
 ) -> Vec<(EditOperation, usize, usize)> {
-    let (_, ops) = _calculate_edit_matrices(
-        CS::new(a, use_graphemes),
-        CS::new(b, use_graphemes),
-        with_swap,
-        spaces_insert_delete_only,
-    );
+    let a_cs = CS::new(a, use_graphemes);
+    let b_cs = CS::new(b, use_graphemes);
+    let mut i = a_cs.len();
+    let mut j = b_cs.len();
+    let cols = b_cs.len() + 1;
+    let (_, ops) = _calculate_edit_matrices(a_cs, b_cs, with_swap, spaces_insert_delete_only);
     // backtrace
     // edit operations => 0 -> insert, 1 -> delete, 2 -> replace, 3 -> swap
     let mut edit_ops = vec![];
-    let mut i = ops.len() - 1;
-    let mut j = ops[0].len() - 1;
     while i > 0 || j > 0 {
-        let op = &ops[i][j];
+        let op = &ops[i * cols + j];
         match op {
             EditOp::None => {
                 panic!("should not happen")
@@ -189,7 +189,7 @@ pub fn distance(
         1.0
     };
     let (d, _) = _calculate_edit_matrices(a_cs, b_cs, with_swap, spaces_insert_delete_only);
-    d[d.len() - 1][d[0].len() - 1] as f64 / norm
+    d.last().copied().unwrap_or(0) as f64 / norm
 }
 
 pub fn distances(
@@ -241,6 +241,31 @@ fn distances_py(
     )
 }
 
+#[pyfunction(signature = (a, b, use_graphemes = true, with_swap = true, spaces_insert_delete_only = false, normalized = false))]
+pub fn prefix_distance(
+    a: &str,
+    b: &str,
+    use_graphemes: bool,
+    with_swap: bool,
+    spaces_insert_delete_only: bool,
+    normalized: bool,
+) -> f64 {
+    let a_cs = CS::new(a, use_graphemes);
+    let b_cs = CS::new(b, use_graphemes);
+    let i = a_cs.len();
+    let cols = b_cs.len() + 1;
+    let norm = if normalized { a_cs.len() as f64 } else { 1.0 };
+    let (d, _) = _calculate_edit_matrices(a_cs, b_cs, with_swap, spaces_insert_delete_only);
+
+    // find minimum in last row
+    d[i * cols..(i + 1) * cols]
+        .iter()
+        .min()
+        .copied()
+        .unwrap_or(0) as f64
+        / norm
+}
+
 #[pyfunction]
 pub fn edited_words(a: &str, b: &str) -> (HashSet<usize>, HashSet<usize>) {
     let (matching_words, a_len, b_len) = match_words(a, b, false);
@@ -266,6 +291,7 @@ pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> 
     let m = PyModule::new_bound(py, m_name)?;
     m.add_function(wrap_pyfunction!(distance, m.clone())?)?;
     m.add_function(wrap_pyfunction!(distances_py, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(prefix_distance, m.clone())?)?;
     m.add_function(wrap_pyfunction!(operations, m.clone())?)?;
     m.add_function(wrap_pyfunction!(edited_words, m.clone())?)?;
     parent_module.add_submodule(&m)?;

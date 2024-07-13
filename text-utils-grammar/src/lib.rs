@@ -1,5 +1,3 @@
-use wasm_bindgen::prelude::*;
-
 pub mod lr1;
 pub mod re;
 pub mod utils;
@@ -27,11 +25,4 @@ pub trait Constraint {
     fn get_valid_continuations(&self, state: &Self::State) -> Vec<usize>;
 
     fn get_next_state(&self, state: &Self::State, continuation: usize) -> Option<Self::State>;
-}
-
-#[wasm_bindgen]
-pub fn parse(text: &str, grammar: &str, lexer: &str) -> Option<String> {
-    let parser = LR1GrammarParser::new(grammar, lexer).ok()?;
-    let parse = parser.parse(text, true, true).ok()?;
-    Some(parse.pretty(text, true, true))
 }

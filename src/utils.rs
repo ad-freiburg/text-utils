@@ -30,8 +30,6 @@ where
 
 impl<T> SerializeMsgPack for T where T: Sized + Serialize + DeserializeOwned {}
 
-pub(crate) type Matrix<T> = Vec<Vec<T>>;
-
 pub fn progress_bar(msg: &str, size: u64, hidden: bool) -> ProgressBar {
     let pb = ProgressBar::new(size)
         .with_style(

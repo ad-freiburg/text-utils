@@ -283,10 +283,10 @@ pub struct LR1GrammarParser {
     pdfas: Vec<(PrefixDFA, Option<TIdx<u32>>)>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LR1Parse<'a> {
     Empty(&'a str),
-    Terminal(&'a str, Span),
+    Terminal(&'a str, Span, Vec<u8>),
     NonTerminal(&'a str, Vec<LR1Parse<'a>>),
 }
 
@@ -295,11 +295,40 @@ impl LR1Parse<'_> {
         matches!(self, LR1Parse::Empty(..))
     }
 
+    pub fn name(&self) -> &str {
+        match self {
+            LR1Parse::Empty(name)
+            | LR1Parse::Terminal(name, ..)
+            | LR1Parse::NonTerminal(name, ..) => name,
+        }
+    }
+
     pub fn span(&self) -> Option<&Span> {
         match self {
             LR1Parse::Empty(..) | LR1Parse::NonTerminal(..) => None,
-            LR1Parse::Terminal(.., span) => Some(span),
+            LR1Parse::Terminal(.., span, _) => Some(span),
         }
+    }
+
+    pub fn to_string(&self) -> String {
+        fn flatten(parse: &LR1Parse<'_>) -> String {
+            match parse {
+                LR1Parse::Empty(..) => String::new(),
+                LR1Parse::Terminal(.., value) => String::from_utf8_lossy(value).to_string(),
+                LR1Parse::NonTerminal(.., children) => children
+                    .iter()
+                    .filter_map(|child| {
+                        let s = flatten(child);
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s)
+                        }
+                    })
+                    .join(" "),
+            }
+        }
+        flatten(self)
     }
 
     pub fn pretty(&self, text: &str, skip_empty: bool, collapse_single: bool) -> String {
@@ -318,8 +347,8 @@ impl LR1Parse<'_> {
                         format!("{:indent$}{name}", "")
                     }
                 }
-                LR1Parse::Terminal(name, (start, len)) => {
-                    format!("{:indent$}{name} '{}'", "", &text[*start..*start + *len],)
+                LR1Parse::Terminal(name, .., value) => {
+                    format!("{:indent$}{name} '{}'", "", String::from_utf8_lossy(&value))
                 }
                 LR1Parse::NonTerminal(name, children, ..) => {
                     assert!(!children.is_empty());
@@ -444,6 +473,7 @@ impl LR1GrammarParser {
     }
 
     fn node_to_lr1<'a>(
+        input: &[u8],
         grammar: &'a YaccGrammar,
         node: &Node<DefaultLexeme<u32>, u32>,
         skip_empty: bool,
@@ -454,14 +484,16 @@ impl LR1GrammarParser {
                 let span = lexeme.span();
                 let tidx = lexeme.tok_id();
                 let tname = grammar.token_name(TIdx(tidx)).unwrap();
-                LR1Parse::Terminal(tname, (span.start(), span.len()))
+                let value = input[span.start()..span.start() + span.len()].to_vec();
+                LR1Parse::Terminal(tname, (span.start(), span.len()), value)
             }
             Node::Nonterm { ridx, nodes } => {
                 let rname = grammar.rule_name_str(*ridx);
                 let nodes: Vec<_> = nodes
                     .iter()
                     .filter_map(|node| {
-                        let node = Self::node_to_lr1(grammar, node, skip_empty, collapse_single);
+                        let node =
+                            Self::node_to_lr1(input, grammar, node, skip_empty, collapse_single);
                         if node.is_empty() && skip_empty {
                             None
                         } else {
@@ -489,6 +521,7 @@ impl LR1GrammarParser {
         let (tree, error) = self.parse_tree(prefix)?;
         if let Some(tree) = tree {
             Ok(Self::node_to_lr1(
+                prefix,
                 &self.grammar,
                 &tree,
                 skip_empty,
@@ -513,6 +546,7 @@ impl LR1GrammarParser {
             return Err("failed to parse input".into());
         };
         Ok(Self::node_to_lr1(
+            text.as_bytes(),
             &self.grammar,
             &tree,
             skip_empty,

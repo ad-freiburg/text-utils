@@ -16,7 +16,6 @@ lrlex = "0.13.4"
 lrpar = { version = "0.13.4", features = ["serde"] }
 indexmap = "2.2"
 clap = { version = "4", features = ["derive"] }
-wasm-bindgen = "0.2"
 
 [dev-dependencies]
 criterion = "0.5"

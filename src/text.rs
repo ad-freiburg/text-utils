@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use crate::unicode::{Character, CS};
-use crate::utils::{find_subsequences_of_max_size_k, Matrix};
+use crate::utils::find_subsequences_of_max_size_k;
 
 #[pyfunction(signature = (s, use_graphemes = true))]
 #[inline]
@@ -77,8 +77,9 @@ pub fn match_words_with(
     let a_words = a.split_ascii_whitespace().collect::<Vec<&str>>();
     let b_words = b.split_ascii_whitespace().collect::<Vec<&str>>();
 
-    let mut d: Matrix<usize> = vec![vec![0; b_words.len() + 1]; a_words.len() + 1];
-    let mut ops: Matrix<MatchOp> = vec![vec![MatchOp::None; b_words.len() + 1]; a_words.len() + 1];
+    let mut d: Vec<Vec<usize>> = vec![vec![0; b_words.len() + 1]; a_words.len() + 1];
+    let mut ops: Vec<Vec<MatchOp>> =
+        vec![vec![MatchOp::None; b_words.len() + 1]; a_words.len() + 1];
 
     // initialize matrices
     ops[0][0] = MatchOp::NoMatch;

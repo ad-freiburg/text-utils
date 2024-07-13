@@ -207,6 +207,7 @@ def beam_search(
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,
     return_full: bool = False,
+    return_incomplete: bool = False,
     yield_intermediate: bool = False,
     **kwargs: Any
 ) -> Iterator[list[list[Beam]]]:
@@ -214,10 +215,9 @@ def beam_search(
 
     score_fn = log_likelihood_score(normalize_by_length, alpha)
 
-    beam_queues: list[list[Beam]] = [[] for _ in range(batch_size)]
-
     beam_widths: list[int] = []
     current_beams: list[list[Beam]] = []
+    beam_queues: list[list[Beam]] = []
     initial_lengths = []
     for init in initial:
         if isinstance(init, Beam):
@@ -235,16 +235,18 @@ def beam_search(
             beam_widths.append(beam_width(beam))
 
         current_beams.append([beam])
-
-    stop_mask = [False for _ in range(batch_size)]
+        beam_queues.append([])
 
     def get_indices_to_decode() -> list[int]:
         indices_to_decode = []
-        for idx, (stop, beams) in enumerate(zip(
-            stop_mask,
-            current_beams
-        )):
-            if stop or len(beams) == 0 or len(beams[0]) >= max_length:
+        for idx in range(batch_size):
+            beams = current_beams[idx]
+            beam_queue = beam_queues[idx]
+            if (
+                len(beam_queue) >= beam_widths[idx]
+                or len(beams) == 0
+                or len(beams[0]) >= max_length
+            ):
                 continue
             indices_to_decode.append(idx)
         return indices_to_decode
@@ -253,24 +255,18 @@ def beam_search(
 
     def get_outputs() -> list[list[Beam]]:
         out_beams = []
-        for idx, (beam_queue, active_beams, n) in enumerate(zip(
-            beam_queues,
-            current_beams,
-            beam_widths
-        )):
+        for idx in range(batch_size):
             beam_queue = sorted(
-                beam_queue,
+                beam_queues[idx],
                 key=lambda b: score_fn(b),
                 reverse=True
-            )[:n]
-
-            if len(beam_queue) < n:
-                active_beams = sorted(
-                    active_beams,
+            )
+            if len(beam_queue) == 0 and return_incomplete:
+                beam_queue = sorted(
+                    current_beams[idx],
                     key=lambda b: score_fn(b),
                     reverse=True
                 )
-                beam_queue.extend(active_beams[:n - len(beam_queue)])
 
             pfx = 0 if return_full else initial_lengths[idx]
             out_beams.append([
@@ -352,35 +348,25 @@ def beam_search(
                         log_probs[beam_idx, token_id].item()
                     ))
 
-            new_beams = []
+            # reset current beams and fill with best candidates
+            current_beams[idx] = []
             for num, (beam, token_id, log_prob) in enumerate(sorted(
                 candidates,
                 key=lambda item: item[0].log_prob + item[2],
                 reverse=True
-            )):
+            )[:n]):
                 # update candidates
                 candidate = candidate_fn(beam, token_id, log_prob)
                 if candidate is None:
                     # skip invalid candidates
                     continue
-                # only consider eos beams if they are in top beam_width beams
-                stop = stop_fn(candidate)
-                if num < n and stop:
-                    # we record all stop beams, but only stop when the top beam should stop
-                    # (because then we are sure there is no better candidate left to decode)
+                elif stop_fn(candidate):
+                    # add stop candidates to beam queue
                     beam_queues[idx].append(candidate)
-                    stop_mask[idx] |= num == 0
-                elif not stop:
-                    new_beams.append(candidate)
+                else:
+                    current_beams[idx].append(candidate)
 
-                if len(new_beams) >= n:
-                    break
-
-            if len(new_beams) == 0:
-                stop_mask[idx] = True
-            else:
-                current_beams[idx] = new_beams
-                update_info[idx] = (i, len(new_beams))
+            update_info[idx] = (i, len(current_beams[idx]))
 
         indices_to_decode = get_indices_to_decode()
 

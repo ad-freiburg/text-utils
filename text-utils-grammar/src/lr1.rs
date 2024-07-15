@@ -1090,12 +1090,9 @@ impl Constraint for LR1GrammarConstraint {
                 i += skip;
                 continue;
             };
-            let Drive::Stack(next_stack) = drive(
-                &self.grammar,
-                &self.table,
-                state.stack.clone(),
-                &tokens,
-            ) else {
+            let Drive::Stack(next_stack) =
+                drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
+            else {
                 i += skip;
                 continue;
             };

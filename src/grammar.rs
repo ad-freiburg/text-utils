@@ -219,7 +219,7 @@ impl LR1Constraint {
             .ok()
             .and_then(|s| s.parse().ok())
             .and_then(NonZeroUsize::new)
-            .unwrap_or(NonZeroUsize::new(8192).expect("invalid LRU cache size"));
+            .unwrap_or(NonZeroUsize::new(8192).unwrap());
         let mut cache = LruCache::new(cache_size);
         cache.put(state.clone(), (indices.clone(), is_match));
         Self {

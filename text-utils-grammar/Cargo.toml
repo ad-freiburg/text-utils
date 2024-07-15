@@ -16,11 +16,11 @@ lrlex = "0.13.4"
 lrpar = { version = "0.13.4", features = ["serde"] }
 indexmap = "2.2"
 clap = { version = "4", features = ["derive"] }
+serde = "1.0"
+serde_json = "1.0"
 
 [dev-dependencies]
 criterion = "0.5"
-serde = "1.0"
-serde_json = "1.0"
 rand = "0.8"
 rand_distr = "0.4"
 rand_chacha = "0.3"

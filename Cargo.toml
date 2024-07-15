@@ -32,6 +32,7 @@ clap = { version = "4", features = ["derive"] }
 tokenizers = "0.19"
 text-utils-prefix = { path = "text-utils-prefix" }
 text-utils-grammar = { path = "text-utils-grammar" }
+lru = "0.12"
 
 [dev-dependencies]
 criterion = "0.5"

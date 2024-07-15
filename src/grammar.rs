@@ -1,8 +1,11 @@
+use std::env::var;
+use std::num::NonZeroUsize;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 // use std::time::Instant;
 
 use anyhow::anyhow;
+use lru::LruCache;
 use numpy::ndarray::Array1;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
@@ -152,6 +155,7 @@ struct LR1Inner {
     indices: Array1<usize>,
     is_match: bool,
     is_invalid: bool,
+    cache: LruCache<LR1State, (Array1<usize>, bool)>,
 }
 
 #[pyclass]
@@ -210,6 +214,14 @@ impl LR1Constraint {
         let state = constraint.get_start_state();
         let indices = constraint.get_valid_continuations(&state);
         let is_match = constraint.is_match_state(&state);
+        // get cache size from env variable TEXT_UTILS_LR1_CACHE_SIZE
+        let cache_size = var("TEXT_UTILS_LR1_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .and_then(NonZeroUsize::new)
+            .unwrap_or(NonZeroUsize::new(8192).expect("invalid LRU cache size"));
+        let mut cache = LruCache::new(cache_size);
+        cache.put(state.clone(), (indices.clone(), is_match));
         Self {
             constraint: Arc::new(constraint),
             inner: Arc::new(Mutex::new(LR1Inner {
@@ -217,6 +229,7 @@ impl LR1Constraint {
                 indices,
                 is_match,
                 is_invalid: false,
+                cache,
             })),
         }
     }
@@ -275,9 +288,12 @@ impl LR1Constraint {
         self.inner
             .lock()
             .map(|mut inner| {
+                let indices = self.constraint.get_valid_continuations(&inner.state);
+                let is_match = self.constraint.is_match_state(&inner.state);
+                inner.cache.put(state.clone(), (indices.clone(), is_match));
                 inner.state = state;
-                inner.indices = self.constraint.get_valid_continuations(&inner.state);
-                inner.is_match = self.constraint.is_match_state(&inner.state);
+                inner.indices = indices;
+                inner.is_match = is_match;
                 inner.is_invalid = false;
             })
             .map_err(|_| anyhow!("error locking inner state"))
@@ -334,9 +350,20 @@ impl LR1Constraint {
                 inner.is_invalid = true;
                 return;
             };
+            let (indices, is_match) =
+                if let Some((indices, is_match)) = inner.cache.get(&next_state) {
+                    (indices.clone(), *is_match)
+                } else {
+                    let indices = constraint.get_valid_continuations(&inner.state);
+                    let is_match = constraint.is_match_state(&inner.state);
+                    inner
+                        .cache
+                        .put(next_state.clone(), (indices.clone(), is_match));
+                    (indices, is_match)
+                };
             inner.state = next_state;
-            inner.indices = constraint.get_valid_continuations(&inner.state);
-            inner.is_match = constraint.is_match_state(&inner.state);
+            inner.indices = indices;
+            inner.is_match = is_match;
         });
         // wait until spawned thread signals that is has locked
         // the inner state, otherwise some unexpected behavior could occurr

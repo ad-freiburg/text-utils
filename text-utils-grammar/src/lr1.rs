@@ -232,6 +232,7 @@ fn prefix_lexer_with(
     Ok((tokens, spans, prefix_matches, (i, continuation.len() - i)))
 }
 
+#[inline]
 fn initial_prefix_match_iter(
     pdfas: &[(PrefixDFA, Option<TIdx<u32>>)],
 ) -> impl Iterator<Item = (usize, StateID)> + '_ {
@@ -241,6 +242,7 @@ fn initial_prefix_match_iter(
         .map(|(pidx, (pdfa, _))| (pidx, pdfa.get_start_state()))
 }
 
+#[inline]
 fn initial_prefix_matches(pdfas: &[(PrefixDFA, Option<TIdx<u32>>)]) -> Matching {
     initial_prefix_match_iter(pdfas).collect()
 }
@@ -310,7 +312,7 @@ impl LR1Parse<'_> {
         }
     }
 
-    pub fn to_string(&self) -> String {
+    pub fn flatten(&self) -> String {
         fn flatten(parse: &LR1Parse<'_>) -> String {
             match parse {
                 LR1Parse::Empty(..) => String::new(),
@@ -331,11 +333,10 @@ impl LR1Parse<'_> {
         flatten(self)
     }
 
-    pub fn pretty(&self, text: &str, skip_empty: bool, collapse_single: bool) -> String {
+    pub fn pretty(&self, skip_empty: bool, collapse_single: bool) -> String {
         fn pretty_parse(
             parse: &LR1Parse<'_>,
             indent: usize,
-            text: &str,
             skip_empty: bool,
             collapse_single: bool,
         ) -> String {
@@ -348,18 +349,12 @@ impl LR1Parse<'_> {
                     }
                 }
                 LR1Parse::Terminal(name, .., value) => {
-                    format!("{:indent$}{name} '{}'", "", String::from_utf8_lossy(&value))
+                    format!("{:indent$}{name} '{}'", "", String::from_utf8_lossy(value))
                 }
                 LR1Parse::NonTerminal(name, children, ..) => {
                     assert!(!children.is_empty());
                     if children.len() == 1 && collapse_single {
-                        return pretty_parse(
-                            &children[0],
-                            indent,
-                            text,
-                            skip_empty,
-                            collapse_single,
-                        );
+                        return pretty_parse(&children[0], indent, skip_empty, collapse_single);
                     }
                     let mut s = format!("{:indent$}{name}", "");
                     for child in children.iter().filter(|child| !child.is_empty()) {
@@ -367,7 +362,6 @@ impl LR1Parse<'_> {
                         s.push_str(&pretty_parse(
                             child,
                             indent + 2,
-                            text,
                             skip_empty,
                             collapse_single,
                         ));
@@ -376,7 +370,7 @@ impl LR1Parse<'_> {
                 }
             }
         }
-        pretty_parse(self, 0, text, skip_empty, collapse_single)
+        pretty_parse(self, 0, skip_empty, collapse_single)
     }
 }
 
@@ -566,7 +560,8 @@ pub struct ExactLR1GrammarConstraint {
 
 #[derive(Debug)]
 enum LR1Action {
-    ShiftReduce(usize, Vec<StIdx<u32>>),
+    ShiftReduce(usize, StIdx<u32>),
+    Stack(Vec<StIdx<u32>>),
     Accept,
     Error,
 }
@@ -585,6 +580,11 @@ impl LR1Action {
     #[allow(dead_code)]
     pub fn is_shift_reduce(&self) -> bool {
         matches!(self, LR1Action::ShiftReduce(..))
+    }
+
+    #[allow(dead_code)]
+    pub fn is_stack(&self) -> bool {
+        matches!(self, LR1Action::Stack(..))
     }
 }
 
@@ -619,7 +619,7 @@ fn shift_reduce(
                     // the stack len would increase, so run a proper drive
                     // as backup
                     return match drive(grammar, table, stack.to_vec(), &[Some(token)]) {
-                        Drive::Stack(stack) => LR1Action::ShiftReduce(0, stack),
+                        Drive::Stack(stack) => LR1Action::Stack(stack),
                         Drive::Accept => LR1Action::Accept,
                         Drive::Error => LR1Action::Error,
                     };
@@ -635,7 +635,7 @@ fn shift_reduce(
             Action::Error => return LR1Action::Error,
         };
     }
-    LR1Action::ShiftReduce(stack_end + 1, vec![stidx])
+    LR1Action::ShiftReduce(stack_end + 1, stidx)
 }
 
 #[inline]
@@ -686,6 +686,7 @@ enum Drive {
     Error,
 }
 
+#[inline]
 fn drive(
     grammar: &YaccGrammar,
     table: &StateTable<u32>,
@@ -753,13 +754,15 @@ fn is_match_state(
         if !pdfa.is_eoi_match(pdfa_state) {
             return false;
         }
-        let LR1Action::ShiftReduce(keep, stidx) =
-            shift_reduce(grammar, table, &state.stack, *token)
-        else {
-            return false;
+        let stack = match shift_reduce(grammar, table, &state.stack, *token) {
+            LR1Action::Stack(stack) => stack,
+            LR1Action::ShiftReduce(keep, stidx) => {
+                let mut stack = state.stack[..keep].to_vec();
+                stack.push(stidx);
+                stack
+            }
+            _ => return false,
         };
-        let mut stack = state.stack[..keep].to_vec();
-        stack.extend(stidx);
         is_accept_state(grammar, table, &stack)
     })
 }
@@ -804,7 +807,7 @@ impl ExactLR1GrammarConstraint {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Default)]
 pub struct LR1State {
     stack: Vec<StIdx<u32>>,
     matching: Matching,
@@ -869,14 +872,15 @@ impl Constraint for ExactLR1GrammarConstraint {
                 return None;
             }
             let next_stack = if let Some(&tidx) = tidx.as_ref() {
-                let LR1Action::ShiftReduce(keep, stidx) =
-                    shift_reduce(&self.grammar, &self.table, &state.stack, tidx)
-                else {
-                    return None;
-                };
-                let mut next_stack = state.stack[..keep].to_vec();
-                next_stack.extend(stidx.clone());
-                next_stack
+                match shift_reduce(&self.grammar, &self.table, &state.stack, tidx) {
+                    LR1Action::Stack(stack) => stack,
+                    LR1Action::ShiftReduce(keep, stidx) => {
+                        let mut next_stack = state.stack[..keep].to_vec();
+                        next_stack.push(stidx);
+                        next_stack
+                    }
+                    _ => return None,
+                }
             } else {
                 state.stack.clone()
             };
@@ -960,13 +964,16 @@ impl Constraint for ExactLR1GrammarConstraint {
                 matching: next_matching,
             })
         } else {
-            let LR1Action::ShiftReduce(keep, stidx) =
-                shift_reduce(&self.grammar, &self.table, &state.stack, tokens[0].unwrap())
-            else {
-                return None;
-            };
-            let mut next_stack = state.stack[..keep].to_vec();
-            next_stack.extend(stidx.clone());
+            let next_stack =
+                match shift_reduce(&self.grammar, &self.table, &state.stack, tokens[0].unwrap()) {
+                    LR1Action::Stack(stack) => stack,
+                    LR1Action::ShiftReduce(keep, stidx) => {
+                        let mut next_stack = state.stack[..keep].to_vec();
+                        next_stack.push(stidx);
+                        next_stack
+                    }
+                    _ => return None,
+                };
             if !is_valid_matching(
                 next_matching.iter().copied(),
                 &self.grammar,
@@ -1083,9 +1090,12 @@ impl Constraint for LR1GrammarConstraint {
                 i += skip;
                 continue;
             };
-            let Drive::Stack(next_stack) =
-                drive(&self.grammar, &self.table, state.stack.clone(), &tokens)
-            else {
+            let Drive::Stack(next_stack) = drive(
+                &self.grammar,
+                &self.table,
+                state.stack.clone(),
+                &tokens,
+            ) else {
                 i += skip;
                 continue;
             };
@@ -1451,7 +1461,7 @@ mod test {
         assert!(lrk.parse("2 - 1", false, false).is_err());
         let text = "(1 + 28)*\n3";
         let parse = lrk.parse(text, false, false).unwrap();
-        println!("{}", parse.pretty(text, true, true));
+        println!("{}", parse.pretty(true, true));
     }
 
     fn drive_with_tokens(

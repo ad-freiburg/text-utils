@@ -121,9 +121,6 @@ fn bench_re_constraint(c: &mut Criterion) {
 fn bench_lr1_constraint(c: &mut Criterion) {
     let conts = load_continuations();
     for (name, grammar, tokens, examples) in load_grammars("constraint") {
-        if name != "sparql" {
-            continue;
-        }
         let exact_lr_constraint =
             ExactLR1GrammarConstraint::from_files(&grammar, &tokens, conts.clone()).unwrap();
         let lr_constraint =
@@ -148,14 +145,15 @@ fn bench_lr1_constraint(c: &mut Criterion) {
             b.iter(|| lr_constraint.get_next_state(&state, conts[0]))
         });
         for (ex_name, example) in examples {
+            let state = exact_lr_constraint.get_state(&example).unwrap();
+            let conts = exact_lr_constraint.get_valid_continuations(&state);
             println!(
                 "testing {} {}:\n{}",
                 name,
                 ex_name,
-                String::from_utf8_lossy(&example)
+                String::from_utf8_lossy(&example),
             );
-            let state = exact_lr_constraint.get_state(&example).unwrap();
-            let conts = exact_lr_constraint.get_valid_continuations(&state);
+            println!("{} exact continuations", conts.len());
             c.bench_function(
                 &format!("exact_lr1_{name}_{ex_name}_get_valid_continuations"),
                 |b| b.iter(|| exact_lr_constraint.get_valid_continuations(&state)),
@@ -165,6 +163,7 @@ fn bench_lr1_constraint(c: &mut Criterion) {
             });
             let state = lr_constraint.get_state(&example).unwrap();
             let conts = lr_constraint.get_valid_continuations(&state);
+            println!("{} standard continuations", conts.len());
             c.bench_function(
                 &format!("standard_lr1_{name}_{ex_name}_get_valid_continuations"),
                 |b| b.iter(|| lr_constraint.get_valid_continuations(&state)),

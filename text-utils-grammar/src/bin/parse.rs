@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let end = Instant::now();
         elapsed += end - start;
         if i == 0 {
-            println!("{}", parse.pretty(&args.input, true, false));
+            println!("{}", parse.pretty(true, false));
         }
     }
     println!(

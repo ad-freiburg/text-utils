@@ -167,7 +167,7 @@ def constraint_logit_fn(
                 zeros[i] = logits[i]
                 continue
 
-            indices = torch.from_numpy(constraint.get())
+            indices = torch.from_numpy(constraint.get()).to(torch.int32)
             zeros[i, indices] = logits[i, indices]
 
             if constraint.is_match():

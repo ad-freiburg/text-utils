@@ -155,13 +155,15 @@ struct LR1Inner {
     indices: Array1<usize>,
     is_match: bool,
     is_invalid: bool,
-    cache: LruCache<LR1State, (Array1<usize>, bool)>,
 }
+
+type LR1ConstraintCache = LruCache<LR1State, (Array1<usize>, bool)>;
 
 #[pyclass]
 struct LR1Constraint {
     constraint: Arc<LR1Type>,
     inner: Arc<Mutex<LR1Inner>>,
+    cache: Arc<Mutex<LR1ConstraintCache>>,
 }
 
 impl LR1Type {
@@ -229,8 +231,8 @@ impl LR1Constraint {
                 indices,
                 is_match,
                 is_invalid: false,
-                cache,
             })),
+            cache: Arc::new(Mutex::new(cache)),
         }
     }
 }
@@ -285,18 +287,26 @@ impl LR1Constraint {
         let Some(state) = self.constraint.get_state(&prefix.unwrap_or_default()) else {
             return Err(anyhow!("failed to reset to given prefix"));
         };
-        self.inner
+        let mut inner = self
+            .inner
             .lock()
-            .map(|mut inner| {
-                let indices = self.constraint.get_valid_continuations(&inner.state);
-                let is_match = self.constraint.is_match_state(&inner.state);
-                inner.cache.put(state.clone(), (indices.clone(), is_match));
-                inner.state = state;
-                inner.indices = indices;
-                inner.is_match = is_match;
-                inner.is_invalid = false;
-            })
-            .map_err(|_| anyhow!("error locking inner state"))
+            .map_err(|_| anyhow!("error locking inner state"))?;
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow!("error locking cache"))?;
+
+        inner.state = state;
+        inner.is_invalid = false;
+        if let Some((indices, is_match)) = cache.get(&inner.state).cloned() {
+            inner.indices = indices;
+            inner.is_match = is_match;
+        } else {
+            inner.indices = self.constraint.get_valid_continuations(&inner.state);
+            inner.is_match = self.constraint.is_match_state(&inner.state);
+            cache.put(inner.state.clone(), (inner.indices.clone(), inner.is_match));
+        }
+        Ok(())
     }
 
     fn clone(&self) -> anyhow::Result<Self> {
@@ -305,6 +315,7 @@ impl LR1Constraint {
             .map(|inner| Self {
                 constraint: self.constraint.clone(),
                 inner: Arc::new(Mutex::new(inner.clone())),
+                cache: self.cache.clone(),
             })
             .map_err(|_| anyhow!("error locking inner state"))
     }
@@ -340,27 +351,36 @@ impl LR1Constraint {
     }
 
     fn next(&self, index: usize) -> anyhow::Result<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow!("error locking inner state"))?;
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow!("error locking cache"))?;
+        let Some(next_state) = self.constraint.get_next_state(&inner.state, index) else {
+            inner.is_invalid = true;
+            return Ok(());
+        };
+        if let Some((indices, is_match)) = cache.get(&next_state).cloned() {
+            inner.state = next_state;
+            inner.indices = indices;
+            inner.is_match = is_match;
+            return Ok(());
+        }
+
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
+        let cache = self.cache.clone();
         let (tx, rx) = channel();
         spawn_fifo(move || {
             let mut inner = inner.lock().expect("error locking inner state");
+            let mut cache = cache.lock().expect("error locking cache");
             tx.send(()).expect("failed to send on channel");
-            let Some(next_state) = constraint.get_next_state(&inner.state, index) else {
-                inner.is_invalid = true;
-                return;
-            };
-            let (indices, is_match) =
-                if let Some((indices, is_match)) = inner.cache.get(&next_state) {
-                    (indices.clone(), *is_match)
-                } else {
-                    let indices = constraint.get_valid_continuations(&inner.state);
-                    let is_match = constraint.is_match_state(&inner.state);
-                    inner
-                        .cache
-                        .put(next_state.clone(), (indices.clone(), is_match));
-                    (indices, is_match)
-                };
+            let indices = constraint.get_valid_continuations(&next_state);
+            let is_match = constraint.is_match_state(&next_state);
+            cache.put(next_state.clone(), (indices.clone(), is_match));
             inner.state = next_state;
             inner.indices = indices;
             inner.is_match = is_match;

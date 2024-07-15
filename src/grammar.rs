@@ -351,25 +351,6 @@ impl LR1Constraint {
     }
 
     fn next(&self, index: usize) -> anyhow::Result<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("error locking inner state"))?;
-        let mut cache = self
-            .cache
-            .lock()
-            .map_err(|_| anyhow!("error locking cache"))?;
-        let Some(next_state) = self.constraint.get_next_state(&inner.state, index) else {
-            inner.is_invalid = true;
-            return Ok(());
-        };
-        if let Some((indices, is_match)) = cache.get(&next_state).cloned() {
-            inner.state = next_state;
-            inner.indices = indices;
-            inner.is_match = is_match;
-            return Ok(());
-        }
-
         let inner = self.inner.clone();
         let constraint = self.constraint.clone();
         let cache = self.cache.clone();
@@ -378,12 +359,19 @@ impl LR1Constraint {
             let mut inner = inner.lock().expect("error locking inner state");
             let mut cache = cache.lock().expect("error locking cache");
             tx.send(()).expect("failed to send on channel");
-            let indices = constraint.get_valid_continuations(&next_state);
-            let is_match = constraint.is_match_state(&next_state);
-            cache.put(next_state.clone(), (indices.clone(), is_match));
+            let Some(next_state) = constraint.get_next_state(&inner.state, index) else {
+                inner.is_invalid = true;
+                return;
+            };
             inner.state = next_state;
-            inner.indices = indices;
-            inner.is_match = is_match;
+            if let Some((indices, is_match)) = cache.get(&inner.state).cloned() {
+                inner.indices = indices;
+                inner.is_match = is_match;
+            } else {
+                inner.indices = constraint.get_valid_continuations(&inner.state);
+                inner.is_match = constraint.is_match_state(&inner.state);
+                cache.put(inner.state.clone(), (inner.indices.clone(), inner.is_match));
+            }
         });
         // wait until spawned thread signals that is has locked
         // the inner state, otherwise some unexpected behavior could occurr

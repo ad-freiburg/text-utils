@@ -259,9 +259,10 @@ def beam_search(
                 )
 
             pfx = 0 if return_full else initial_lengths[idx]
+            n = beam_widths[idx]
             out_beams.append([
                 beam.truncate_prefix(pfx)
-                for beam in beam_queue
+                for beam in beam_queue[:n]
             ])
 
         return out_beams

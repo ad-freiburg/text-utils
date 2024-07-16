@@ -29,20 +29,6 @@ def eos_stop_fn(eos_token_id: int) -> StopFn:
     return _stop
 
 
-def _sub_select(
-    inputs: torch.Tensor | dict[str, torch.Tensor],
-    mask: int | torch.Tensor,
-) -> torch.Tensor | dict[str, torch.Tensor]:
-    if isinstance(inputs, torch.Tensor):
-        return inputs[mask]
-    elif isinstance(inputs, dict):
-        return {k: v[mask] for k, v in inputs.items()}
-    else:
-        raise ValueError(
-            f"expected inputs to be of type tensor or dict of tensors, but got {type(inputs)}"
-        )
-
-
 @torch.inference_mode()
 def search(
     decode_fn: DecodeFn,
@@ -105,9 +91,9 @@ def search(
 
     # all sequences are at max length or stopped by stop_fn
     while torch.sum(mask) > 0:
-        decoder_lengths = _sub_select(lengths, mask)
-        assert isinstance(decoder_lengths, torch.Tensor)
+        decoder_lengths = lengths[mask]
         max_decoder_length = torch.max(decoder_lengths)  # type: ignore
+        decoder_token_ids = token_ids[mask][..., :max_decoder_length]
         indices_mask = indices[mask]
 
         decoder_kwargs = kwargs_select_fn(
@@ -115,9 +101,6 @@ def search(
             indices_mask
         ) if kwargs_select_fn is not None else {}
 
-        decoder_token_ids = _sub_select(
-            token_ids, mask
-        )[:, :max_decoder_length]  # type: ignore
         # always add a padding mask, indicating which tokens are padding
         # and the lengths of the sequence to the additional arguments
         assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \
@@ -253,17 +236,24 @@ def beam_search(
 
     indices_to_decode = get_indices_to_decode()
 
-    def get_outputs() -> list[list[Beam]]:
+    def get_outputs(intermediate: bool) -> list[list[Beam]]:
         out_beams = []
         for idx in range(batch_size):
+            beam_queue = beam_queues[idx]
+            current = current_beams[idx]
+            if intermediate:
+                # for intermediate outputs we
+                # return the active beams, so swap here
+                beam_queue, current = current, beam_queue
+
             beam_queue = sorted(
-                beam_queues[idx],
+                beam_queue,
                 key=lambda b: score_fn(b),
                 reverse=True
             )
-            if len(beam_queue) == 0 and return_incomplete:
+            if len(beam_queue) == 0 and (return_incomplete or intermediate):
                 beam_queue = sorted(
-                    current_beams[idx],
+                    current,
                     key=lambda b: score_fn(b),
                     reverse=True
                 )
@@ -384,6 +374,6 @@ def beam_search(
             )
 
         if yield_intermediate:
-            yield get_outputs()
+            yield get_outputs(intermediate=True)
 
-    yield get_outputs()
+    yield get_outputs(intermediate=False)

@@ -4,7 +4,7 @@ import sys
 import time
 import logging
 import warnings
-from typing import Iterator, Iterable, Type
+from typing import Iterator, Iterable, Type, Any
 try:
     import readline  # noqa
 except ImportError:
@@ -186,9 +186,6 @@ class TextProcessingCli:
     def version(self) -> str:
         raise NotImplementedError
 
-    def format_output(self, output: str) -> Iterable[str]:
-        return [output]
-
     def _run_with_profiling(self, file: str) -> None:
         import cProfile
         cProfile.runctx("self.run()", globals(), locals(), file)
@@ -197,7 +194,7 @@ class TextProcessingCli:
         self,
         processor: TextProcessor,
         iter: Iterator[str]
-    ) -> Iterator[str]:
+    ) -> Iterator[Any]:
         raise NotImplementedError
 
     def setup(self) -> TextProcessor:
@@ -269,11 +266,10 @@ class TextProcessingCli:
         start = time.perf_counter()
         if self.args.process is not None:
             self.args.progress = False
-            output = next(self.process_iter(
+            for output in self.process_iter(
                 self.cor, iter([self.args.process])
-            ))
-            for opt in self.format_output(output):
-                print(opt)
+            ):
+                print(output)
 
         elif self.args.file is not None:
             if self.args.out_path is None:
@@ -292,8 +288,7 @@ class TextProcessingCli:
                 self.input_size
             )
             for output in self.process_iter(self.cor, sized_it):
-                for opt in self.format_output(output):
-                    out.write(opt + "\n")
+                out.write(output + "\n")
 
             out.close()
 
@@ -322,9 +317,8 @@ class TextProcessingCli:
             self.args.progress = False
             while True:
                 ipt = data.InferenceData(input(">> "))
-                output = next(self.process_iter(self.cor, iter([ipt])))
-                for opt in self.format_output(output):
-                    print(opt)
+                for output in self.process_iter(self.cor, iter([ipt])):
+                    print(output)
 
         else:
             if sys.stdin.isatty():
@@ -341,8 +335,7 @@ class TextProcessingCli:
                     self.input_size
                 )
                 for output in self.process_iter(self.cor, sized_it):
-                    for opt in self.format_output(output):
-                        print(opt)
+                    print(output)
 
                 if self.args.report:
                     for d in self.cor.devices:

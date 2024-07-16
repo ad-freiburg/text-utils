@@ -25,8 +25,6 @@ ModelInfo = collections.namedtuple(
     ["name", "description", "tags"]
 )
 
-T = TypeVar("T")
-
 
 class TextProcessor:
     task: str
@@ -186,11 +184,11 @@ class TextProcessor:
         iter: Iterator[data.InferenceData],
         inference_fn: Callable[
             [data.InferenceBatch],
-            list[T]
+            list[Any]
         ],
         postprocessing_fn: Callable[
-            [list[data.InferenceItem], list[T]],
-            data.InferenceData
+            [list[data.InferenceItem], list[Any]],
+            Any
         ],
         progress_desc: str,
         batch_size: int = 16,
@@ -201,7 +199,7 @@ class TextProcessor:
         progress_unit: str = "it",
         show_progress: bool = False,
         **kwargs: Any
-    ) -> Iterator[data.InferenceData]:
+    ) -> Iterator[Any]:
         if num_threads is None:
             num_threads = min(len(os.sched_getaffinity(0)), 4)
 

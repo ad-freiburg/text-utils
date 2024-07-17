@@ -1,176 +1,23 @@
-from typing import Callable, Iterator, Any
+from typing import Any, Iterator
 
 import torch
-
 from torch.nn.utils import rnn
 
 from text_utils.inference.utils import (
     DecodeFn,
+    SampleFn,
+    LogitFn,
     MaskSelectFn,
     MaskUpdateFn,
-    LogitFn,
-    SampleFn,
-    StopFn,
     Beam,
-    BeamSampleFn,
     BeamWidthFn,
-    BeamCandidateFn,
-    BeamStopFn,
-    beam_greedy,
+    CandidateFn,
+    StopFn,
+    ScoreFn,
     default_beam_candidate_fn,
+    log_likelihood_score,
     greedy
 )
-
-
-def eos_stop_fn(eos_token_id: int) -> StopFn:
-    def _stop(token_ids: torch.Tensor, _: int) -> bool:
-        return token_ids[-1].item() == eos_token_id
-
-    return _stop
-
-
-@torch.inference_mode()
-def search(
-    decode_fn: DecodeFn,
-    initial_token_ids: list[list[int]],
-    pad_token_id: int,
-    max_length: int,
-    stop_fn: StopFn,
-    device: torch.device,
-    sample_fn: SampleFn = greedy(),
-    logit_fns: list[LogitFn] | None = None,
-    kwargs_select_fn: MaskSelectFn | None = None,
-    kwargs_update_fn: MaskUpdateFn | None = None,
-    return_full: bool = False,
-    yield_intermediate: bool = False,
-    **kwargs: Any,
-) -> Iterator[list[list[int]]]:
-    batch_size = len(initial_token_ids)
-    assert batch_size > 0, "empty inputs"
-
-    lengths = []
-    padded_initial_token_ids = []
-    for token_ids in initial_token_ids:
-        num_tokens = len(token_ids)
-        assert num_tokens <= max_length, "initial token ids cannot be longer than max length"
-        padded_initial_token_ids.append(
-            token_ids + [pad_token_id] * (max_length + 1 - num_tokens)
-        )
-        lengths.append(num_tokens)
-    initial_lengths = list(lengths)
-
-    log_prob = torch.zeros(
-        batch_size,
-        max_length + 1,
-        dtype=torch.float,
-        device=device
-    )
-    token_ids = torch.as_tensor(
-        padded_initial_token_ids,
-        dtype=torch.long,
-        device=device
-    )
-    lengths = torch.as_tensor(lengths, dtype=torch.long)
-
-    smaller_max_length_mask = torch.ones(
-        batch_size,
-        dtype=torch.bool,
-    )
-    smaller_max_length_mask[lengths >= max_length] = False
-    non_stop_mask = torch.ones(batch_size, dtype=torch.bool)
-    mask = non_stop_mask & smaller_max_length_mask
-    indices = torch.arange(batch_size, dtype=torch.long)
-
-    def get_outputs() -> list[list[int]]:
-        outputs = []
-        for i in range(batch_size):
-            length = lengths[i]
-            start = 0 if return_full else initial_lengths[i]
-            outputs.append(token_ids[i][start:length].tolist())
-        return outputs
-
-    # all sequences are at max length or stopped by stop_fn
-    while torch.sum(mask) > 0:
-        decoder_lengths = lengths[mask]
-        max_decoder_length = torch.max(decoder_lengths)  # type: ignore
-        decoder_token_ids = token_ids[mask][..., :max_decoder_length]
-        indices_mask = indices[mask]
-
-        decoder_kwargs = kwargs_select_fn(
-            kwargs,
-            indices_mask
-        ) if kwargs_select_fn is not None else {}
-
-        # always add a padding mask, indicating which tokens are padding
-        # and the lengths of the sequence to the additional arguments
-        assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \
-            "padding_mask and lengths are added automatically, do not provide them yourself"
-        decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
-        decoder_kwargs["lengths"] = decoder_lengths
-
-        decoder_outputs, decoder_info = decode_fn(
-            decoder_token_ids,
-            **decoder_kwargs
-        )
-        b, s, _ = decoder_outputs.shape
-        if s == 1:
-            decoder_outputs = decoder_outputs[:, 0]
-        else:
-            decoder_outputs = decoder_outputs[
-                torch.arange(b, device=decoder_outputs.device),
-                decoder_lengths.to(decoder_outputs.device) - 1
-            ]
-
-        # process logits and sample
-        batch_indices = indices_mask.tolist()
-        for logit_fn in logit_fns or []:
-            decoder_outputs = logit_fn(decoder_outputs, batch_indices)
-        sel_ids = sample_fn(decoder_outputs, batch_indices)
-
-        # get log prob of selected ids
-        sel_lps = torch.gather(
-            torch.log_softmax(decoder_outputs, dim=-1),
-            -1,
-            sel_ids.unsqueeze(-1)
-        ).squeeze(-1)
-
-        sel_ids = sel_ids.to(token_ids.device)
-        sel_lps = sel_lps.to(log_prob.device)
-        token_ids[mask, decoder_lengths] = sel_ids
-        log_prob[mask, decoder_lengths] = sel_lps
-
-        lengths[mask] += 1
-
-        max_length_indices = torch.where(lengths >= max_length)[0]
-        smaller_max_length_mask[max_length_indices] = False
-
-        for idx in batch_indices:
-            if stop_fn(token_ids[idx, :lengths[idx]], idx):
-                non_stop_mask[idx] = False
-
-        mask = non_stop_mask & smaller_max_length_mask
-
-        if kwargs_update_fn is not None:
-            update_mask = torch.arange(b)[mask[indices_mask]]
-            kwargs_update_fn(kwargs, decoder_info, update_mask)
-
-        if yield_intermediate:
-            yield get_outputs()
-
-    yield get_outputs()
-
-
-def log_likelihood_score(
-    normalize_by_length: bool = True,
-    alpha: float = 1.0
-) -> Callable[[Beam], float]:
-    def _score(beam: Beam) -> float:
-        if normalize_by_length:
-            return beam.log_prob / (len(beam) ** alpha)
-        else:
-            return beam.log_prob
-
-    return _score
 
 
 @torch.inference_mode()
@@ -179,13 +26,14 @@ def beam_search(
     initial: list[list[int]] | list[Beam],
     pad_token_id: int,
     max_length: int,
-    stop_fn: BeamStopFn,
+    stop_fn: StopFn,
     device: torch.device,
     normalize_by_length: bool,
     alpha: float,
     beam_width: int | BeamWidthFn,
-    sample_fn: BeamSampleFn = beam_greedy(),
-    candidate_fn: BeamCandidateFn = default_beam_candidate_fn(),
+    sample_fn: SampleFn = greedy(),
+    candidate_fn: CandidateFn = default_beam_candidate_fn(),
+    score_fn: ScoreFn = log_likelihood_score(True, 1.0),
     logit_fns: list[LogitFn] | None = None,
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,
@@ -320,7 +168,7 @@ def beam_search(
 
         # apply logit functions
         for logit_fn in logit_fns or []:
-            decoder_outputs = logit_fn(decoder_outputs, beams)
+            decoder_outputs = logit_fn(decoder_token_ids, decoder_outputs, beams)
 
         log_probs = torch.log_softmax(decoder_outputs, dim=-1)
 

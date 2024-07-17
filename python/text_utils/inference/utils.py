@@ -70,42 +70,20 @@ class Beam:
 # processes logits and returns new logits
 LogitFn = Callable[
     [
+        # token ids, shape [batch_size, seq_len]
+        torch.Tensor,
         # logits, shape [batch_size, vocab_size]
         torch.Tensor,
-        # indices of the input elements currently being processed
-        list[int] | list[Beam]
+        # beams being processed
+        list[Beam]
     ],
     # new logits, shape [batch_size, vocab_size]
     torch.Tensor,
 ]
 
-# selects indices and scores from given token distributions
-SampleFn = Callable[
-    [
-        # distributions over next token id, shape [batch_size, vocab_size]
-        torch.Tensor,
-        # indices of input batch elements which are sampled
-        list[int]
-    ],
-    # indices of selected tokens, shape [batch_size]
-    torch.Tensor,
-]
-
-# checks if decoding should be stopped
-StopFn = Callable[
-    [
-        # token ids decoded so far
-        torch.Tensor,
-        # index of input batch element checked for stopping
-        int
-    ],
-    # bool indicating if decoding should be stopped
-    bool
-]
-
 # takes in log probs and beam width and returns
 # beam width samples
-BeamSampleFn = Callable[
+SampleFn = Callable[
     [
         # distribution over next tokens, shape [vocab_size]
         torch.Tensor,
@@ -117,7 +95,7 @@ BeamSampleFn = Callable[
 ]
 
 # checks if beam should be stopped
-BeamStopFn = Callable[
+StopFn = Callable[
     [
         # beam checked for stopping
         Beam,
@@ -130,7 +108,7 @@ BeamStopFn = Callable[
 # returns a new updated beam
 # (having this as a separate function allows for state transfer
 # between beams)
-BeamCandidateFn = Callable[
+CandidateFn = Callable[
     [
         Beam,
         int,
@@ -150,17 +128,35 @@ BeamWidthFn = Callable[
 ]
 
 
+# takes in a beam and returns a scalar score
+ScoreFn = Callable[[Beam], float]
+
+
+def log_likelihood_score(
+    normalize_by_length: bool = True,
+    alpha: float = 1.0
+) -> ScoreFn:
+    def _score(beam: Beam) -> float:
+        if normalize_by_length:
+            return beam.log_prob / (len(beam) ** alpha)
+        else:
+            return beam.log_prob
+
+    return _score
+
+
 def constraint_logit_fn(
     retrieve_constraint_fn: Callable[[int | Beam], Constraint | None],
     eos_token_id: int
 ) -> LogitFn:
     def _constrain_logits(
+        _: torch.Tensor,
         logits: torch.Tensor,
-        beams_or_indices:  list[int] | list[Beam]
+        beams:  list[Beam]
     ) -> torch.Tensor:
         zeros = torch.full_like(logits, float("-inf"))
 
-        for i, beam_or_idx in enumerate(beams_or_indices):
+        for i, beam_or_idx in enumerate(beams):
             constraint = retrieve_constraint_fn(beam_or_idx)
 
             if constraint is None or constraint.is_invalid():
@@ -178,32 +174,7 @@ def constraint_logit_fn(
     return _constrain_logits
 
 
-def constraint_sample_fn(
-    retrieve_constraint_fn: Callable[[int], Constraint | None],
-    sample_fn: SampleFn,
-    eos_token_id: int
-) -> SampleFn:
-    def _constrain_sample(
-        logits: torch.Tensor,
-        indices: list[int]
-    ) -> torch.Tensor:
-        token_ids = sample_fn(logits, indices)
-        for idx, token_id in zip(indices, token_ids.tolist()):
-            if token_id == eos_token_id:
-                continue
-
-            constraint = retrieve_constraint_fn(idx)
-            if constraint is None or constraint.is_invalid():
-                continue
-
-            constraint.next(token_id)
-
-        return token_ids
-
-    return _constrain_sample
-
-
-def default_beam_candidate_fn() -> BeamCandidateFn:
+def default_beam_candidate_fn() -> CandidateFn:
     def _default_beam_candidate_fn(
         beam: Beam,
         token_id: int,
@@ -215,53 +186,59 @@ def default_beam_candidate_fn() -> BeamCandidateFn:
 
 
 def sample() -> SampleFn:
-    def _sample(logits: torch.Tensor, _: list[int]) -> torch.Tensor:
+    def _sample(logits: torch.Tensor, k: int) -> torch.Tensor:
         probs = torch.softmax(logits, dim=-1)
-        return torch.multinomial(probs, 1).squeeze(-1)
+        k = min(
+            k,
+            probs.shape[-1],
+            int(torch.sum(probs > 0).item())
+        )
+        return torch.multinomial(probs, k)
 
     return _sample
 
 
-def beam_sample() -> BeamSampleFn:
-    def _beam_sample(logits: torch.Tensor, beam_width: int) -> torch.Tensor:
-        probs = torch.softmax(logits, dim=-1)
-        beam_width = min(
-            beam_width,
-            probs.shape[-1],
-            int(torch.sum(probs > 0).item())
-        )
-        return torch.multinomial(probs, beam_width)
-
-    return _beam_sample
-
-
 def greedy() -> SampleFn:
-    def _greedy(logits: torch.Tensor, _: list[int]) -> torch.Tensor:
-        return torch.argmax(logits, dim=-1)
+    def _greedy(logits: torch.Tensor, k: int) -> torch.Tensor:
+        k = min(
+            k,
+            logits.shape[-1] - int(torch.sum(torch.isinf(logits)).item())
+        )
+        return torch.topk(logits, k, dim=-1).indices
 
     return _greedy
 
 
-def beam_greedy() -> BeamSampleFn:
-    def _beam_greedy(logits: torch.Tensor, beam_width: int) -> torch.Tensor:
-        beam_width = min(
-            beam_width,
-            logits.shape[-1] - int(torch.sum(torch.isinf(logits)).item())
-        )
-        return torch.topk(logits, beam_width, dim=-1).indices
+def repetition_penalty(penalty: float) -> LogitFn:
+    def _repetition_penalty(
+        input_ids: torch.Tensor,
+        logits: torch.Tensor,
+        _beams: list[Beam]
+    ) -> torch.Tensor:
+        logit = torch.gather(logits, -1, input_ids)
+        logit = torch.where(logit > 0, logit / penalty, logit * penalty)
+        return logits.scatter_(-1, input_ids, logit)
 
-    return _beam_greedy
+    return _repetition_penalty
 
 
 def temperature_scaling(temp: float) -> LogitFn:
-    def _temperature_scaling(logits: torch.Tensor, _: list[int] | list[Beam]) -> torch.Tensor:
+    def _temperature_scaling(
+        _input_ids: torch.Tensor,
+        logits: torch.Tensor,
+        _beams: list[Beam]
+    ) -> torch.Tensor:
         return logits / temp
 
     return _temperature_scaling
 
 
 def top_k_masking(k: int) -> LogitFn:
-    def _top_k(logits: torch.Tensor, _: list[int] | list[Beam]) -> torch.Tensor:
+    def _top_k(
+        _input_ids: torch.Tensor,
+        logits: torch.Tensor,
+        _beams: list[Beam]
+    ) -> torch.Tensor:
         topk = torch.full_like(logits, float("-inf"))
         values, indices = torch.topk(
             logits,
@@ -275,7 +252,11 @@ def top_k_masking(k: int) -> LogitFn:
 
 
 def nucleus_masking(p: float) -> LogitFn:
-    def _nuc(logits: torch.Tensor, _: list[int] | list[Beam]) -> torch.Tensor:
+    def _nuc(
+        _input_ids: torch.Tensor,
+        logits: torch.Tensor,
+        _: list[Beam]
+    ) -> torch.Tensor:
         probs = torch.softmax(logits, dim=-1)
         sorted_probs, indices = torch.sort(probs, dim=-1, descending=True)
         cum_sum_probs = torch.cumsum(sorted_probs, dim=-1)

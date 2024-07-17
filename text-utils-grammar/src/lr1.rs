@@ -506,21 +506,28 @@ impl LR1GrammarParser {
         }
     }
 
-    pub fn prefix_parse(
+    pub fn prefix_parse<'p>(
         &self,
-        prefix: &[u8],
+        prefix: &'p [u8],
         skip_empty: bool,
         collapse_single: bool,
-    ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
+    ) -> Result<(LR1Parse<'_>, &'p [u8]), Box<dyn Error>> {
         let (tree, error) = self.parse_tree(prefix)?;
         if let Some(tree) = tree {
-            Ok(Self::node_to_lr1(
-                prefix,
-                &self.grammar,
-                &tree,
-                skip_empty,
-                collapse_single,
-            ))
+            let parse =
+                Self::node_to_lr1(prefix, &self.grammar, &tree, skip_empty, collapse_single);
+            fn find_end(parse: &LR1Parse<'_>, end: usize) -> usize {
+                match parse {
+                    LR1Parse::Empty(..) => end,
+                    LR1Parse::Terminal(.., (start, len), _) => end.max(*start + len),
+                    LR1Parse::NonTerminal(.., children) => children
+                        .last()
+                        .map(|child| find_end(child, end))
+                        .unwrap_or(end),
+                }
+            }
+            let end = find_end(&parse, 0);
+            Ok((parse, &prefix[end..]))
         } else {
             Err(error.unwrap_or_else(|| "failed to parse input".into()))
         }

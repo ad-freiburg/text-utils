@@ -435,12 +435,13 @@ impl LR1Parser {
         input: &[u8],
         skip_empty: bool,
         collapse_single: bool,
-    ) -> anyhow::Result<PyObject> {
-        let parse = slf
+    ) -> anyhow::Result<(PyObject, Vec<u8>)> {
+        let (parse, end) = slf
             .inner
             .prefix_parse(input, skip_empty, collapse_single)
             .map_err(|e| anyhow!("failed to parse input: {e}"))?;
-        Ok(parse_into_py(std::str::from_utf8(input)?, &parse, py)?)
+        let py_parse = parse_into_py(std::str::from_utf8(input)?, &parse, py)?;
+        Ok((py_parse, end.to_vec()))
     }
 
     #[pyo3(signature = (input, skip_empty = false, collapse_single = false))]

@@ -174,6 +174,21 @@ def constraint_logit_fn(
     return _constrain_logits
 
 
+def allow_tokens_logit_fn(allowed_tokens: list[int]) -> LogitFn:
+    allowed = torch.tensor(allowed_tokens, dtype=torch.long)
+
+    def _allow_tokens(
+        _input_ids: torch.Tensor,
+        logits: torch.Tensor,
+        _beams: list[Beam]
+    ) -> torch.Tensor:
+        zeros = torch.full_like(logits, float("-inf"))
+        zeros[:, allowed] = logits[:, allowed]
+        return zeros
+
+    return _allow_tokens
+
+
 def default_beam_candidate_fn() -> CandidateFn:
     def _default_beam_candidate_fn(
         beam: Beam,

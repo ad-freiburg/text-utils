@@ -10,7 +10,6 @@ from text_utils.inference.utils import (
     MaskSelectFn,
     MaskUpdateFn,
     Beam,
-    BeamWidthFn,
     CandidateFn,
     StopFn,
     ScoreFn,
@@ -23,21 +22,20 @@ from text_utils.inference.utils import (
 @torch.inference_mode()
 def beam_search(
     decode_fn: DecodeFn,
-    initial: list[list[int]] | list[Beam],
+    initial: list[list[int]] | list[Beam] | list[list[Beam]],
     pad_token_id: int,
     max_length: int,
     stop_fn: StopFn,
     device: torch.device,
     normalize_by_length: bool,
     alpha: float,
-    beam_width: int | BeamWidthFn,
+    beam_width: int,
     sample_fn: SampleFn = greedy(),
     candidate_fn: CandidateFn = default_beam_candidate_fn(),
     score_fn: ScoreFn = log_likelihood_score(True, 1.0),
     logit_fns: list[LogitFn] | None = None,
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,
-    return_full: bool = False,
     return_incomplete: bool = False,
     yield_intermediate: bool = False,
     **kwargs: Any
@@ -46,84 +44,76 @@ def beam_search(
 
     score_fn = log_likelihood_score(normalize_by_length, alpha)
 
-    beam_widths: list[int] = []
+    decoder_info: Any | None = None
+    update_info: list[int] = []
     current_beams: list[list[Beam]] = []
     beam_queues: list[list[Beam]] = []
-    initial_lengths = []
     for init in initial:
         if isinstance(init, Beam):
-            beam = init
+            beams = [init]
+        elif isinstance(init[0], int):
+            beams = [Beam(init, [0.0] * len(init))]  # type: ignore
+        elif isinstance(init[0], Beam):
+            beams = init
         else:
-            beam = Beam(init, [0.0] * len(init))
+            raise ValueError("invalid initial beam type")
 
-        initial_lengths.append(len(beam))
-        assert initial_lengths[-1] <= max_length, \
-            "initial beam cannot be longer than max length"
-
-        if isinstance(beam_width, int):
-            beam_widths.append(beam_width)
-        else:
-            beam_widths.append(beam_width(beam))
-
-        current_beams.append([beam])
+        current_beams.append(beams)  # type: ignore
+        update_info.append(len(beams))
         beam_queues.append([])
 
-    def get_indices_to_decode() -> list[int]:
-        indices_to_decode = []
+    def filter_beams() -> bool:
+        finished = True
         for idx in range(batch_size):
-            beams = current_beams[idx]
-            beam_queue = beam_queues[idx]
-            if (
-                len(beam_queue) >= beam_widths[idx]
-                or len(beams) == 0
-                or len(beams[0]) >= max_length
-            ):
-                continue
-            indices_to_decode.append(idx)
-        return indices_to_decode
+            new_beams = []
+            for beam in current_beams[idx]:
+                if stop_fn(beam) or len(beam) >= max_length:
+                    beam_queues[idx].append(beam)
+                else:
+                    new_beams.append(beam)
 
-    indices_to_decode = get_indices_to_decode()
+            current_beams[idx] = new_beams
+            finished = finished and (
+                len(current_beams[idx]) == 0
+                or len(beam_queues[idx]) >= beam_width
+            )
+        return finished
 
     def get_outputs(intermediate: bool) -> list[list[Beam]]:
         out_beams = []
         for idx in range(batch_size):
-            beam_queue = beam_queues[idx]
-            current = current_beams[idx]
             if intermediate:
                 # for intermediate outputs we
-                # return the active beams, so swap here
-                beam_queue, current = current, beam_queue
+                # just return the active beams
+                out_beams.append(current_beams[idx])
+                continue
 
             beam_queue = sorted(
-                beam_queue,
+                beam_queues[idx],
                 key=lambda b: score_fn(b),
                 reverse=True
             )
-            if len(beam_queue) == 0 and (return_incomplete or intermediate):
+            if len(beam_queue) == 0 and return_incomplete:
                 beam_queue = sorted(
-                    current,
+                    current_beams[idx],
                     key=lambda b: score_fn(b),
                     reverse=True
                 )
 
-            pfx = 0 if return_full else initial_lengths[idx]
-            n = beam_widths[idx]
-            out_beams.append([
-                beam.truncate_prefix(pfx)
-                for beam in beam_queue[:n]
-            ])
+            out_beams.append(beam_queue[:beam_width])
 
         return out_beams
 
-    while len(indices_to_decode) > 0:
+    while not filter_beams():
         num_beams = []
         beams = []
         decoder_mask = []
         decoder_token_ids = []
         decoder_lengths = []
-        for idx in indices_to_decode:
-            num_beams.append(len(current_beams[idx]))
-            decoder_mask.extend([idx] * num_beams[-1])
+        for idx in range(batch_size):
+            num = len(current_beams[idx])
+            num_beams.append(num)
+            decoder_mask.extend([idx] * num)
             for beam in current_beams[idx]:
                 beams.append(beam)
                 decoder_lengths.append(len(beam))
@@ -142,15 +132,24 @@ def beam_search(
             dtype=torch.long
         )
 
-        decoder_kwargs = kwargs_select_fn(
-            kwargs,
-            decoder_mask
-        ) if kwargs_select_fn is not None else {}
-        # always add a padding mask, indicating which tokens are padding
-        # and the lengths of the sequence to the additional arguments
-        assert "padding_mask" not in decoder_kwargs and "lengths" not in decoder_kwargs, \
-            "padding_mask and lengths are added automatically, do not provide them yourself"
-        decoder_kwargs["padding_mask"] = decoder_token_ids == pad_token_id
+        if kwargs_update_fn is not None and decoder_info is not None:
+            update_mask = []
+            for idx in range(batch_size):
+                update_mask.extend([idx] * update_info[idx])
+            kwargs_update_fn(
+                kwargs,
+                decoder_info,
+                torch.tensor(update_mask, dtype=torch.long)
+            )
+
+        if kwargs_select_fn is not None:
+            decoder_kwargs = kwargs_select_fn(
+                kwargs,
+                decoder_mask
+            )
+        else:
+            decoder_kwargs = {}
+        # lengths are added automatically, do not provide them yourself"
         decoder_kwargs["lengths"] = decoder_lengths_tensor
 
         decoder_outputs, decoder_info = decode_fn(
@@ -168,19 +167,18 @@ def beam_search(
 
         # apply logit functions
         for logit_fn in logit_fns or []:
-            decoder_outputs = logit_fn(decoder_token_ids, decoder_outputs, beams)
+            decoder_outputs = logit_fn(
+                decoder_token_ids,
+                decoder_outputs,
+                beams
+            )
 
         log_probs = torch.log_softmax(decoder_outputs, dim=-1)
 
-        update_info = {}
-        for i, (idx, log_probs) in enumerate(zip(
-            indices_to_decode,
-            torch.split(log_probs, num_beams)
-        )):
-            n = beam_widths[idx]
+        for idx, log_probs in enumerate(torch.split(log_probs, num_beams)):
             candidates: list[tuple[Beam, int, float]] = []
             for beam_idx, beam in enumerate(current_beams[idx]):
-                for token_id in sample_fn(log_probs[beam_idx], n).tolist():
+                for token_id in sample_fn(log_probs[beam_idx], beam_width).tolist():
                     candidates.append((
                         beam,
                         token_id,
@@ -189,38 +187,20 @@ def beam_search(
 
             # reset current beams and fill with best candidates
             current_beams[idx] = []
-            for num, (beam, token_id, log_prob) in enumerate(sorted(
+            for beam, token_id, log_prob in sorted(
                 candidates,
                 key=lambda item: item[0].log_prob + item[2],
                 reverse=True
-            )[:n]):
+            )[:beam_width]:
                 # update candidates
                 candidate = candidate_fn(beam, token_id, log_prob)
                 if candidate is None:
                     # skip invalid candidates
                     continue
-                elif stop_fn(candidate):
-                    # add stop candidates to beam queue
-                    beam_queues[idx].append(candidate)
                 else:
                     current_beams[idx].append(candidate)
 
-            update_info[idx] = (i, len(current_beams[idx]))
-
-        indices_to_decode = get_indices_to_decode()
-
-        if kwargs_update_fn is not None:
-            update_mask = []
-            for idx in indices_to_decode:
-                if idx not in update_info:
-                    continue
-                i, num = update_info[idx]
-                update_mask.extend([i] * num)
-            kwargs_update_fn(
-                kwargs,
-                decoder_info,
-                torch.tensor(update_mask, dtype=torch.long)
-            )
+            update_info[idx] = len(current_beams[idx])
 
         if yield_intermediate:
             yield get_outputs(intermediate=True)

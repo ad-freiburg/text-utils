@@ -43,13 +43,10 @@ class Beam:
             {k: v for k, v in other.info.items()}
         )
 
-    def truncate_prefix(
-        self,
-        length: int
-    ) -> "Beam":
+    def clone(self) -> "Beam":
         return Beam(
-            self.token_ids[length:],
-            self.log_probs[length:],
+            self.token_ids.copy(),
+            self.log_probs.copy(),
             {k: v for k, v in self.info.items()}
         )
 
@@ -146,7 +143,7 @@ def log_likelihood_score(
 
 
 def constraint_logit_fn(
-    retrieve_constraint_fn: Callable[[int | Beam], Constraint | None],
+    retrieve_constraint_fn: Callable[[Beam], Constraint | None],
     eos_token_id: int
 ) -> LogitFn:
     def _constrain_logits(

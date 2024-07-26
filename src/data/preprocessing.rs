@@ -80,7 +80,7 @@ pub enum PreprocessingFnConfig {
     // decode from json string
     JsonDecode(Part),
     // decode from json chat
-    ChatDecode(Part, Option<String>, Option<ChatTemplate>),
+    ChatDecode(Part, ChatTemplate),
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
@@ -271,12 +271,10 @@ impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
                 let Some(part) = d.get_item("part")? else {
                     return Err(py_required_key_error("part", "chat decode config"));
                 };
-                let separator = d.get_item("separator")?.map(|s| s.extract()).transpose()?;
-                let template = d
-                    .get_item("chat_template")?
-                    .map(|t| t.extract())
-                    .transpose()?;
-                PreprocessingFnConfig::ChatDecode(part.extract()?, separator, template)
+                let Some(template) = d.get_item("chat_template")? else {
+                    return Err(py_required_key_error("chat_template", "chat decode config"));
+                };
+                PreprocessingFnConfig::ChatDecode(part.extract()?, template.extract()?)
             }
             k => {
                 return Err(py_invalid_type_error(k, "preprocessing fn"));
@@ -726,18 +724,10 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
         PreprocessingFnConfig::JsonDecode(part) => apply(part, move |s, _| {
             serde_json::from_str(s).map_err(|e| anyhow!("failed to decode string from json: {}", e))
         }),
-        PreprocessingFnConfig::ChatDecode(part, separator, template) => apply(part, move |s, _| {
+        PreprocessingFnConfig::ChatDecode(part, template) => apply(part, move |s, _| {
             let chat = serde_json::from_str::<Chat>(s)
                 .map_err(|e| anyhow!("failed to decode chat from json: {}", e))?;
-
-            if let Some(template) = &template {
-                template.format(&chat)
-            } else {
-                Ok(chat
-                    .into_iter()
-                    .map(|m| m.text)
-                    .join(separator.as_deref().unwrap_or_default()))
-            }
+            template.format(&chat)
         }),
     }
 }

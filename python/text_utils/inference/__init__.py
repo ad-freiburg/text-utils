@@ -51,6 +51,8 @@ def beam_search(
     for init in initial:
         if isinstance(init, Beam):
             beams = [init]
+        elif len(init) == 0:
+            beams = []
         elif isinstance(init[0], int):
             beams = [Beam(init, [0.0] * len(init))]  # type: ignore
         elif isinstance(init[0], Beam):

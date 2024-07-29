@@ -321,7 +321,7 @@ class TextProcessingCli:
             while True:
                 ipt = data.InferenceData(input(">> "))
                 for output in self.process_iter(self.cor, iter([ipt])):
-                    print(output)
+                    print(output, flush=self.args.unsorted)
 
         else:
             if sys.stdin.isatty():
@@ -338,7 +338,7 @@ class TextProcessingCli:
                     self.input_size
                 )
                 for output in self.process_iter(self.cor, sized_it):
-                    print(output)
+                    print(output, flush=self.args.unsorted)
 
                 if self.args.report:
                     for d in self.cor.devices:

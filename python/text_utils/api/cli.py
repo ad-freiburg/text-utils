@@ -4,7 +4,7 @@ import sys
 import time
 import logging
 import warnings
-from typing import Iterator, Iterable, Type, Any
+from typing import Iterator, Type, Any
 try:
     import readline  # noqa
 except ImportError:
@@ -168,8 +168,8 @@ class TextProcessingCli:
         parser.add_argument(
             "--log-level",
             type=str,
-            choices=["none", "info", "debug"],
-            default="none",
+            choices=["info", "debug"],
+            default=None,
             help="Sets the logging level for the underlying loggers"
         )
         parser.add_argument(
@@ -250,10 +250,13 @@ class TextProcessingCli:
             self.text_processing_server_cls.from_config(self.args.server).run()
             return
 
-        if self.args.log_level == "info":
-            logging.basicConfig(level=logging.INFO)
-        elif self.args.log_level == "debug":
-            logging.basicConfig(level=logging.DEBUG)
+        if self.args.log_level is not None:
+            # set template for logging
+            logging.basicConfig(
+                level=self.args.log_level.upper(),
+                format="[%(asctime)s] p%(process)s {%(pathname)s:%(lineno)d} "
+                "%(levelname)s - %(message)s"
+            )
         else:
             logging.disable(logging.CRITICAL)
 

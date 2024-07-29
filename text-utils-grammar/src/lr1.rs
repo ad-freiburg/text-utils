@@ -521,9 +521,9 @@ impl LR1GrammarParser {
                     LR1Parse::Empty(..) => end,
                     LR1Parse::Terminal(.., (start, len), _) => end.max(*start + len),
                     LR1Parse::NonTerminal(.., children) => children
-                        .last()
+                        .iter()
                         .map(|child| find_end(child, end))
-                        .unwrap_or(end),
+                        .fold(end, |cur, end| cur.max(end)),
                 }
             }
             let end = find_end(&parse, 0);

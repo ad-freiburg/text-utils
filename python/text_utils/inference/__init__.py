@@ -82,29 +82,30 @@ def beam_search(
         return finished
 
     def get_outputs(intermediate: bool) -> list[list[Beam]]:
-        out_beams = []
+        outputs = []
         for idx in range(batch_size):
+            beam_queue = beam_queues[idx]
+            current = current_beams[idx]
             if intermediate:
                 # for intermediate outputs we
-                # just return the active beams
-                out_beams.append(current_beams[idx])
-                continue
+                # return the active beams, so swap here
+                beam_queue, current = current, beam_queue
 
             beam_queue = sorted(
-                beam_queues[idx],
+                beam_queue,
                 key=lambda b: score_fn(b),
                 reverse=True
             )
-            if len(beam_queue) == 0 and return_incomplete:
+            if len(beam_queue) == 0 and (return_incomplete or intermediate):
                 beam_queue = sorted(
-                    current_beams[idx],
+                    current,
                     key=lambda b: score_fn(b),
                     reverse=True
                 )
 
-            out_beams.append(beam_queue[:beam_width])
+            outputs.append(beam_queue[:beam_width])
 
-        return out_beams
+        return outputs
 
     while not filter_beams():
         num_beams = []

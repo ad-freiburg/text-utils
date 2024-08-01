@@ -3,7 +3,7 @@ import math
 import sys
 import os
 import pprint
-from typing import Iterator, Any, Callable, TypeVar
+from typing import Iterator, Any, Callable
 
 import torch
 from torch import nn

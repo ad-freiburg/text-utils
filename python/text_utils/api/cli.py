@@ -18,8 +18,6 @@ from text_utils.api.server import TextProcessingServer
 from text_utils.api.table import generate_report, generate_table
 from text_utils.api.utils import ProgressIterator
 
-from text_utils import data
-
 
 class TextProcessingCli:
     text_processor_cls: Type[TextProcessor]
@@ -319,7 +317,7 @@ class TextProcessingCli:
         elif self.args.interactive:
             self.args.progress = False
             while True:
-                ipt = data.InferenceData(input(">> "))
+                ipt = input(">> ")
                 for output in self.process_iter(self.cor, iter([ipt])):
                     print(output, flush=self.args.unsorted)
 

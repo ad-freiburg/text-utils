@@ -763,26 +763,31 @@ mod tests {
         };
         let chat_fn = preprocessing(PreprocessingFnConfig::ChatDecode(
             Part::Input,
-            Some("\n".to_string()),
-            None,
+            ChatTemplate {
+                start: None,
+                roles: vec![("user", "{text}\n"), ("bot", "{text}\n")]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                end: None,
+            },
         ));
         let (data, _) = chat_fn(data, TextDataInfo::default()).unwrap();
-        assert_eq!(data.input, "Hello\nHi");
+        assert_eq!(data.input, "Hello\nHi\n");
         let data = TrainData {
             input: chat.to_string(),
             target: "".to_string(),
         };
         let chat_fn = preprocessing(PreprocessingFnConfig::ChatDecode(
             Part::Input,
-            None,
-            Some(ChatTemplate {
+            ChatTemplate {
                 start: Some("<start>".to_string()),
                 roles: vec![("user", "User: {text}\n"), ("bot", "Bot: {text}")]
                     .into_iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
                 end: Some("<end>".to_string()),
-            }),
+            },
         ));
         let (data, _) = chat_fn(data, TextDataInfo::default()).unwrap();
         assert_eq!(data.input, "<start>User: Hello\nBot: Hi<end>");

@@ -1,11 +1,12 @@
 import logging
 
-_LOG_FORMAT = "%(asctime)s [%(name)s] [%(levelname)s] %(message)s"
+LOG_FORMAT = "[%(asctime)s] {%(name)s - %(levelname)s} %(message)s"
 
-__all__ = ["setup_logging", "add_file_log", "get_logger", "eta_minutes_message", "eta_seconds_message"]
+__all__ = ["setup_logging", "add_file_log", "get_logger",
+           "eta_minutes_message", "eta_seconds_message"]
 
 
-def setup_logging(level: int = logging.INFO) -> None:
+def setup_logging(level: int | str = logging.INFO) -> None:
     """
 
     Sets up logging with a custom log format and level.
@@ -13,8 +14,20 @@ def setup_logging(level: int = logging.INFO) -> None:
     :param level: log level
     :return: None
     """
-    logging.basicConfig(format=_LOG_FORMAT)
-    logging.getLogger().setLevel(level)
+    logging.basicConfig(
+        format=LOG_FORMAT,
+        level=logging.getLevelName(level)
+    )
+
+
+def disable_logging() -> None:
+    """
+
+    Disables logging.
+
+    :return: None
+    """
+    logging.disable(logging.CRITICAL)
 
 
 def add_file_log(logger: logging.Logger, log_file: str) -> None:
@@ -27,11 +40,11 @@ def add_file_log(logger: logging.Logger, log_file: str) -> None:
     :return: logger with file logging handler
     """
     file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(file_handler)
 
 
-def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+def get_logger(name: str, level: int | None = None) -> logging.Logger:
     """
 
     Get a logger that writes to stderr.
@@ -44,10 +57,11 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.propagate = False
     stderr_handler = logging.StreamHandler()
-    stderr_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    stderr_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     if not logger.hasHandlers():
         logger.addHandler(stderr_handler)
-    logger.setLevel(level)
+    if level is not None:
+        logger.setLevel(level)
     return logger
 
 

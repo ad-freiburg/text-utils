@@ -25,34 +25,61 @@ class Beam:
         self,
         token_ids: list[int],
         log_probs: list[float],
-        info: dict[str, Any] | None = None
+        info: dict[str, Any] | None = None,
+        initial_length: int | None = None
     ) -> None:
+        assert len(token_ids) == len(log_probs), \
+            "expected token_ids and log_probs to have the same length"
         self.token_ids = token_ids
         self.log_probs = log_probs
+        if initial_length is None:
+            initial_length = len(token_ids)
+        self.initial_length = initial_length
         self.info: dict[str, Any] = info or {}
 
-    @staticmethod
-    def from_beam(
-        other: "Beam",
+    def add(
+        self,
         token_id: int,
         log_p: float
-    ) -> "Beam":
-        return Beam(
-            other.token_ids + [token_id],
-            other.log_probs + [log_p],
-            {k: v for k, v in other.info.items()}
-        )
+    ) -> None:
+        self.token_ids.append(token_id)
+        self.log_probs.append(log_p)
 
     def clone(self) -> "Beam":
         return Beam(
             self.token_ids.copy(),
             self.log_probs.copy(),
-            {k: v for k, v in self.info.items()}
+            self.info.copy(),
+            self.initial_length
         )
+
+    @property
+    def initial_token_ids(self) -> list[int]:
+        return self.token_ids[:self.initial_length]
+
+    @property
+    def initial_log_probs(self) -> list[float]:
+        return self.log_probs[:self.initial_length]
+
+    @property
+    def decoded_token_ids(self) -> list[int]:
+        return self.token_ids[self.initial_length:]
+
+    @property
+    def decoded_log_probs(self) -> list[float]:
+        return self.log_probs[self.initial_length:]
 
     @property
     def log_prob(self) -> float:
         return sum(self.log_probs)
+
+    @property
+    def decoded_log_prob(self) -> float:
+        return sum(self.decoded_log_probs)
+
+    @property
+    def decoded_length(self) -> int:
+        return len(self) - self.initial_length
 
     def __lt__(self, other: "Beam") -> bool:
         return len(self) < len(other)
@@ -101,16 +128,9 @@ StopFn = Callable[
     bool
 ]
 
-# takes in the beam, token id, and log prob,
-# returns a new updated beam
-# (having this as a separate function allows for state transfer
-# between beams)
-CandidateFn = Callable[
-    [
-        Beam,
-        int,
-        float
-    ],
+# takes in a beam candidate and returns an updated beam
+UpdateFn = Callable[
+    [Beam],
     Beam | None
 ]
 
@@ -131,13 +151,21 @@ ScoreFn = Callable[[Beam], float]
 
 def log_likelihood_score(
     normalize_by_length: bool = True,
-    alpha: float = 1.0
+    alpha: float = 1.0,
+    full: bool = False
 ) -> ScoreFn:
     def _score(beam: Beam) -> float:
-        if normalize_by_length:
-            return beam.log_prob / (len(beam) ** alpha)
+        if full:
+            log_prob = beam.log_prob
+            length = len(beam)
         else:
-            return beam.log_prob
+            log_prob = beam.decoded_log_prob
+            length = beam.decoded_length
+
+        if normalize_by_length and length > 0:
+            return log_prob / (length ** alpha)
+        else:
+            return log_prob
 
     return _score
 
@@ -186,15 +214,11 @@ def allow_tokens_logit_fn(allowed_tokens: list[int]) -> LogitFn:
     return _allow_tokens
 
 
-def default_beam_candidate_fn() -> CandidateFn:
-    def _default_beam_candidate_fn(
-        beam: Beam,
-        token_id: int,
-        log_prob: float
-    ) -> Beam:
-        return Beam.from_beam(beam, token_id, log_prob)
+def identity_update_fn() -> UpdateFn:
+    def _update_fn(beam: Beam) -> Beam:
+        return beam
 
-    return _default_beam_candidate_fn
+    return _update_fn
 
 
 def sample() -> SampleFn:

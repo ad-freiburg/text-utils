@@ -2,7 +2,6 @@ import argparse
 from io import TextIOWrapper
 import sys
 import time
-import logging
 import warnings
 from typing import Iterator, Type, Any
 try:
@@ -17,6 +16,7 @@ from text_utils.api.processor import TextProcessor
 from text_utils.api.server import TextProcessingServer
 from text_utils.api.table import generate_report, generate_table
 from text_utils.api.utils import ProgressIterator
+from text_utils.logging import setup_logging, disable_logging
 
 
 class TextProcessingCli:
@@ -166,7 +166,7 @@ class TextProcessingCli:
         parser.add_argument(
             "--log-level",
             type=str,
-            choices=["info", "debug"],
+            choices=["info", "debug", "warning", "error", "critical"],
             default=None,
             help="Sets the logging level for the underlying loggers"
         )
@@ -250,13 +250,9 @@ class TextProcessingCli:
 
         if self.args.log_level is not None:
             # set template for logging
-            logging.basicConfig(
-                level=self.args.log_level.upper(),
-                format="[%(asctime)s] p%(process)s {%(pathname)s:%(lineno)d} "
-                "%(levelname)s - %(message)s"
-            )
+            setup_logging(self.args.log_level.upper())
         else:
-            logging.disable(logging.CRITICAL)
+            disable_logging()
 
         self.cor = self.setup()
 

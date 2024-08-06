@@ -6,7 +6,7 @@ fn main() {
     let dir = env!("CARGO_MANIFEST_DIR");
     let index = fs::read_to_string(PathBuf::from(dir).join("resources/test/index.txt"))
         .expect("failed to read file");
-    let n = 10_000_000;
+    let n = 100_000_000;
 
     let art: AdaptiveRadixTrie<_> = index
         .lines()
@@ -26,7 +26,7 @@ fn main() {
     let start = std::time::Instant::now();
     let _ = cont.sub_index_by_values(0..10000usize);
     println!(
-        "sub_index_by_values took: {:?}us",
-        start.elapsed().as_micros()
+        "sub_index_by_values took: {:?}ms",
+        start.elapsed().as_micros() / 1000
     );
 }

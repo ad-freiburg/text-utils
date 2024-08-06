@@ -10,10 +10,10 @@ from text_utils.inference.utils import (
     MaskSelectFn,
     MaskUpdateFn,
     Beam,
-    CandidateFn,
+    UpdateFn,
     StopFn,
     ScoreFn,
-    default_beam_candidate_fn,
+    identity_update_fn,
     log_likelihood_score,
     greedy
 )
@@ -27,11 +27,9 @@ def beam_search(
     max_length: int,
     stop_fn: StopFn,
     device: torch.device,
-    normalize_by_length: bool,
-    alpha: float,
     beam_width: int,
     sample_fn: SampleFn = greedy(),
-    candidate_fn: CandidateFn = default_beam_candidate_fn(),
+    update_fn: UpdateFn = identity_update_fn(),
     score_fn: ScoreFn = log_likelihood_score(True, 1.0),
     logit_fns: list[LogitFn] | None = None,
     kwargs_select_fn: MaskSelectFn | None = None,
@@ -41,8 +39,6 @@ def beam_search(
     **kwargs: Any
 ) -> Iterator[list[list[Beam]]]:
     batch_size = len(initial)
-
-    score_fn = log_likelihood_score(normalize_by_length, alpha)
 
     decoder_info: Any | None = None
     update_info: list[int] = []
@@ -168,6 +164,8 @@ def beam_search(
                 decoder_lengths_tensor - 1
             ]
 
+        org_log_probs = torch.log_softmax(decoder_outputs, dim=-1)
+
         # apply logit functions
         for logit_fn in logit_fns or []:
             decoder_outputs = logit_fn(
@@ -178,25 +176,26 @@ def beam_search(
 
         log_probs = torch.log_softmax(decoder_outputs, dim=-1)
 
-        for idx, log_probs in enumerate(torch.split(log_probs, num_beams)):
-            candidates: list[tuple[Beam, int, float]] = []
+        for idx, (log_probs, org_log_probs) in enumerate(zip(
+            torch.split(log_probs, num_beams),
+            torch.split(org_log_probs, num_beams)
+        )):
+            candidates: list[Beam] = []
             for beam_idx, beam in enumerate(current_beams[idx]):
                 for token_id in sample_fn(log_probs[beam_idx], beam_width).tolist():
-                    candidates.append((
-                        beam,
-                        token_id,
-                        log_probs[beam_idx, token_id].item()
-                    ))
+                    candidate = beam.clone()
+                    candidate.add(token_id, org_log_probs[beam_idx, token_id].item())
+                    candidates.append(candidate)
 
             # reset current beams and fill with best candidates
             current_beams[idx] = []
-            for beam, token_id, log_prob in sorted(
+            for candidate in sorted(
                 candidates,
-                key=lambda item: item[0].log_prob + item[2],
+                key=lambda b: score_fn(b),
                 reverse=True
             )[:beam_width]:
                 # update candidates
-                candidate = candidate_fn(beam, token_id, log_prob)
+                candidate = update_fn(candidate)
                 if candidate is None:
                     # skip invalid candidates
                     continue

@@ -851,6 +851,7 @@ training will resume from latest checkpoint."
         directories: dict[str, str],
         profile: str | None = None
     ):
+        logging.setup_logging()
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = str(port)
 
@@ -890,6 +891,7 @@ training will resume from latest checkpoint."
         assert torch.cuda.device_count() > 0, "need at least one GPU for training, but found none"
         assert dist.is_available(), "distributed package must be available for training"
         assert dist.is_nccl_available(), "nccl backend for distributed training must be available"
+        logging.setup_logging()
         logger = logging.get_logger("SLURM_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
         logger.info(f"Found {num_gpus} GPU{'s' * (num_gpus > 1)} "
@@ -967,6 +969,7 @@ training will resume from latest checkpoint."
 
     @classmethod
     def train_local(cls, work_dir: str, experiment_dir: str, config_path: str, profile: str | None = None):
+        logging.setup_logging()
         logger = logging.get_logger("LOCAL_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
         assert num_gpus > 0, "need at least one GPU for local training"

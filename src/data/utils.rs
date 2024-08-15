@@ -111,6 +111,12 @@ pub type Chat = Vec<ChatMessage>;
 pub struct ChatMessage {
     pub text: String,
     pub role: String,
+    #[serde(default = "default_partial")]
+    pub partial: bool,
+}
+
+fn default_partial() -> bool {
+    false
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,21 +127,52 @@ pub struct ChatTemplate {
 }
 
 impl ChatTemplate {
+    pub fn new(
+        start: Option<String>,
+        roles: HashMap<String, String>,
+        end: Option<String>,
+    ) -> anyhow::Result<Self> {
+        for (role, template) in &roles {
+            // check that each template contains {text} exactly once
+            if template.matches("{text}").count() != 1 {
+                return Err(anyhow!(
+                    "role template for {} must contain exactly one {{text}} pattern",
+                    role
+                ));
+            }
+        }
+        Ok(ChatTemplate { start, roles, end })
+    }
+
     pub fn format(&self, chat: &[ChatMessage]) -> anyhow::Result<String> {
         let mut text = String::new();
         if let Some(start) = &self.start {
             text.push_str(start);
         }
-        for msg in chat {
+        let mut last_partial = false;
+        for (i, msg) in chat.iter().enumerate() {
             let role_template = self
                 .roles
                 .get(&msg.role)
                 .ok_or_else(|| anyhow!("role {} not found in template", &msg.role))?;
-            let formatted = role_template.replace("{text}", &msg.text);
-            text.push_str(&formatted);
+            if msg.partial {
+                if i != chat.len() - 1 {
+                    return Err(anyhow!("only last message can be partial"));
+                }
+                last_partial = true;
+                // trim everything after {text} for partial message
+                let pos = role_template
+                    .find("{text}")
+                    .ok_or_else(|| anyhow!("partial message must contain {{text}}"))?;
+                text.push_str(&role_template[..pos]);
+                text.push_str(&msg.text);
+            } else {
+                let formatted = role_template.replace("{text}", &msg.text);
+                text.push_str(&formatted);
+            }
         }
-        if let Some(end) = &self.end {
-            text.push_str(end);
+        if !last_partial && self.end.is_some() {
+            text.push_str(self.end.as_ref().unwrap())
         }
         Ok(text)
     }
@@ -149,11 +186,11 @@ impl<'a> FromPyObject<'a> for ChatTemplate {
             return Err(py_required_key_error("roles", "chat template"));
         };
 
-        Ok(ChatTemplate {
-            start: d.get_item("start")?.map(|s| s.extract()).transpose()?,
-            roles: roles.extract()?,
-            end: d.get_item("end")?.map(|s| s.extract()).transpose()?,
-        })
+        Ok(ChatTemplate::new(
+            d.get_item("start")?.map(|s| s.extract()).transpose()?,
+            roles.extract()?,
+            d.get_item("end")?.map(|s| s.extract()).transpose()?,
+        )?)
     }
 }
 
@@ -163,27 +200,59 @@ mod test {
 
     #[test]
     fn test_chat_template() {
-        let template = ChatTemplate {
-            start: Some("<start>".to_string()),
-            roles: vec![("user", "User: {text}\n"), ("bot", "Bot: {text}")]
+        let template = ChatTemplate::new(
+            Some("<start>".to_string()),
+            vec![("user", "User: {text}\n"), ("bot", "Bot: {text}\n")]
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
-            end: Some("<end>".to_string()),
-        };
+            Some("<end>".to_string()),
+        )
+        .unwrap();
         let chat = vec![
             ChatMessage {
                 text: "Hello".to_string(),
                 role: "user".to_string(),
+                partial: false,
             },
             ChatMessage {
                 text: "Hi".to_string(),
                 role: "bot".to_string(),
+                partial: false,
             },
         ];
         assert_eq!(
             template.format(&chat).unwrap(),
-            "<start>User: Hello\nBot: Hi<end>"
+            "<start>User: Hello\nBot: Hi\n<end>"
         );
+        let chat = vec![
+            ChatMessage {
+                text: "Hello".to_string(),
+                role: "user".to_string(),
+                partial: false,
+            },
+            ChatMessage {
+                text: "this is not yet fini".to_string(),
+                role: "bot".to_string(),
+                partial: true,
+            },
+        ];
+        assert_eq!(
+            template.format(&chat).unwrap(),
+            "<start>User: Hello\nBot: this is not yet fini"
+        );
+        let chat = vec![
+            ChatMessage {
+                text: "Hello".to_string(),
+                role: "user".to_string(),
+                partial: true,
+            },
+            ChatMessage {
+                text: "Hi".to_string(),
+                role: "bot".to_string(),
+                partial: true,
+            },
+        ];
+        assert!(matches!(template.format(&chat), Err(_)));
     }
 }

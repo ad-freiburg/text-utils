@@ -24,10 +24,12 @@ class Beam:
     def __init__(
         self,
         token_ids: list[int],
-        log_probs: list[float],
+        log_probs: list[float] | None = None,
         info: dict[str, Any] | None = None,
         initial_length: int | None = None
     ) -> None:
+        if log_probs is None:
+            log_probs = [0.0] * len(token_ids)
         assert len(token_ids) == len(log_probs), \
             "expected token_ids and log_probs to have the same length"
         self.token_ids = token_ids

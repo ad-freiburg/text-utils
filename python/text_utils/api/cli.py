@@ -245,6 +245,7 @@ class TextProcessingCli:
             print(table)
             return
         elif self.args.server is not None:
+            setup_logging((self.args.log_level or "INFO").upper())
             self.text_processing_server_cls.from_config(self.args.server).run()
             return
 

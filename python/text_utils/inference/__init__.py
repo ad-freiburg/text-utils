@@ -59,7 +59,7 @@ def beam_search(
         elif len(init) == 0:
             beams = []
         elif isinstance(init[0], int):
-            beams = [Beam(init, [0.0] * len(init))]  # type: ignore
+            beams = [Beam(init)]  # type: ignore
         elif isinstance(init[0], Beam):
             beams = init
         else:
@@ -197,7 +197,9 @@ def beam_search(
                 for token_id in sample_fn(log_probs[beam_idx], beam_width).tolist():
                     candidate = beam.clone()
                     candidate.add(
-                        token_id, org_log_probs[beam_idx, token_id].item())
+                        token_id,
+                        org_log_probs[beam_idx, token_id].item()
+                    )
                     candidates.append(candidate)
 
             # reset current beams and fill with best candidates

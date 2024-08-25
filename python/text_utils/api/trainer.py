@@ -88,10 +88,9 @@ training will resume from latest checkpoint."
         )
         parser.add_argument(
             "--profile",
-            type=str,
-            default=None,
-            help="Run cProfile profile on main process and output stats to this file "
-            "(only respected if platform=local)"
+            action="store_true",
+            help="Run cProfile profile on main process and output stats to 'profile.pstat' "
+            "in experiment directory (only works for platform=local)"
         )
         return parser
 
@@ -166,10 +165,14 @@ training will resume from latest checkpoint."
         assert dist_type in {"DDP", "FSDP"}, \
             f"distributed training type must be either DDP or FSDP, but got {dist_type}"
 
-        if dist_type == "DDP":
+        if self.info.is_single_gpu:
+            self.model = model.to(self.info.device)
+            dist_type = "single GPU"
+        elif dist_type == "DDP":
             self.model = DDP(
                 model.to(self.info.device),
-                static_graph=compile
+                static_graph=compile,
+                gradient_as_bucket_view=True
             )
         else:
             offload_params = dist_cfg.get("offload", False)
@@ -234,7 +237,7 @@ training will resume from latest checkpoint."
                 )
             )
 
-        self.model: DDP | FSDP = torch.compile(
+        self.model: nn.Module | DDP | FSDP = torch.compile(
             self.model,
             fullgraph=True,
             disable=not compile
@@ -849,7 +852,7 @@ training will resume from latest checkpoint."
         port: int,
         cfg: dict[str, Any],
         directories: dict[str, str],
-        profile: str | None = None
+        profile: bool
     ):
         logging.setup_logging()
         os.environ["MASTER_ADDR"] = "localhost"
@@ -874,16 +877,25 @@ training will resume from latest checkpoint."
 
         assert dist.is_initialized(), "failed to initialize process group"
 
-        if info.is_main_process and profile is not None:
+        if info.is_main_process and profile:
             import cProfile
+            torch.cuda.memory._record_memory_history()
             cProfile.runctx(
                 "cls(cfg, directories, info).run()",
                 globals(),
                 locals(),
-                filename=profile
+                filename=os.path.join(
+                    directories["experiment"],
+                    "profile.pstat"
+                )
             )
+            torch.cuda.memory._dump_snapshot(os.path.join(
+                directories["experiment"],
+                "memory_profile.pickle"
+            ))
         else:
             cls(cfg, directories, info).run()
+
         dist.destroy_process_group()
 
     @classmethod
@@ -968,7 +980,13 @@ training will resume from latest checkpoint."
         dist.destroy_process_group()
 
     @classmethod
-    def train_local(cls, work_dir: str, experiment_dir: str, config_path: str, profile: str | None = None):
+    def train_local(
+        cls,
+        work_dir: str,
+        experiment_dir: str,
+        config_path: str,
+        profile: bool
+    ):
         logging.setup_logging()
         logger = logging.get_logger("LOCAL_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
@@ -1133,7 +1151,7 @@ training will resume from latest checkpoint."
                 ), torch.autograd.set_detect_anomaly(
                     os.environ.get("TORCH_SET_DETECT_ANOMALY", "") != ""
                 ):
-                    if i < len(batches) - 1:
+                    if i < len(batches) - 1 and self.info.is_distributed:
                         with self.model.no_sync():
                             outputs, loss = step(
                                 batch,
@@ -1144,7 +1162,11 @@ training will resume from latest checkpoint."
                     else:
                         # synchronize gradients for the last batch
                         outputs, loss = step(
-                            batch, rank_batch_size, inputs, labels)
+                            batch,
+                            rank_batch_size,
+                            inputs,
+                            labels
+                        )
 
                 losses.append(loss)
                 if first_outputs is None:

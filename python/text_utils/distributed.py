@@ -1,4 +1,4 @@
-from typing import Any, Dict, Union
+from typing import Any
 
 import torch
 from torch import nn, optim
@@ -28,6 +28,14 @@ class DistributedInfo:
                 f"but got {torch.cuda.device_count()} GPUs instead"
             )
         self.device = torch.device(device_index)
+
+    @property
+    def is_distributed(self) -> bool:
+        return not self.is_single_gpu
+
+    @property
+    def is_single_gpu(self) -> bool:
+        return self.world_size == 1
 
     @property
     def is_local_main_process(self) -> bool:

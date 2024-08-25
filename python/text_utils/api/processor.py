@@ -213,7 +213,7 @@ class TextProcessor:
             min_items_per_batch = math.ceil(batch_limit / self.max_length)
             buffer_size = min_items_per_batch
 
-        if sorted:
+        if sort:
             prefetch_factor = sys.maxsize
         else:
             prefetch_factor = 1
@@ -240,7 +240,7 @@ class TextProcessor:
             progress_unit,
             show_progress
         )
-        if sorted:
+        if sort:
             results = {}
             for batch in loader:
                 with torch.inference_mode():

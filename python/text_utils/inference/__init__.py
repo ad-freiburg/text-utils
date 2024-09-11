@@ -35,10 +35,13 @@ def beam_search(
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,
     max_outputs: int | list[int] | None = None,
+    max_new_tokens: int | None = None,
     return_incomplete: bool = False,
     yield_intermediate: bool = False,
     **kwargs: Any
 ) -> Iterator[list[list[Beam]]]:
+    assert max_new_tokens is None or max_new_tokens > 0, \
+        "max_new_tokens must be None or positive"
     batch_size = len(initial)
 
     decoder_info: Any | None = None
@@ -69,12 +72,19 @@ def beam_search(
         update_info.append(len(beams))
         beam_queues.append([])
 
+    def should_stop(beam: Beam) -> bool:
+        return (
+            stop_fn(beam)
+            or len(beam) >= max_length
+            or beam.decoded_length >= (max_new_tokens or beam.decoded_length + 1)
+        )
+
     def filter_beams() -> bool:
         finished = True
         for idx in range(batch_size):
             new_beams = []
             for beam in current_beams[idx]:
-                if stop_fn(beam) or len(beam) >= max_length:
+                if should_stop(beam):
                     beam_queues[idx].append(beam)
                 else:
                     new_beams.append(beam)

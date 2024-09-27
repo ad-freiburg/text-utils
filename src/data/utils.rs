@@ -126,6 +126,19 @@ pub struct ChatTemplate {
     pub end: Option<String>,
 }
 
+impl Default for ChatTemplate {
+    fn default() -> Self {
+        ChatTemplate {
+            start: None,
+            roles: ["user", "assistant", "system"]
+                .iter()
+                .map(|r| (r.to_string(), format!("<|{r}|>\n{{text}}\n\n")))
+                .collect(),
+            end: Some("<|assistant|>\n".to_string()),
+        }
+    }
+}
+
 impl ChatTemplate {
     pub fn new(
         start: Option<String>,

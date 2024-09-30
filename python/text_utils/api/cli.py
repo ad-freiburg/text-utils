@@ -50,6 +50,11 @@ class TextProcessingCli:
             help="Path to an experiment directory from which the model will be loaded "
                  "(use this when you trained your own model and want to use it)"
         )
+        parser.add_argument(
+            "--last",
+            action="store_true",
+            help="Use last checkpoint instead of best, only works with experiments"
+        )
         input_group = parser.add_mutually_exclusive_group()
         input_group.add_argument(
             "-p",
@@ -203,7 +208,8 @@ class TextProcessingCli:
         if self.args.experiment:
             cor = self.text_processor_cls.from_experiment(
                 experiment_dir=self.args.experiment,
-                device=device
+                device=device,
+                last=self.args.last,
             )
         else:
             cor = self.text_processor_cls.from_pretrained(

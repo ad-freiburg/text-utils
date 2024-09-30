@@ -124,24 +124,27 @@ class TextProcessor:
     def from_experiment(
         cls,
         experiment_dir: str,
-        device: Device = "cuda"
+        device: Device = "cuda",
+        last: bool = False
     ):
         cfg = configuration.load_config_from_experiment(experiment_dir)
         model = cls._model_from_config(cfg, device)
-        best_checkpoint_path = os.path.join(
-            experiment_dir,
-            "checkpoints",
-            "checkpoint_best.pt"
-        )
-        if not os.path.exists(best_checkpoint_path):
-            best_checkpoint_path = os.path.join(
+        ckpt_keys = ["best", "last"]
+        if last:
+            ckpt_keys = reversed(ckpt_keys)
+
+        for ckpt in ckpt_keys:
+            ckpt_path = os.path.join(
                 experiment_dir,
                 "checkpoints",
-                "checkpoint_last.pt"
+                f"checkpoint_{ckpt}.pt"
             )
-        if os.path.exists(best_checkpoint_path):
-            best_checkpoint = io.load_checkpoint(best_checkpoint_path)
-            model.load_state_dict(best_checkpoint["model_state_dict"])
+            if not os.path.exists(ckpt_path):
+                continue
+
+            checkpoint = io.load_checkpoint(ckpt_path)
+            model.load_state_dict(checkpoint["model_state_dict"])
+
         model = model.eval().requires_grad_(False)
         return cls(model, cfg, device)
 

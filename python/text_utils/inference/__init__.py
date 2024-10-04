@@ -30,7 +30,7 @@ def beam_search(
     beam_width: int,
     sample_fn: SampleFn = greedy(),
     update_fn: UpdateFn = identity_update_fn(),
-    score_fn: ScoreFn = log_likelihood_score(True, 1.0),
+    score_fn: ScoreFn = log_likelihood_score(),
     logit_fns: list[LogitFn] | None = None,
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,

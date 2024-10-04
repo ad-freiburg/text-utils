@@ -1015,9 +1015,8 @@ training will resume from latest checkpoint."
         }
         mp.spawn(
             fn=cls._train_local_distributed,
-            nprocs=num_gpus,
             args=(num_gpus, port, cfg, directories, profile),
-            join=True
+            nprocs=num_gpus,
         )
 
     def _prepare_batch(self, batch: data.TrainBatch) -> tuple[

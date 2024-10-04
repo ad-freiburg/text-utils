@@ -145,7 +145,7 @@ class AvoidConstraint(Constraint):
         self.value = input or bytes()
 
     def next(self, index: int) -> None:
-        self.value += self.continuations[index]
+        self.value += bytes(self.continuations[index])
 
     def is_match(self) -> bool:
         return all(avoid != self.value for avoid in self.avoid)

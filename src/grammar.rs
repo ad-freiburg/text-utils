@@ -479,9 +479,9 @@ fn parse_into_py(
         }
         LR1Parse::Terminal(name, span, value) => {
             dict.set_item("name", name)?;
-            let &(start, len) = span;
+            let &(start, end) = span;
             dict.set_item("value", String::from_utf8_lossy(value))?;
-            dict.set_item("byte_span", (start, start + len))?;
+            dict.set_item("byte_span", (start, end))?;
         }
         LR1Parse::NonTerminal(name, children) => {
             dict.set_item("name", name)?;

@@ -516,13 +516,13 @@ impl LR1GrammarParser {
         })
     }
 
-    fn filter_lr1(node: LR1Parse<'_>, skip_empty: bool, collapse_single: bool) -> LR1Parse<'_> {
+    fn filter_parse(node: LR1Parse<'_>, skip_empty: bool, collapse_single: bool) -> LR1Parse<'_> {
         match node {
             LR1Parse::NonTerminal(name, children) => {
                 let children: Vec<_> = children
                     .into_iter()
                     .filter_map(|node| {
-                        let node = Self::filter_lr1(node, skip_empty, collapse_single);
+                        let node = Self::filter_parse(node, skip_empty, collapse_single);
                         if node.is_empty() && skip_empty {
                             None
                         } else {
@@ -550,7 +550,7 @@ impl LR1GrammarParser {
     ) -> Result<(LR1Parse<'_>, &'p [u8]), Box<dyn Error>> {
         let tree = self
             .parse_tree(prefix, true)
-            .map(|tree| Self::filter_lr1(tree, skip_empty, collapse_single))?;
+            .map(|tree| Self::filter_parse(tree, skip_empty, collapse_single))?;
         fn find_end(parse: &LR1Parse<'_>, end: usize) -> usize {
             match parse {
                 LR1Parse::Empty(..) => end,
@@ -572,7 +572,7 @@ impl LR1GrammarParser {
         collapse_single: bool,
     ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
         self.parse_tree(text, false)
-            .map(|tree| Self::filter_lr1(tree, skip_empty, collapse_single))
+            .map(|tree| Self::filter_parse(tree, skip_empty, collapse_single))
     }
 }
 

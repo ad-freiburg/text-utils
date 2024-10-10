@@ -10,8 +10,8 @@ from text_utils.api import utils
 
 
 def generate_table(
-    headers: List[List[str]],
     data: List[List[str]],
+    headers: List[List[str]] | None = None,
     alignments: Optional[List[str]] = None,
     horizontal_lines: Optional[List[int]] = None,
     highlight: Optional[Set[Tuple[int, int]]] = None,
@@ -19,15 +19,19 @@ def generate_table(
     highlight_color: str = "green",
     max_column_width: int = 48
 ) -> str:
-    assert len(headers), "got no headers"
-    assert len(set(len(header) for header in headers)) == 1, "all headers must have the same length"
-    header_length = len(headers[0])
+    rows = len(data)
+    if rows:
+        columns = len(data[0])
+    elif headers:
+        columns = len(headers[0])
+    else:
+        return ""
 
-    assert all(header_length == len(item) for item in data), \
-        f"header has length {header_length}, but data items have lengths {[len(item) for item in data]}"
+    assert all(len(r) == columns for r in data), \
+        f"all rows must have {columns} columns"
 
     if alignments is None:
-        alignments = ["left"] + ["right"] * (header_length - 1)
+        alignments = ["left"] + ["right"] * (columns - 1)
 
     if highlight is None:
         highlight = set()
@@ -38,9 +42,9 @@ def generate_table(
 
     # get max width for each column in headers and data
     column_widths = []
-    for i in range(header_length):
+    for i in range(columns):
         # add 4 to width if cell is bold because of the two **s left and right
-        header_width = max(len(h[i]) for h in headers)
+        header_width = max(len(h[i]) for h in headers) if headers else 0
         data_width = max(
             min(
                 max_column_width,
@@ -70,12 +74,15 @@ def generate_table(
 
     tables_lines = []
 
-    tables_lines.extend([
-        _table_row(header, [False] * header_length, highlight_type,
-                   highlight_color, alignments, column_widths, max_column_width)
-        + (_table_horizontal_line(column_widths) if i == len(headers) - 1 else "")
-        for i, header in enumerate(headers)
-    ])
+    if headers is not None:
+        assert all(len(h) == columns for h in headers), \
+            f"all headers must have {columns} columns"
+        tables_lines.extend([
+            _table_row(header, [False] * columns, highlight_type,
+                       highlight_color, alignments, column_widths, max_column_width)
+            + (_table_horizontal_line(column_widths) if i == len(headers) - 1 else "")
+            for i, header in enumerate(headers)
+        ])
 
     for item, horizontal_line, bold in zip(data, horizontal_lines, highlight_cells):
         line = _table_row(item, bold, highlight_type, highlight_color,
@@ -98,7 +105,7 @@ def _table_cell(s: str, alignment: str, width: int) -> str:
 
 
 def _highlight(s: str, hcolor: str) -> str:
-    return colored(s, hcolor, attrs=["bold"])
+    return colored(s, hcolor, attrs=["bold"])  # type: ignore
 
 
 def _table_row(
@@ -110,7 +117,6 @@ def _table_row(
     widths: List[int],
     max_width: int
 ) -> str:
-    assert len(data) == len(highlight)
     num_lines = [math.ceil(len(d) / max_width) for d in data]
     max_num_lines = max(num_lines)
     lines = []

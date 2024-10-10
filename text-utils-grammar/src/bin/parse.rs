@@ -30,11 +30,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         let start = Instant::now();
 
         let parse = if args.prefix {
-            parser.prefix_parse(args.input.as_bytes(), false, false)
+            parser
+                .prefix_parse(args.input.as_bytes(), false, false)
+                .unwrap()
+                .0
         } else {
-            parser.parse(&args.input, false, false)
-        }
-        .unwrap();
+            parser.parse(&args.input, false, false).unwrap()
+        };
         let end = Instant::now();
         elapsed += end - start;
         if i == 0 {

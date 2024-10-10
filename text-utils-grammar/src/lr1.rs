@@ -2,12 +2,10 @@ use std::{collections::HashMap, error::Error, fs::File, io::read_to_string, path
 
 use cfgrammar::{
     yacc::{YaccGrammar, YaccGrammarError, YaccKind, YaccOriginalActionKind},
-    NewlineCache, Spanned, TIdx,
+    Spanned, TIdx,
 };
 use indexmap::IndexMap;
 use itertools::{Either, Itertools};
-use lrlex::{DefaultLexeme, DefaultLexerTypes, LRNonStreamingLexer};
-use lrpar::{Lexeme, Node, RTParserBuilder};
 use lrtable::{Action, Minimiser, StIdx, StateTable};
 use regex::{escape, Regex};
 use regex_automata::util::primitives::StateID;
@@ -212,7 +210,7 @@ fn prefix_lexer_with(
         match find_token_or_matching(&continuation[i..], &prefix_matches, pdfas) {
             Some(TokenOrMatching::Token(token, len)) => {
                 tokens.push(token);
-                spans.push((i, len));
+                spans.push((i, i + len));
                 i += len;
                 prefix_matches = initial_prefix_matches(pdfas);
             }
@@ -229,7 +227,7 @@ fn prefix_lexer_with(
             }
         }
     }
-    Ok((tokens, spans, prefix_matches, (i, continuation.len() - i)))
+    Ok((tokens, spans, prefix_matches, (i, continuation.len())))
 }
 
 #[inline]
@@ -270,7 +268,7 @@ fn lexer(
         }
     }) {
         assert!(
-            last_span.1 > 0,
+            last_span.1 > last_span.0,
             "last span should not be empty in this case"
         );
         tokens.push(token);
@@ -424,70 +422,107 @@ impl LR1GrammarParser {
     fn parse_tree(
         &self,
         input: impl AsRef<[u8]>,
-    ) -> Result<
-        (
-            Option<Node<DefaultLexeme<u32>, u32>>,
-            Option<Box<dyn Error>>,
-        ),
-        Box<dyn Error>,
-    > {
-        let text = String::from_utf8_lossy(input.as_ref()).into_owned();
-        let (tokens, spans) = lexer(input, &self.pdfas)?;
-        let mut nlc = NewlineCache::new();
-        nlc.feed(&text);
-        let lexer = LRNonStreamingLexer::new(
-            &text,
-            tokens
-                .into_iter()
-                .zip(spans)
-                .filter_map(|(tidx, (start, len))| {
-                    tidx.map(|tidx| Ok(DefaultLexeme::new(tidx.as_storaget(), start, len)))
-                })
-                .collect(),
-            nlc,
-        );
-        let parser: RTParserBuilder<'_, u32, DefaultLexerTypes> =
-            RTParserBuilder::new(&self.grammar, &self.table);
-        let (tree, errors) = parser.parse_generictree(&lexer);
-        let error = if errors.is_empty() {
-            None
+        is_prefix: bool,
+    ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
+        let input = input.as_ref();
+        let (tokens, spans) = if is_prefix {
+            let (tokens, spans, ..) = prefix_lexer(input, &self.pdfas)?;
+            (tokens, spans)
         } else {
-            Some(
-                format!(
-                    "errors parsing input:\n{}",
-                    errors
-                        .iter()
-                        .map(|e| e.pp(&lexer, &|tidx| self.grammar.token_epp(tidx)))
-                        .join("\n")
-                )
-                .into(),
-            )
+            lexer(input, &self.pdfas)?
         };
-        Ok((tree, error))
+
+        let mut tokens: Vec<_> = tokens
+            .into_iter()
+            .zip(spans)
+            .filter_map(|(tidx, span)| {
+                tidx.map(|tidx| {
+                    (
+                        tidx,
+                        self.grammar.token_name(tidx).unwrap_or("UNKOWN"),
+                        span,
+                    )
+                })
+            })
+            .collect();
+        if !is_prefix {
+            tokens.push((self.grammar.eof_token_idx(), "EOF", (input.len(), 0)));
+        }
+
+        // see lr() fn from lrpar in parser.rs
+        let mut pstack = vec![self.table.start_state()];
+        let mut astack = vec![];
+        let mut spans: Vec<(usize, usize)> = vec![];
+        let mut laidx = 0;
+        while laidx < tokens.len() {
+            let stidx = *pstack.last().ok_or("empty stack")?;
+            let (la_tidx, t_name, span) = tokens[laidx];
+
+            match self.table.action(stidx, la_tidx) {
+                Action::Reduce(pidx) => {
+                    let ridx = self.grammar.prod_to_rule(pidx);
+                    let pop_idx = pstack.len() - self.grammar.prod(pidx).len();
+
+                    pstack.drain(pop_idx..);
+                    let prior = *pstack.last().ok_or("empty stack")?;
+                    pstack.push(self.table.goto(prior, ridx).ok_or("goto failed")?);
+
+                    let span = if spans.is_empty() {
+                        (0, 0)
+                    } else if pop_idx - 1 < spans.len() {
+                        (spans[pop_idx - 1].0, spans.last().ok_or("spans empty")?.1)
+                    } else {
+                        *spans.last().ok_or("spans empty")?
+                    };
+                    spans.truncate(pop_idx - 1);
+                    spans.push(span);
+
+                    let children: Vec<_> = astack.drain(pop_idx - 1..).collect();
+                    let rule_name = self.grammar.rule_name_str(ridx);
+                    let node = if children.is_empty() {
+                        LR1Parse::Empty(rule_name)
+                    } else {
+                        LR1Parse::NonTerminal(rule_name, children)
+                    };
+                    astack.push(node);
+                }
+                Action::Shift(state_id) => {
+                    let (start, end) = span;
+                    astack.push(LR1Parse::Terminal(t_name, span, input[start..end].to_vec()));
+                    pstack.push(state_id);
+                    spans.push(span);
+                    laidx += 1;
+                }
+                Action::Accept => {
+                    assert_eq!(astack.len(), 1);
+                    assert_eq!(la_tidx, self.grammar.eof_token_idx());
+                    return astack.drain(..).next().ok_or("empty stack".into());
+                }
+                Action::Error => {
+                    let (t_start, t_end) = span;
+                    return Err(format!("parse error from position {t_start} for token {t_name} ({la_tidx:?}) with content {}",
+                        String::from_utf8_lossy(&input[t_start..t_end])).into());
+                }
+            }
+        }
+        Ok(if astack.is_empty() {
+            let start_name = self.grammar.rule_name_str(self.grammar.start_rule_idx());
+            LR1Parse::Empty(start_name)
+        } else {
+            LR1Parse::NonTerminal(
+                self.grammar.rule_name_str(self.grammar.start_rule_idx()),
+                astack,
+            )
+        })
     }
 
-    fn node_to_lr1<'a>(
-        input: &[u8],
-        grammar: &'a YaccGrammar,
-        node: &Node<DefaultLexeme<u32>, u32>,
-        skip_empty: bool,
-        collapse_single: bool,
-    ) -> LR1Parse<'a> {
+    fn filter_lr1(node: LR1Parse<'_>, skip_empty: bool, collapse_single: bool) -> LR1Parse<'_> {
         match node {
-            Node::Term { lexeme } => {
-                let span = lexeme.span();
-                let tidx = lexeme.tok_id();
-                let tname = grammar.token_name(TIdx(tidx)).unwrap();
-                let value = input[span.start()..span.start() + span.len()].to_vec();
-                LR1Parse::Terminal(tname, (span.start(), span.len()), value)
-            }
-            Node::Nonterm { ridx, nodes } => {
-                let rname = grammar.rule_name_str(*ridx);
-                let nodes: Vec<_> = nodes
-                    .iter()
+            LR1Parse::NonTerminal(name, children) => {
+                let children: Vec<_> = children
+                    .into_iter()
                     .filter_map(|node| {
-                        let node =
-                            Self::node_to_lr1(input, grammar, node, skip_empty, collapse_single);
+                        let node = Self::filter_lr1(node, skip_empty, collapse_single);
                         if node.is_empty() && skip_empty {
                             None
                         } else {
@@ -495,14 +530,15 @@ impl LR1GrammarParser {
                         }
                     })
                     .collect();
-                if nodes.is_empty() {
-                    LR1Parse::Empty(rname)
-                } else if nodes.len() == 1 && collapse_single {
-                    nodes.into_iter().next().unwrap()
+                if children.is_empty() {
+                    LR1Parse::Empty(name)
+                } else if children.len() == 1 && collapse_single {
+                    children.into_iter().next().unwrap()
                 } else {
-                    LR1Parse::NonTerminal(rname, nodes)
+                    LR1Parse::NonTerminal(name, children)
                 }
             }
+            _ => node,
         }
     }
 
@@ -512,25 +548,21 @@ impl LR1GrammarParser {
         skip_empty: bool,
         collapse_single: bool,
     ) -> Result<(LR1Parse<'_>, &'p [u8]), Box<dyn Error>> {
-        let (tree, error) = self.parse_tree(prefix)?;
-        if let Some(tree) = tree {
-            let parse =
-                Self::node_to_lr1(prefix, &self.grammar, &tree, skip_empty, collapse_single);
-            fn find_end(parse: &LR1Parse<'_>, end: usize) -> usize {
-                match parse {
-                    LR1Parse::Empty(..) => end,
-                    LR1Parse::Terminal(.., (start, len), _) => end.max(*start + len),
-                    LR1Parse::NonTerminal(.., children) => children
-                        .iter()
-                        .map(|child| find_end(child, end))
-                        .fold(end, |cur, end| cur.max(end)),
-                }
+        let tree = self
+            .parse_tree(prefix, true)
+            .map(|tree| Self::filter_lr1(tree, skip_empty, collapse_single))?;
+        fn find_end(parse: &LR1Parse<'_>, end: usize) -> usize {
+            match parse {
+                LR1Parse::Empty(..) => end,
+                LR1Parse::Terminal(.., (_, term_end), _) => end.max(*term_end),
+                LR1Parse::NonTerminal(.., children) => children
+                    .iter()
+                    .map(|child| find_end(child, end))
+                    .fold(end, |cur, end| cur.max(end)),
             }
-            let end = find_end(&parse, 0);
-            Ok((parse, &prefix[end..]))
-        } else {
-            Err(error.unwrap_or_else(|| "failed to parse input".into()))
         }
+        let end = find_end(&tree, 0);
+        Ok((tree, &prefix[end..]))
     }
 
     pub fn parse(
@@ -539,20 +571,8 @@ impl LR1GrammarParser {
         skip_empty: bool,
         collapse_single: bool,
     ) -> Result<LR1Parse<'_>, Box<dyn Error>> {
-        let (tree, error) = self.parse_tree(text)?;
-        if let Some(error) = error {
-            return Err(error);
-        }
-        let Some(tree) = tree else {
-            return Err("failed to parse input".into());
-        };
-        Ok(Self::node_to_lr1(
-            text.as_bytes(),
-            &self.grammar,
-            &tree,
-            skip_empty,
-            collapse_single,
-        ))
+        self.parse_tree(text, false)
+            .map(|tree| Self::filter_lr1(tree, skip_empty, collapse_single))
     }
 }
 
@@ -1233,15 +1253,15 @@ mod test {
             spans,
             vec![
                 (0, 1),
-                (1, 1),
-                (2, 1),
-                (3, 1),
-                (4, 1),
-                (5, 2),
-                (7, 1),
-                (8, 1),
-                (9, 1),
-                (10, 1)
+                (1, 2),
+                (2, 3),
+                (3, 4),
+                (4, 5),
+                (5, 7),
+                (7, 8),
+                (8, 9),
+                (9, 10),
+                (10, 11)
             ]
         );
         let (pdfas, map) = get_ab_pdfas();
@@ -1253,7 +1273,7 @@ mod test {
                 .collect_vec(),
             vec!["AA", "BB"]
         );
-        assert_eq!(spans, vec![(0, 2), (2, 2)]);
+        assert_eq!(spans, vec![(0, 2), (2, 4)]);
         let (tokens, spans) = lexer("abb", &pdfas).unwrap();
         assert_eq!(
             tokens
@@ -1262,7 +1282,7 @@ mod test {
                 .collect_vec(),
             vec!["AB1", "B"]
         );
-        assert_eq!(spans, vec![(0, 2), (2, 1)]);
+        assert_eq!(spans, vec![(0, 2), (2, 3)]);
         assert!(lexer("abac", &pdfas).is_err());
     }
 
@@ -1279,9 +1299,9 @@ mod test {
                 spans2
                     .into_iter()
                     .skip(1)
-                    .map(|(start, len)| (last_span.0 + last_span.1 + start, len)),
+                    .map(|(start, end)| (last_span.1 + start, last_span.1 + end)),
             );
-            last_span = (last_span.0 + last_span.1 + last_span2.0, last_span2.1);
+            last_span = (last_span.1 + last_span2.0, last_span.1 + last_span2.1);
         } else {
             assert!(last_span2.0 == 0);
             last_span = (last_span.0, last_span.1 + last_span2.1);
@@ -1371,18 +1391,18 @@ mod test {
             spans,
             vec![
                 (0, 1),
-                (1, 1),
-                (2, 1),
-                (3, 1),
-                (4, 1),
-                (5, 2),
-                (7, 1),
-                (8, 1),
-                (9, 1)
+                (1, 2),
+                (2, 3),
+                (3, 4),
+                (4, 5),
+                (5, 7),
+                (7, 8),
+                (8, 9),
+                (9, 10)
             ]
         );
         assert_eq!(matching.len(), 1);
-        assert_eq!(last_span, (10, 1));
+        assert_eq!(last_span, (10, 11));
         let (idx, state) = matching[0];
         assert_eq!(idx, 4);
         let (pdfa, tidx) = &pdfas[idx];
@@ -1406,7 +1426,7 @@ mod test {
         assert_eq!(lexemes.into_iter().filter(|tidx| tidx.is_some()).count(), 0);
         assert_eq!(spans.len(), 1);
         assert_eq!(matching.len(), 1);
-        assert_eq!(last_span, (4, 1));
+        assert_eq!(last_span, (4, 5));
 
         let (pdfas, map) = get_ab_pdfas();
         let (lexemes, spans, matching, last_span) = prefix_lexer(b"aabb", &pdfas).unwrap();
@@ -1419,7 +1439,7 @@ mod test {
         );
         assert_eq!(spans, vec![(0, 2)]);
         assert_eq!(matching.len(), 1);
-        assert_eq!(last_span, (2, 2));
+        assert_eq!(last_span, (2, 4));
 
         let (lexemes, spans, matching, last_span) = prefix_lexer(b"aab", &pdfas).unwrap();
         assert_eq!(
@@ -1436,7 +1456,7 @@ mod test {
         let (pdfa, tidx) = &pdfas[idx];
         assert_eq!(map[tidx.as_ref().unwrap()], "B");
         assert!(pdfa.is_eoi_match(state));
-        assert_eq!(last_span, (2, 1));
+        assert_eq!(last_span, (2, 3));
         let (idx, state) = matching[1];
         assert_eq!(idx, 4);
         let (pdfa, tidx) = &pdfas[idx];
@@ -1465,6 +1485,18 @@ mod test {
         assert!(lrk.parse("2 - 1", false, false).is_err());
         let text = "(1 + 28)*\n3";
         let parse = lrk.parse(text, false, false).unwrap();
+        println!("{}", parse.pretty(true, true));
+
+        let (grammar, lexer, _) = load_lrk_grammar("sparql", "parser");
+        let lrk = LR1GrammarParser::from_files(grammar, lexer).unwrap();
+        let s = "SELECT DISTINCT ?answer WHERE { 
+    <https://dblp.org/rec/conf/bibm/GoparajuQS15> dblp:numberOfCreators ?x .
+    <https://dblp.org/rec/journals/ijon/RibeiroA18> dblp:numberOfCreators ?y .
+    BIND ( IF (
+        ?x > ?y ,
+        <https://dblp.org/rec/conf/bibm/GoparajuQS15> ,
+        <https://dblp.org/rec/journals/ijon/RibeiroA18>)";
+        let (parse, _) = lrk.prefix_parse(s.as_bytes(), false, false).unwrap();
         println!("{}", parse.pretty(true, true));
     }
 

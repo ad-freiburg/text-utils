@@ -505,7 +505,8 @@ impl LR1GrammarParser {
                 Action::Error => {
                     let (t_start, t_end) = span;
                     return Err(format!(
-                        "parse error from position {t_start} for token {t_name} ({la_tidx:?}) with content '{}'",
+                        "parse error at position {t_start} for token {t_name} with content '{}' \
+                        (the input most likely does not follow the grammar)",
                         String::from_utf8_lossy(&input[t_start..t_end])
                     )
                     .into());

@@ -192,8 +192,8 @@ impl ChatTemplate {
 }
 
 impl<'a> FromPyObject<'a> for ChatTemplate {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
 
         let Some(roles) = d.get_item("roles")? else {
             return Err(py_required_key_error("roles", "chat template"));

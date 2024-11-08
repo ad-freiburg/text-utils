@@ -33,8 +33,8 @@ pub enum TrainTaskConfig {
 }
 
 impl<'a> FromPyObject<'a> for TrainTaskConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         let Some(labeling_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "task config"));
         };

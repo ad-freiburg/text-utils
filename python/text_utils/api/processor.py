@@ -20,10 +20,7 @@ from text_utils.api.utils import Device, get_devices
 
 __all__ = ["ModelInfo"]
 
-ModelInfo = collections.namedtuple(
-    "ModelInfo",
-    ["name", "description", "tags"]
-)
+ModelInfo = collections.namedtuple("ModelInfo", ["name", "description", "tags"])
 
 
 class TextProcessor:
@@ -58,11 +55,7 @@ class TextProcessor:
         task_name = cls._task_upper().replace(" ", "_")
         return os.environ.get(
             f"{task_name}_DOWNLOAD_DIR",
-            os.path.join(
-                os.path.dirname(__file__),
-                ".download",
-                task_name
-            )
+            os.path.join(os.path.dirname(__file__), ".download", task_name),
         )
 
     @classmethod
@@ -70,11 +63,7 @@ class TextProcessor:
         task_name = cls._task_upper().replace(" ", "_")
         return os.environ.get(
             f"{task_name}_CACHE_DIR",
-            os.path.join(
-                os.path.dirname(__file__),
-                ".cache",
-                task_name
-            )
+            os.path.join(os.path.dirname(__file__), ".cache", task_name),
         )
 
     @classmethod
@@ -84,7 +73,7 @@ class TextProcessor:
         device: Device = "cuda",
         download_dir: str | None = None,
         cache_dir: str | None = None,
-        force_download: bool = False
+        force_download: bool = False,
     ):
         if model is None:
             default = cls.default_model()
@@ -92,9 +81,10 @@ class TextProcessor:
             model = default.name
 
         assert model is not None
-        assert any(model == m.name for m in cls.available_models()), \
-            f"model {model} does not match any of the available models:\n" \
+        assert any(model == m.name for m in cls.available_models()), (
+            f"model {model} does not match any of the available models:\n"
             f"{pprint.pformat(cls.available_models())}"
+        )
 
         logger = logging.get_logger(f"{cls._task_upper()} DOWNLOAD")
         model_url = cls._model_url(model)
@@ -110,22 +100,20 @@ class TextProcessor:
             cache_dir,
             sub_cache_dir,
             force_download,
-            logger
+            logger,
         )
         sub_dirs = os.listdir(zip_dir)
-        assert len(sub_dirs) == 1, \
-            f"expected extracted zip for model {model} to contain " \
+        assert len(sub_dirs) == 1, (
+            f"expected extracted zip for model {model} to contain "
             f"one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
+        )
         # mark processor as pretrained
         cls.pretrained = True
         return cls.from_experiment(os.path.join(zip_dir, sub_dirs[0]), device)
 
     @classmethod
     def from_experiment(
-        cls,
-        experiment_dir: str,
-        device: Device = "cuda",
-        last: bool = False
+        cls, experiment_dir: str, device: Device = "cuda", last: bool = False
     ):
         cfg = configuration.load_config_from_experiment(experiment_dir)
         model = cls._model_from_config(cfg, device)
@@ -135,9 +123,7 @@ class TextProcessor:
 
         for ckpt in ckpt_keys:
             ckpt_path = os.path.join(
-                experiment_dir,
-                "checkpoints",
-                f"checkpoint_{ckpt}.pt"
+                experiment_dir, "checkpoints", f"checkpoint_{ckpt}.pt"
             )
             if not os.path.exists(ckpt_path):
                 continue
@@ -153,11 +139,7 @@ class TextProcessor:
         raise NotImplementedError
 
     @classmethod
-    def _model_from_config(
-        cls,
-        cfg: dict[str, Any],
-        device: Device
-    ) -> nn.Module:
+    def _model_from_config(cls, cfg: dict[str, Any], device: Device) -> nn.Module:
         raise NotImplementedError
 
     @property
@@ -165,10 +147,7 @@ class TextProcessor:
         raise NotImplementedError
 
     def __init__(
-        self,
-        model: nn.Module,
-        cfg: dict[str, Any],
-        device: Device = "cuda"
+        self, model: nn.Module, cfg: dict[str, Any], device: Device = "cuda"
     ) -> None:
         self.cfg = cfg
         self.logger = logging.get_logger(self._task_upper())
@@ -184,15 +163,9 @@ class TextProcessor:
 
     def _process(
         self,
-        iter: Iterator[data.InferenceData],
-        inference_fn: Callable[
-            [data.InferenceBatch],
-            list[Any]
-        ],
-        postprocessing_fn: Callable[
-            [list[data.InferenceItem], list[Any]],
-            Any
-        ],
+        iter: Iterator[str],
+        inference_fn: Callable[[data.InferenceBatch], list[Any]],
+        postprocessing_fn: Callable[[list[data.InferenceItem], list[Any]], Any],
         progress_desc: str,
         batch_size: int = 16,
         batch_max_tokens: int | None = None,
@@ -201,7 +174,7 @@ class TextProcessor:
         progress_total: int | None = None,
         progress_unit: str = "it",
         show_progress: bool = False,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> Iterator[Any]:
         if num_threads is None:
             num_threads = min(len(os.sched_getaffinity(0)), 4)
@@ -229,19 +202,13 @@ class TextProcessor:
             "buffer_size": buffer_size,
             "prefetch_factor": prefetch_factor,
             "batch_limit_type": batch_limit_type,
-            "sort": sort
+            "sort": sort,
         }
         inference_cfg.update(kwargs)
-        loader = data.InferenceLoader.from_iterator(
-            iter,
-            **inference_cfg
-        )
+        loader = data.InferenceLoader.from_iterator(iter, **inference_cfg)
 
         pbar = api.progress_bar(
-            progress_desc,
-            progress_total,
-            progress_unit,
-            show_progress
+            progress_desc, progress_total, progress_unit, show_progress
         )
         if sort:
             results = {}
@@ -281,10 +248,7 @@ class TextProcessor:
                         continue
                     yield postprocessing_fn(window_items, window_outputs)
                     if progress_unit == "byte":
-                        pbar.update(sum(
-                            item.window_bytes()
-                            for item in window_items
-                        ))
+                        pbar.update(sum(item.window_bytes() for item in window_items))
                     prev_item_idx = item.item_idx
                     window_items = [item]
                     window_outputs = [output]
@@ -297,8 +261,9 @@ class TextProcessor:
 
     def to(self, device: Device) -> "TextProcessor":
         self.devices = get_devices(device)
-        assert len(self.devices) == 1, \
-            "only a single device supported by default, implement custom to() if you need " \
+        assert len(self.devices) == 1, (
+            "only a single device supported by default, implement custom to() if you need "
             "multi-device support"
+        )
         self.model = self.model.to(self.devices[0])
         return self

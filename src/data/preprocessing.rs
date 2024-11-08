@@ -35,7 +35,7 @@ pub enum Part {
 }
 
 impl<'a> FromPyObject<'a> for Part {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let part: String = ob.extract()?;
         match part.as_str() {
             "input" => Ok(Part::Input),
@@ -84,8 +84,8 @@ pub enum PreprocessingFnConfig {
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingFnConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         let Some(preprocessing_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "preprocessing fn config"));
         };
@@ -407,8 +407,8 @@ pub enum SpellingCorruptionMode {
 }
 
 impl<'a> FromPyObject<'a> for SpellingCorruptionMode {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         let Some(corruption_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "spelling corruption mode"));
         };
@@ -725,7 +725,7 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
             serde_json::from_str(s).map_err(|e| anyhow!("failed to decode string from json: {}", e))
         }),
         PreprocessingFnConfig::ChatDecode(part, template) => apply(part, move |s, _| {
-            let chat = serde_json::from_str::<Chat>(s)
+            let chat: Chat = serde_json::from_str(s)
                 .map_err(|e| anyhow!("failed to decode chat from json: {}", e))?;
             template.format(&chat)
         }),

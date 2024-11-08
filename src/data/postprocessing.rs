@@ -30,8 +30,8 @@ pub enum PostprocessingFnConfig {
 }
 
 impl<'a> FromPyObject<'a> for PostprocessingFnConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         let Some(postprocessing_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "postprocessing fn config"));
         };

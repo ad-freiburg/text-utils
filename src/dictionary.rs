@@ -202,7 +202,7 @@ pub enum DictionaryDistanceMeasure {
 }
 
 impl<'a> FromPyObject<'a> for DictionaryDistanceMeasure {
-    fn extract(obj: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(obj: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: String = obj.extract()?;
         let dist = match s.as_str() {
             "ed" | "edit_distance" => Self::EditDistance,

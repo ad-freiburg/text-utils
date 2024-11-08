@@ -1,4 +1,4 @@
-use crate::data::{Batch, InferenceData, Pipeline, TrainData};
+use crate::data::{Batch, Pipeline, TrainData};
 use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
 use log::debug;
@@ -7,9 +7,9 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::marker::PhantomData;
 use std::panic;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,8 +26,8 @@ fn open(p: &Path) -> anyhow::Result<File> {
     File::open(p).with_context(|| format!("could not open file at {:}", p.display()))
 }
 
-fn count_lines(p: &Path) -> anyhow::Result<usize> {
-    Ok(LossyUtf8Reader::new(BufReader::new(open(p)?))
+fn count_lines(p: impl AsRef<Path>) -> anyhow::Result<usize> {
+    Ok(LossyUtf8Reader::new(BufReader::new(open(p.as_ref())?))
         .lines()
         .count())
 }
@@ -119,87 +119,54 @@ where
     }
 }
 
-pub fn train_data_generator_from_files<P: AsRef<Path>>(
-    input: P,
-    target: Option<P>,
+pub fn train_data_generator_from_jsonl(
+    path: impl AsRef<Path>,
 ) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TrainData>>>> {
-    let input_len = count_lines(input.as_ref())?;
-    let input_iter = LossyUtf8Reader::new(BufReader::new(open(input.as_ref())?)).lines();
-    let mut target_iter = if let Some(target) = target {
-        let target_len = count_lines(target.as_ref())?;
-        assert_eq!(
-            input_len,
-            target_len,
-            "expected same number of lines for {:?} and {:?}",
-            input.as_ref(),
-            target.as_ref()
-        );
-        Some(LossyUtf8Reader::new(BufReader::new(open(target.as_ref())?)).lines())
-    } else {
-        None
-    };
-    let iter = input_iter.map(move |input_s| {
-        let target_s = if target_iter.is_some() {
-            match target_iter.as_mut().unwrap().next() {
-                Some(result) => Some(result?),
-                None => None,
-            }
-        } else {
-            None
-        };
-        Ok(TrainData::new(input_s?, target_s))
+    let file_len = count_lines(path.as_ref())?;
+    let file_iter = LossyUtf8Reader::new(BufReader::new(open(path.as_ref())?)).lines();
+    let iter = file_iter.map(|line| {
+        line.and_then(|s| {
+            let jsonl: serde_json::Value = serde_json::from_str(&s)
+                .with_context(|| format!("failed to parse json line: {s}"))?;
+            let data = match &jsonl {
+                Value::Object(map) => {
+                    let input = match map.get("input") {
+                        None => {
+                            return Err(anyhow!(
+                                "key 'input' not found in json line: {jsonl}"
+                            ))
+                        },
+                        Some(Value::String(input)) => input.to_string(),
+                        Some(val) => {
+                            return Err(anyhow!(
+                                "key 'input' must be a string, got: {}", val
+                            ))
+                        }
+                    };
+                    let target = match map.get("target") {
+                        None => None,
+                        Some(Value::String(target)) => Some(target.to_string()),
+                        Some(val) => {
+                            return Err(anyhow!(
+                                "key 'target' must be a string, got: {}", val
+                            ))
+                        }
+                    };
+                    TrainData::new(input, target)
+                },
+                _ => {
+                    return Err(anyhow!(
+                        "json line must be an object with key 'input' and optional key 'target', got: {s}"
+                    ))
+                },
+            };
+            Ok(data)
+        })
     });
     Ok(Box::new(DataGenerator {
-        min_len: input_len,
+        min_len: file_len,
         iter,
     }))
-}
-
-struct PythonIterator<T>
-where
-    T: for<'a> FromPyObject<'a>,
-{
-    iterator: PyObject,
-    _phantom: PhantomData<T>,
-}
-
-impl<T> Iterator for PythonIterator<T>
-where
-    T: for<'a> FromPyObject<'a>,
-{
-    type Item = anyhow::Result<T>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Python::with_gil(|py| {
-            let mut it = match self.iterator.bind(py).iter() {
-                Err(e) => {
-                    return Some(Err(anyhow!("failed to get iterator: {e}")));
-                }
-                Ok(it) => it,
-            };
-            match it.next() {
-                None => None,
-                Some(Err(e)) => Some(Err(anyhow!(
-                    "failed to extract next item from iterator: {e}",
-                ))),
-                Some(Ok(value)) => {
-                    let data = value
-                        .extract()
-                        .map_err(|e| anyhow!("failed to extract data from iterator item: {e}"));
-                    Some(data)
-                }
-            }
-        })
-    }
-}
-
-pub fn inference_data_iterator_from_python(
-    iterator: PyObject,
-) -> impl Iterator<Item = anyhow::Result<InferenceData>> {
-    PythonIterator {
-        iterator,
-        _phantom: PhantomData,
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -210,7 +177,7 @@ pub enum TextIterationStrategy {
 }
 
 impl<'a> FromPyObject<'a> for TextIterationStrategy {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: String = ob.extract()?;
         let strategy = match s.as_str() {
             "sequential" => TextIterationStrategy::Sequential,
@@ -430,7 +397,7 @@ pub enum BatchLimitType {
 }
 
 impl<'a> FromPyObject<'a> for BatchLimitType {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: String = ob.extract()?;
         let limit_type = match s.as_str() {
             "batch_size" => BatchLimitType::BatchSize,
@@ -821,7 +788,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::data::loading::{open, BatchLimitType, BatchedIterator};
+    use crate::data::loading::{BatchLimitType, BatchedIterator, TextIterationStrategy};
     use crate::data::postprocessing::PostprocessingFnConfig;
     use crate::data::preprocessing::PreprocessingFnConfig;
     use crate::data::task::TrainTaskConfig;
@@ -832,14 +799,14 @@ mod tests {
     use crate::tokenization::{SpecialConfig, TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
     use log::info;
-    use std::collections::HashMap;
-    use std::io::BufReader;
-    use std::io::{self, BufRead};
-    use std::path::PathBuf;
-    use std::time::{Duration, Instant};
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
 
     use super::{
-        train_data_generator_from_files, BufferedIterator, PipelineIterator, TextIterator,
+        train_data_generator_from_jsonl, BufferedIterator, PipelineIterator, TextIterator,
     };
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
@@ -851,9 +818,9 @@ mod tests {
     #[test]
     fn test_text_iterator() -> anyhow::Result<()> {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let d = base.clone().join("resources/test/multi30k.txt");
-        let d2 = base.clone().join("resources/test/multi30k_rev.txt");
-        let multi30k = train_data_generator_from_files(&d, None)?;
+        let d = base.clone().join("resources/test/multi30k.jsonl");
+        let d2 = base.clone().join("resources/test/multi30k_rev.jsonl");
+        let multi30k = train_data_generator_from_jsonl(&d)?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -873,7 +840,7 @@ mod tests {
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check sequential lines with input and target
-        let multi30k = train_data_generator_from_files(&d, Some(&d2))?;
+        let multi30k = train_data_generator_from_jsonl(&d)?;
         let mut it = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -892,11 +859,11 @@ mod tests {
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check interleaved lines with two files
-        let multi30k = train_data_generator_from_files(&d, None)?;
-        let multi30k_rev = train_data_generator_from_files(&d2, None)?;
+        let multi30k = train_data_generator_from_jsonl(&d)?;
+        let multi30k_rev = train_data_generator_from_jsonl(&d2)?;
         let mut it = TextIterator::new(
             vec![multi30k, multi30k_rev],
-            super::TextIterationStrategy::Interleaved,
+            TextIterationStrategy::Interleaved,
             None,
         )?;
 
@@ -922,8 +889,8 @@ mod tests {
         };
         assert!(matches!(it.next().unwrap(), (Ok(_data), 1)));
         // check weighted lines with two files
-        let multi30k = train_data_generator_from_files(&d, None)?;
-        let multi30k_rev = train_data_generator_from_files(&d2, None)?;
+        let multi30k = train_data_generator_from_jsonl(&d)?;
+        let multi30k_rev = train_data_generator_from_jsonl(&d2)?;
         let it = TextIterator::new(
             vec![multi30k, multi30k_rev],
             super::TextIterationStrategy::Weighted,
@@ -938,7 +905,7 @@ mod tests {
         let _ = env_logger::try_init();
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let d = base.clone().join("resources/test/multi30k.txt");
+        let d = base.clone().join("resources/test/multi30k.jsonl");
 
         // create a pipeline that simulates some real processing,
         // we use the dummy tokenizer with a delay of 100 milliseconds for that
@@ -955,7 +922,7 @@ mod tests {
             512,
         )?;
         // test if it works with one worker and record the time it took
-        let multi30k = train_data_generator_from_files(&d, None)?;
+        let multi30k = train_data_generator_from_jsonl(&d)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -981,7 +948,7 @@ mod tests {
 
         // if more cpus are available, test with more workers, check that its faster
         if n_cpus >= 2 {
-            let multi30k = train_data_generator_from_files(&d, None)?;
+            let multi30k = train_data_generator_from_jsonl(&d)?;
             let text_iter = TextIterator::new(
                 vec![multi30k],
                 super::TextIterationStrategy::Sequential,
@@ -1006,7 +973,7 @@ mod tests {
 
         // test with even more workers, if available
         if n_cpus >= 4 {
-            let multi30k = train_data_generator_from_files(&d, None)?;
+            let multi30k = train_data_generator_from_jsonl(&d)?;
             let text_iter = TextIterator::new(
                 vec![multi30k],
                 super::TextIterationStrategy::Sequential,
@@ -1028,7 +995,7 @@ mod tests {
             assert!(time3 < time);
         }
 
-        // test that all lines of multi30k.txt are returned in order,
+        // test that all lines of multi30k.jsonl are returned in order,
         // switch to non blocking tokenizer again
         let tokenizer_cfg = TokenizerConfig {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
@@ -1042,7 +1009,7 @@ mod tests {
             },
             512,
         )?;
-        let multi30k = train_data_generator_from_files(&d, None)?;
+        let multi30k = train_data_generator_from_jsonl(&d)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
@@ -1058,10 +1025,13 @@ mod tests {
                 }
             })
             .pipe(pipeline.clone(), 0);
-        let lines = BufReader::new(open(&d)?).lines();
-        for (item, line) in it.zip(lines) {
-            assert_eq!(item.unwrap().data.target, line.unwrap())
+        let data: Vec<_> = train_data_generator_from_jsonl(&d)?.collect::<anyhow::Result<_>>()?;
+        let mut count = 0;
+        for (item, data) in it.zip(&data) {
+            assert_eq!(item.unwrap().data.target, data.target);
+            count += 1;
         }
+        assert_eq!(count, data.len());
         Ok(())
     }
 
@@ -1070,17 +1040,14 @@ mod tests {
         let _ = env_logger::try_init();
 
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let d = base.clone().join("resources/test/multi30k.txt");
-        let multi30k = train_data_generator_from_files(&d, None)?;
+        let d = base.clone().join("resources/test/multi30k.jsonl");
+        let multi30k = train_data_generator_from_jsonl(&d)?;
         let text_iter = TextIterator::new(
             vec![multi30k],
             super::TextIterationStrategy::Sequential,
             None,
         )?;
-        let lines: Vec<String> = BufReader::new(open(&d)?)
-            .lines()
-            .collect::<Result<Vec<String>, io::Error>>()
-            .unwrap();
+        let data: Vec<_> = train_data_generator_from_jsonl(&d)?.collect::<anyhow::Result<_>>()?;
         let tokenizer_cfg = TokenizerConfig {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
             special: SpecialConfig::default(),
@@ -1104,20 +1071,21 @@ mod tests {
             .pipe(pipeline.clone(), 4)
             .filter_map(|d| d.ok())
             .batched(false, false, 0, 8, BatchLimitType::BatchSize, None);
-        for (batch, line_batch) in pipe_it.zip(&lines.iter().chunks(8)) {
+        for (batch, data_batch) in pipe_it.zip(&data.iter().chunks(8)) {
             assert!(batch.len() > 0 && batch.len() <= 8);
-            let lines: Vec<&String> = line_batch.into_iter().collect();
-            assert!(batch.len() == lines.len());
-            for (item, line) in batch.into_iter().zip(lines.into_iter()) {
-                assert_eq!(item.data.target, *line);
+            let mut count = 0;
+            for (item, data) in batch.iter().zip(data_batch) {
+                assert_eq!(item.data.target, data.target);
+                count += 1;
             }
+            assert_eq!(count, batch.len());
         }
         // now check the batched iterator with any combinations of shuffling and sorting
         // check that each line was yielded by the batch iterator once or twice
         // (because some descriptions in multi30k appear twice)
         for shuffle in [true, false] {
             for sort in [true, false] {
-                let multi30k = train_data_generator_from_files(&d, None)?;
+                let multi30k = train_data_generator_from_jsonl(&d)?;
                 let text_iter = TextIterator::new(
                     vec![multi30k],
                     super::TextIterationStrategy::Weighted,
@@ -1143,7 +1111,7 @@ mod tests {
                         Some(22),
                     );
                 let mut line_counter: HashMap<String, usize> =
-                    lines.iter().cloned().map(|l| (l, 0)).collect();
+                    data.iter().cloned().map(|d| (d.input, 0)).collect();
                 for batch in pipe_it {
                     let item_lengths: Vec<usize> =
                         batch.iter().map(|item| item.input.len()).collect();
@@ -1157,7 +1125,7 @@ mod tests {
                 }
                 assert!(
                     line_counter.iter().all(|(_, c)| *c == 1 || *c == 2)
-                        && line_counter.iter().map(|(_, c)| *c).sum::<usize>() == lines.len()
+                        && line_counter.iter().map(|(_, c)| *c).sum::<usize>() == data.len()
                 );
             }
         }

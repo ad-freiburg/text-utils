@@ -419,7 +419,7 @@ pub enum WhitespaceCorrectionMode {
 }
 
 impl<'a> FromPyObject<'a> for WhitespaceCorrectionMode {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: String = ob.extract()?;
         let mode = match s.as_str() {
             "insertions" => WhitespaceCorrectionMode::Insertions,

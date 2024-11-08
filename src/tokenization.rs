@@ -112,8 +112,8 @@ impl Default for SpecialConfig {
 }
 
 impl<'a> FromPyObject<'a> for SpecialConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         let Some(pad) = d.get_item("pad")? else {
             return Err(py_required_key_error("pad", "special config"));
         };
@@ -176,8 +176,8 @@ impl TokenizationConstraint {
 }
 
 impl<'a> FromPyObject<'a> for TokenizationConstraintConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         let Some(constraint_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "generation config"));
         };
@@ -224,8 +224,8 @@ pub struct TokenizerConfig {
 }
 
 impl<'a> FromPyObject<'a> for TokenizerConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         Ok(Self {
             tokenize: d
                 .get_item("tokenize")?
@@ -295,8 +295,8 @@ impl IntoPy<PyObject> for TokenizeConfig {
 }
 
 impl<'a> FromPyObject<'a> for TokenizeConfig {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = ob.extract()?;
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = ob.downcast()?;
         let Some(tokenizer_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "tokenizer config"));
         };
@@ -550,7 +550,7 @@ impl ToPyObject for GroupAggregation {
 }
 
 impl<'a> FromPyObject<'a> for GroupAggregation {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let agg: String = ob.extract()?;
         match agg.as_str() {
             "mean" => Ok(GroupAggregation::Mean),
@@ -2079,7 +2079,7 @@ impl IntoPy<PyObject> for ByteGroups {
 }
 
 impl<'a> FromPyObject<'a> for ByteGroups {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: String = ob.extract()?;
         let groups = match s.as_str() {
             "bytes" => ByteGroups::Bytes,

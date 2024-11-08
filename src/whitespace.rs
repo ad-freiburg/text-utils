@@ -29,7 +29,7 @@ pub enum Operation {
 }
 
 impl<'a> FromPyObject<'a> for Operation {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: PyResult<String> = ob.extract();
         let ws_op = if let Ok(s) = s {
             match s.as_str() {

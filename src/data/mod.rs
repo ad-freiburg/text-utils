@@ -1,14 +1,12 @@
 use crate::data::loading::{
-    inference_data_iterator_from_python, train_data_generator_from_files, BatchLimitType,
-    BatchedIterator, BufferedIterator, ItemSize, PipelineIterator, Tensorize, TensorizedIterator,
-    TextIterationStrategy, TextIterator,
+    train_data_generator_from_jsonl, BatchLimitType, BatchedIterator, BufferedIterator, ItemSize,
+    PipelineIterator, Tensorize, TensorizedIterator, TextIterationStrategy, TextIterator,
 };
 use crate::data::preprocessing::{preprocessing, PreprocessingFnConfig};
 use crate::tokenization::{
     padding_mask, token_groups_to_sparse_coo_matrix, tokenizer, TensorizedTokenizationInfo,
     Tokenization, TokenizationInfo, TokenizerConfig,
 };
-use crate::unicode::CS;
 use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
 use anyhow::anyhow;
@@ -16,7 +14,7 @@ use itertools::Itertools;
 use numpy::ndarray::prelude::*;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyIterator};
 use std::collections::HashMap;
 use std::iter::repeat;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -183,29 +181,9 @@ impl TrainItem {
     }
 }
 
-#[derive(Clone, Debug)]
-#[pyclass]
-pub struct InferenceData {
-    #[pyo3(get, set)]
-    text: String,
-    #[pyo3(get, set)]
-    info: Option<PyObject>,
-}
-
-#[pymethods]
-impl InferenceData {
-    #[new]
-    #[pyo3(signature = (text, info = None))]
-    pub fn new(text: String, info: Option<PyObject>) -> Self {
-        Self { text, info }
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[pyclass]
 pub struct InferenceItem {
-    #[pyo3(get)]
-    pub data: InferenceData,
     #[pyo3(get)]
     pub tokenization: Tokenization,
     #[pyo3(get)]
@@ -220,7 +198,6 @@ pub struct InferenceItem {
 
 impl InferenceItem {
     pub fn new(
-        data: InferenceData,
         tokenization: Tokenization,
         item_idx: usize,
         window_idx: usize,
@@ -228,7 +205,6 @@ impl InferenceItem {
         byte_window: (usize, usize, usize, usize),
     ) -> Self {
         InferenceItem {
-            data,
             tokenization,
             item_idx,
             window_idx,
@@ -256,30 +232,6 @@ impl InferenceItem {
 
     fn context_bytes(&self) -> usize {
         self.byte_window.3 - self.byte_window.0
-    }
-
-    fn window_str(&self) -> String {
-        self.data.text[self.byte_window.1..self.byte_window.2].to_string()
-    }
-
-    fn context_str(&self) -> String {
-        self.data.text[self.byte_window.0..self.byte_window.3].to_string()
-    }
-
-    fn window_chars(&self) -> Vec<String> {
-        let cs = CS::new(
-            &self.data.text[self.byte_window.1..self.byte_window.2],
-            true,
-        );
-        cs.chars().map(|c| c.str.to_string()).collect()
-    }
-
-    fn context_chars(&self) -> Vec<String> {
-        let cs = CS::new(
-            &self.data.text[self.byte_window.0..self.byte_window.3],
-            true,
-        );
-        cs.chars().map(|c| c.str.to_string()).collect()
     }
 }
 
@@ -549,15 +501,6 @@ impl InferenceBatch {
             .map(|batch| batch.iter().map(|item| item.size()).collect())
     }
 
-    fn infos(&self) -> anyhow::Result<Batch<Option<PyObject>>> {
-        self.batch
-            .as_ref()
-            .ok_or_else(|| {
-                anyhow!("can only get infos before getting items, because they are moved")
-            })
-            .map(|batch| batch.iter().map(|item| item.data.info.clone()).collect())
-    }
-
     fn token_ids(&self) -> anyhow::Result<Batch<Vec<u32>>> {
         self.batch
             .as_ref()
@@ -570,6 +513,15 @@ impl InferenceBatch {
                     .map(|item| item.tokenization.token_ids.clone())
                     .collect()
             })
+    }
+
+    fn indices(&self) -> anyhow::Result<Batch<usize>> {
+        self.batch
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("can only get indices before getting items, because they are moved")
+            })
+            .map(|batch| batch.iter().map(|item| item.item_idx).collect())
     }
 
     fn items(&mut self) -> anyhow::Result<Batch<InferenceItem>> {
@@ -586,8 +538,8 @@ pub enum PreprocessingConfig {
 }
 
 impl<'a> FromPyObject<'a> for PreprocessingConfig {
-    fn extract(obj: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = obj.extract()?;
+    fn extract_bound(obj: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = obj.downcast()?;
         let Some(preprocessing_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "preprocessing config"));
         };
@@ -618,8 +570,8 @@ pub enum PostprocessingConfig {
 }
 
 impl<'a> FromPyObject<'a> for PostprocessingConfig {
-    fn extract(obj: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = obj.extract()?;
+    fn extract_bound(obj: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = obj.downcast()?;
         let Some(postprocessing_type) = d.get_item("type")? else {
             return Err(py_required_key_error("type", "postprocessing config"));
         };
@@ -651,8 +603,8 @@ pub struct TrainPipelineConfig {
 }
 
 impl<'a> FromPyObject<'a> for TrainPipelineConfig {
-    fn extract(obj: &'a PyAny) -> PyResult<Self> {
-        let d: &PyDict = obj.extract()?;
+    fn extract_bound(obj: &Bound<'a, PyAny>) -> PyResult<Self> {
+        let d: &Bound<'_, PyDict> = obj.downcast()?;
         let Some(preprocessing) = d.get_item("preprocessing")? else {
             return Err(py_required_key_error("preprocessing", "pipeline config"));
         };
@@ -726,27 +678,22 @@ pub fn train_pipeline(
     ))
 }
 
-pub struct InferenceDataInfo {
-    pub item_idx: usize,
-}
-pub type InferencePipeline =
-    Pipeline<(InferenceData, InferenceDataInfo), anyhow::Result<Vec<InferenceItem>>>;
+pub type InferencePipeline = Pipeline<(usize, String), anyhow::Result<Vec<InferenceItem>>>;
 pub fn inference_pipeline(
     window_cfg: WindowConfig,
     tokenizer_cfg: TokenizerConfig,
     ignore_special_tokens: bool,
 ) -> anyhow::Result<InferencePipeline> {
     let tok = tokenizer(tokenizer_cfg)?;
-    Ok(Arc::new(move |(data, info)| {
-        windows(&data.text, &window_cfg)?
+    Ok(Arc::new(move |(index, data)| {
+        windows(&data, &window_cfg)?
             .iter()
             .enumerate()
             .map(|(w_idx, w)| {
                 let tokenization = tok.tokenize(w.str, ignore_special_tokens)?;
                 Ok(InferenceItem::new(
-                    data.clone(),
                     tokenization,
-                    info.item_idx,
+                    index,
                     w_idx,
                     w.boundaries(),
                     w.byte_boundaries(),
@@ -766,7 +713,7 @@ struct InferenceLoader {
 impl InferenceLoader {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        iter: impl Iterator<Item = anyhow::Result<InferenceData>> + Send + 'static,
+        iter: impl Iterator<Item = anyhow::Result<String>> + Send + 'static,
         tokenizer: TokenizerConfig,
         ignore_special_tokens: bool,
         window: WindowConfig,
@@ -791,7 +738,6 @@ impl InferenceLoader {
                 }
             })
             .enumerate()
-            .map(|(item_idx, data)| (data, InferenceDataInfo { item_idx }))
             .pipe(pipeline, num_threads)
             .scan(iter_err.clone(), move |err, item| match item {
                 Ok(item) => Some(item),
@@ -819,6 +765,32 @@ impl InferenceLoader {
     }
 }
 
+pub struct InferenceIterator(Py<PyIterator>);
+
+impl InferenceIterator {
+    pub fn new(iter: Py<PyIterator>) -> Self {
+        InferenceIterator(iter)
+    }
+}
+
+impl Iterator for InferenceIterator {
+    type Item = anyhow::Result<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Python::with_gil(|py| {
+            let mut bound = self.0.clone_ref(py).into_bound(py);
+            let item = bound.next()?;
+            let Ok(item) = item else {
+                return Some(Err(anyhow!("error extracting item from iterator")));
+            };
+            Some(
+                item.extract()
+                    .map_err(|py_err| anyhow!("error extracting item from iterator: {py_err}")),
+            )
+        })
+    }
+}
+
 #[pymethods]
 impl InferenceLoader {
     #[allow(clippy::too_many_arguments)]
@@ -836,7 +808,8 @@ impl InferenceLoader {
         sort = false
     ))]
     pub fn from_iterator(
-        iterator: PyObject,
+        py: Python<'_>,
+        iterator: Py<PyIterator>,
         tokenizer: TokenizerConfig,
         window: WindowConfig,
         ignore_special_tokens: bool,
@@ -847,9 +820,19 @@ impl InferenceLoader {
         prefetch_factor: usize,
         sort: bool,
     ) -> anyhow::Result<Self> {
-        let data: Vec<_> = inference_data_iterator_from_python(iterator).collect();
+        let items: Vec<_> = iterator
+            .into_bound(py)
+            .map(|item| -> anyhow::Result<_> {
+                item.map_err(|e| anyhow!("error in inference iterator: {e}"))
+                    .and_then(|item| {
+                        item.extract().map_err(|e| {
+                            anyhow!("error extracting item in inference iterator: {e}")
+                        })
+                    })
+            })
+            .collect();
         Self::new(
-            data.into_iter(),
+            items.into_iter(),
             tokenizer,
             ignore_special_tokens,
             window,
@@ -891,7 +874,7 @@ type TrainIter =
 #[pyclass]
 struct TrainLoader {
     pipeline: TrainPipeline,
-    files: Vec<(String, Option<String>)>,
+    files: Vec<String>,
     strategy: TextIterationStrategy,
     num_threads: u8,
     buffer_size: usize,
@@ -917,7 +900,7 @@ struct TrainLoader {
 impl TrainLoader {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        files: Vec<(String, Option<String>)>,
+        files: Vec<String>,
         pipeline: TrainPipelineConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
@@ -970,12 +953,13 @@ impl TrainLoader {
     }
 
     fn init_iter(&mut self) -> anyhow::Result<()> {
-        let seed = self.seed.unwrap_or(0) + self.epoch as u64;
-        let mut generators = vec![];
-        for (input_file, target_file) in self.files.iter() {
-            let generator = train_data_generator_from_files(input_file, target_file.as_ref())?;
-            generators.push(generator);
-        }
+        let seed = self.seed.unwrap_or_default() + self.epoch as u64;
+
+        let generators = self
+            .files
+            .iter()
+            .map(train_data_generator_from_jsonl)
+            .collect::<anyhow::Result<_>>()?;
 
         let text_iter = TextIterator::new(generators, self.strategy, Some(seed))?;
         self.min_items = Some(
@@ -989,19 +973,17 @@ impl TrainLoader {
             .take(self.limit)
             .skip(self.skip + self.fast_forward + self.rank)
             .step_by(self.world_size)
-            .filter_map(move |(item_idx, (d, file_idx))| {
-                if let Ok(d) = d {
-                    Some((
-                        d,
+            .filter_map(move |(item_idx, (data, file_idx))| {
+                data.ok().map(|data| {
+                    (
+                        data,
                         TextDataInfo {
                             file_idx,
                             seed: seed + item_idx as u64,
                             ..Default::default()
                         },
-                    ))
-                } else {
-                    None
-                }
+                    )
+                })
             })
             .pipe(self.pipeline.clone(), self.num_threads)
             .filter_map(|i| i.ok())
@@ -1034,7 +1016,7 @@ impl TrainLoader {
         batch_limit_type = BatchLimitType::BatchSize,
         max_length = 512,
         shuffle = false,
-        prefetch_factor = 4,
+        prefetch_factor = 1,
         sort = false,
         seed = None,
         skip = 0,
@@ -1042,7 +1024,7 @@ impl TrainLoader {
         distributed = None,
     ))]
     pub fn from_files(
-        files: Vec<(String, Option<String>)>,
+        files: Vec<String>,
         pipeline: TrainPipelineConfig,
         strategy: TextIterationStrategy,
         num_threads: u8,
@@ -1139,7 +1121,6 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>)
     m.add_class::<TrainItem>()?;
     m.add_class::<TrainBatch>()?;
     m.add_class::<InferenceLoader>()?;
-    m.add_class::<InferenceData>()?;
     m.add_class::<InferenceItem>()?;
     m.add_class::<InferenceBatch>()?;
     parent_module.add_submodule(&m)?;

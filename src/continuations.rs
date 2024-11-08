@@ -20,6 +20,7 @@ pub struct MmapContinuationIndex {
 #[pymethods]
 impl MmapContinuationIndex {
     #[staticmethod]
+    #[pyo3(signature = (data, dir, common_suffix = None))]
     fn load(data: &str, dir: &str, common_suffix: Option<&str>) -> anyhow::Result<Self> {
         let trie = Arc::new(ArtMmapContinuationTrie::load(data, dir, common_suffix)?);
         Ok(Self {
@@ -33,6 +34,7 @@ impl MmapContinuationIndex {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (data, dir, continuations, common_suffix = None))]
     fn load_with_continuations(
         data: &str,
         dir: &str,
@@ -52,6 +54,7 @@ impl MmapContinuationIndex {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (data, output_dir, common_suffix = None))]
     fn build_from_file(
         data: &str,
         output_dir: &str,

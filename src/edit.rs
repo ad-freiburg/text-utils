@@ -96,7 +96,7 @@ pub enum EditOperation {
 }
 
 impl<'a> FromPyObject<'a> for EditOperation {
-    fn extract(ob: &'a PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: String = ob.extract()?;
         let edit_op = match s.as_str() {
             "i" | "insert" => EditOperation::Insert,

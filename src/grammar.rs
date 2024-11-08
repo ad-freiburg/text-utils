@@ -2,7 +2,6 @@ use std::env::var;
 use std::num::NonZeroUsize;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
-// use std::time::Instant;
 
 use anyhow::anyhow;
 use lru::LruCache;
@@ -80,6 +79,7 @@ impl RegexConstraint {
             })
     }
 
+    #[pyo3(signature = (prefix = None))]
     fn reset(&self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
         let Some(state) = self.constraint.get_state(&prefix.unwrap_or_default()) else {
             return Err(anyhow!("failed to reset to given prefix"));
@@ -298,6 +298,7 @@ impl LR1Constraint {
         Ok(Self::init(constraint))
     }
 
+    #[pyo3(signature = (prefix = None))]
     fn reset(&self, prefix: Option<Vec<u8>>) -> anyhow::Result<()> {
         let Some(state) = self.constraint.get_state(&prefix.unwrap_or_default()) else {
             return Err(anyhow!("failed to reset to given prefix"));

@@ -1,4 +1,5 @@
 import glob
+import json
 import os.path
 from typing import Any
 
@@ -31,7 +32,7 @@ def save_checkpoint(
     optimizer_state_dict: dict[str, Any] | None = None,
     lr_scheduler_state_dict: dict[str, Any] | None = None,
     loss_fn_state_dict: dict[str, Any] | None = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> None:
     """
     Saves a checkpoint to a file.
@@ -63,23 +64,28 @@ def save_checkpoint(
         "optimizer_state_dict": optimizer_state_dict,
         "lr_scheduler_state_dict": lr_scheduler_state_dict,
         "loss_fn_state_dict": loss_fn_state_dict,
-        **kwargs
+        **kwargs,
     }
     torch.save(state, f=checkpoint_path)
 
 
 def load_checkpoint(
-    checkpoint_path: str,
-    device: torch.device = torch.device("cpu")
+    checkpoint_path: str, device: torch.device = torch.device("cpu")
 ) -> dict[str, Any]:
     return torch.load(checkpoint_path, map_location=device)
 
 
-def load_text_file(
-    path: str
-) -> list[str]:
+def load_text_file(path: str) -> list[str]:
     text = []
     with open(path, "r", encoding="utf8") as inf:
         for line in inf:
             text.append(line.rstrip("\r\n"))
     return text
+
+
+def load_jsonl_file(path: str) -> list:
+    data = []
+    with open(path, "r", encoding="utf8") as inf:
+        for line in inf:
+            data.append(json.loads(line.rstrip("\r\n")))
+    return data

@@ -921,7 +921,7 @@ training will resume from latest checkpoint.",
 
     @classmethod
     def train_local(
-        cls, work_dir: str, experiment_dir: str, config_path: str, profile: bool
+        cls, work_dir: str, experiment_dir: str, config_path: str, profile: bool = False
     ):
         logging.setup_logging()
         logger = logging.get_logger("LOCAL_INITIALIZATION")

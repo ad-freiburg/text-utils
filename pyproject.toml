@@ -29,7 +29,8 @@ dependencies = [
     "tensorboard>=2.16.0",
     "flask>=3.0",
     "requests>=2.31",
-    "termcolor>=2.4.0"
+    "termcolor>=2.4.0",
+    "grammar-utils>=0.1.0"
 ]
 
 [project.scripts]

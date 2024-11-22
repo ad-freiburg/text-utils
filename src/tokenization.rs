@@ -28,7 +28,6 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
-use text_utils_grammar::LR1GrammarParser;
 use tokenizers::{self as hft, Decoder};
 
 pub const UNK: &str = "<unk>";
@@ -147,31 +146,32 @@ pub enum TokenizationConstraintConfig {
 }
 
 pub enum TokenizationConstraint {
-    LR1Grammar {
-        parser: LR1GrammarParser,
-        skip_ignore_tokens: bool,
-    },
+    // LR1Grammar {
+    //     parser: LR1GrammarParser,
+    //     skip_ignore_tokens: bool,
+    // },
 }
 
 impl TokenizationConstraint {
-    pub fn from_config(config: TokenizationConstraintConfig) -> anyhow::Result<Self> {
-        match config {
-            TokenizationConstraintConfig::LR1Grammar {
-                lexer,
-                grammar,
-                skip_ignore_tokens,
-            } => {
-                let parser = LR1GrammarParser::from_files(&grammar, &lexer).map_err(|e| {
-                    anyhow!(
-                        "failed to create LR1 grammar parser from lexer {lexer} and grammar {grammar}: {e}"
-                    )
-                })?;
-                Ok(Self::LR1Grammar {
-                    parser,
-                    skip_ignore_tokens,
-                })
-            }
-        }
+    pub fn from_config(_config: TokenizationConstraintConfig) -> anyhow::Result<Self> {
+        unimplemented!()
+        // match config {
+        //     TokenizationConstraintConfig::LR1Grammar {
+        //         lexer,
+        //         grammar,
+        //         skip_ignore_tokens,
+        //     } => {
+        //         let parser = LR1GrammarParser::from_files(&grammar, &lexer).map_err(|e| {
+        //             anyhow!(
+        //                 "failed to create LR1 grammar parser from lexer {lexer} and grammar {grammar}: {e}"
+        //             )
+        //         })?;
+        //         Ok(Self::LR1Grammar {
+        //             parser,
+        //             skip_ignore_tokens,
+        //         })
+        //     }
+        // }
     }
 }
 
@@ -719,49 +719,50 @@ pub trait Tokenize: BaseTokenize {
 
     fn tokenize_with_constraint(
         &self,
-        s: &str,
-        ignore_special_tokens: bool,
-        constraint: &TokenizationConstraint,
+        _s: &str,
+        _ignore_special_tokens: bool,
+        _constraint: &TokenizationConstraint,
     ) -> anyhow::Result<Tokenization> {
-        match constraint {
-            TokenizationConstraint::LR1Grammar {
-                parser,
-                skip_ignore_tokens,
-            } => {
-                let lexemes = parser.lex(s).map_err(|e| {
-                    anyhow!("tokenizing with grammar constraint failed with a lexer error: {e}")
-                })?;
-                let mut all_token_ids = vec![];
-                let num_lexemes = lexemes.len();
-                for (i, (lexeme, (start, len))) in lexemes.into_iter().enumerate() {
-                    if *skip_ignore_tokens && lexeme.is_none() {
-                        continue;
-                    }
-                    let tokenization =
-                        self.tokenize(&s[start..start + len], ignore_special_tokens)?;
-                    if !matches!(tokenization.info, TokenizationInfo::Empty) {
-                        return Err(anyhow!(
-                            "default implementation does not support tokenization info with grammar constraint"
-                        ));
-                    }
-                    let pfx = if i == 0 { 0 } else { self.num_prefix_tokens() };
-                    let sfx = if i == num_lexemes - 1 {
-                        0
-                    } else {
-                        self.num_suffix_tokens()
-                    };
-                    let num_tokens = tokenization.token_ids.len() - pfx - sfx;
-                    all_token_ids.extend(
-                        tokenization
-                            .token_ids
-                            .into_iter()
-                            .skip(pfx)
-                            .take(num_tokens),
-                    );
-                }
-                Ok(Tokenization::new(all_token_ids, TokenizationInfo::Empty))
-            }
-        }
+        unimplemented!();
+        // match constraint {
+        //     TokenizationConstraint::LR1Grammar {
+        //         parser,
+        //         skip_ignore_tokens,
+        //     } => {
+        //         let lexemes = parser.lex(s).map_err(|e| {
+        //             anyhow!("tokenizing with grammar constraint failed with a lexer error: {e}")
+        //         })?;
+        //         let mut all_token_ids = vec![];
+        //         let num_lexemes = lexemes.len();
+        //         for (i, (lexeme, (start, len))) in lexemes.into_iter().enumerate() {
+        //             if *skip_ignore_tokens && lexeme.is_none() {
+        //                 continue;
+        //             }
+        //             let tokenization =
+        //                 self.tokenize(&s[start..start + len], ignore_special_tokens)?;
+        //             if !matches!(tokenization.info, TokenizationInfo::Empty) {
+        //                 return Err(anyhow!(
+        //                     "default implementation does not support tokenization info with grammar constraint"
+        //                 ));
+        //             }
+        //             let pfx = if i == 0 { 0 } else { self.num_prefix_tokens() };
+        //             let sfx = if i == num_lexemes - 1 {
+        //                 0
+        //             } else {
+        //                 self.num_suffix_tokens()
+        //             };
+        //             let num_tokens = tokenization.token_ids.len() - pfx - sfx;
+        //             all_token_ids.extend(
+        //                 tokenization
+        //                     .token_ids
+        //                     .into_iter()
+        //                     .skip(pfx)
+        //                     .take(num_tokens),
+        //             );
+        //         }
+        //         Ok(Tokenization::new(all_token_ids, TokenizationInfo::Empty))
+        //     }
+        // }
     }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool)

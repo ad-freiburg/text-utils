@@ -1,6 +1,6 @@
 [package]
 publish = false
-name = "text-utils-rs"
+name = "text-utils"
 version = "0.6.0"
 edition = "2021"
 
@@ -13,7 +13,7 @@ log = "0.4"
 env_logger = "0.11"
 rayon = "1.8"
 indicatif = { version = "0.17", features = ["rayon"] }
-pyo3 = { version = "0.22", features = ["anyhow", "extension-module", "abi3-py310", "auto-initialize", "macros"] }
+pyo3 = { version = "0.22", features = ["anyhow", "extension-module", "abi3-py310", "auto-initialize"]}
 itertools = "0.13"
 rand = "0.8"
 rand_distr = "0.4"
@@ -30,8 +30,6 @@ num_cpus = "1.14"
 numpy = "0.22"
 clap = { version = "4", features = ["derive"] }
 tokenizers = "0.20"
-text-utils-prefix = { path = "text-utils-prefix" }
-text-utils-grammar = { path = "text-utils-grammar" }
 lru = "0.12"
 
 [dev-dependencies]

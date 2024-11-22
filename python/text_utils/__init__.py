@@ -9,15 +9,5 @@ from text_utils._internal import (
     windows,
     metrics,
     unicode,
-    continuations,
-    grammar
 )
-from text_utils import (
-    api,
-    inference,
-    modules,
-    logging,
-    distributed,
-    mask,
-    io
-)
+from text_utils import api, inference, modules, logging, distributed, mask, io

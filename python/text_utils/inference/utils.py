@@ -63,6 +63,10 @@ class Beam:
         return self.log_probs[self.initial_length :]
 
     @property
+    def length(self) -> int:
+        return len(self)
+
+    @property
     def log_prob(self) -> float:
         return sum(self.log_probs)
 
@@ -135,22 +139,19 @@ BeamWidthFn = Callable[
 ]
 
 
-# takes in a beam and returns a scalar score
-ScoreFn = Callable[[Beam], float]
+# takes in a beam (and optional length) and returns a scalar score
+ScoreFn = Callable[[Beam, int | None], float]
 
 
-def log_likelihood_score(
-    normalize_by_length: bool = True, alpha: float = 1.0, full: bool = False
-) -> ScoreFn:
-    def _score(beam: Beam) -> float:
-        if full:
-            log_prob = beam.log_prob
-            length = len(beam)
-        else:
-            log_prob = beam.decoded_log_prob
+def log_likelihood_score(normalize: bool = True, alpha: float = 1.0) -> ScoreFn:
+    assert alpha >= 0.0, "alpha must be positive"
+
+    def _score(beam: Beam, length: int | None = None) -> float:
+        log_prob = beam.decoded_log_prob
+        if length is None:
             length = beam.decoded_length
 
-        if normalize_by_length and length > 0:
+        if normalize and length > 0:
             return log_prob / (length**alpha)
         else:
             return log_prob

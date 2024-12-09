@@ -166,8 +166,8 @@ def constraint_logit_fn(
     ) -> torch.Tensor:
         zeros = torch.full_like(logits, float("-inf"))
 
-        for i, beam_or_idx in enumerate(beams):
-            constraint = retrieve_constraint_fn(beam_or_idx)
+        for i, beam in enumerate(beams):
+            constraint = retrieve_constraint_fn(beam)
 
             if constraint is None or constraint.is_invalid():
                 zeros[i] = logits[i]
@@ -178,6 +178,12 @@ def constraint_logit_fn(
 
             if constraint.is_match():
                 zeros[i, eos_token_id] = logits[i, eos_token_id]
+            else:
+                # eos token might still be valid on non-match beams
+                # if its text representation, e.g. <|endoftext|>, is allowed
+                # by the constraint, e.g. ".+"; avoid this by setting the
+                # logit to negative infinity explicitly on non-match beams
+                zeros[i, eos_token_id] = float("-inf")
 
         return zeros
 

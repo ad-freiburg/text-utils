@@ -726,7 +726,7 @@ pub fn preprocessing(cfg: PreprocessingFnConfig) -> Box<PreprocessingFn> {
         }),
         PreprocessingFnConfig::ChatDecode(part, template) => apply(part, move |s, _| {
             let chat: Chat = serde_json::from_str(s)
-                .map_err(|e| anyhow!("failed to decode chat from json: {}", e))?;
+                .map_err(|e| anyhow!("failed to decode chat from json: {e}\n{s}"))?;
             template.format(&chat)
         }),
     }

@@ -3,13 +3,13 @@ import os
 import platform
 import re
 import shutil
-import zipfile
 import subprocess
+import zipfile
 from pathlib import Path
-from typing import Union, Dict, List, Any, Optional, Iterator, Callable
+from typing import Any, Callable, Dict, Iterator, List, Union
 
-import requests
 import numpy as np
+import requests
 import torch
 from torch import nn
 from tqdm import tqdm
@@ -31,10 +31,7 @@ def get_devices(device: Device) -> list[torch.device]:
     return devices
 
 
-def _unpack_zip(
-    zip_file_path: str,
-    directory: str
-) -> None:
+def _unpack_zip(zip_file_path: str, directory: str) -> None:
     with zipfile.ZipFile(zip_file_path, "r") as zip_file:
         zip_file.extractall(directory)
 
@@ -57,11 +54,7 @@ def to(v: Any, device: torch.device) -> Any:
 class ProgressIterator:
     # a utility class capturing the number and total size
     # of items passed through an iterator
-    def __init__(
-        self,
-        it: Iterator[Any],
-        size_fn: Callable[[Any], int]
-    ):
+    def __init__(self, it: Iterator[Any], size_fn: Callable[[Any], int]):
         self.it = it
         self.num_items = 0
         self.total_size = 0
@@ -84,7 +77,7 @@ def download_zip(
     cache_dir: str,
     sub_cache_dir: str,
     force_download: bool,
-    logger: logging.Logger
+    logger: logging.Logger,
 ) -> str:
     """
     Downloads and extracts a zip into cache dir and returns the path to the only subdirectory
@@ -104,11 +97,14 @@ def download_zip(
         if directory:
             os.makedirs(directory, exist_ok=True)
         logger.info(
-            f"downloading {name} from {url} to download directory {download_dir}")
+            f"downloading {name} from {url} to download directory {download_dir}"
+        )
         response = requests.get(url, stream=True)
         if not response.ok:
-            raise RuntimeError(f"error downloading {name} from {url}: "
-                               f"status {response.status_code}, {response.reason}")
+            raise RuntimeError(
+                f"error downloading {name} from {url}: "
+                f"status {response.status_code}, {response.reason}"
+            )
 
         try:
             file_size = int(response.headers.get("content-length", 0))
@@ -127,7 +123,8 @@ def download_zip(
             raise e
     else:
         logger.info(
-            f"{name} is already downloaded to download directory {download_dir}")
+            f"{name} is already downloaded to download directory {download_dir}"
+        )
 
     zip_dir = os.path.join(cache_dir, sub_cache_dir)
     not_extracted = not os.path.exists(zip_dir)
@@ -156,9 +153,11 @@ def cpu_info() -> str:
 
 def gpu_info(device: Union[torch.device, str, int]) -> str:
     device_props = torch.cuda.get_device_properties(device)
-    return f"{device_props.name} ({device_props.total_memory // 1024 // 1024:,}MiB memory, " \
-           f"{device_props.major}.{device_props.minor} compute capability, " \
-           f"{device_props.multi_processor_count} multiprocessors)"
+    return (
+        f"{device_props.name} ({device_props.total_memory // 1024 // 1024:,}MiB memory, "
+        f"{device_props.major}.{device_props.minor} compute capability, "
+        f"{device_props.multi_processor_count} multiprocessors)"
+    )
 
 
 def device_info(device: torch.device) -> str:
@@ -167,10 +166,11 @@ def device_info(device: torch.device) -> str:
 
 def _run_cmd(path: str, cmd: List[str]) -> str:
     try:
-        return subprocess.check_output(
-            cmd,
-            cwd=Path(path).resolve()
-        ).strip().decode("utf8")
+        return (
+            subprocess.check_output(cmd, cwd=Path(path).resolve())
+            .strip()
+            .decode("utf8")
+        )
     except subprocess.CalledProcessError:
         return ""
 
@@ -205,7 +205,9 @@ def num_parameters(module: nn.Module) -> Dict[str, int]:
     return {"trainable": trainable, "fixed": fixed, "total": trainable + fixed}
 
 
-def item_progress_bar(desc: str, total: int | None = None, disable: bool = False) -> tqdm:
+def item_progress_bar(
+    desc: str, total: int | None = None, disable: bool = False
+) -> tqdm:
     return tqdm(
         desc=desc,
         total=total,
@@ -215,7 +217,9 @@ def item_progress_bar(desc: str, total: int | None = None, disable: bool = False
     )
 
 
-def byte_progress_bar(desc: str, total: int | None = None, disable: bool = False) -> tqdm:
+def byte_progress_bar(
+    desc: str, total: int | None = None, disable: bool = False
+) -> tqdm:
     return tqdm(
         desc=desc,
         total=total,
@@ -241,3 +245,49 @@ def progress_bar(
         raise ValueError(
             f"unknown progress unit {progress_unit}, must be either 'it' or 'byte'"
         )
+
+
+class GradientClipper:
+    def add_norm(self, norm: torch.Tensor | float) -> None:
+        raise NotImplementedError
+
+    def get_norm(self) -> float:
+        raise NotImplementedError
+
+
+class MaxNormGradientClipper:
+    def __init__(self, max_norm: float):
+        self.max_norm = max_norm
+
+    def add_norm(self, norm: torch.Tensor | float) -> None:
+        pass
+
+    def get_norm(self) -> float:
+        return self.max_norm
+
+
+class PercentileGradientClipper:
+    def __init__(self, percentile: int):
+        assert 0 <= percentile <= 100, "percentile must be between 0 and 100"
+        self.percentile = percentile
+        self.norms = []
+
+    def add_norm(self, norm: torch.Tensor | float) -> None:
+        if isinstance(norm, torch.Tensor):
+            norm = norm.item()
+
+        self.norms.append(norm)
+
+    def get_norm(self) -> float:
+        assert self.norms, "call add_norm at least once before calling get_norm"
+        return np.percentile(self.norms, self.percentile)
+
+
+def get_gradient_clipper(cfg: dict[str, Any]) -> GradientClipper:
+    typ = cfg["type"]
+    if typ == "max_norm":
+        return MaxNormGradientClipper(cfg["max_norm"])
+    elif typ == "percentile":
+        return PercentileGradientClipper(cfg["percentile"])
+    else:
+        raise ValueError(f"unknown gradient clipper type {typ}")

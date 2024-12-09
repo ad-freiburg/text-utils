@@ -11,6 +11,7 @@ use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
 use anyhow::anyhow;
 use itertools::Itertools;
+use log::warn;
 use numpy::ndarray::prelude::*;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
@@ -986,7 +987,13 @@ impl TrainLoader {
                 })
             })
             .pipe(self.pipeline.clone(), self.num_threads)
-            .filter_map(|i| i.ok())
+            .filter_map(|item| match item {
+                Ok(item) => Some(item),
+                Err(e) => {
+                    warn!("error in pipeline: {e}");
+                    None
+                }
+            })
             .batched(
                 self.sort,
                 self.shuffle,

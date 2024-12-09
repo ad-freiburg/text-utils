@@ -1,20 +1,20 @@
 import collections
 import math
-import sys
 import os
 import pprint
-from typing import Iterator, Any, Callable
+import sys
+from typing import Any, Callable, Iterator
 
 import torch
 from torch import nn
-from torch.backends import cudnn, cuda
+from torch.backends import cuda, cudnn
 
 from text_utils import (
     api,
-    logging,
     configuration,
-    io,
     data,
+    io,
+    logging,
 )
 from text_utils.api.utils import Device, get_devices
 
@@ -218,11 +218,14 @@ class TextProcessor:
                 for item, output in zip(batch.items(), outputs):
                     if item.item_idx not in results:
                         results[item.item_idx] = {}
+                        if progress_unit == "it":
+                            pbar.update(1)
+
                     if progress_unit == "byte":
                         pbar.update(item.window_bytes())
+
                     results[item.item_idx][item.window_idx] = (item, output)
-                if progress_unit == "it":
-                    pbar.update(1)
+
             outputs = []
             for item_idx in range(len(results)):
                 window_items = []
@@ -231,6 +234,7 @@ class TextProcessor:
                     item, output = results[item_idx][window_idx]
                     window_items.append(item)
                     window_outputs.append(output)
+
                 yield postprocessing_fn(window_items, window_outputs)
 
         else:
@@ -246,14 +250,18 @@ class TextProcessor:
                         window_items.append(item)
                         window_outputs.append(output)
                         continue
+
                     yield postprocessing_fn(window_items, window_outputs)
                     if progress_unit == "byte":
                         pbar.update(sum(item.window_bytes() for item in window_items))
+
                     prev_item_idx = item.item_idx
                     window_items = [item]
                     window_outputs = [output]
+
                 if progress_unit == "it":
                     pbar.update(1)
+
             # dont forget to yield final item
             yield postprocessing_fn(window_items, window_outputs)
 

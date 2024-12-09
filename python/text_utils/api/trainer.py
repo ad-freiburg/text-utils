@@ -1,48 +1,48 @@
 import argparse
-import math
 import copy
 import functools
-import sys
-import random
-import os
 import hashlib
+import math
+import os
+import random
 import shutil
+import sys
 import time
 import zipfile
 from typing import Any, Callable
 
+from text_utils.api.utils import get_gradient_clipper
 import torch
-from torch.backends import cuda, cudnn
+import yaml
 from torch import distributed as dist
 from torch import multiprocessing as mp
 from torch import nn
-from torch.optim import lr_scheduler
-from torch.backends import cudnn, cuda  # noqa
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullyShardedDataParallel as FSDP,
-)
+from torch.backends import cuda, cudnn  # noqa
 from torch.distributed.fsdp.api import (
+    BackwardPrefetch,
+    CPUOffload,
+    FullOptimStateDictConfig,
+    FullStateDictConfig,
     MixedPrecision,
     ShardingStrategy,
     StateDictType,
-    FullStateDictConfig,
-    FullOptimStateDictConfig,
-    CPUOffload,
-    BackwardPrefetch,
+)
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    FullyShardedDataParallel as FSDP,
 )
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import lr_scheduler
 from torch.utils.tensorboard.writer import SummaryWriter
-import yaml
 
+from text_utils import api, configuration, data, distributed, io, logging, tensorboard
 from text_utils.modules.loss import loss_from_config
+from text_utils.modules.optimizer import optimizer_from_config
 from text_utils.modules.scheduler import (
     lr_scheduler_from_config,
     max_length_scheduler_from_config,
 )
-from text_utils.modules.optimizer import optimizer_from_config
-from text_utils import distributed, data, configuration, io, logging, api, tensorboard
 
 
 def clamp(v: float, minimum: int, maximum: int) -> int:
@@ -140,8 +140,6 @@ training will resume from latest checkpoint.",
                 )
             model = self._prepare_peft(model, peft)
 
-        sharding_policy = self._sharding_policy(model)
-
         mixed_precision = self.cfg["train"].get("mixed_precision", None)
         if mixed_precision == "fp16":
             self.mixed_precision = torch.float16
@@ -180,6 +178,7 @@ training will resume from latest checkpoint.",
                 gradient_as_bucket_view=True,
             )
         else:
+            sharding_policy = self._sharding_policy(model)
             offload_params = dist_cfg.get("offload", False)
             prefetch = dist_cfg.get("prefetch", True)
             strategy = ShardingStrategy[dist_cfg.get("strategy", "NO_SHARD")]
@@ -245,9 +244,12 @@ training will resume from latest checkpoint.",
             additional_optimizer_fn=self._additional_optimizer_fn(),
         )
 
-        self.clip_gradient_norm: float | None = self.cfg["train"].get(
-            "clip_gradient_norm", None
-        )
+        gradient_clipping_cfg = self.cfg["train"].get("gradient_clipping", None)
+        if gradient_clipping_cfg:
+            self.gradient_clipper = get_gradient_clipper(gradient_clipping_cfg)
+        else:
+            self.gradient_clipper = None
+
         gradient_accumulation_cfg = self.cfg["train"].get("gradient_accumulation", {})
         self.gradient_accumulation_steps = gradient_accumulation_cfg.get("steps", 1)
         self.gradient_accumulation_reduction = gradient_accumulation_cfg.get(
@@ -992,6 +994,9 @@ training will resume from latest checkpoint.",
         mean_item_size_ratio = tensorboard.DistAverageTracker(
             "train_item_size_ratio", self.info.device
         )
+        mean_peak_gpu_memory = tensorboard.DistAverageTracker(
+            "train_peak_gpu_memory", self.info.device
+        )
         total_batch_size = torch.zeros(1, dtype=torch.long, device=self.info.device)
         min_num_batches = torch.zeros(1, dtype=torch.long, device=self.info.device)
 
@@ -1105,14 +1110,15 @@ training will resume from latest checkpoint.",
             if self.info.is_main_process:
                 mean_grad_norm.add(grad_norm)
 
-            if self.clip_gradient_norm is not None:
+            if self.gradient_clipper is not None:
+                self.gradient_clipper.add_norm(grad_norm)
+                clip_norm = self.gradient_clipper.get_norm()
+
                 self.grad_scaler.unscale_(self.optimizer)
                 if isinstance(self.model, FSDP):
-                    self.model.clip_grad_norm_(self.clip_gradient_norm)
+                    self.model.clip_grad_norm_(clip_norm)
                 else:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.clip_gradient_norm
-                    )
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_norm)
 
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
@@ -1127,6 +1133,9 @@ training will resume from latest checkpoint.",
             mean_batch_size.add(batch_items)
 
             mean_loss.add(sum(losses))
+            mean_peak_gpu_memory.add(
+                torch.cuda.max_memory_allocated(self.info.device) / 1024**3
+            )
 
             if self.total_items >= self.step_at:
                 lr_scheduler = self.cooldown_scheduler or self.lr_scheduler
@@ -1152,6 +1161,7 @@ training will resume from latest checkpoint.",
                 mean_item_size.sync()
                 mean_item_size_ratio.sync()
                 mean_batch_preparation.sync()
+                mean_peak_gpu_memory.sync()
                 end = time.perf_counter()
 
                 if self.info.is_main_process:
@@ -1210,6 +1220,11 @@ training will resume from latest checkpoint.",
                     )
                     mean_item_size_ratio.log_info(self.logger, self.total_step)
 
+                    mean_peak_gpu_memory.log_tensorboard(
+                        self.summary_writer, self.total_step
+                    )
+                    mean_peak_gpu_memory.log_info(self.logger, self.total_step)
+
                     items = batches[0].items()
                     for metric in metrics:
                         metric.set_values(items, first_outputs)
@@ -1229,12 +1244,6 @@ training will resume from latest checkpoint.",
                         f"[step {self.total_step}] [epoch {self.epoch + 1}] {eta_msg}"
                     )
 
-                if self.info.is_local_main_process:
-                    self.logger.info(
-                        f"[step {self.total_step}] [rank {self.info.rank}] nvidia-smi:\n"
-                        f"{api.nvidia_smi()}"
-                    )
-
                 start = end
                 mean_loss.reset()
                 mean_grad_norm.reset()
@@ -1244,6 +1253,8 @@ training will resume from latest checkpoint.",
                 mean_item_size.reset()
                 mean_item_size_ratio.reset()
                 mean_batch_preparation.reset()
+                mean_peak_gpu_memory.reset()
+                torch.cuda.reset_peak_memory_stats(self.info.device)
                 self.log_at += self.log_interval
 
             if (
@@ -1277,6 +1288,8 @@ training will resume from latest checkpoint.",
                     mean_item_size.reset()
                     mean_item_size_ratio.reset()
                     mean_batch_preparation.reset()
+                    mean_peak_gpu_memory.reset()
+                    torch.cuda.reset_peak_memory_stats(self.info.device)
                     start = time.perf_counter()
 
                 self.eval_at += self.eval_interval

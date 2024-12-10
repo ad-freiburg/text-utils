@@ -171,6 +171,7 @@ def constraint_logit_fn(
             constraint = retrieve_constraint_fn(beam)
 
             if constraint is None or constraint.is_invalid():
+                # fallback to unconstrained logits
                 zeros[i] = logits[i]
                 continue
 
@@ -192,6 +193,7 @@ def constraint_logit_fn(
 
 
 def allow_tokens_logit_fn(allowed_tokens: list[int]) -> LogitFn:
+    assert len(allowed_tokens) > 0, "allowed_tokens must be non-empty"
     allowed = torch.tensor(allowed_tokens, dtype=torch.long)
 
     def _allow_tokens(
@@ -228,18 +230,22 @@ def greedy() -> SampleFn:
     return _greedy
 
 
-def repetition_penalty(penalty: float) -> LogitFn:
-    def _repetition_penalty(
+def repeat_penalty(penalty: float) -> LogitFn:
+    assert penalty > 0.0, "penalty must be positive"
+
+    def _repeat_penalty(
         input_ids: torch.Tensor, logits: torch.Tensor, _beams: list[Beam]
     ) -> torch.Tensor:
         logit = torch.gather(logits, -1, input_ids)
         logit = torch.where(logit > 0, logit / penalty, logit * penalty)
-        return logits.scatter_(-1, input_ids, logit)
+        return logits.scatter(-1, input_ids, logit)
 
-    return _repetition_penalty
+    return _repeat_penalty
 
 
 def temperature_scaling(temp: float) -> LogitFn:
+    assert temp > 0.0, "temperature must be positive"
+
     def _temperature_scaling(
         _input_ids: torch.Tensor, logits: torch.Tensor, _beams: list[Beam]
     ) -> torch.Tensor:
@@ -249,6 +255,8 @@ def temperature_scaling(temp: float) -> LogitFn:
 
 
 def top_k_masking(k: int) -> LogitFn:
+    assert k > 0, "k must be positive"
+
     def _top_k(
         _input_ids: torch.Tensor, logits: torch.Tensor, _beams: list[Beam]
     ) -> torch.Tensor:
@@ -261,6 +269,8 @@ def top_k_masking(k: int) -> LogitFn:
 
 
 def nucleus_masking(p: float) -> LogitFn:
+    assert 0.0 <= p <= 1.0, "p must be in [0, 1]"
+
     def _nuc(
         _input_ids: torch.Tensor, logits: torch.Tensor, _: list[Beam]
     ) -> torch.Tensor:

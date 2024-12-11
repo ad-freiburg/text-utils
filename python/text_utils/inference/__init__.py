@@ -218,16 +218,16 @@ def beam_search(
 
             # reset current beams and fill with best candidates
             current_beams[idx] = []
-            for candidate in sorted(
-                candidates, key=lambda b: score_fn(b), reverse=True
-            )[:beam_width]:
+            for candidate in sorted(candidates, key=score_fn, reverse=True):
                 # update candidates
                 candidate = update_fn(candidate)
                 if candidate is None:
                     # skip invalid candidates
                     continue
-                else:
+                elif len(current_beams[idx]) < beam_width:
                     current_beams[idx].append(candidate)
+                else:
+                    break
 
             update_info[idx] = len(current_beams[idx])
 

@@ -215,8 +215,9 @@ def identity_update_fn() -> UpdateFn:
 
 def sample() -> SampleFn:
     def _sample(logits: torch.Tensor, k: int) -> torch.Tensor:
+        assert logits.ndim == 1, "expected logits to be 1D"
+        k = min(k, logits.shape[-1] - torch.isneginf(logits).sum().item())
         probs = torch.softmax(logits, dim=-1)
-        k = min(k, probs.shape[-1], int(torch.sum(probs > 0).item()))
         return torch.multinomial(probs, k)
 
     return _sample
@@ -224,7 +225,8 @@ def sample() -> SampleFn:
 
 def greedy() -> SampleFn:
     def _greedy(logits: torch.Tensor, k: int) -> torch.Tensor:
-        k = min(k, logits.shape[-1] - int(torch.sum(torch.isinf(logits)).item()))
+        assert logits.ndim == 1, "expected logits to be 1D"
+        k = min(k, logits.shape[-1] - torch.isneginf(logits).sum().item())
         return torch.topk(logits, k, dim=-1).indices
 
     return _greedy

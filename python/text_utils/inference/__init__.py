@@ -44,12 +44,12 @@ def beam_search(
         max_new_tokens is None or max_new_tokens > 0
     ), "max_new_tokens must be None or positive"
     if stop_condition is None:
-        stop_condition = "max score"
+        stop_condition = "max_score"
     assert stop_condition in {
-        "max score",
-        "estimated score",
-        "max outputs",
-    }, "stop condition must be 'max score', 'estimated score' or 'max outputs'"
+        "max_score",
+        "estimated_score",
+        "max_outputs",
+    }, "stop condition must be 'max_score', 'estimated_score' or 'max_outputs'"
     batch_size = len(initial)
 
     decoder_info: Any | None = None
@@ -98,7 +98,7 @@ def beam_search(
                 finished = False
                 continue
 
-            elif stop_condition == "max outputs":
+            elif stop_condition == "max_outputs":
                 # we are done with this batch element
                 # because we have enough finished beams
                 current_beams[idx] = []
@@ -107,7 +107,7 @@ def beam_search(
             worst_finished = min(
                 (score_fn(b) for b in finished_beams[idx]), default=float("-inf")
             )
-            if stop_condition == "estimated score":
+            if stop_condition == "estimated_score":
                 # best current calculated from current length
                 # idea: is a current active beam better than the worst finished beam?
                 best_current = max(score_fn(b) for b in current_beams[idx])

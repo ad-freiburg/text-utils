@@ -288,17 +288,24 @@ def nucleus_masking(p: float) -> LogitFn:
     return _nuc
 
 
-def min_p_masking(min_p: float) -> LogitFn:
+def min_p_masking(min_p: float, keep_min: int = 1) -> LogitFn:
     assert 0.0 <= min_p <= 1.0, "min_p must be in [0, 1]"
 
     def _min_p(
         _input_ids: torch.Tensor, logits: torch.Tensor, _: list[Beam]
     ) -> torch.Tensor:
-        masked_logits = torch.full_like(logits, float("-inf"))
         probs = torch.softmax(logits, dim=-1)
-        min_probs = probs.max(dim=-1, keepdim=True)[0] * min_p
-        mask = probs >= min_probs
-        masked_logits[mask] = logits[mask]
-        return masked_logits
+        max_probs = probs.max(dim=-1, keepdim=True)[0]
+
+        mask = probs < max_probs * min_p
+
+        sorted_indices = torch.argsort(probs, descending=True, dim=-1)
+        sorted_indices_mask = torch.gather(mask, dim=-1, index=sorted_indices)
+        sorted_indices_mask[..., :keep_min] = False
+
+        indices_mask = sorted_indices_mask.scatter(
+            -1, sorted_indices, sorted_indices_mask
+        )
+        return logits.masked_fill(indices_mask, float("-inf"))
 
     return _min_p

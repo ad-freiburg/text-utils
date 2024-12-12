@@ -34,7 +34,7 @@ def beam_search(
     logit_fns: list[LogitFn] | None = None,
     kwargs_select_fn: MaskSelectFn | None = None,
     kwargs_update_fn: MaskUpdateFn | None = None,
-    stop_condition: str | None = None,
+    stop_condition: str = "estimated_score",
     max_new_tokens: int | None = None,
     return_incomplete: bool = False,
     yield_intermediate: bool = False,
@@ -43,8 +43,6 @@ def beam_search(
     assert (
         max_new_tokens is None or max_new_tokens > 0
     ), "max_new_tokens must be None or positive"
-    if stop_condition is None:
-        stop_condition = "max_score"
     assert stop_condition in {
         "max_score",
         "estimated_score",

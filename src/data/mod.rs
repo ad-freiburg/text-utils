@@ -516,13 +516,18 @@ impl InferenceBatch {
             })
     }
 
-    fn indices(&self) -> anyhow::Result<Batch<usize>> {
+    fn indices(&self) -> anyhow::Result<Batch<(usize, usize)>> {
         self.batch
             .as_ref()
             .ok_or_else(|| {
                 anyhow!("can only get indices before getting items, because they are moved")
             })
-            .map(|batch| batch.iter().map(|item| item.item_idx).collect())
+            .map(|batch| {
+                batch
+                    .iter()
+                    .map(|item| (item.item_idx, item.window_idx))
+                    .collect()
+            })
     }
 
     fn items(&mut self) -> anyhow::Result<Batch<InferenceItem>> {

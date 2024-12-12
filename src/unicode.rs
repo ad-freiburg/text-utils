@@ -26,8 +26,8 @@ pub(crate) type CS<'a> = CharString<'a>;
 // CharString::new("नमस्ते", true).len() -> 4; num grapheme clusters, closest to what
 // humans consider to be characters (in Python available via third party libraries)
 
-impl<'a> CharString<'a> {
-    pub fn new(str: &'a str, use_graphemes: bool) -> CharString {
+impl<'s> CharString<'s> {
+    pub fn new(str: &'s str, use_graphemes: bool) -> CharString<'s> {
         let cluster_lengths: Vec<usize> = if use_graphemes {
             str.graphemes(true).map(str::len).collect()
         } else {
@@ -86,7 +86,7 @@ impl<'a> CharString<'a> {
         (start_byte, end_byte)
     }
 
-    pub fn get(&self, n: usize) -> Option<&'a str> {
+    pub fn get(&self, n: usize) -> Option<&'s str> {
         if n >= self.len() {
             return None;
         }
@@ -94,11 +94,11 @@ impl<'a> CharString<'a> {
         Some(&self.str[start..end])
     }
 
-    pub fn get_char(&self, n: usize) -> Option<Character<'a>> {
-        self.get(n).map(|s| Character { str: s })
+    pub fn get_char(&self, n: usize) -> Option<Character<'s>> {
+        self.get(n).map(|str| Character { str })
     }
 
-    pub fn sub(&self, start: usize, end: usize) -> &'a str {
+    pub fn sub(&self, start: usize, end: usize) -> &'s str {
         assert!(start <= end, "start cannot be larger than end");
         let start = start.min(self.len());
         let end = end.min(self.len());
@@ -109,7 +109,7 @@ impl<'a> CharString<'a> {
         &self.str[start..end]
     }
 
-    pub fn chars(&self) -> impl Iterator<Item = Character> {
+    pub fn chars(&self) -> impl Iterator<Item = Character<'_>> {
         (0..self.len()).map(|i| self.get_char(i).unwrap())
     }
 
@@ -134,8 +134,8 @@ impl Display for CharString<'_> {
 }
 
 #[derive(Debug)]
-pub struct Character<'a> {
-    pub str: &'a str,
+pub struct Character<'s> {
+    pub str: &'s str,
 }
 
 #[inline]
@@ -178,7 +178,7 @@ pub(crate) fn is_right_punctuation(s: &str) -> bool {
     Regex::new(r"^[\p{Pf}\p{Pe}]+$").unwrap().is_match(s)
 }
 
-impl<'a> Character<'a> {
+impl Character<'_> {
     pub fn byte_len(&self) -> usize {
         self.str.len()
     }

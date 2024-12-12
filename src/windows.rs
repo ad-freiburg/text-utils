@@ -8,7 +8,7 @@ use pyo3::pybacked::PyBackedStr;
 use pyo3::types::PyDict;
 
 #[derive(Debug, Clone)]
-pub struct Window<'a> {
+pub struct Window<'s> {
     ctx_start: usize,
     ctx_end: usize,
     window_start: usize,
@@ -17,10 +17,10 @@ pub struct Window<'a> {
     byte_ctx_end: usize,
     byte_window_start: usize,
     byte_window_end: usize,
-    pub str: &'a str,
+    pub str: &'s str,
 }
 
-impl<'a> Window<'a> {
+impl Window<'_> {
     pub fn boundaries(&self) -> (usize, usize, usize, usize) {
         (
             self.ctx_start,

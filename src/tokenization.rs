@@ -136,85 +136,6 @@ impl<'a> FromPyObject<'a> for SpecialConfig {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum TokenizationConstraintConfig {
-    LR1Grammar {
-        lexer: String,
-        grammar: String,
-        skip_ignore_tokens: bool,
-    },
-}
-
-pub enum TokenizationConstraint {
-    // LR1Grammar {
-    //     parser: LR1GrammarParser,
-    //     skip_ignore_tokens: bool,
-    // },
-}
-
-impl TokenizationConstraint {
-    pub fn from_config(_config: TokenizationConstraintConfig) -> anyhow::Result<Self> {
-        unimplemented!()
-        // match config {
-        //     TokenizationConstraintConfig::LR1Grammar {
-        //         lexer,
-        //         grammar,
-        //         skip_ignore_tokens,
-        //     } => {
-        //         let parser = LR1GrammarParser::from_files(&grammar, &lexer).map_err(|e| {
-        //             anyhow!(
-        //                 "failed to create LR1 grammar parser from lexer {lexer} and grammar {grammar}: {e}"
-        //             )
-        //         })?;
-        //         Ok(Self::LR1Grammar {
-        //             parser,
-        //             skip_ignore_tokens,
-        //         })
-        //     }
-        // }
-    }
-}
-
-impl<'a> FromPyObject<'a> for TokenizationConstraintConfig {
-    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
-        let d: &Bound<'_, PyDict> = ob.downcast()?;
-        let Some(constraint_type) = d.get_item("type")? else {
-            return Err(py_required_key_error("type", "generation config"));
-        };
-        let constraint_type: String = constraint_type.extract()?;
-        let constraint = match constraint_type.as_str() {
-            "lr1_grammar" => {
-                let Some(lexer) = d.get_item("lexer")? else {
-                    return Err(py_required_key_error(
-                        "lexer",
-                        "tokenization constraint config",
-                    ));
-                };
-                let Some(grammar) = d.get_item("grammar")? else {
-                    return Err(py_required_key_error(
-                        "grammar",
-                        "tokenization constraint config",
-                    ));
-                };
-                let skip_ignore_tokens = d
-                    .get_item("skip_ignore_tokens")?
-                    .map(|v| v.extract())
-                    .transpose()?
-                    .unwrap_or(false);
-                TokenizationConstraintConfig::LR1Grammar {
-                    lexer: lexer.extract()?,
-                    grammar: grammar.extract()?,
-                    skip_ignore_tokens,
-                }
-            }
-            k => {
-                return Err(py_invalid_type_error(k, "tokenization constraint config"));
-            }
-        };
-        Ok(constraint)
-    }
-}
-
 /// This is a tokenizer config, containing configs for special tokens, language,
 /// and the actual tokenize config inside it.
 #[derive(Clone, Debug)]
@@ -716,54 +637,6 @@ pub trait Tokenize: BaseTokenize {
     fn id_to_token(&self, id: u32) -> Option<Vec<u8>>;
 
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization>;
-
-    fn tokenize_with_constraint(
-        &self,
-        _s: &str,
-        _ignore_special_tokens: bool,
-        _constraint: &TokenizationConstraint,
-    ) -> anyhow::Result<Tokenization> {
-        unimplemented!();
-        // match constraint {
-        //     TokenizationConstraint::LR1Grammar {
-        //         parser,
-        //         skip_ignore_tokens,
-        //     } => {
-        //         let lexemes = parser.lex(s).map_err(|e| {
-        //             anyhow!("tokenizing with grammar constraint failed with a lexer error: {e}")
-        //         })?;
-        //         let mut all_token_ids = vec![];
-        //         let num_lexemes = lexemes.len();
-        //         for (i, (lexeme, (start, len))) in lexemes.into_iter().enumerate() {
-        //             if *skip_ignore_tokens && lexeme.is_none() {
-        //                 continue;
-        //             }
-        //             let tokenization =
-        //                 self.tokenize(&s[start..start + len], ignore_special_tokens)?;
-        //             if !matches!(tokenization.info, TokenizationInfo::Empty) {
-        //                 return Err(anyhow!(
-        //                     "default implementation does not support tokenization info with grammar constraint"
-        //                 ));
-        //             }
-        //             let pfx = if i == 0 { 0 } else { self.num_prefix_tokens() };
-        //             let sfx = if i == num_lexemes - 1 {
-        //                 0
-        //             } else {
-        //                 self.num_suffix_tokens()
-        //             };
-        //             let num_tokens = tokenization.token_ids.len() - pfx - sfx;
-        //             all_token_ids.extend(
-        //                 tokenization
-        //                     .token_ids
-        //                     .into_iter()
-        //                     .skip(pfx)
-        //                     .take(num_tokens),
-        //             );
-        //         }
-        //         Ok(Tokenization::new(all_token_ids, TokenizationInfo::Empty))
-        //     }
-        // }
-    }
 
     fn de_tokenize(&self, token_ids: &[u32], ignore_special_tokens: bool)
         -> anyhow::Result<String>;
@@ -2340,33 +2213,20 @@ pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
 #[pyo3(name = "Tokenizer")]
 struct PyTokenizer {
     tokenizer: Tokenizer,
-    constraint: Option<TokenizationConstraint>,
 }
 
 #[pymethods]
 impl PyTokenizer {
     #[staticmethod]
-    #[pyo3(signature = (config, constraint = None))]
-    fn from_config(
-        config: TokenizerConfig,
-        constraint: Option<TokenizationConstraintConfig>,
-    ) -> anyhow::Result<Self> {
+    fn from_config(config: TokenizerConfig) -> anyhow::Result<Self> {
         Ok(PyTokenizer {
             tokenizer: tokenizer(config)?,
-            constraint: constraint
-                .map(TokenizationConstraint::from_config)
-                .transpose()?,
         })
     }
 
     #[pyo3(signature = (s, ignore_special_tokens = false))]
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
-        if let Some(constraint) = &self.constraint {
-            self.tokenizer
-                .tokenize_with_constraint(s, ignore_special_tokens, constraint)
-        } else {
-            self.tokenizer.tokenize(s, ignore_special_tokens)
-        }
+        self.tokenizer.tokenize(s, ignore_special_tokens)
     }
 
     fn token_to_id(&self, token: &str) -> Option<u32> {

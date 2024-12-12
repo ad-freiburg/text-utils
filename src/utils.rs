@@ -1,5 +1,5 @@
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -203,6 +203,10 @@ pub(crate) fn py_required_key_error(key_name: impl Display, value_name: impl Dis
 
 pub(crate) fn py_invalid_type_error(name: impl Display, type_name: impl Display) -> PyErr {
     PyTypeError::new_err(format!("\"{name}\" is not a valid {type_name} type"))
+}
+
+pub(crate) fn py_value_error(msg: impl Display) -> PyErr {
+    PyValueError::new_err(msg.to_string())
 }
 
 #[cfg(test)]

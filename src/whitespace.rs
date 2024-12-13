@@ -3,6 +3,7 @@ use crate::utils::py_invalid_type_error;
 use anyhow::anyhow;
 use itertools::Itertools;
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use regex::{escape, Regex};
 
 #[pyfunction(signature = (s, use_graphemes = true))]
@@ -51,14 +52,18 @@ impl<'a> FromPyObject<'a> for Operation {
     }
 }
 
-impl IntoPy<PyObject> for Operation {
-    fn into_py(self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for Operation {
+    type Target = PyString;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             Operation::Keep => "k",
             Operation::Insert => "i",
             Operation::Delete => "d",
         }
-        .into_py(py)
+        .into_pyobject(py)
     }
 }
 
@@ -162,7 +167,7 @@ pub fn find_substring_ignoring_whitespace_py(
 
 /// A submodule containing functionality specific to handle whitespaces in text.
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(py, "whitespace")?;
+    let m = PyModule::new(py, "whitespace")?;
     m.add_function(wrap_pyfunction!(
         find_substring_ignoring_whitespace_py,
         m.clone()

@@ -264,7 +264,7 @@ fn file_size_py(path: &str) -> PyResult<(usize, usize)> {
 /// A submodule containing useful functions on text, like cleaning text or
 /// calculating word boundaries of all words in a text.
 pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(py, "text")?;
+    let m = PyModule::new(py, "text")?;
     m.add_function(wrap_pyfunction!(word_boundaries, m.clone())?)?;
     m.add_function(wrap_pyfunction!(clean, m.clone())?)?;
     m.add_function(wrap_pyfunction!(match_words, m.clone())?)?;

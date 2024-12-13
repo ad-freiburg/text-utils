@@ -122,13 +122,17 @@ pub enum F1Info {
     SpellingCorrectionInfo((Vec<usize>, Vec<usize>, Vec<usize>)),
 }
 
-impl IntoPy<PyObject> for F1Info {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        match self {
-            F1Info::Empty => py.None(),
-            F1Info::WhitespaceCorrectionInfo(info) => info.into_py(py),
-            F1Info::SpellingCorrectionInfo(info) => info.into_py(py),
-        }
+impl<'py> IntoPyObject<'py> for F1Info {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(match self {
+            F1Info::Empty => py.None().into_any().into_bound(py),
+            F1Info::WhitespaceCorrectionInfo(info) => info.into_pyobject(py)?.into_any(),
+            F1Info::SpellingCorrectionInfo(info) => info.into_pyobject(py)?.into_any(),
+        })
     }
 }
 
@@ -552,7 +556,7 @@ fn whitespace_correction_f1_py(
 
 /// A submodule containing functions to calculate various text correction metrics.
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(py, "metrics")?;
+    let m = PyModule::new(py, "metrics")?;
     m.add_function(wrap_pyfunction!(mean_edit_distance_py, m.clone())?)?;
     m.add_function(wrap_pyfunction!(
         mean_normalized_edit_distance_py,

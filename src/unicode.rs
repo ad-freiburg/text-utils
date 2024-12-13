@@ -1,6 +1,7 @@
 use crate::utils::{py_invalid_type_error, run_length_decode, run_length_encode};
 use pyo3::conversion::FromPyObject;
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use regex::Regex;
 use std::fmt::{Display, Formatter};
 use std::str::Chars;
@@ -262,15 +263,19 @@ impl<'a> FromPyObject<'a> for Normalization {
     }
 }
 
-impl IntoPy<PyObject> for Normalization {
-    fn into_py(self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for Normalization {
+    type Target = PyString;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             Normalization::NFC => "nfc",
             Normalization::NFD => "nfd",
             Normalization::NFKC => "nfkc",
             Normalization::NFKD => "nfkd",
         }
-        .into_py(py)
+        .into_pyobject(py)
     }
 }
 
@@ -297,7 +302,7 @@ pub fn normalize(s: &str, normalization: Normalization, use_graphemes: bool) -> 
 
 /// A submodule containing functionality for handling unicode.
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(py, "unicode")?;
+    let m = PyModule::new(py, "unicode")?;
     m.add_function(wrap_pyfunction!(normalize, m.clone())?)?;
     parent_module.add_submodule(&m)?;
 

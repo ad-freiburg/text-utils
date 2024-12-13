@@ -99,17 +99,21 @@ fn bench_tokenizer(c: &mut Criterion) {
     let char_tok = CharTokenizer::new(
         CharTokenizerConfig {
             use_graphemes: true,
+            unk_token: "<unk>".to_string(),
         },
         SpecialConfig::default(),
-    );
+    )
+    .expect("failed to create char tokenizer");
     let tokenize_cfg = ByteTokenizerConfig {
         use_graphemes: true,
         groups: ByteGroups::Bytes,
         aggregation: GroupAggregation::Mean,
         pad_to_multiple_of: None,
     };
-    let byte_tok_byte_groups = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default());
-    let byte_tok_code_point_groups = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default());
+    let byte_tok_byte_groups = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default())
+        .expect("failed to create byte tokenizer");
+    let byte_tok_code_point_groups = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default())
+        .expect("failed to create byte tokenizer");
     let dir = env!("CARGO_MANIFEST_DIR");
     let bpe_tok = BPETokenizer::new(
         BPETokenizerConfig {

@@ -6,12 +6,11 @@ use crate::utils::{
 use anyhow::anyhow;
 use hft::{NormalizedString, Normalizer};
 use itertools::Itertools;
-use log::info;
 use numpy::ndarray::{Array1, Array2};
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 use regex::{escape, Regex};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -35,35 +34,6 @@ pub const BOS: &str = "<bos>";
 pub const EOS: &str = "<eos>";
 pub const PAD: &str = "<pad>";
 pub const SPECIAL_TOKENS: [&str; 4] = [UNK, BOS, EOS, PAD];
-pub const DEFAULT_PREFIX_TOKENS: [&str; 1] = [BOS];
-pub const DEFAULT_SUFFIX_TOKENS: [&str; 1] = [EOS];
-
-#[pyclass]
-pub struct SpecialTokens {}
-
-#[pymethods]
-impl SpecialTokens {
-    #[classattr]
-    const UNK: &'static str = UNK;
-    #[classattr]
-    const BOS: &'static str = BOS;
-    #[classattr]
-    const EOS: &'static str = EOS;
-    #[classattr]
-    const PAD: &'static str = PAD;
-}
-
-// language tokens
-pub const LANG_UNK: &str = "<lang:unk>";
-
-#[pyclass]
-pub struct LanguageTokens {}
-
-#[pymethods]
-impl LanguageTokens {
-    #[classattr]
-    const UNK: &'static str = LANG_UNK;
-}
 
 /// Config for special tokens and options regarding special tokens
 #[derive(Debug, Clone)]
@@ -72,31 +42,6 @@ pub struct SpecialConfig {
     pub tokens: Vec<String>,
     pub prefix: Vec<String>,
     pub suffix: Vec<String>,
-}
-
-fn validate_special_config(special_config: &SpecialConfig) -> anyhow::Result<()> {
-    if !special_config.tokens.contains(&special_config.pad) {
-        return Err(anyhow!("pad token not in special tokens",));
-    }
-    if special_config
-        .prefix
-        .iter()
-        .any(|tok| !special_config.tokens.contains(tok))
-    {
-        return Err(anyhow!(
-            "one or more prefix tokens are not in special tokens",
-        ));
-    }
-    if special_config
-        .suffix
-        .iter()
-        .any(|tok| !special_config.tokens.contains(tok))
-    {
-        return Err(anyhow!(
-            "one or more suffix tokens are not in special tokens",
-        ));
-    }
-    Ok(())
 }
 
 impl Default for SpecialConfig {
@@ -165,53 +110,49 @@ impl<'a> FromPyObject<'a> for TokenizerConfig {
 pub enum TokenizeConfig {
     Character(CharTokenizerConfig),
     Byte(ByteTokenizerConfig),
-    ByT5(ByteTokenizerConfig),
     BPE(BPETokenizerConfig),
     Dummy(Duration),
     Huggingface(String),
 }
 
-impl IntoPy<PyObject> for TokenizeConfig {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new_bound(py);
+impl<'py> IntoPyObject<'py> for TokenizeConfig {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let d = PyDict::new(py);
         let tokenizer_type = match self {
             TokenizeConfig::Character(cfg) => {
-                d.set_item("use_graphemes", cfg.use_graphemes).unwrap();
+                d.set_item("use_graphemes", cfg.use_graphemes)?;
+                d.set_item("unk_token", cfg.unk_token)?;
                 "character"
             }
             TokenizeConfig::Byte(cfg) => {
-                d.set_item("use_graphemes", cfg.use_graphemes).unwrap();
-                d.set_item("groups", cfg.groups.into_py(py)).unwrap();
-                d.set_item("aggregation", cfg.aggregation.into_py(py))
-                    .unwrap();
+                d.set_item("use_graphemes", cfg.use_graphemes)?;
+                d.set_item("groups", cfg.groups.into_pyobject(py)?)?;
+                d.set_item("aggregation", cfg.aggregation.into_pyobject(py)?)?;
                 if let Some(pad) = cfg.pad_to_multiple_of {
-                    d.set_item("pad_to_multiple_of", pad).unwrap();
+                    d.set_item("pad_to_multiple_of", pad)?;
                 }
                 "byte"
             }
-            TokenizeConfig::ByT5(cfg) => {
-                d.set_item("use_graphemes", cfg.use_graphemes).unwrap();
-                d.set_item("groups", cfg.groups.into_py(py)).unwrap();
-                d.set_item("aggregation", cfg.aggregation.into_py(py))
-                    .unwrap();
-                "byt5"
-            }
             TokenizeConfig::BPE(cfg) => {
-                d.set_item("use_graphemes", cfg.use_graphemes).unwrap();
-                d.set_item("merge_file", cfg.merge_file).unwrap();
+                d.set_item("use_graphemes", cfg.use_graphemes)?;
+                d.set_item("merge_file", cfg.merge_file)?;
                 "bpe"
             }
             TokenizeConfig::Dummy(delay) => {
-                d.set_item("delay", delay.as_millis()).unwrap();
+                d.set_item("delay", delay.as_millis())?;
                 "dummy"
             }
             TokenizeConfig::Huggingface(path) => {
-                d.set_item("path", path).unwrap();
+                d.set_item("path", path)?;
                 "huggingface"
             }
         };
-        d.set_item("type", tokenizer_type).unwrap();
-        d.to_object(py)
+        d.set_item("type", tokenizer_type)?;
+        Ok(d)
     }
 }
 
@@ -229,19 +170,25 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                 } else {
                     true
                 };
-                TokenizeConfig::Character(CharTokenizerConfig { use_graphemes })
+                let Some(unk_token) = d.get_item("unk_token")? else {
+                    return Err(py_required_key_error(
+                        "unk_token",
+                        "character tokenizer config",
+                    ));
+                };
+                TokenizeConfig::Character(CharTokenizerConfig {
+                    use_graphemes,
+                    unk_token: unk_token.extract()?,
+                })
             }
-            name @ ("byte" | "byt5") => {
+            "byte" => {
                 let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes")? {
                     value.extract()?
                 } else {
                     true
                 };
                 let Some(groups) = d.get_item("groups")? else {
-                    return Err(py_required_key_error(
-                        "groups",
-                        format!("{name} tokenizer config"),
-                    ));
+                    return Err(py_required_key_error("groups", "byte tokenizer config"));
                 };
                 let agg: GroupAggregation = if let Some(value) = d.get_item("aggregation")? {
                     value.extract()?
@@ -259,14 +206,7 @@ impl<'a> FromPyObject<'a> for TokenizeConfig {
                     groups: groups.extract()?,
                     aggregation: agg,
                 };
-                if name == "byt5" {
-                    TokenizeConfig::ByT5(ByteTokenizerConfig {
-                        pad_to_multiple_of: None,
-                        ..byte_cfg
-                    })
-                } else {
-                    TokenizeConfig::Byte(byte_cfg)
-                }
+                TokenizeConfig::Byte(byte_cfg)
             }
             "bpe" => {
                 let use_graphemes: bool = if let Some(value) = d.get_item("use_graphemes")? {
@@ -321,30 +261,28 @@ pub enum TokenGroup {
     Nested(Vec<TokenGroup>),
 }
 
-impl IntoPy<PyObject> for TokenGroup {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new_bound(py);
+impl<'py> IntoPyObject<'py> for TokenGroup {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let d = PyDict::new(py);
         match self {
             TokenGroup::Empty(len) => {
-                d.set_item("type", "empty").unwrap();
-                d.set_item("len", len).unwrap();
+                d.set_item("type", "empty")?;
+                d.set_item("len", len)?;
             }
             TokenGroup::Full(len) => {
-                d.set_item("type", "full").unwrap();
-                d.set_item("len", len).unwrap();
+                d.set_item("type", "full")?;
+                d.set_item("len", len)?;
             }
             TokenGroup::Nested(groups) => {
-                d.set_item("type", "nested").unwrap();
-                d.set_item("groups", groups.into_py(py)).unwrap();
+                d.set_item("type", "nested")?;
+                d.set_item("groups", groups.into_pyobject(py)?)?;
             }
         };
-        d.into_py(py)
-    }
-}
-
-impl ToPyObject for TokenGroup {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
-        self.clone().into_py(py)
+        Ok(d)
     }
 }
 
@@ -415,36 +353,39 @@ pub struct SparseCoo {
     pub(crate) group_lengths: Vec<usize>,
 }
 
-impl IntoPy<PyObject> for SparseCoo {
-    fn into_py(self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for SparseCoo {
+    type Target = PyTuple;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         (
-            self.indices.into_pyarray_bound(py),
-            self.values.into_pyarray_bound(py),
+            self.indices.into_pyarray(py),
+            self.values.into_pyarray(py),
             self.size,
             self.group_lengths,
         )
-            .into_py(py)
+            .into_pyobject(py)
     }
 }
 
 pub type PaddingMask = Array2<bool>;
 
-impl IntoPy<PyObject> for TensorizedTokenizationInfo {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new_bound(py);
+impl<'py> IntoPyObject<'py> for TensorizedTokenizationInfo {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let d = PyDict::new(py);
         if let TensorizedTokenizationInfo::TokenGroups(matrices) = self {
             for (name, (scoo, pad_mask)) in matrices {
-                let t = PyTuple::new_bound(
-                    py,
-                    &[
-                        scoo.into_py(py),
-                        pad_mask.into_pyarray_bound(py).into_py(py),
-                    ],
-                );
-                d.set_item(name, t).unwrap();
+                let tuple =
+                    (scoo.into_pyobject(py)?, pad_mask.into_pyarray(py)).into_pyobject(py)?;
+                d.set_item(name, tuple)?;
             }
         };
-        d.into_py(py)
+        Ok(d)
     }
 }
 
@@ -454,19 +395,17 @@ pub enum GroupAggregation {
     Sum,
 }
 
-impl IntoPy<PyObject> for GroupAggregation {
-    fn into_py(self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for GroupAggregation {
+    type Target = PyString;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             GroupAggregation::Mean => "mean",
             GroupAggregation::Sum => "sum",
         }
-        .into_py(py)
-    }
-}
-
-impl ToPyObject for GroupAggregation {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
-        self.into_py(py)
+        .into_pyobject(py)
     }
 }
 
@@ -548,33 +487,37 @@ pub fn padding_mask(lengths: &[usize]) -> PaddingMask {
     PaddingMask::from_shape_vec((batch_size, max_length), mask).expect("should not fail")
 }
 
-impl IntoPy<PyObject> for TokenizationInfo {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new_bound(py);
+impl<'py> IntoPyObject<'py> for TokenizationInfo {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let d = PyDict::new(py);
         let info_type = match self {
             TokenizationInfo::Empty => "empty",
             TokenizationInfo::TokenGroups(token_groups) => {
                 for (group_name, (groups, agg)) in token_groups {
-                    let l = PyList::empty_bound(py);
+                    let l = PyList::empty(py);
                     for group in groups {
-                        l.append(group).unwrap();
+                        l.append(group)?;
                     }
-                    let gd = PyDict::new_bound(py);
-                    gd.set_item("groups", l).unwrap();
-                    gd.set_item("aggregation", agg.into_py(py)).unwrap();
-                    d.set_item(group_name, gd).unwrap();
+                    let gd = PyDict::new(py);
+                    gd.set_item("groups", l)?;
+                    gd.set_item("aggregation", agg.into_pyobject(py)?)?;
+                    d.set_item(group_name, gd)?;
                 }
                 "token_groups"
             }
             TokenizationInfo::Info(infos) => {
                 for (info_name, info) in infos {
-                    d.set_item(info_name, info.into_py(py)).unwrap();
+                    d.set_item(info_name, info.into_pyobject(py)?)?;
                 }
                 "info"
             }
         };
-        d.set_item("type", info_type).unwrap();
-        d.into()
+        d.set_item("type", info_type)?;
+        Ok(d)
     }
 }
 
@@ -685,57 +628,63 @@ where
         special_config: SpecialConfig,
         config: Config,
         state: State,
-    ) -> Self {
-        if let Err(e) = validate_special_config(&special_config) {
-            panic!("invalid special config: {e}");
-        }
+    ) -> anyhow::Result<Self> {
         let special_vocab = Vocab::build(special_config.tokens, special_offset);
-        let prefix_token_ids = special_config
+        let prefix_token_ids: Vec<_> = special_config
             .prefix
             .iter()
-            .map(|tok| special_vocab.token_to_id(tok).unwrap())
-            .collect();
-        let suffix_token_ids = special_config
+            .map(|tok| {
+                special_vocab
+                    .token_to_id(tok)
+                    .ok_or_else(|| anyhow!("prefix token {} not in special tokens", tok))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        let suffix_token_ids: Vec<_> = special_config
             .suffix
             .iter()
-            .map(|tok| special_vocab.token_to_id(tok).unwrap())
-            .collect();
-        let special_token_pattern = if special_vocab.size() > 0 {
-            let re = Regex::new(&special_vocab.vocab.keys().map(|st| escape(st)).join(r"|"))
-                .expect("invalid regex pattern, should not happen");
+            .map(|tok| {
+                special_vocab
+                    .token_to_id(tok)
+                    .ok_or_else(|| anyhow!("suffix token {} not in special tokens", tok))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        let special_token_pattern = if !special_vocab.is_empty() {
+            let re = Regex::new(&special_vocab.vocab.keys().map(|st| escape(st)).join(r"|"))?;
             Some(re)
         } else {
             None
         };
-        BaseTokenizer {
+        Ok(BaseTokenizer {
             prefix_token_ids,
             suffix_token_ids,
-            pad_token_id: special_vocab.token_to_id(&special_config.pad).unwrap(),
+            pad_token_id: special_vocab
+                .token_to_id(&special_config.pad)
+                .ok_or_else(|| anyhow!("pad token not in special tokens"))?,
             special_vocab,
             special_token_pattern,
             config,
             state,
-        }
+        })
     }
 
     fn split_input<'a>(&self, s: &'a str, ignore_special_tokens: bool) -> Vec<TokenInput<'a>> {
         if ignore_special_tokens || self.special_token_pattern.is_none() {
-            vec![TokenInput::Regular(s)]
-        } else {
-            let mut splits = vec![];
-            let mut last = 0;
-            for m in self.special_token_pattern.as_ref().unwrap().find_iter(s) {
-                if m.start() > last {
-                    splits.push(TokenInput::Regular(&s[last..m.start()]));
-                }
-                splits.push(TokenInput::Special(&s[m.start()..m.end()]));
-                last = m.end();
-            }
-            if last < s.len() {
-                splits.push(TokenInput::Regular(&s[last..]));
-            }
-            splits
+            return vec![TokenInput::Regular(s)];
         }
+        let pattern = self.special_token_pattern.as_ref().expect("cannot be none");
+        let mut splits = vec![];
+        let mut last = 0;
+        for m in pattern.find_iter(s) {
+            if m.start() > last {
+                splits.push(TokenInput::Regular(&s[last..m.start()]));
+            }
+            splits.push(TokenInput::Special(&s[m.start()..m.end()]));
+            last = m.end();
+        }
+        if last < s.len() {
+            splits.push(TokenInput::Regular(&s[last..]));
+        }
+        splits
     }
 
     fn add_prefix_and_suffix(&self, token_ids: Vec<u32>) -> Vec<u32> {
@@ -774,8 +723,12 @@ where
         }
     }
 
-    fn size(&self) -> usize {
+    fn len(&self) -> usize {
         self.vocab.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.vocab.is_empty()
     }
 
     fn token_to_id<K>(&self, token: &K) -> Option<u32>
@@ -835,7 +788,7 @@ where
         special_offset: u32,
         special_config: SpecialConfig,
         config: Config,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         Self::new_base_tokenizer(special_offset, special_config, config, ())
     }
 }
@@ -867,12 +820,12 @@ where
         unk_token: String,
         mut special_config: SpecialConfig,
         config: Config,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let vocab = Vocab::build(tokens, 0);
         // add unk token to special config
         special_config.tokens.push(unk_token.clone());
         Self::new_base_tokenizer(
-            vocab.size() as u32,
+            vocab.len() as u32,
             special_config,
             config,
             (unk_token, vocab),
@@ -880,7 +833,9 @@ where
     }
 
     pub fn unk_token_id(&self) -> u32 {
-        self.special_vocab.token_to_id(&self.state.0).unwrap()
+        self.special_vocab
+            .token_to_id(&self.state.0)
+            .expect("unk token is always in special vocab")
     }
 }
 
@@ -899,12 +854,12 @@ where
         let vocab = Vocab::from_file(vocab_file, 0)?;
         // add unk token to special config
         special_config.tokens.push(unk_token.clone());
-        Ok(Self::new_base_tokenizer(
-            vocab.size() as u32,
+        Self::new_base_tokenizer(
+            vocab.len() as u32,
             special_config,
             config,
             (unk_token, vocab),
-        ))
+        )
     }
 }
 
@@ -965,7 +920,7 @@ where
     Self: VocabTokenize<Token>,
 {
     fn vocab_size(&self) -> usize {
-        self.state.1.size() + self.special_vocab.size()
+        self.state.1.len() + self.special_vocab.len()
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -1004,20 +959,17 @@ where
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
         let token_input = self.split_input(s, ignore_special_tokens);
         let (tokens, tokenization_info) = self.process_token_input(token_input);
-        let token_ids = tokens
+        let token_ids: Vec<_> = tokens
             .iter()
             .map(|token| {
                 match token {
-                    VocabToken::Special(token) => self.special_vocab.token_to_id(*token).unwrap(),
-                    VocabToken::Token(token) => self
-                        .state
-                        .1
-                        .token_to_id(token)
-                        .unwrap_or_else(|| self.unk_token_id()),
+                    VocabToken::Special(token) => self.special_vocab.token_to_id(*token),
+                    VocabToken::Token(token) => self.state.1.token_to_id(token),
                 }
+                .unwrap_or_else(|| self.unk_token_id())
                 // // }
             })
-            .collect::<Vec<_>>();
+            .collect();
         Ok(Tokenization::new(
             self.add_prefix_and_suffix(token_ids),
             tokenization_info,
@@ -1059,7 +1011,7 @@ where
 pub type DummyTokenizer = VocabFreeTokenizer<Duration>;
 
 impl DummyTokenizer {
-    fn new(delay: Duration) -> Self {
+    fn new(delay: Duration) -> anyhow::Result<Self> {
         Self::new_vocab_free_tokenizer(0, SpecialConfig::default(), delay)
     }
 }
@@ -1312,6 +1264,7 @@ where
 #[derive(Debug, Clone)]
 pub struct CharTokenizerConfig {
     pub use_graphemes: bool,
+    pub unk_token: String,
 }
 pub type CharTokenizer = VocabTokenizer<char, CharTokenizerConfig>;
 
@@ -1340,7 +1293,9 @@ impl VocabTokenize<char> for CharTokenizer {
                     tokens.extend(CS::new(s, self.config.use_graphemes).chars().map(|c| {
                         // Character always has at least one char so this is safe
                         let mut code_points = c.code_points();
-                        let char = code_points.next().unwrap();
+                        let char = code_points
+                            .next()
+                            .expect("expected at least one code point");
                         // return unk if Character has another char because
                         // our tokens in the vocab are all single char tokens
                         if code_points.next().is_some() {
@@ -1360,10 +1315,10 @@ impl VocabTokenize<char> for CharTokenizer {
 }
 
 impl CharTokenizer {
-    pub fn new(config: CharTokenizerConfig, special_config: SpecialConfig) -> Self {
+    pub fn new(config: CharTokenizerConfig, special_config: SpecialConfig) -> anyhow::Result<Self> {
         Self::new_vocab_tokenizer(
             CHARS.chars().collect(),
-            UNK.to_string(),
+            config.unk_token.clone(),
             special_config,
             config,
         )
@@ -1398,7 +1353,7 @@ impl BPETokenizer {
         for (bytes, _) in merge_ops.iter().sorted_by_key(|&(_, merge_id)| merge_id) {
             reverse_merge_ops.push(bytes.to_vec());
         }
-        Ok(Self::new_base_tokenizer(
+        Self::new_base_tokenizer(
             reverse_merge_ops.len() as u32,
             special_config,
             config,
@@ -1407,7 +1362,7 @@ impl BPETokenizer {
                 reverse_merge_ops,
                 Regex::new(SPLIT_WORD_WHITESPACE_PATTERN)?,
             ),
-        ))
+        )
     }
 
     fn merge_bytes(&self, s: &str) -> Vec<u32> {
@@ -1521,7 +1476,7 @@ impl BPETokenizer {
 
 impl Tokenize for BPETokenizer {
     fn vocab_size(&self) -> usize {
-        self.state.1.len() + self.special_vocab.size()
+        self.state.1.len() + self.special_vocab.len()
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -1572,7 +1527,11 @@ impl Tokenize for BPETokenizer {
                     token_ids.extend(self.merge_bytes(s));
                 }
                 TokenInput::Special(token) => {
-                    token_ids.push(self.special_vocab.token_to_id(token).unwrap());
+                    token_ids.push(
+                        self.special_vocab
+                            .token_to_id(token)
+                            .ok_or_else(|| anyhow!("unknown special token {token} in input {s}"))?,
+                    );
                 }
             }
         }
@@ -1661,11 +1620,14 @@ fn byte_pair_stats(vocab: &BytePairVocab) -> BytePairStats {
 
 #[inline]
 fn replace_pair_in_word(word: &[Vec<u8>], pair: &BytePair) -> Vec<Vec<u8>> {
-    assert!(!word.is_empty());
-    let mut new_word = vec![word[0].to_vec()];
-    for subword in &word[1..] {
-        if new_word.last().unwrap() == &pair.first && subword == &pair.second {
-            new_word.last_mut().unwrap().extend(subword);
+    let mut new_word = vec![];
+    for subword in word {
+        let Some(last) = new_word.last_mut() else {
+            new_word.push(subword.to_vec());
+            continue;
+        };
+        if last == &pair.first && subword == &pair.second {
+            last.extend(subword);
         } else {
             new_word.push(subword.to_vec());
         }
@@ -1694,8 +1656,14 @@ fn replace_pair(
 }
 
 #[inline]
-fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairChanges) {
-    let stat = stats.get_mut(pair).unwrap();
+fn update_stats(
+    stats: &mut BytePairStats,
+    pair: &BytePair,
+    changes: &BytePairChanges,
+) -> anyhow::Result<()> {
+    let stat = stats
+        .get_mut(pair)
+        .ok_or_else(|| anyhow!("pair not found in stats"))?;
     stat.freq = 0;
     stat.words.iter_mut().for_each(|(_, occ)| *occ = 0);
     let merged = pair.merge();
@@ -1718,9 +1686,14 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
                     first: old_word[i - 1].to_vec(),
                     second: old_word[i].to_vec(),
                 };
-                let stat = stats.get_mut(&prev_pair).unwrap();
+                let stat = stats
+                    .get_mut(&prev_pair)
+                    .ok_or_else(|| anyhow!("pair not found in stats"))?;
                 stat.freq = stat.freq.saturating_sub(*freq);
-                let occ = stat.words.get_mut(idx).unwrap();
+                let occ = stat
+                    .words
+                    .get_mut(idx)
+                    .ok_or_else(|| anyhow!("word not found in pair stats"))?;
                 *occ = occ.saturating_sub(1);
             }
             if i < old_word.len() - 2
@@ -1732,9 +1705,14 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
                     first: old_word[i + 1].to_vec(),
                     second: old_word[i + 2].to_vec(),
                 };
-                let stat = stats.get_mut(&next_pair).unwrap();
+                let stat = stats
+                    .get_mut(&next_pair)
+                    .ok_or_else(|| anyhow!("pair not found in stats"))?;
                 stat.freq = stat.freq.saturating_sub(*freq);
-                let occ = stat.words.get_mut(idx).unwrap();
+                let occ = stat
+                    .words
+                    .get_mut(idx)
+                    .ok_or_else(|| anyhow!("word not found in pair stats"))?;
                 *occ = occ.saturating_sub(1);
             }
             i += 2;
@@ -1784,6 +1762,7 @@ fn update_stats(stats: &mut BytePairStats, pair: &BytePair, changes: &BytePairCh
             i += 1;
         }
     }
+    Ok(())
 }
 
 #[pyfunction(
@@ -1915,19 +1894,13 @@ pub fn train_bpe(
         .saturating_sub(num_special_tokens);
     let pbar = progress_bar("performing byte merges", num_merges as u64, !progress);
     let mut merge_ops = MergeOps::new();
-    if progress {
-        info!(
-            "found {} unique words in files, going to perform {num_merges} byte merges",
-            vocab.len()
-        );
-    }
     let mut stats = byte_pair_stats(&vocab);
     for merge_idx in 0..num_merges {
         let Some(pair) = max_byte_pair(&stats) else {
             break;
         };
         let changes = replace_pair(&mut vocab, &pair, &stats);
-        update_stats(&mut stats, &pair, &changes);
+        update_stats(&mut stats, &pair, &changes)?;
         merge_ops.insert(pair.merge(), merge_idx as u32);
         pbar.inc(1);
     }
@@ -1942,13 +1915,17 @@ pub enum ByteGroups {
     CodePoints,
 }
 
-impl IntoPy<PyObject> for ByteGroups {
-    fn into_py(self, py: Python) -> PyObject {
+impl<'py> IntoPyObject<'py> for ByteGroups {
+    type Target = PyString;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             ByteGroups::Bytes => "bytes",
             ByteGroups::CodePoints => "code_points",
         }
-        .into_py(py)
+        .into_pyobject(py)
     }
 }
 
@@ -1975,11 +1952,14 @@ pub struct ByteTokenizerConfig {
 pub type ByteTokenizer = VocabFreeTokenizer<ByteTokenizerConfig>;
 
 impl ByteTokenizer {
-    pub fn new(config: ByteTokenizerConfig, special_config: SpecialConfig) -> Self {
+    pub fn new(config: ByteTokenizerConfig, special_config: SpecialConfig) -> anyhow::Result<Self> {
         Self::new_with(config, special_config)
     }
 
-    fn new_with(config: ByteTokenizerConfig, mut special_config: SpecialConfig) -> Self {
+    fn new_with(
+        config: ByteTokenizerConfig,
+        mut special_config: SpecialConfig,
+    ) -> anyhow::Result<Self> {
         if let Some(pad_to) = config.pad_to_multiple_of {
             assert!(
                 pad_to.is_power_of_two(),
@@ -1997,7 +1977,11 @@ impl ByteTokenizer {
         Self::new_vocab_free_tokenizer(256, special_config, config)
     }
 
-    fn process_input(&self, s: &str, ignore_special_tokens: bool) -> (Vec<u32>, TokenizationInfo) {
+    fn process_input(
+        &self,
+        s: &str,
+        ignore_special_tokens: bool,
+    ) -> anyhow::Result<(Vec<u32>, TokenizationInfo)> {
         let mut tokens = vec![];
         let group_name = match self.config.groups {
             ByteGroups::Bytes => "byte_groups",
@@ -2011,7 +1995,10 @@ impl ByteTokenizer {
         for input in self.split_input(s, ignore_special_tokens) {
             match input {
                 TokenInput::Special(token) => {
-                    let token_id = self.special_vocab.token_to_id(token).unwrap();
+                    let token_id = self
+                        .special_vocab
+                        .token_to_id(token)
+                        .ok_or_else(|| anyhow!("unknown special token {token} in input"))?;
                     tokens.push(token_id);
                     groups.push(TokenGroup::Full(1));
                 }
@@ -2040,19 +2027,19 @@ impl ByteTokenizer {
 
         // append group of length 1 for each suffix token
         groups.append(&mut vec![TokenGroup::Full(1); self.num_suffix_tokens()]);
-        (
+        Ok((
             tokens,
             TokenizationInfo::TokenGroups(HashMap::from([(
                 group_name,
                 (groups, self.config.aggregation),
             )])),
-        )
+        ))
     }
 }
 
 impl Tokenize for ByteTokenizer {
     fn vocab_size(&self) -> usize {
-        256 + self.special_vocab.size()
+        256 + self.special_vocab.len()
     }
 
     fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -2085,7 +2072,7 @@ impl Tokenize for ByteTokenizer {
     }
 
     fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
-        let (bytes, info) = self.process_input(s, ignore_special_tokens);
+        let (bytes, info) = self.process_input(s, ignore_special_tokens)?;
         Ok(Tokenization::new(self.add_prefix_and_suffix(bytes), info))
     }
 
@@ -2111,98 +2098,12 @@ impl Tokenize for ByteTokenizer {
     }
 }
 
-pub struct ByT5Tokenizer {
-    inner: ByteTokenizer,
-}
-
-impl ByT5Tokenizer {
-    pub fn new(config: ByteTokenizerConfig) -> Self {
-        // disable vocab padding for byt5 tokenizer
-        let inner = ByteTokenizer::new_with(
-            ByteTokenizerConfig {
-                pad_to_multiple_of: None,
-                ..config
-            },
-            SpecialConfig {
-                pad: "<pad>".into(),
-                tokens: vec!["<pad>".into(), "</s>".into(), "<unk>".into()],
-                prefix: vec![],
-                suffix: vec!["</s>".into()],
-            },
-        );
-        Self { inner }
-    }
-}
-
-impl BaseTokenize for ByT5Tokenizer {
-    fn prefix_token_ids(&self) -> &[u32] {
-        self.inner.prefix_token_ids()
-    }
-
-    fn suffix_token_ids(&self) -> &[u32] {
-        self.inner.suffix_token_ids()
-    }
-
-    fn pad_token_id(&self) -> u32 {
-        self.inner.pad_token_id()
-    }
-}
-
-impl Tokenize for ByT5Tokenizer {
-    fn vocab_size(&self) -> usize {
-        self.inner.vocab_size()
-    }
-
-    fn get_vocab(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        self.inner.get_vocab()
-    }
-
-    fn get_continuations(&self, initial: bool) -> anyhow::Result<Vec<Vec<u8>>> {
-        self.inner.get_continuations(initial)
-    }
-
-    fn token_to_id(&self, token: &str) -> Option<u32> {
-        self.inner.token_to_id(token)
-    }
-
-    fn id_to_token(&self, id: u32) -> Option<Vec<u8>> {
-        self.inner.id_to_token(id)
-    }
-
-    fn tokenize(&self, s: &str, ignore_special_tokens: bool) -> anyhow::Result<Tokenization> {
-        let Tokenization { token_ids, info } = self.inner.tokenize(s, ignore_special_tokens)?;
-        // adapt token ids to byt5 format
-        // --> shift byte token_ids from 0..255 to 3..258
-        // --> shift eos token
-        let num_token_ids = token_ids.len();
-        let mut token_ids: Vec<_> = token_ids
-            .into_iter()
-            .take(num_token_ids - 1)
-            .map(|t| {
-                assert!(t < 256);
-                t + 3
-            })
-            .collect();
-        token_ids.push(1);
-        Ok(Tokenization::new(token_ids, info))
-    }
-
-    fn de_tokenize(
-        &self,
-        token_ids: &[u32],
-        ignore_special_tokens: bool,
-    ) -> anyhow::Result<String> {
-        self.inner.de_tokenize(token_ids, ignore_special_tokens)
-    }
-}
-
 pub fn tokenizer(cfg: TokenizerConfig) -> anyhow::Result<Tokenizer> {
     Ok(match cfg.tokenize {
-        TokenizeConfig::Character(char_cfg) => Box::new(CharTokenizer::new(char_cfg, cfg.special)),
-        TokenizeConfig::Byte(byte_cfg) => Box::new(ByteTokenizer::new(byte_cfg, cfg.special)),
-        TokenizeConfig::ByT5(byte_cfg) => Box::new(ByT5Tokenizer::new(byte_cfg)),
+        TokenizeConfig::Character(char_cfg) => Box::new(CharTokenizer::new(char_cfg, cfg.special)?),
+        TokenizeConfig::Byte(byte_cfg) => Box::new(ByteTokenizer::new(byte_cfg, cfg.special)?),
         TokenizeConfig::BPE(bpe_cfg) => Box::new(BPETokenizer::new(bpe_cfg, cfg.special)?),
-        TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)),
+        TokenizeConfig::Dummy(d) => Box::new(DummyTokenizer::new(d)?),
         TokenizeConfig::Huggingface(path) => {
             Box::new(HuggingfaceTokenizer::new(path, cfg.special)?)
         }
@@ -2281,11 +2182,9 @@ impl PyTokenizer {
 /// - character level tokenization
 /// - byte level tokenization
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(py, "tokenization")?;
+    let m = PyModule::new(py, "tokenization")?;
     m.add_class::<PyTokenizer>()?;
     m.add_class::<Tokenization>()?;
-    m.add_class::<SpecialTokens>()?;
-    m.add_class::<LanguageTokens>()?;
     m.add_function(wrap_pyfunction!(train_bpe_py, m.clone())?)?;
     parent_module.add_submodule(&m)?;
 
@@ -2296,17 +2195,15 @@ pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>)
 mod tests {
     use std::{collections::HashMap, path::PathBuf};
 
-    use log::info;
     use numpy::ndarray::{Array1, Array2};
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     use crate::{
         tokenization::{
-            token_groups_to_sparse_coo_matrix, train_bpe, BPETokenizer, ByT5Tokenizer, ByteGroups,
-            ByteTokenizer, ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig,
-            GroupAggregation, SparseCoo, SpecialConfig, TokenGroup, Tokenization, TokenizationInfo,
-            Tokenize,
+            token_groups_to_sparse_coo_matrix, train_bpe, BPETokenizer, ByteGroups, ByteTokenizer,
+            ByteTokenizerConfig, CharTokenizer, CharTokenizerConfig, GroupAggregation, SparseCoo,
+            SpecialConfig, TokenGroup, Tokenization, TokenizationInfo, Tokenize,
         },
         unicode::Normalization,
     };
@@ -2318,9 +2215,11 @@ mod tests {
         let tok = CharTokenizer::new(
             CharTokenizerConfig {
                 use_graphemes: true,
+                unk_token: "<unk>".to_string(),
             },
             SpecialConfig::default(),
-        );
+        )
+        .unwrap();
         let text = "a täst";
         let Tokenization { token_ids, .. } = tok.tokenize(text, true).unwrap();
         assert_eq!(token_ids.len(), 6);
@@ -2367,7 +2266,7 @@ mod tests {
             groups: ByteGroups::Bytes,
             aggregation: GroupAggregation::Mean,
         };
-        let tok = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default());
+        let tok = ByteTokenizer::new(tokenize_cfg.clone(), SpecialConfig::default()).unwrap();
         assert_eq!(tok.vocab_size(), 384);
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, true).unwrap();
@@ -2399,7 +2298,7 @@ mod tests {
             groups: ByteGroups::CodePoints,
             ..tokenize_cfg
         };
-        let tok = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default());
+        let tok = ByteTokenizer::new(tokenize_cfg, SpecialConfig::default()).unwrap();
         let text = "a täst";
         let Tokenization { token_ids, info } = tok.tokenize(text, true).unwrap();
         assert_eq!(
@@ -2432,8 +2331,6 @@ mod tests {
 
     #[test]
     fn test_bpe_tokenizer() {
-        let _ = env_logger::try_init();
-
         let special_config = SpecialConfig::default();
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let file = base.clone().join("resources/test/multi30k.txt");
@@ -2456,19 +2353,10 @@ mod tests {
             use_graphemes: true,
         };
         let bpe = BPETokenizer::new(bpe_config, special_config).unwrap();
-        info!("loaded bpe tokenizer");
         let s = "this is a long reading couple restaurant";
         let token_ids = bpe.tokenize(s, true).unwrap().token_ids;
-        info!("token ids: {token_ids:?}");
-        let tokens: Vec<_> = token_ids
-            .iter()
-            .filter_map(|t| bpe.state.1.get(*t as usize))
-            .map(|b| String::from_utf8_lossy(b).to_string())
-            .collect();
-        info!("tokens: {tokens:?}");
         let ds = bpe.de_tokenize(&token_ids, true).unwrap();
         assert_eq!(s, ds);
-        info!("de-tokenized: \"{ds}\"");
 
         let mut rng = ChaCha8Rng::seed_from_u64(22);
         for _ in 0..200 {
@@ -2481,20 +2369,6 @@ mod tests {
             let ds = bpe.de_tokenize(&token_ids, true).unwrap();
             assert_eq!(s, ds);
         }
-    }
-
-    #[test]
-    fn test_byt5_tokenizer() {
-        let tokenize_cfg = ByteTokenizerConfig {
-            use_graphemes: true,
-            pad_to_multiple_of: Some(128),
-            groups: ByteGroups::Bytes,
-            aggregation: GroupAggregation::Mean,
-        };
-        let tok = ByT5Tokenizer::new(tokenize_cfg);
-        assert_eq!(tok.vocab_size(), 259);
-        let Tokenization { token_ids, info: _ } = tok.tokenize("a täst", true).unwrap();
-        assert_eq!(token_ids, vec![100, 35, 119, 198, 167, 118, 119, 1]);
     }
 
     #[test]

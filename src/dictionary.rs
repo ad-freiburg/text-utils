@@ -341,7 +341,7 @@ impl Dictionary {
 /// A submodule for creating and querying dictionaries.
 pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let m_name = "dictionary";
-    let m = PyModule::new_bound(py, m_name)?;
+    let m = PyModule::new(py, m_name)?;
     m.add_class::<Dictionary>()?;
     parent_module.add_submodule(&m)?;
     Ok(())

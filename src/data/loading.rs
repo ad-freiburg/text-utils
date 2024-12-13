@@ -15,11 +15,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
-use std::thread::{Builder, JoinHandle};
-
-pub trait DataGen: Iterator + Send {
-    fn min_len(&self) -> usize;
-}
+use std::thread::Builder;
 
 fn open(p: &Path) -> anyhow::Result<File> {
     File::open(p).with_context(|| format!("could not open file at {:}", p.display()))
@@ -94,34 +90,35 @@ where
 }
 
 #[derive(Debug)]
-pub struct DataGenerator<I> {
+pub struct ExactSizeGenerator<I> {
     iter: I,
-    min_len: usize,
+    len: usize,
 }
 
-impl<I> Iterator for DataGenerator<I>
+impl<I> ExactSizeIterator for ExactSizeGenerator<I> where I: Iterator {}
+
+impl<I> Iterator for ExactSizeGenerator<I>
 where
-    I: Iterator + Send,
+    I: Iterator,
 {
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
     }
-}
-impl<I> DataGen for DataGenerator<I>
-where
-    I: Iterator + Send,
-{
-    fn min_len(&self) -> usize {
-        self.min_len
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
     }
 }
 
+pub type MaybeTrainData = anyhow::Result<TrainData>;
+pub type TrainDataGenerator = Box<dyn ExactSizeIterator<Item = MaybeTrainData> + Send + 'static>;
+
 pub fn train_data_generator_from_jsonl(
     path: impl AsRef<Path>,
-) -> anyhow::Result<Box<dyn DataGen<Item = anyhow::Result<TrainData>>>> {
-    let file_len = count_lines(path.as_ref())?;
+) -> anyhow::Result<TrainDataGenerator> {
+    let len = count_lines(path.as_ref())?;
     let file_iter = LossyUtf8Reader::new(BufReader::new(open(path.as_ref())?)).lines();
     let iter = file_iter.map(|line| {
         line.and_then(|s| {
@@ -162,57 +159,56 @@ pub fn train_data_generator_from_jsonl(
             Ok(data)
         })
     });
-    Ok(Box::new(DataGenerator {
-        min_len: file_len,
-        iter,
-    }))
+    Ok(Box::new(ExactSizeGenerator { iter, len }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum TextIterationStrategy {
+pub enum GenerationStrategy {
     Sequential,
     Interleaved,
     Weighted,
 }
 
-impl<'a> FromPyObject<'a> for TextIterationStrategy {
+impl<'a> FromPyObject<'a> for GenerationStrategy {
     fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
         let s: String = ob.extract()?;
         let strategy = match s.as_str() {
-            "sequential" => TextIterationStrategy::Sequential,
-            "interleaved" => TextIterationStrategy::Interleaved,
-            "weighted" => TextIterationStrategy::Weighted,
+            "sequential" => GenerationStrategy::Sequential,
+            "interleaved" => GenerationStrategy::Interleaved,
+            "weighted" => GenerationStrategy::Weighted,
             k => return Err(py_invalid_type_error(k, "text iteration strategy")),
         };
         Ok(strategy)
     }
 }
 
-pub struct TextIterator<T> {
-    text_generators: Vec<Box<dyn DataGen<Item = T>>>,
+pub struct MultiTrainDataGenerator {
+    generators: Vec<TrainDataGenerator>,
     lengths: Vec<usize>,
-    strategy: TextIterationStrategy,
+    total_len: usize,
+    strategy: GenerationStrategy,
     idx: usize,
     rng: ChaCha8Rng,
     finished: Vec<bool>,
 }
 
-impl<T> TextIterator<T> {
+impl MultiTrainDataGenerator {
     pub fn new(
-        text_generators: Vec<Box<dyn DataGen<Item = T>>>,
-        strategy: TextIterationStrategy,
+        generators: Vec<TrainDataGenerator>,
+        strategy: GenerationStrategy,
         seed: Option<u64>,
     ) -> anyhow::Result<Self> {
-        let lengths: Vec<usize> = text_generators.iter().map(|g| g.min_len()).collect();
-        if strategy == TextIterationStrategy::Weighted && lengths.iter().any(|l| *l == 0) {
+        let lengths: Vec<usize> = generators.iter().map(|g| g.len()).collect();
+        if strategy == GenerationStrategy::Weighted && lengths.iter().any(|l| *l == 0) {
             return Err(anyhow!(
                 "for the weighted iteration strategy all text generators must specify a positive \
             minimum length, otherwise they would never be iterated"
             ));
         }
-        let finished = vec![false; text_generators.len()];
-        Ok(TextIterator {
-            text_generators,
+        let finished = vec![false; generators.len()];
+        Ok(MultiTrainDataGenerator {
+            generators,
+            total_len: lengths.iter().sum(),
             lengths,
             strategy,
             idx: 0,
@@ -228,19 +224,19 @@ impl<T> TextIterator<T> {
     fn next_idx(&mut self) {
         assert!(!self.all_finished());
         match self.strategy {
-            TextIterationStrategy::Sequential => {
+            GenerationStrategy::Sequential => {
                 if self.finished[self.idx] {
                     self.idx = (self.idx + 1) % self.finished.len();
                 }
             }
-            TextIterationStrategy::Interleaved => {
+            GenerationStrategy::Interleaved => {
                 let mut idx = self.idx;
                 while idx == self.idx || self.finished[idx] {
                     idx = (idx + 1) % self.finished.len()
                 }
                 self.idx = idx;
             }
-            TextIterationStrategy::Weighted => {
+            GenerationStrategy::Weighted => {
                 let non_finished_indices: Vec<usize> = self
                     .finished
                     .iter()
@@ -263,17 +259,21 @@ impl<T> TextIterator<T> {
         self.finished.iter().all(|f| *f)
     }
 
-    pub fn min_len(&self) -> usize {
-        self.lengths.iter().sum()
+    pub fn len(&self) -> usize {
+        self.total_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_len == 0
     }
 }
 
-impl<T> Iterator for TextIterator<T> {
-    type Item = (T, usize);
+impl Iterator for MultiTrainDataGenerator {
+    type Item = (MaybeTrainData, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         let data = loop {
-            let next = self.text_generators[self.idx].next();
+            let next = self.generators[self.idx].next();
             match next {
                 Some(v) => break v,
                 None => {
@@ -315,7 +315,7 @@ pub struct Pipe<O>
 where
     O: Send + 'static,
 {
-    output: Receiver<O>,
+    rx: Receiver<O>,
 }
 
 impl<O> Pipe<O>
@@ -332,7 +332,7 @@ where
         let (tx, rx) = sync_channel(num_threads as usize);
         let sent_counter = Arc::new(AtomicUsize::new(0));
         panic::set_hook(Box::new(move |info| {
-            warn!("thread panicked: {info}");
+            warn!("Thread panicked: {info}");
             std::process::exit(1);
         }));
         for thread in 0..num_threads {
@@ -340,7 +340,7 @@ where
             let tx_clone = tx.clone();
             let pipeline_clone = pipeline.clone();
             let send_next = sent_counter.clone();
-            let _: JoinHandle<()> = Builder::new()
+            let _ = Builder::new()
                 .name(format!("pipeline worker thread {thread}"))
                 .spawn(move || {
                     loop {
@@ -364,18 +364,18 @@ where
                 })
                 .unwrap_or_else(|_| panic!("failed building worker thread {thread}"));
         }
-        Pipe { output: rx }
+        Pipe { rx }
     }
 }
 
 impl<O> Iterator for Pipe<O>
 where
-    O: Send + 'static,
+    O: Send + Sync + 'static,
 {
     type Item = O;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.output.recv().ok()
+        self.rx.recv().ok()
     }
 }
 
@@ -403,7 +403,7 @@ pub trait ItemSize {
 
 pub trait BatchedIterator<T>
 where
-    Self: Iterator<Item = T> + Send + 'static,
+    Self: Iterator<Item = T> + Sized,
     T: ItemSize,
 {
     fn batched(
@@ -414,12 +414,12 @@ where
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         seed: Option<u64>,
-    ) -> Batched<T>;
+    ) -> Batched<Self, T>;
 }
 
 impl<I, T> BatchedIterator<T> for I
 where
-    I: Iterator<Item = T> + Send + 'static,
+    Self: Iterator<Item = T>,
     T: ItemSize,
 {
     fn batched(
@@ -430,7 +430,7 @@ where
         batch_limit: usize,
         batch_limit_type: BatchLimitType,
         seed: Option<u64>,
-    ) -> Batched<T> {
+    ) -> Batched<I, T> {
         Batched::new(
             self,
             sort,
@@ -443,8 +443,8 @@ where
     }
 }
 
-pub struct Batched<T> {
-    inner: Box<dyn Iterator<Item = T> + Send + 'static>,
+pub struct Batched<I, T> {
+    iter: I,
     rng: ChaCha8Rng,
     batch_limit: usize,
     batch_limit_type: BatchLimitType,
@@ -454,12 +454,9 @@ pub struct Batched<T> {
     shuffle_buffer: Vec<T>,
 }
 
-impl<T> Batched<T>
-where
-    T: ItemSize,
-{
+impl<I, T> Batched<I, T> {
     pub fn new(
-        iter: impl Iterator<Item = T> + Send + 'static,
+        iter: I,
         sort: bool,
         shuffle: bool,
         prefetch_factor: usize,
@@ -481,14 +478,20 @@ where
             sort,
             shuffle,
             shuffle_buffer: Vec::new(),
-            inner: Box::new(iter),
+            iter,
         }
     }
+}
 
+impl<I, T> Batched<I, T>
+where
+    I: Iterator<Item = T>,
+    T: ItemSize,
+{
     #[allow(clippy::too_many_arguments)]
     #[inline]
     fn build_batch(
-        iter: &mut impl Iterator<Item = T>,
+        iter: &mut I,
         buf: &mut Vec<T>,
         rng: &mut ChaCha8Rng,
         sort: bool,
@@ -607,15 +610,16 @@ where
     }
 }
 
-impl<T> Iterator for Batched<T>
+impl<I, T> Iterator for Batched<I, T>
 where
+    I: Iterator<Item = T>,
     T: ItemSize,
 {
     type Item = Batch<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Self::build_batch(
-            &mut self.inner,
+            &mut self.iter,
             &mut self.shuffle_buffer,
             &mut self.rng,
             self.sort,
@@ -667,50 +671,47 @@ pub trait Tensorize {
     fn tensorize(&self) -> Self::Output;
 }
 
-pub trait TensorizedIterator<T>
+pub trait TensorizedIterator
 where
-    Self: Iterator<Item = T> + Send + 'static,
-    T: Tensorize + Send + 'static,
+    Self: Iterator + Sized,
+    Self::Item: Tensorize,
 {
-    fn tensorized(self) -> Tensorized<T>;
+    fn tensorized(self) -> Tensorized<Self>;
 }
 
-impl<I, T> TensorizedIterator<T> for I
+impl<I> TensorizedIterator for I
 where
-    I: Iterator<Item = T> + Send + 'static,
-    T: Tensorize + Send + 'static,
+    I: Iterator,
+    I::Item: Tensorize,
 {
-    fn tensorized(self) -> Tensorized<T> {
+    fn tensorized(self) -> Tensorized<Self> {
         Tensorized::new(self)
     }
 }
 
-pub struct Tensorized<T>
-where
-    T: Tensorize + Send + 'static,
-{
-    inner: Box<dyn Iterator<Item = T> + Send + 'static>,
+pub struct Tensorized<I> {
+    iter: I,
 }
 
-impl<T> Tensorized<T>
+impl<I> Tensorized<I>
 where
-    T: Tensorize + Send + 'static,
+    I: Iterator,
+    I::Item: Tensorize,
 {
-    pub fn new(inner: impl Iterator<Item = T> + Send + 'static) -> Self {
-        Self {
-            inner: Box::new(inner),
-        }
+    pub fn new(iter: I) -> Self {
+        Self { iter }
     }
 }
 
-impl<T> Iterator for Tensorized<T>
+impl<I> Iterator for Tensorized<I>
 where
-    T: Tensorize + Send + 'static,
+    I: Iterator,
+    I::Item: Tensorize,
 {
-    type Item = (T, <T as Tensorize>::Output);
+    type Item = (I::Item, <I::Item as Tensorize>::Output);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|b| {
+        self.iter.next().map(|b| {
             let tensorized = b.tensorize();
             (b, tensorized)
         })
@@ -719,8 +720,7 @@ where
 
 pub trait BufferedIterator<T>
 where
-    Self: Iterator<Item = T> + Send + 'static,
-    T: Send + 'static,
+    Self: Iterator<Item = T>,
 {
     fn buffered(self, buffer_size: usize) -> Buffered<T>;
 }
@@ -735,12 +735,8 @@ where
     }
 }
 
-pub struct Buffered<T>
-where
-    T: Send + 'static,
-{
-    // inner: Box<dyn Iterator<Item = T> + Send + 'static>,
-    inner: Receiver<T>,
+pub struct Buffered<T> {
+    rx: Receiver<T>,
 }
 
 impl<T> Buffered<T>
@@ -760,24 +756,23 @@ where
                 }
             })
             .expect("failed to build buffer thread");
-        Self { inner: rx }
+        Self { rx }
     }
 }
 
-impl<T> Iterator for Buffered<T>
-where
-    T: Send + 'static,
-{
+impl<T> Iterator for Buffered<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.recv().ok()
+        self.rx.recv().ok()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::data::loading::{BatchLimitType, BatchedIterator, TextIterationStrategy};
+    use crate::data::loading::{
+        BatchLimitType, BatchedIterator, GenerationStrategy, MultiTrainDataGenerator,
+    };
     use crate::data::postprocessing::PostprocessingFnConfig;
     use crate::data::preprocessing::PreprocessingFnConfig;
     use crate::data::task::TrainTaskConfig;
@@ -794,9 +789,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::{
-        train_data_generator_from_jsonl, BufferedIterator, PipelineIterator, TextIterator,
-    };
+    use super::{train_data_generator_from_jsonl, BufferedIterator, PipelineIterator};
 
     const MULTI30K_FIRST: &str = "Two young, White males are outside near many bushes.";
     const MULTI30K_SECOND: &str = "Several men in hard hats are operating a giant pulley system.";
@@ -810,14 +803,11 @@ mod tests {
         let d = base.clone().join("resources/test/multi30k.jsonl");
         let d2 = base.clone().join("resources/test/multi30k_rev.jsonl");
         let multi30k = train_data_generator_from_jsonl(&d)?;
-        let mut it = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
+        let mut it =
+            MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
 
         // first check sequential lines with one file
-        assert_eq!(it.min_len(), 29000);
+        assert_eq!(it.len(), 29000);
         let _data = TrainData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_FIRST.to_string(),
@@ -830,13 +820,10 @@ mod tests {
         assert!(matches!(it.next().unwrap(), (Ok(_data), 0)));
         // check sequential lines with input and target
         let multi30k = train_data_generator_from_jsonl(&d)?;
-        let mut it = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
+        let mut it =
+            MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
 
-        assert_eq!(it.min_len(), 29000);
+        assert_eq!(it.len(), 29000);
         let _data = TrainData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_REV_FIRST.to_string(),
@@ -850,13 +837,13 @@ mod tests {
         // check interleaved lines with two files
         let multi30k = train_data_generator_from_jsonl(&d)?;
         let multi30k_rev = train_data_generator_from_jsonl(&d2)?;
-        let mut it = TextIterator::new(
+        let mut it = MultiTrainDataGenerator::new(
             vec![multi30k, multi30k_rev],
-            TextIterationStrategy::Interleaved,
+            GenerationStrategy::Interleaved,
             None,
         )?;
 
-        assert_eq!(it.min_len(), 2 * 29000);
+        assert_eq!(it.len(), 2 * 29000);
         let _data = TrainData {
             target: MULTI30K_FIRST.to_string(),
             input: MULTI30K_FIRST.to_string(),
@@ -880,19 +867,17 @@ mod tests {
         // check weighted lines with two files
         let multi30k = train_data_generator_from_jsonl(&d)?;
         let multi30k_rev = train_data_generator_from_jsonl(&d2)?;
-        let it = TextIterator::new(
+        let it = MultiTrainDataGenerator::new(
             vec![multi30k, multi30k_rev],
-            super::TextIterationStrategy::Weighted,
+            GenerationStrategy::Weighted,
             None,
         )?;
-        assert_eq!(it.min_len(), 2 * 29000);
+        assert_eq!(it.len(), 2 * 29000);
         Ok(())
     }
 
     #[test]
     fn test_pipeline_iterator() -> anyhow::Result<()> {
-        let _ = env_logger::try_init();
-
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.jsonl");
 
@@ -912,11 +897,8 @@ mod tests {
         )?;
         // test if it works with one worker and record the time it took
         let multi30k = train_data_generator_from_jsonl(&d)?;
-        let text_iter = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
+        let text_iter =
+            MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
 
         let it = text_iter
             .filter_map(|(d, _)| {
@@ -931,18 +913,14 @@ mod tests {
         let now = Instant::now();
         let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
         let mut time = now.elapsed().as_secs_f64();
-        info!("took {:.2}s to fetch {} items", time, n);
 
         let n_cpus = num_cpus::get();
 
         // if more cpus are available, test with more workers, check that its faster
         if n_cpus >= 2 {
             let multi30k = train_data_generator_from_jsonl(&d)?;
-            let text_iter = TextIterator::new(
-                vec![multi30k],
-                super::TextIterationStrategy::Sequential,
-                None,
-            )?;
+            let text_iter =
+                MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
             let it = text_iter
                 .filter_map(|(d, _)| {
                     if let Ok(d) = d {
@@ -955,7 +933,6 @@ mod tests {
             let now = Instant::now();
             let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
             let time2 = now.elapsed().as_secs_f64();
-            info!("took {:.2}s to fetch {} items", time2, n);
             assert!(time2 < time);
             time = time2;
         }
@@ -963,11 +940,8 @@ mod tests {
         // test with even more workers, if available
         if n_cpus >= 4 {
             let multi30k = train_data_generator_from_jsonl(&d)?;
-            let text_iter = TextIterator::new(
-                vec![multi30k],
-                super::TextIterationStrategy::Sequential,
-                None,
-            )?;
+            let text_iter =
+                MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
             let it = text_iter
                 .filter_map(|(d, _)| {
                     if let Ok(d) = d {
@@ -999,11 +973,8 @@ mod tests {
             512,
         )?;
         let multi30k = train_data_generator_from_jsonl(&d)?;
-        let text_iter = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
+        let text_iter =
+            MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
 
         let it = text_iter
             .filter_map(|(d, _)| {
@@ -1026,16 +997,11 @@ mod tests {
 
     #[test]
     fn test_batched_pipeline_iterator() -> anyhow::Result<()> {
-        let _ = env_logger::try_init();
-
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let d = base.clone().join("resources/test/multi30k.jsonl");
         let multi30k = train_data_generator_from_jsonl(&d)?;
-        let text_iter = TextIterator::new(
-            vec![multi30k],
-            super::TextIterationStrategy::Sequential,
-            None,
-        )?;
+        let text_iter =
+            MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
         let data: Vec<_> = train_data_generator_from_jsonl(&d)?.collect::<anyhow::Result<_>>()?;
         let tokenizer_cfg = TokenizerConfig {
             tokenize: TokenizeConfig::Dummy(Duration::from_millis(0)),
@@ -1075,9 +1041,9 @@ mod tests {
         for shuffle in [true, false] {
             for sort in [true, false] {
                 let multi30k = train_data_generator_from_jsonl(&d)?;
-                let text_iter = TextIterator::new(
+                let text_iter = MultiTrainDataGenerator::new(
                     vec![multi30k],
-                    super::TextIterationStrategy::Weighted,
+                    GenerationStrategy::Weighted,
                     None,
                 )?;
 

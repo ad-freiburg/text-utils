@@ -304,7 +304,7 @@ pub fn byte_py(
 /// A submodule containing helper functions needed for splitting long strings
 /// into multiple windows (useful for text correction inference).
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(py, "windows")?;
+    let m = PyModule::new(py, "windows")?;
     m.add_function(wrap_pyfunction!(byte_py, m.clone())?)?;
     m.add_function(wrap_pyfunction!(char_py, m.clone())?)?;
     parent_module.add_submodule(&m)?;

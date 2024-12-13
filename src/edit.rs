@@ -3,6 +3,7 @@ use crate::unicode::{CharString, Character, CS};
 use anyhow::anyhow;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
+use pyo3::types::PyString;
 use std::collections::HashSet;
 
 use crate::utils::py_invalid_type_error;
@@ -109,15 +110,19 @@ impl<'a> FromPyObject<'a> for EditOperation {
     }
 }
 
-impl IntoPy<PyObject> for EditOperation {
-    fn into_py(self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for EditOperation {
+    type Target = PyString;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
             EditOperation::Insert => "i",
             EditOperation::Delete => "d",
             EditOperation::Replace => "r",
             EditOperation::Swap => "s",
         }
-        .into_py(py)
+        .into_pyobject(py)
     }
 }
 
@@ -288,7 +293,7 @@ pub fn edited_words(a: &str, b: &str) -> (HashSet<usize>, HashSet<usize>) {
 /// A submodule for calculating the edit distance and operations between strings.
 pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let m_name = "edit";
-    let m = PyModule::new_bound(py, m_name)?;
+    let m = PyModule::new(py, m_name)?;
     m.add_function(wrap_pyfunction!(distance, m.clone())?)?;
     m.add_function(wrap_pyfunction!(distances_py, m.clone())?)?;
     m.add_function(wrap_pyfunction!(prefix_distance, m.clone())?)?;

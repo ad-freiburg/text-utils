@@ -1,6 +1,6 @@
 use crate::data::loading::{
-    train_data_generator_from_jsonl, BatchLimitType, BatchedIterator, BufferedIterator, ItemSize,
-    PipelineIterator, Tensorize, TensorizedIterator, TextIterationStrategy, TextIterator,
+    train_data_generator_from_jsonl, BatchLimitType, BatchedIterator, BufferedIterator,
+    GenerationStrategy, ItemSize, PipelineIterator, Tensorize, TensorizedIterator,
 };
 use crate::data::preprocessing::{preprocessing, PreprocessingFnConfig};
 use crate::tokenization::{
@@ -11,6 +11,7 @@ use crate::utils::{py_invalid_type_error, py_required_key_error};
 use crate::windows::{windows, WindowConfig};
 use anyhow::anyhow;
 use itertools::Itertools;
+use loading::MultiTrainDataGenerator;
 use log::warn;
 use numpy::ndarray::prelude::*;
 use numpy::IntoPyArray;
@@ -99,18 +100,22 @@ impl TrainTaskInput {
     }
 }
 
-impl IntoPy<PyObject> for TrainTaskInput {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        let d = PyDict::new_bound(py);
+impl<'py> IntoPyObject<'py> for TrainTaskInput {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let d = PyDict::new(py);
         let label_type = match &self {
             TrainTaskInput::Classification {
                 token_ids,
                 pad_token_id,
                 label,
             } => {
-                d.set_item("token_ids", token_ids).unwrap();
-                d.set_item("pad_token_id", pad_token_id).unwrap();
-                d.set_item("label", label).unwrap();
+                d.set_item("token_ids", token_ids)?;
+                d.set_item("pad_token_id", pad_token_id)?;
+                d.set_item("label", label)?;
                 "classification"
             }
             TrainTaskInput::SequenceClassification {
@@ -118,9 +123,9 @@ impl IntoPy<PyObject> for TrainTaskInput {
                 pad_token_id,
                 labels,
             } => {
-                d.set_item("token_ids", token_ids).unwrap();
-                d.set_item("pad_token_id", pad_token_id).unwrap();
-                d.set_item("labels", labels).unwrap();
+                d.set_item("token_ids", token_ids)?;
+                d.set_item("pad_token_id", pad_token_id)?;
+                d.set_item("labels", labels)?;
                 "sequence_classification"
             }
             TrainTaskInput::Generation {
@@ -128,9 +133,9 @@ impl IntoPy<PyObject> for TrainTaskInput {
                 pad_token_id,
                 labels,
             } => {
-                d.set_item("token_ids", token_ids).unwrap();
-                d.set_item("pad_token_id", pad_token_id).unwrap();
-                d.set_item("labels", labels).unwrap();
+                d.set_item("token_ids", token_ids)?;
+                d.set_item("pad_token_id", pad_token_id)?;
+                d.set_item("labels", labels)?;
                 "generation"
             }
             TrainTaskInput::ConditionalGeneration {
@@ -140,17 +145,16 @@ impl IntoPy<PyObject> for TrainTaskInput {
                 target_pad_token_id,
                 labels,
             } => {
-                d.set_item("token_ids", token_ids).unwrap();
-                d.set_item("target_token_ids", target_token_ids).unwrap();
-                d.set_item("labels", labels).unwrap();
-                d.set_item("pad_token_id", pad_token_id).unwrap();
-                d.set_item("target_pad_token_id", target_pad_token_id)
-                    .unwrap();
+                d.set_item("token_ids", token_ids)?;
+                d.set_item("target_token_ids", target_token_ids)?;
+                d.set_item("labels", labels)?;
+                d.set_item("pad_token_id", pad_token_id)?;
+                d.set_item("target_pad_token_id", target_pad_token_id)?;
                 "conditional_generation"
             }
         };
-        d.set_item("type", label_type).unwrap();
-        d.into()
+        d.set_item("type", label_type)?;
+        Ok(d)
     }
 }
 
@@ -342,24 +346,24 @@ pub enum TensorizedTrainTaskInput {
 
 impl TensorizedTrainTaskInput {
     pub fn into_py(self, py: Python<'_>) -> anyhow::Result<PyObject> {
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         let input_type = match self {
             TensorizedTrainTaskInput::Classification(token_ids, lengths, labels) => {
-                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
-                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
-                d.set_item("labels", labels.into_pyarray_bound(py))?;
+                d.set_item("token_ids", token_ids.into_pyarray(py))?;
+                d.set_item("lengths", lengths.into_pyarray(py))?;
+                d.set_item("labels", labels.into_pyarray(py))?;
                 "classification"
             }
             TensorizedTrainTaskInput::SequenceClassification(token_ids, lengths, labels) => {
-                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
-                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
-                d.set_item("labels", labels.into_pyarray_bound(py))?;
+                d.set_item("token_ids", token_ids.into_pyarray(py))?;
+                d.set_item("lengths", lengths.into_pyarray(py))?;
+                d.set_item("labels", labels.into_pyarray(py))?;
                 "sequence_classification"
             }
             TensorizedTrainTaskInput::Generation(token_ids, lengths, labels) => {
-                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
-                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
-                d.set_item("labels", labels.into_pyarray_bound(py))?;
+                d.set_item("token_ids", token_ids.into_pyarray(py))?;
+                d.set_item("lengths", lengths.into_pyarray(py))?;
+                d.set_item("labels", labels.into_pyarray(py))?;
                 "generation"
             }
             TensorizedTrainTaskInput::ConditionalGeneration(
@@ -369,11 +373,11 @@ impl TensorizedTrainTaskInput {
                 target_lengths,
                 labels,
             ) => {
-                d.set_item("token_ids", token_ids.into_pyarray_bound(py))?;
-                d.set_item("lengths", lengths.into_pyarray_bound(py))?;
-                d.set_item("labels", labels.into_pyarray_bound(py))?;
-                d.set_item("target_token_ids", target_token_ids.into_pyarray_bound(py))?;
-                d.set_item("target_lengths", target_lengths.into_pyarray_bound(py))?;
+                d.set_item("token_ids", token_ids.into_pyarray(py))?;
+                d.set_item("lengths", lengths.into_pyarray(py))?;
+                d.set_item("labels", labels.into_pyarray(py))?;
+                d.set_item("target_token_ids", target_token_ids.into_pyarray(py))?;
+                d.set_item("target_lengths", target_lengths.into_pyarray(py))?;
                 "conditional_generation"
             }
         };
@@ -630,9 +634,9 @@ impl<'a> FromPyObject<'a> for TrainPipelineConfig {
 
 // a pipeline is a function mapping an input to an output,
 // and it also sharable across threads
-pub type Pipeline<I, O> = Arc<dyn Send + Sync + 'static + Fn(I) -> O>;
-
+pub type Pipeline<I, O> = Arc<dyn Fn(I) -> O + Send + Sync>;
 pub type TrainPipeline = Pipeline<(TrainData, TextDataInfo), anyhow::Result<TrainItem>>;
+
 pub fn train_pipeline(
     pipeline_cfg: TrainPipelineConfig,
     max_length: usize,
@@ -712,7 +716,7 @@ pub fn inference_pipeline(
 type InferenceDataIter = dyn Iterator<Item = Batch<InferenceItem>> + Send;
 #[pyclass]
 struct InferenceLoader {
-    iter: Box<InferenceDataIter>,
+    iter: Arc<Mutex<InferenceDataIter>>,
     iter_err: Arc<Mutex<Option<anyhow::Error>>>,
 }
 
@@ -765,7 +769,7 @@ impl InferenceLoader {
             )
             .buffered(buffer_size);
         Ok(InferenceLoader {
-            iter: Box::new(iter),
+            iter: Arc::new(Mutex::new(iter)),
             iter_err,
         })
     }
@@ -855,19 +859,24 @@ impl InferenceLoader {
         slf
     }
 
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<InferenceBatch>>> {
-        if let Some(batch) = slf.iter.next() {
-            Ok(Some(Py::new(
-                slf.py(),
-                InferenceBatch {
-                    len: batch.len(),
-                    batch: Some(batch),
-                },
-            )?))
+    fn __next__(&self) -> anyhow::Result<Option<InferenceBatch>> {
+        let mut iter = self
+            .iter
+            .lock()
+            .map_err(|e| anyhow!("error locking inference iterator: {e}"))?;
+        if let Some(batch) = iter.next() {
+            Ok(Some(InferenceBatch {
+                len: batch.len(),
+                batch: Some(batch),
+            }))
         } else {
             // check if batch is None because iterator is stopped,
             // or because an error was encountered
-            match slf.iter_err.lock().unwrap().as_ref() {
+            let err = self
+                .iter_err
+                .lock()
+                .map_err(|e| anyhow!("error locking inference iterator error: {e}"))?;
+            match err.as_ref() {
                 Some(e) => Err(anyhow!("error in inference iterator: {e}")),
                 None => Ok(None),
             }
@@ -875,13 +884,13 @@ impl InferenceLoader {
     }
 }
 
-type TrainIter =
+type TrainDataIter =
     dyn Iterator<Item = (Batch<TrainItem>, <Batch<TrainItem> as Tensorize>::Output)> + Send;
 #[pyclass]
 struct TrainLoader {
     pipeline: TrainPipeline,
     files: Vec<String>,
-    strategy: TextIterationStrategy,
+    strategy: GenerationStrategy,
     num_threads: u8,
     buffer_size: usize,
     batch_limit: usize,
@@ -900,7 +909,7 @@ struct TrainLoader {
     // the next to values will be set after each __iter__ call
     #[pyo3(get)]
     min_items: Option<usize>,
-    iter: Option<Box<TrainIter>>,
+    iter: Option<Arc<Mutex<TrainDataIter>>>,
 }
 
 impl TrainLoader {
@@ -908,7 +917,7 @@ impl TrainLoader {
     fn new(
         files: Vec<String>,
         pipeline: TrainPipelineConfig,
-        strategy: TextIterationStrategy,
+        strategy: GenerationStrategy,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -967,14 +976,9 @@ impl TrainLoader {
             .map(train_data_generator_from_jsonl)
             .collect::<anyhow::Result<_>>()?;
 
-        let text_iter = TextIterator::new(generators, self.strategy, Some(seed))?;
-        self.min_items = Some(
-            text_iter
-                .min_len()
-                .min(self.limit)
-                .saturating_sub(self.skip),
-        );
-        let batch_iter = text_iter
+        let data_iter = MultiTrainDataGenerator::new(generators, self.strategy, Some(seed))?;
+        self.min_items = Some(data_iter.len().min(self.limit).saturating_sub(self.skip));
+        let batch_iter = data_iter
             .enumerate()
             .take(self.limit)
             .skip(self.skip + self.fast_forward + self.rank)
@@ -1009,7 +1013,7 @@ impl TrainLoader {
             )
             .tensorized()
             .buffered(self.buffer_size);
-        self.iter = Some(Box::new(batch_iter));
+        self.iter = Some(Arc::new(Mutex::new(Box::new(batch_iter))));
         Ok(())
     }
 }
@@ -1021,7 +1025,7 @@ impl TrainLoader {
     #[pyo3(signature = (
         files,
         pipeline,
-        strategy = TextIterationStrategy::Sequential,
+        strategy = GenerationStrategy::Sequential,
         num_threads = num_cpus::get() as u8,
         buffer_size = 128,
         batch_limit = 16,
@@ -1038,7 +1042,7 @@ impl TrainLoader {
     pub fn from_files(
         files: Vec<String>,
         pipeline: TrainPipelineConfig,
-        strategy: TextIterationStrategy,
+        strategy: GenerationStrategy,
         num_threads: u8,
         buffer_size: usize,
         batch_limit: usize,
@@ -1079,22 +1083,22 @@ impl TrainLoader {
         Ok(slf)
     }
 
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> anyhow::Result<Option<Py<TrainBatch>>> {
-        if slf.iter.is_none() {
-            slf.init_iter()?;
+    fn __next__(&mut self) -> anyhow::Result<Option<TrainBatch>> {
+        if self.iter.is_none() {
+            self.init_iter()?;
         }
-        let next = if let Some((batch, tensorized)) = slf.iter.as_mut().unwrap().next() {
-            Some(
-                Py::new(
-                    slf.py(),
-                    TrainBatch {
-                        len: batch.len(),
-                        batch: Some(batch),
-                        tensorized: Some(tensorized),
-                    },
-                )
-                .expect("should not fail"),
-            )
+        let Some(iter) = self.iter.as_ref() else {
+            return Err(anyhow!("iterator is not initialized"));
+        };
+        let mut iter = iter
+            .lock()
+            .map_err(|e| anyhow!("error locking train iterator: {e}"))?;
+        let next = if let Some((batch, tensorized)) = iter.next() {
+            Some(TrainBatch {
+                len: batch.len(),
+                batch: Some(batch),
+                tensorized: Some(tensorized),
+            })
         } else {
             None
         };
@@ -1127,7 +1131,7 @@ impl TrainLoader {
 /// - batched loading (limited by a max batch size or a max number of tokens)
 /// - distributed loading (distribute work across multiple processes or machines)
 pub(super) fn add_submodule(py: Python<'_>, parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let m = PyModule::new_bound(py, "data")?;
+    let m = PyModule::new(py, "data")?;
     m.add_class::<TrainLoader>()?;
     m.add_class::<TrainData>()?;
     m.add_class::<TrainItem>()?;

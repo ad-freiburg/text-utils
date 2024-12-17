@@ -1774,7 +1774,7 @@ fn update_stats(
         out_file,
         max_lines_per_file = None,
         normalization = Normalization::NFKC,
-        num_threads = num_cpus::get() as u8,
+        num_threads = 0,
         progress = true,
     )
 )]

@@ -77,12 +77,12 @@ class TextProcessor:
     ):
         if model is None:
             default = cls.default_model()
-            assert default is not None, "no default model available"
+            assert default is not None, "No default model available"
             model = default.name
 
         assert model is not None
         assert any(model == m.name for m in cls.available_models()), (
-            f"model {model} does not match any of the available models:\n"
+            f"Model {model} does not match any of the available models:\n"
             f"{pprint.pformat(cls.available_models())}"
         )
 
@@ -104,7 +104,7 @@ class TextProcessor:
         )
         sub_dirs = os.listdir(zip_dir)
         assert len(sub_dirs) == 1, (
-            f"expected extracted zip for model {model} to contain "
+            f"Expected extracted zip for model {model} to contain "
             f"one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
         )
         # mark processor as pretrained
@@ -151,7 +151,7 @@ class TextProcessor:
     ) -> None:
         self.cfg = cfg
         self.logger = logging.get_logger(self._task_upper())
-        self.logger.debug(f"got config:\n{self.cfg}")
+        self.logger.debug(f"Got config:\n{self.cfg}")
 
         torch.set_num_threads(len(os.sched_getaffinity(0)))
         torch.use_deterministic_algorithms(False)
@@ -215,6 +215,7 @@ class TextProcessor:
             for batch in loader:
                 with torch.inference_mode():
                     outputs = inference_fn(batch)
+
                 for item, output in zip(batch.items(), outputs):
                     if item.item_idx not in results:
                         results[item.item_idx] = {}
@@ -245,6 +246,7 @@ class TextProcessor:
             for batch in loader:
                 with torch.inference_mode():
                     outputs = inference_fn(batch)
+
                 for item, output in zip(batch.items(), outputs):
                     if item.item_idx == prev_item_idx:
                         window_items.append(item)
@@ -254,13 +256,12 @@ class TextProcessor:
                     yield postprocessing_fn(window_items, window_outputs)
                     if progress_unit == "byte":
                         pbar.update(sum(item.window_bytes() for item in window_items))
+                    elif progress_unit == "it":
+                        pbar.update(1)
 
                     prev_item_idx = item.item_idx
                     window_items = [item]
                     window_outputs = [output]
-
-                if progress_unit == "it":
-                    pbar.update(1)
 
             # dont forget to yield final item
             yield postprocessing_fn(window_items, window_outputs)

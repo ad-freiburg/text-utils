@@ -26,7 +26,6 @@ unicode-segmentation = "1.10"
 unicode-normalization = "0.1"
 num = "0.4"
 anyhow = "1.0"
-num_cpus = "1.14"
 numpy = "0.23"
 clap = { version = "4", features = ["derive"] }
 tokenizers = "0.21"
@@ -37,11 +36,6 @@ criterion = "0.5"
 
 [features]
 benchmark-utils = []
-
-[profile.release]
-lto = true
-codegen-units = 1
-strip = true
 
 [[bench]]
 required-features = ["benchmark-utils"]

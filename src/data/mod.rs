@@ -794,13 +794,14 @@ impl Iterator for InferenceIterator {
                     )))
                 }
             };
-            match item.extract(py) {
-                Ok(None) => None,
-                Ok(Some(item)) => Some(Ok(item)),
-                Err(e) => Some(Err(anyhow!(
+            let item = match item.extract(py) {
+                Ok(None) => return None,
+                Ok(Some(item)) => Ok(item),
+                Err(e) => Err(anyhow!(
                     "error extracting item from inference iterator: {e}"
-                ))),
-            }
+                )),
+            };
+            Some(item)
         })
     }
 }
@@ -814,8 +815,8 @@ impl InferenceLoader {
         tokenizer,
         window,
         ignore_special_tokens = false,
-        num_threads = num_cpus::get() as u8,
-        buffer_size = 128,
+        num_threads = 0,
+        buffer_size = 16,
         batch_limit = 16,
         batch_limit_type = BatchLimitType::BatchSize,
         prefetch_factor = 1,
@@ -851,28 +852,35 @@ impl InferenceLoader {
         slf
     }
 
-    fn __next__(&self) -> anyhow::Result<Option<InferenceBatch>> {
-        let mut iter = self
-            .iter
-            .lock()
-            .map_err(|e| anyhow!("error locking inference iterator: {e}"))?;
-        if let Some(batch) = iter.next() {
-            Ok(Some(InferenceBatch {
-                len: batch.len(),
-                batch: Some(batch),
-            }))
-        } else {
-            // check if batch is None because iterator is stopped,
-            // or because an error was encountered
-            let err = self
-                .iter_err
+    fn __next__(&self, py: Python<'_>) -> anyhow::Result<Option<InferenceBatch>> {
+        // allow threads is required here because the underlying iterator
+        // is actually a python itetrator that also requests the GIL when calling
+        // next on it. so we need to release the GIL here, call next on the python
+        // iterator, and then re-acquire the GIL afterwards
+        py.allow_threads(move || {
+            let mut iter = self
+                .iter
                 .lock()
-                .map_err(|e| anyhow!("error locking inference iterator error: {e}"))?;
-            match err.as_ref() {
-                Some(e) => Err(anyhow!("error in inference iterator: {e}")),
-                None => Ok(None),
+                .map_err(|e| anyhow!("error locking inference iterator: {e}"))?;
+
+            if let Some(batch) = iter.next() {
+                Ok(Some(InferenceBatch {
+                    len: batch.len(),
+                    batch: Some(batch),
+                }))
+            } else {
+                // check if batch is None because iterator is stopped,
+                // or because an error was encountered
+                let err = self
+                    .iter_err
+                    .lock()
+                    .map_err(|e| anyhow!("error locking inference iterator error: {e}"))?;
+                match err.as_ref() {
+                    Some(e) => Err(anyhow!("error in inference iterator: {e}")),
+                    None => Ok(None),
+                }
             }
-        }
+        })
     }
 }
 
@@ -1018,8 +1026,8 @@ impl TrainLoader {
         files,
         pipeline,
         strategy = GenerationStrategy::Sequential,
-        num_threads = num_cpus::get() as u8,
-        buffer_size = 128,
+        num_threads = 0,
+        buffer_size = 16,
         batch_limit = 16,
         batch_limit_type = BatchLimitType::BatchSize,
         max_length = 512,

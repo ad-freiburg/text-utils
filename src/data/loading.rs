@@ -311,11 +311,16 @@ where
     }
 }
 
+enum PipeInner<O> {
+    Unthreaded(Box<dyn Iterator<Item = O> + Send>),
+    Threaded(Receiver<O>),
+}
+
 pub struct Pipe<O>
 where
     O: Send + 'static,
 {
-    rx: Receiver<O>,
+    inner: PipeInner<O>,
 }
 
 impl<O> Pipe<O>
@@ -323,13 +328,18 @@ where
     O: Send + 'static,
 {
     fn new<I: Send + 'static>(
-        inner: impl Iterator<Item = I> + Send + 'static,
+        iter: impl Iterator<Item = I> + Send + 'static,
         pipeline: Pipeline<I, O>,
         num_threads: u8,
     ) -> Self {
-        let num_threads = num_threads.clamp(1, num_cpus::get() as u8);
-        let inner = Arc::new(Mutex::new(inner.enumerate()));
-        let (tx, rx) = sync_channel(num_threads as usize);
+        if num_threads == 0 {
+            return Pipe {
+                inner: PipeInner::Unthreaded(Box::new(iter.map(move |item| pipeline(item)))),
+            };
+        }
+        let num_threads = num_threads as usize;
+        let inner = Arc::new(Mutex::new(iter.enumerate()));
+        let (tx, rx) = sync_channel(num_threads);
         let sent_counter = Arc::new(AtomicUsize::new(0));
         panic::set_hook(Box::new(move |info| {
             warn!("Thread panicked: {info}");
@@ -364,7 +374,9 @@ where
                 })
                 .unwrap_or_else(|_| panic!("failed building worker thread {thread}"));
         }
-        Pipe { rx }
+        Pipe {
+            inner: PipeInner::Threaded(rx),
+        }
     }
 }
 
@@ -375,7 +387,10 @@ where
     type Item = O;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.rx.recv().ok()
+        match self.inner {
+            PipeInner::Unthreaded(ref mut iter) => iter.next(),
+            PipeInner::Threaded(ref rx) => rx.recv().ok(),
+        }
     }
 }
 

@@ -229,7 +229,7 @@ impl Dictionary {
     #[staticmethod]
     #[pyo3(
         name = "create",
-        signature = (files, max_size = None, max_sequences = None, num_threads=num_cpus::get() as u8, use_characters = false, char_grams=1, show_progress=false),
+        signature = (files, max_size = None, max_sequences = None, num_threads=0, use_characters = false, char_grams=1, show_progress=false),
     )]
     fn create_py(
         files: Vec<PyBackedStr>,

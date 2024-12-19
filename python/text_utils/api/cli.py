@@ -1,9 +1,11 @@
 import argparse
-from io import TextIOWrapper
+import logging
 import sys
 import time
 import warnings
-from typing import Iterator, Type, Any
+from io import TextIOWrapper
+from typing import Any, Iterator, Type
+
 try:
     import readline  # noqa
 except ImportError:
@@ -16,7 +18,7 @@ from text_utils.api.processor import TextProcessor
 from text_utils.api.server import TextProcessingServer
 from text_utils.api.table import generate_report, generate_table
 from text_utils.api.utils import ProgressIterator
-from text_utils.logging import setup_logging, disable_logging
+from text_utils.logging import disable_logging, setup_logging
 
 
 class TextProcessingCli:
@@ -24,23 +26,16 @@ class TextProcessingCli:
     text_processing_server_cls: Type[TextProcessingServer]
 
     @classmethod
-    def parser(
-        cls,
-        name: str,
-        description: str
-    ) -> argparse.ArgumentParser:
+    def parser(cls, name: str, description: str) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(name, description)
         model_group = parser.add_mutually_exclusive_group()
         default_model = cls.text_processor_cls.default_model()
         model_group.add_argument(
             "-m",
             "--model",
-            choices=[
-                model.name for model in
-                cls.text_processor_cls.available_models()
-            ],
+            choices=[model.name for model in cls.text_processor_cls.available_models()],
             default=None if default_model is None else default_model.name,
-            help=f"Name of the model to use for {cls.text_processor_cls.task}"
+            help=f"Name of the model to use for {cls.text_processor_cls.task}",
         )
         model_group.add_argument(
             "-e",
@@ -48,55 +43,51 @@ class TextProcessingCli:
             type=str,
             default=None,
             help="Path to an experiment directory from which the model will be loaded "
-                 "(use this when you trained your own model and want to use it)"
+            "(use this when you trained your own model and want to use it)",
         )
         parser.add_argument(
             "--last",
             action="store_true",
-            help="Use last checkpoint instead of best, only works with experiments"
+            help="Use last checkpoint instead of best, only works with experiments",
         )
         input_group = parser.add_mutually_exclusive_group()
         input_group.add_argument(
-            "-p",
-            "--process",
-            type=str,
-            default=None,
-            help="Text to process"
+            "-p", "--process", type=str, default=None, help="Text to process"
         )
         input_group.add_argument(
             "-f",
             "--file",
             type=str,
             default=None,
-            help="Path to a text file which will be processed"
+            help="Path to a text file which will be processed",
         )
         input_group.add_argument(
             "-i",
             "--interactive",
             action="store_true",
             default=None,
-            help="Start an interactive session where your command line input is processed"
+            help="Start an interactive session where your command line input is processed",
         )
         parser.add_argument(
             "-o",
             "--out-path",
             type=str,
             default=None,
-            help="Path where processed text should be saved to"
+            help="Path where processed text should be saved to",
         )
         parser.add_argument(
             "-d",
             "--device",
             type=str,
             nargs="+",
-            help="Specify one or more devices to use for inference, by default a single GPU is used if available"
+            help="Specify one or more devices to use for inference, by default a single GPU is used if available",
         )
         parser.add_argument(
             "-n",
             "--num-threads",
             type=int,
             default=None,
-            help="Number of threads used for running the inference pipeline"
+            help="Number of threads used for running the inference pipeline",
         )
         batch_limit_group = parser.add_mutually_exclusive_group()
         batch_limit_group.add_argument(
@@ -105,7 +96,7 @@ class TextProcessingCli:
             type=int,
             default=16,
             help="Determines how many inputs will be processed at the same time, larger values should usually result "
-            "in faster processing but require more memory"
+            "in faster processing but require more memory",
         )
         batch_limit_group.add_argument(
             "-t",
@@ -113,7 +104,7 @@ class TextProcessingCli:
             type=int,
             default=None,
             help="Determines the maximum number of tokens processed at the same time, larger values should usually "
-            "result in faster processing but require more memory"
+            "result in faster processing but require more memory",
         )
         parser.add_argument(
             "-u",
@@ -121,65 +112,65 @@ class TextProcessingCli:
             action="store_true",
             help="Disable sorting of the inputs before processing (for a large number of inputs or large text files "
             "sorting the sequences beforehand leads to speed ups because it minimizes the amount of padding "
-            "needed within a batch of sequences)"
+            "needed within a batch of sequences)",
         )
         parser.add_argument(
             "-l",
             "--list",
             action="store_true",
-            help="List all available models with short descriptions"
+            help="List all available models with short descriptions",
         )
         parser.add_argument(
             "-v",
             "--version",
             action="store_true",
-            help=f"Print name and version of the underlying {cls.text_processor_cls.task} library"
+            help=f"Print name and version of the underlying {cls.text_processor_cls.task} library",
         )
         parser.add_argument(
             "--force-download",
             action="store_true",
-            help="Download the model again even if it already was downloaded"
+            help="Download the model again even if it already was downloaded",
         )
         parser.add_argument(
             "--download-dir",
             type=str,
             default=None,
-            help="Directory the model will be downloaded to (as zip file)"
+            help="Directory the model will be downloaded to (as zip file)",
         )
         parser.add_argument(
             "--cache-dir",
             type=str,
             default=None,
-            help="Directory the downloaded model will be extracted to"
+            help="Directory the downloaded model will be extracted to",
         )
         parser.add_argument(
             "--server",
             type=str,
             default=None,
-            help=f"Path to a yaml config file to run a {cls.text_processor_cls.task} server"
+            help=f"Path to a yaml config file to run a {cls.text_processor_cls.task} server",
         )
         parser.add_argument(
             "--report",
             action="store_true",
-            help="Print a runtime report (ignoring startup time) at the end of the processing"
+            help="Print a runtime report (ignoring startup time) at the end of the processing",
         )
         parser.add_argument(
             "--progress",
             action="store_true",
-            help="Show a progress bar while processing"
+            help="Show a progress bar while processing",
         )
         parser.add_argument(
             "--log-level",
             type=str,
-            choices=["info", "debug", "warning", "error", "critical"],
+            choices=list(logging._nameToLevel),
             default=None,
-            help="Sets the logging level for the underlying loggers"
+            help="Sets the logging level for the underlying loggers",
         )
         parser.add_argument(
             "--profile",
             type=str,
             default=None,
-            help="Run CLI with cProfile profiler on and output stats to this file"
+            help="Run CLI with cProfile profiler on and output stats to this file",
         )
         return parser
 
@@ -191,20 +182,16 @@ class TextProcessingCli:
 
     def _run_with_profiling(self, file: str) -> None:
         import cProfile
+
         cProfile.runctx("self.run()", globals(), locals(), file)
 
     def process_iter(
-        self,
-        processor: TextProcessor,
-        iter: Iterator[str]
+        self, processor: TextProcessor, iter: Iterator[str]
     ) -> Iterator[Any]:
         raise NotImplementedError
 
     def setup(self) -> TextProcessor:
-        device = self.args.device or (
-            "cuda" if torch.cuda.is_available()
-            else "cpu"
-        )
+        device = self.args.device or ("cuda" if torch.cuda.is_available() else "cpu")
         if self.args.experiment:
             cor = self.text_processor_cls.from_experiment(
                 experiment_dir=self.args.experiment,
@@ -217,7 +204,7 @@ class TextProcessingCli:
                 device=device,
                 download_dir=self.args.download_dir,
                 cache_dir=self.args.cache_dir,
-                force_download=self.args.force_download
+                force_download=self.args.force_download,
             )
 
         return cor
@@ -241,17 +228,20 @@ class TextProcessingCli:
             table = generate_table(
                 headers=[["Model", "Description", "Tags"]],
                 data=[
-                    [model.name, model.description, ", ".join(
-                        str(tag) for tag in model.tags)]
+                    [
+                        model.name,
+                        model.description,
+                        ", ".join(str(tag) for tag in model.tags),
+                    ]
                     for model in self.text_processor_cls.available_models()
                 ],
                 alignments=["left", "left", "left"],
-                max_column_width=80
+                max_column_width=80,
             )
             print(table)
             return
         elif self.args.server is not None:
-            setup_logging((self.args.log_level or "INFO").upper())
+            setup_logging(self.args.log_level or logging.INFO)
             self.text_processing_server_cls.from_config(self.args.server).run()
             return
 
@@ -270,9 +260,7 @@ class TextProcessingCli:
         start = time.perf_counter()
         if self.args.process is not None:
             self.args.progress = False
-            for output in self.process_iter(
-                self.cor, iter([self.args.process])
-            ):
+            for output in self.process_iter(self.cor, iter([self.args.process])):
                 print(output)
 
         elif self.args.file is not None:
@@ -283,14 +271,8 @@ class TextProcessingCli:
                 assert isinstance(self.args.out_path, str)
                 out = open(self.args.out_path, "w")
 
-            input_it = (
-                line.rstrip("\r\n")
-                for line in open(self.args.file)
-            )
-            sized_it = ProgressIterator(
-                input_it,
-                self.input_size
-            )
+            input_it = (line.rstrip("\r\n") for line in open(self.args.file))
+            sized_it = ProgressIterator(input_it, self.input_size)
             for output in self.process_iter(self.cor, sized_it):
                 out.write(output + "\n")
 
@@ -330,14 +312,8 @@ class TextProcessingCli:
 
             try:
                 # correct lines from stdin as they come
-                input_it = (
-                    line.rstrip("\r\n")
-                    for line in sys.stdin
-                )
-                sized_it = ProgressIterator(
-                    input_it,
-                    self.input_size
-                )
+                input_it = (line.rstrip("\r\n") for line in sys.stdin)
+                sized_it = ProgressIterator(input_it, self.input_size)
                 for output in self.process_iter(self.cor, sized_it):
                     print(output, flush=self.args.unsorted)
 

@@ -1,186 +1,204 @@
-import os
-from contextlib import contextmanager
+import asyncio
 import logging
-from threading import Lock
-from typing import Dict, Any, Type, Union, Generator
+from contextlib import asynccontextmanager
+from typing import Any, Type
 
-import yaml
 import torch
-from flask import Flask, Response, cli, jsonify
+import uvicorn
+import yaml
+from fastapi import FastAPI, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from text_utils.api.processor import TextProcessor, ModelInfo
-from text_utils.api.utils import gpu_info, cpu_info
-from text_utils.logging import get_logger
 from text_utils import configuration
+from text_utils.api.processor import ModelInfo, TextProcessor
+from text_utils.api.utils import cpu_info, gpu_info
+from text_utils.logging import get_logger
+
+
+class RequestCancelledMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        print(f"In {scope['type']} scope")
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Let's make a shared queue for the request messages
+        queue = asyncio.Queue()
+
+        async def message_poller(sentinel: object, handler_task: asyncio.Task):
+            nonlocal queue
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    print("Canceling handler task")
+                    handler_task.cancel()
+                    return sentinel  # Break the loop
+
+                # Puts the message in the queue
+                await queue.put(message)
+
+        sentinel = object()
+        handler_task = asyncio.create_task(self.app(scope, queue.get, send))  # type: ignore
+        asyncio.create_task(message_poller(sentinel, handler_task))
+
+        try:
+            return await handler_task
+        except asyncio.CancelledError:
+            print("Cancelling request due to disconnect")
 
 
 class Error:
-    def __init__(self, msg: str, status: int):
-        self.msg = msg
-        self.status = status
+    def __init__(self, error: str, status_code: int):
+        self.error = error
+        self.status_code = status_code
 
-    def to_response(self) -> Response:
-        return Response(self.msg, status=self.status)
+    def to_response(self) -> JSONResponse:
+        return JSONResponse({"error": self.error}, self.status_code)
 
 
 class TextProcessingServer:
     text_processor_cls: Type[TextProcessor]
 
     @classmethod
-    def from_config(cls, path: str) -> "TextProcessingServer":
+    def from_config(
+        cls, path: str, log_level: str | int | None = None
+    ) -> "TextProcessingServer":
         config = configuration.load_config(path)
-        return cls(config)
+        return cls(config, log_level)
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any], log_level: str | int | None = None):
         self.config = config
-        self.logger = get_logger(
-            f"{self.text_processor_cls.task.upper()} SERVER"
-        )
-        self.logger.info(f"loaded server config:\n{yaml.dump(config)}")
+        self.logger = get_logger(f"{self.text_processor_cls.task} server", log_level)
+        self.logger.info(f"Loaded server config:\n{yaml.dump(config)}")
         self.port = int(self.config.get("port", 40000))
-        # disable flask startup message and set flask mode to development
-        cli.show_server_banner = lambda *_: None
-        os.environ["FLASK_DEBUG"] = "development"
-        self.server = Flask(__name__)
-        max_content_length = int(
-            float(config.get("max_content_length", 1000.0)) * 1000.0
+
+        self.server = FastAPI()
+        self.server.add_middleware(
+            CORSMiddleware,
+            allow_origins=[config.get("allow_origin", "*")],
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["*"],
         )
-        self.server.config["MAX_CONTENT_LENGTH"] = max_content_length
-        self.max_models_per_gpu = max(1, config.get("max_models_per_gpu", 3))
-        self.allow_origin = config.get("allow_origin", "*")
-        self.timeout = float(config.get("timeout", 10.0))
-        logging.getLogger("werkzeug").disabled = True
+        self.server.add_middleware(RequestCancelledMiddleware)
+
+        self.max_models_per_gpu = max(1, config.get("max_models_per_gpu", 1))
+        self.timeout = config.get("timeout", 10.0)
         self.num_gpus = torch.cuda.device_count()
 
-        assert "models" in config and len(config["models"]) > 0, \
-            "expected at least one model to be specified in the server config"
+        assert (
+            "models" in config and len(config["models"]) > 0
+        ), "Expected at least one model to be specified in the server config"
 
-        @self.server.after_request
-        def _after_request(response: Response) -> Response:
-            response.headers.add(
-                "Access-Control-Allow-Origin",
-                self.allow_origin
-            )
-            response.headers.add(
-                "Access-Control-Allow-Headers",
-                "*"
-            )
-            response.headers.add(
-                "Access-Control-Allow-Private-Network",
-                "true"
-            )
-            return response
-
-        @self.server.route("/info")
-        def _info() -> Response:
-            response = jsonify({
-                "gpu": [gpu_info(i) for i in range(self.num_gpus)],
-                "cpu": cpu_info(),
-                "timeout": self.timeout,
-            })
-            return response
-
-        self.text_processors: list[TextProcessor] = []
-        self.name_to_idx = {}
-        self.lock = Lock()
-
-        model_infos = []
-        assert "models" in config, "expected models in server config"
-        for i, cfg in enumerate(config["models"]):
-            if "device" in cfg:
-                device = cfg["device"]
+        self.text_processors: dict[str, TextProcessor] = {}
+        self.model_infos = {}
+        self.model_cfgs = {}
+        assert "models" in config, "Expected models in server config"
+        for name, model_cfg in config["models"].items():
+            if "device" in model_cfg:
+                device = model_cfg["device"]
             elif self.num_gpus > 0:
                 device = f"cuda:{len(self.text_processors) % self.num_gpus}"
             else:
                 device = "cpu"
 
-            if "name" in cfg:
-                model_name = cfg["name"]
+            if "name" in model_cfg:
+                model_name = model_cfg["name"]
                 model_info = next(
                     filter(
                         lambda m: m.name == model_name,
-                        self.text_processor_cls.available_models()
+                        self.text_processor_cls.available_models(),
                     ),
-                    None
+                    None,
                 )
                 if model_info is None:
                     raise RuntimeError(
-                        f"model {model_name} not found in available models"
+                        f"Model {model_name} not found in available models"
                     )
                 self.logger.info(
-                    f"loading pretrained model {model_info.name} for task "
+                    f"Loading pretrained model {model_info.name} for task "
                     f"{self.text_processor_cls.task} onto device {device}"
                 )
                 text_processor = self.text_processor_cls.from_pretrained(
-                    model_name,
-                    device
+                    model_name, device
                 )
                 model_info.tags.append("src::pretrained")
 
-            elif "path" in cfg:
-                path = cfg["path"]
+            elif "path" in model_cfg:
+                path = model_cfg["path"]
                 self.logger.info(
-                    f"loading model for task {self.text_processor_cls.task} "
+                    f"Loading model for task {self.text_processor_cls.task} "
                     f"from experiment {path} onto device {device}"
                 )
-                text_processor = self.text_processor_cls.from_experiment(
-                    path,
-                    device
-                )
+                text_processor = self.text_processor_cls.from_experiment(path, device)
 
                 model_info = ModelInfo(
                     name=text_processor.name,
-                    description="loaded from custom experiment",
-                    tags=["src::experiment"]
+                    description="Loaded from custom experiment",
+                    tags=["src::experiment"],
                 )
 
             else:
-                raise RuntimeError(
-                    "expected either name or path in model config"
-                )
+                raise RuntimeError("Expected either name or path in model config")
 
             # handle the case when two models have the same name
-            if model_info.name in self.text_processors:
-                raise RuntimeError(
-                    f"got multiple models with name '{model_info.name}', "
-                    f"second one at position {i + 1}"
-                )
+            if name in self.text_processors:
+                raise RuntimeError(f"Got multiple models with name '{name}'")
 
-            model_infos.append(model_info)
-            self.text_processors.append(text_processor)
-            self.name_to_idx[model_info.name] = i
+            self.model_infos[name] = model_info
+            self.model_cfgs[name] = model_cfg
+            self.text_processors[name] = text_processor
 
-        @self.server.route("/models")
-        def _models() -> Response:
-            response = jsonify({
+        self.lock = asyncio.Lock()
+
+        @self.server.get("/info")
+        async def info() -> dict[str, Any]:
+            return {
+                "gpu": [gpu_info(i) for i in range(self.num_gpus)],
+                "cpu": cpu_info(),
+                "timeout": self.timeout,
+            }
+
+        @self.server.get("/models")
+        async def models() -> dict[str, Any]:
+            return {
                 "task": self.text_processor_cls.task,
-                "models": [
-                    info._asdict()
-                    for info in model_infos
-                ]
-            })
-            return response
+                "models": {
+                    name: info._asdict() for name, info in self.model_infos.items()
+                },
+            }
 
-    @contextmanager
-    def text_processor(self, model_name: str) -> Generator[Union[TextProcessor, Error], None, None]:
-        if model_name not in self.name_to_idx:
-            yield Error(f"model {model_name} does not exist", 404)
-            return
-
-        acquired = self.lock.acquire(timeout=self.timeout)
-        if not acquired:
-            yield Error(f"failed to reserve model within {self.timeout}s", 503)
+    @asynccontextmanager
+    async def get_text_processor(self, name: str):
+        if name not in self.text_processors:
+            yield Error(f"Model {name} does not exist", status.HTTP_404_NOT_FOUND)
             return
 
         try:
-            yield self.text_processors[self.name_to_idx[model_name]]
+            await asyncio.wait_for(self.lock.acquire(), timeout=self.timeout)
+
+            yield self.text_processors[name]
+
+        except asyncio.TimeoutError:
+            yield Error(
+                f"Failed to acquire lock within {self.timeout:.2f}s",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         finally:
-            self.lock.release()
+            if self.lock.locked():
+                self.lock.release()
 
     def run(self):
-        self.server.run(
-            "0.0.0.0",
-            self.port,
-            debug=False,
-            use_reloader=False
+        uvicorn.run(
+            self.server,
+            host="0.0.0.0",
+            port=self.port,
+            log_level=self.logger.level,
+            limit_concurrency=32,
         )

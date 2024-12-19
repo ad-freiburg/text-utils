@@ -2,11 +2,16 @@ import logging
 
 LOG_FORMAT = "[%(asctime)s] {%(name)s - %(levelname)s} %(message)s"
 
-__all__ = ["setup_logging", "add_file_log", "get_logger",
-           "eta_minutes_message", "eta_seconds_message"]
+__all__ = [
+    "setup_logging",
+    "add_file_log",
+    "get_logger",
+    "eta_minutes_message",
+    "eta_seconds_message",
+]
 
 
-def setup_logging(level: int | str = logging.INFO) -> None:
+def setup_logging(level: str | int | None = None) -> None:
     """
 
     Sets up logging with a custom log format and level.
@@ -14,10 +19,7 @@ def setup_logging(level: int | str = logging.INFO) -> None:
     :param level: log level
     :return: None
     """
-    logging.basicConfig(
-        format=LOG_FORMAT,
-        level=logging.getLevelName(level)
-    )
+    logging.basicConfig(format=LOG_FORMAT, level=level)
 
 
 def disable_logging() -> None:
@@ -44,7 +46,7 @@ def add_file_log(logger: logging.Logger, log_file: str) -> None:
     logger.addHandler(file_handler)
 
 
-def get_logger(name: str, level: int | None = None) -> logging.Logger:
+def get_logger(name: str, level: str | int | None = None) -> logging.Logger:
     """
 
     Get a logger that writes to stderr.
@@ -60,8 +62,9 @@ def get_logger(name: str, level: int | None = None) -> logging.Logger:
     stderr_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     if not logger.hasHandlers():
         logger.addHandler(stderr_handler)
-    if level is not None:
-        logger.setLevel(level)
+
+    logger.setLevel(level or logging.root.level)
+
     return logger
 
 

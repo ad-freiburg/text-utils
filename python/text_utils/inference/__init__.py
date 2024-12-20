@@ -194,7 +194,7 @@ def beam_search(
                 torch.arange(b), decoder_lengths_tensor - 1
             ]
 
-        org_log_probs = torch.log_softmax(decoder_outputs, dim=-1)
+        raw_log_probs = torch.log_softmax(decoder_outputs, dim=-1)
 
         # apply logit functions
         for logit_fn in logit_fns or []:
@@ -202,16 +202,14 @@ def beam_search(
 
         log_probs = torch.log_softmax(decoder_outputs, dim=-1)
 
-        for idx, (log_probs, org_log_probs) in enumerate(
-            zip(
-                torch.split(log_probs, num_beams), torch.split(org_log_probs, num_beams)
-            )
-        ):
+        raw_log_probs = torch.split(raw_log_probs, num_beams)
+        log_probs = torch.split(log_probs, num_beams)
+        for idx, (raw_log_prob, log_prob) in enumerate(zip(raw_log_probs, log_probs)):
             candidates: list[Beam] = []
             for beam_idx, beam in enumerate(current_beams[idx]):
-                for token_id in sample_fn(log_probs[beam_idx], beam_width).tolist():
+                for token_id in sample_fn(log_prob[beam_idx], beam_width).tolist():
                     candidate = beam.clone()
-                    candidate.add(token_id, org_log_probs[beam_idx, token_id].item())
+                    candidate.add(token_id, raw_log_prob[beam_idx, token_id].item())
                     candidates.append(candidate)
 
             # reset current beams and fill with best candidates

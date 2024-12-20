@@ -29,10 +29,6 @@ class TextProcessor:
     devices: list[torch.device]
 
     @classmethod
-    def _task_upper(cls) -> str:
-        return cls.task.upper()
-
-    @classmethod
     def available_models(cls) -> list[ModelInfo]:
         raise NotImplementedError
 
@@ -52,7 +48,7 @@ class TextProcessor:
 
     @classmethod
     def download_dir(cls) -> str:
-        task_name = cls._task_upper().replace(" ", "_")
+        task_name = cls.task.upper().replace(" ", "_")
         return os.environ.get(
             f"{task_name}_DOWNLOAD_DIR",
             os.path.join(os.path.dirname(__file__), ".download", task_name),
@@ -60,7 +56,7 @@ class TextProcessor:
 
     @classmethod
     def cache_dir(cls) -> str:
-        task_name = cls._task_upper().replace(" ", "_")
+        task_name = cls.task.upper().replace(" ", "_")
         return os.environ.get(
             f"{task_name}_CACHE_DIR",
             os.path.join(os.path.dirname(__file__), ".cache", task_name),
@@ -86,7 +82,7 @@ class TextProcessor:
             f"{pprint.pformat(cls.available_models())}"
         )
 
-        logger = logging.get_logger(f"{cls._task_upper()} DOWNLOAD")
+        logger = logging.get_logger(f"{cls.task.upper()} DOWNLOAD")
         model_url = cls._model_url(model)
         if download_dir is None:
             download_dir = cls.download_dir()
@@ -150,7 +146,7 @@ class TextProcessor:
         self, model: nn.Module, cfg: dict[str, Any], device: Device = "cuda"
     ) -> None:
         self.cfg = cfg
-        self.logger = logging.get_logger(self._task_upper())
+        self.logger = logging.get_logger(self.task.upper())
         self.logger.debug(f"Got config:\n{self.cfg}")
 
         torch.set_num_threads(len(os.sched_getaffinity(0)))

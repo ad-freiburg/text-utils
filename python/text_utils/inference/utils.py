@@ -1,7 +1,6 @@
-from typing import Callable, Any
+from typing import Any, Callable, Protocol
 
 import torch
-
 from grammar_utils.constrain import Constraint
 
 # maps from token ids, length, and other kwargs to distribution over next token id and other info
@@ -140,7 +139,8 @@ BeamWidthFn = Callable[
 
 
 # takes in a beam (and optional length) and returns a scalar score
-ScoreFn = Callable[[Beam, int | None], float]
+class ScoreFn(Protocol):
+    def __call__(self, beam: Beam, length: int | None = None) -> float: ...
 
 
 def log_likelihood_score(normalize: bool = True, alpha: float = 1.0) -> ScoreFn:

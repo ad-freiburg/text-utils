@@ -73,7 +73,10 @@ class TextProcessingServer:
 
     def __init__(self, config: dict[str, Any], log_level: str | int | None = None):
         self.config = config
-        self.logger = get_logger(f"{self.text_processor_cls.task} server", log_level)
+        self.logger = get_logger(
+            f"{self.text_processor_cls.task.upper()} SERVER",
+            log_level,
+        )
         self.logger.info(f"Loaded server config:\n{yaml.dump(config)}")
         self.port = int(self.config.get("port", 40000))
 

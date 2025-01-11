@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from contextlib import asynccontextmanager
 from typing import Any, Type
 
@@ -17,15 +16,14 @@ from text_utils.api.utils import cpu_info, gpu_info
 from text_utils.logging import get_logger
 
 
+
 class RequestCancelledMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        print(f"In {scope['type']} scope")
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+            return await self.app(scope, receive, send)
 
         # Let's make a shared queue for the request messages
         queue = asyncio.Queue()
@@ -35,7 +33,6 @@ class RequestCancelledMiddleware:
             while True:
                 message = await receive()
                 if message["type"] == "http.disconnect":
-                    print("Canceling handler task")
                     handler_task.cancel()
                     return sentinel  # Break the loop
 
@@ -49,7 +46,7 @@ class RequestCancelledMiddleware:
         try:
             return await handler_task
         except asyncio.CancelledError:
-            print("Cancelling request due to disconnect")
+            pass
 
 
 class Error:

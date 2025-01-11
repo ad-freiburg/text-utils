@@ -9,9 +9,9 @@ import shutil
 import sys
 import time
 import zipfile
+from logging import INFO
 from typing import Any, Callable
 
-from text_utils.api.utils import get_gradient_clipper
 import torch
 import yaml
 from torch import distributed as dist
@@ -37,6 +37,7 @@ from torch.optim import lr_scheduler
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from text_utils import api, configuration, data, distributed, io, logging, tensorboard
+from text_utils.api.utils import get_gradient_clipper
 from text_utils.modules.loss import loss_from_config
 from text_utils.modules.optimizer import optimizer_from_config
 from text_utils.modules.scheduler import (
@@ -559,46 +560,38 @@ training will resume from latest checkpoint.",
 
     @classmethod
     def _prepare_data_sources(
-        cls, sources: list[dict[str, Any]], info: distributed.DistributedInfo
-    ) -> tuple[list[str], list[Any | None], list[Any | None], list[str]]:
+        cls,
+        sources: list[dict[str, Any]],
+        info: distributed.DistributedInfo,
+    ) -> tuple[list[str], list[str]]:
         src_paths = []
-        src_preprocessings = []
-        src_postprocessings = []
         cleanup_paths = []
         for src in sources:
             src = copy.deepcopy(src)
             src_type = src.pop("type")
             if src_type == "file":
-                preprocessing = src.get("preprocessing")
-                postprocessing = src.get("postprocessing")
                 path = src["path"]
                 assert os.path.isfile(path), f"{path} is not a file"
                 temp_dir = src.get("temp_dir")
                 if temp_dir is not None:
                     path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                     cleanup_paths.append(path)
-                src_preprocessings.append(preprocessing)
-                src_postprocessings.append(postprocessing)
                 src_paths.append(path)
 
             elif src_type == "file_glob":
-                preprocessing = src.get("preprocessing")
-                postprocessing = src.get("postprocessing")
                 temp_dir = src.get("temp_dir")
                 for path in io.glob_safe(src["glob"]):
                     assert os.path.isfile(path), f"{path} is not a file"
                     if temp_dir is not None:
                         path = cls._copy_file_to_tmp_dir(path, temp_dir, info)
                         cleanup_paths.append(path)
-                    src_preprocessings.append(preprocessing)
-                    src_postprocessings.append(postprocessing)
                     src_paths.append(path)
 
             else:
-                raise ValueError(f"unknown source type {src_type}")
+                raise ValueError(f"Unknown source type {src_type}")
 
-        assert len(src_paths) > 0, "got no data sources"
-        return src_paths, src_preprocessings, src_postprocessings, cleanup_paths
+        assert len(src_paths) > 0, "Got no data sources"
+        return src_paths, cleanup_paths
 
     @classmethod
     def _data_from_config(
@@ -617,30 +610,6 @@ training will resume from latest checkpoint.",
         Callable[[int], int] | None,
         list[str],
     ]:
-        def prepare_data_loader(
-            pipeline_cfg: dict[str, Any],
-            sources: list[str],
-            preprocessings: list[Any | None],
-            postprocessings: list[Any | None],
-            **kwargs: Any,
-        ) -> data.TrainLoader:
-            pipeline_cfg = copy.deepcopy(pipeline_cfg)
-            if "preprocessing" not in pipeline_cfg:
-                assert all(preproc is not None for preproc in preprocessings), (
-                    "expected preprocessing to be specified per data source if not specified "
-                    "for pipeline"
-                )
-                pipeline_cfg["preprocessing"] = preprocessings
-
-            if "postprocessing" not in pipeline_cfg:
-                assert all(postproc is not None for postproc in postprocessings), (
-                    "expected postprocessing to be specified per data source if not specified "
-                    "for pipeline"
-                )
-                pipeline_cfg["postprocessing"] = postprocessings
-
-            return data.TrainLoader.from_files(sources, pipeline_cfg, **kwargs)
-
         train_cfg = copy.deepcopy(train_cfg)
 
         # adapt config to multi gpu usage
@@ -652,7 +621,7 @@ training will resume from latest checkpoint.",
         assert max_length is not None, "missing max_length in data config"
         max_length_scheduler_cfg = train_cfg.pop("max_length_scheduler", None)
 
-        *training, cleanup = cls._prepare_data_sources(train_cfg.pop("sources"), info)
+        train_files, cleanup = cls._prepare_data_sources(train_cfg.pop("sources"), info)
 
         pipeline_cfg = train_cfg.pop("pipeline")
 
@@ -677,9 +646,10 @@ training will resume from latest checkpoint.",
                     f"train limit ({train_limit:,}) cannot be smaller or "
                     f"equal to val limit ({val_cfg:,})"
                 )
-            train_loader = prepare_data_loader(
+
+            train_loader = data.TrainLoader.from_files(
+                train_files,
                 pipeline_cfg,
-                *training,
                 skip=val_cfg,
                 seed=seed,
                 max_length=max_length,
@@ -687,9 +657,9 @@ training will resume from latest checkpoint.",
                 **train_cfg,
             )
             # specify the val limit
-            val_loader = prepare_data_loader(
+            val_loader = data.TrainLoader.from_files(
+                train_files,
                 pipeline_cfg,
-                *training,
                 limit=val_cfg,
                 seed=seed,
                 max_length=max_length,
@@ -697,29 +667,26 @@ training will resume from latest checkpoint.",
                 **val_options,
             )
 
-        elif isinstance(val_cfg, list):
+        else:
             # if validation is a separate set of data sources
-            train_loader = prepare_data_loader(
+            train_loader = data.TrainLoader.from_files(
+                train_files,
                 pipeline_cfg,
-                *training,
                 seed=seed,
                 max_length=max_length,
                 distributed=(info.rank, info.world_size),
                 **train_cfg,
             )
-            *validation, val_cleanup = cls._prepare_data_sources(val_cfg, info)
+            val_files, val_cleanup = cls._prepare_data_sources(val_cfg, info)
             cleanup.extend(val_cleanup)
-            val_loader = prepare_data_loader(
+            val_loader = data.TrainLoader.from_files(
+                val_files,
                 pipeline_cfg,
-                *validation,
                 seed=seed,
                 max_length=max_length,
                 distributed=(info.rank, info.world_size),
                 **val_options,
             )
-
-        else:
-            raise ValueError("unsupported validation config")
 
         # trigger train loader, so that min_items is set
         iter(train_loader)
@@ -793,7 +760,7 @@ training will resume from latest checkpoint.",
         directories: dict[str, str],
         profile: bool,
     ):
-        logging.setup_logging()
+        logging.setup_logging(INFO)
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = str(port)
 
@@ -843,7 +810,7 @@ training will resume from latest checkpoint.",
         assert (
             dist.is_nccl_available()
         ), "nccl backend for distributed training must be available"
-        logging.setup_logging()
+        logging.setup_logging(INFO)
         logger = logging.get_logger("SLURM_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
         logger.info(
@@ -925,7 +892,7 @@ training will resume from latest checkpoint.",
     def train_local(
         cls, work_dir: str, experiment_dir: str, config_path: str, profile: bool = False
     ):
-        logging.setup_logging()
+        logging.setup_logging(INFO)
         logger = logging.get_logger("LOCAL_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
         assert num_gpus > 0, "need at least one GPU for local training"
@@ -1078,12 +1045,15 @@ training will resume from latest checkpoint.",
                 end_preparation = time.perf_counter()
                 mean_batch_preparation.add((end_preparation - start_preparation) * 1000)
 
-                with torch.autocast(
-                    "cuda",
-                    dtype=self.mixed_precision,
-                    enabled=self.mixed_precision is not None,
-                ), torch.autograd.set_detect_anomaly(
-                    os.environ.get("TORCH_SET_DETECT_ANOMALY", "") != ""
+                with (
+                    torch.autocast(
+                        "cuda",
+                        dtype=self.mixed_precision,
+                        enabled=self.mixed_precision is not None,
+                    ),
+                    torch.autograd.set_detect_anomaly(
+                        os.environ.get("TORCH_SET_DETECT_ANOMALY", "") != ""
+                    ),
                 ):
                     if i < len(batches) - 1 and self.info.is_distributed:
                         with self.model.no_sync():
@@ -1322,11 +1292,14 @@ training will resume from latest checkpoint.",
 
             inputs, labels = self._prepare_batch(batch)
 
-            with torch.autocast(
-                "cuda",
-                dtype=self.mixed_precision,
-                enabled=self.mixed_precision is not None,
-            ), torch.inference_mode():
+            with (
+                torch.autocast(
+                    "cuda",
+                    dtype=self.mixed_precision,
+                    enabled=self.mixed_precision is not None,
+                ),
+                torch.inference_mode(),
+            ):
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
 

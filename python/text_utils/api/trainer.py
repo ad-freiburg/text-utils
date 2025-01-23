@@ -37,7 +37,7 @@ from torch.optim import lr_scheduler
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from text_utils import api, configuration, data, distributed, io, logging, tensorboard
-from text_utils.api.utils import get_gradient_clipper
+from text_utils.api.utils import get_gradient_clipper, git_branch, git_commit
 from text_utils.modules.loss import loss_from_config
 from text_utils.modules.optimizer import optimizer_from_config
 from text_utils.modules.scheduler import (
@@ -724,7 +724,9 @@ training will resume from latest checkpoint.",
             f.write(yaml.safe_dump(cfg))
         # make a backup of the raw, unresolved configs in the config directory as zip
         with zipfile.ZipFile(
-            os.path.join(exp_dir, "configs.zip"), "w", zipfile.ZIP_DEFLATED
+            os.path.join(exp_dir, "configs.zip"),
+            "w",
+            zipfile.ZIP_DEFLATED,
         ) as zf:
             root = os.path.dirname(config_path)
             for config_dir, _, files in os.walk(root):
@@ -741,8 +743,8 @@ training will resume from latest checkpoint.",
                     {
                         "config_name": config_name,
                         "git": {
-                            "branch": api.git_branch(work_dir),
-                            "commit": api.git_commit(work_dir),
+                            "branch": git_branch(work_dir),
+                            "commit": git_commit(work_dir),
                         },
                     }
                 )

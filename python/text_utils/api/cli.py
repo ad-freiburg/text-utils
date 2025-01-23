@@ -247,7 +247,7 @@ class TextProcessingCli:
 
         if self.args.log_level is not None:
             # set template for logging
-            setup_logging(self.args.log_level.upper())
+            setup_logging(self.args.log_level)
         else:
             disable_logging()
 

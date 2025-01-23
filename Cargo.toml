@@ -1,12 +1,8 @@
 [package]
-publish = false
 name = "text-utils"
 version = "0.6.2"
 edition = "2021"
-
-[lib]
-name = "text_utils"
-crate-type = ["cdylib", "rlib"]
+publish = false
 
 [dependencies]
 log = "0.4"
@@ -14,7 +10,7 @@ rayon = "1.8"
 indicatif = { version = "0.17", features = ["rayon"] }
 pyo3 = { version = "0.23", features = ["anyhow", "extension-module", "abi3-py310", "auto-initialize"]}
 pyo3-log = "0.12"
-itertools = "0.13"
+itertools = "0.14"
 rand = "0.8"
 rand_distr = "0.4"
 rand_chacha = "0.3"

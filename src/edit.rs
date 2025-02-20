@@ -306,8 +306,9 @@ pub(super) fn add_submodule(py: Python, parent_module: &Bound<'_, PyModule>) -> 
 
 #[cfg(test)]
 mod tests {
-    use crate::edit::{distance, edited_words, operations, EditOperation};
     use rand::{Rng, SeedableRng};
+
+    use crate::edit::{distance, edited_words, operations, EditOperation};
     use std::collections::HashSet;
 
     #[test]
@@ -355,12 +356,12 @@ mod tests {
             ]
         );
 
-        let mut rng = rand_chacha::ChaCha8Rng::from_entropy();
+        let mut rng = rand_chacha::ChaCha8Rng::from_os_rng();
 
         let mut rand_string = |min_size: usize, max_size: usize| -> String {
-            let size: usize = rng.gen_range(min_size..=max_size);
+            let size: usize = rng.random_range(min_size..=max_size);
             (0..size)
-                .map(|_| char::from_u32(rng.gen_range(97..=100)).unwrap())
+                .map(|_| char::from_u32(rng.random_range(97..=100)).unwrap())
                 .collect()
         };
         // test that edit operations are returned always in sorted order

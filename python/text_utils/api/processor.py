@@ -16,7 +16,7 @@ from text_utils import (
     io,
     logging,
 )
-from text_utils.api.utils import Device, get_devices
+from text_utils.api.utils import Device, download_zip, get_devices
 
 __all__ = ["ModelInfo"]
 
@@ -89,7 +89,7 @@ class TextProcessor:
         if cache_dir is None:
             cache_dir = cls.cache_dir()
         sub_cache_dir = model.lower().replace(" ", "_")
-        zip_dir = api.download_zip(
+        zip_dir = download_zip(
             model,
             model_url,
             download_dir,

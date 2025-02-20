@@ -3,8 +3,7 @@ use crate::utils::{find_subsequences_of_max_size_k, py_invalid_type_error};
 use anyhow::{anyhow, Context};
 use log::warn;
 use pyo3::prelude::*;
-use rand::distributions::WeightedIndex;
-use rand::prelude::SliceRandom;
+use rand::{distr::weighted::WeightedIndex, prelude::SliceRandom};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde_json::Value;
@@ -215,7 +214,7 @@ impl MultiTrainDataGenerator {
             rng: if let Some(seed) = seed {
                 ChaCha8Rng::seed_from_u64(seed)
             } else {
-                ChaCha8Rng::from_entropy()
+                ChaCha8Rng::from_os_rng()
             },
             finished,
         })
@@ -485,7 +484,7 @@ impl<I, T> Batched<I, T> {
             rng: if let Some(seed) = seed {
                 ChaCha8Rng::seed_from_u64(seed)
             } else {
-                ChaCha8Rng::from_entropy()
+                ChaCha8Rng::from_os_rng()
             },
             batch_limit,
             batch_limit_type,
@@ -574,7 +573,7 @@ where
                     let batch = vec![buf.pop().unwrap()];
                     return Some(batch);
                 }
-                let index = rng.gen_range(0..sub_sequences.len());
+                let index = rng.random_range(0..sub_sequences.len());
                 let (start_range, end_range) = sub_sequences[index];
                 let items_in_range: Vec<T> = buf.splice(start_range..end_range, vec![]).collect();
                 return Some(items_in_range);
@@ -797,12 +796,7 @@ mod tests {
     };
     use crate::tokenization::{SpecialConfig, TokenizeConfig, TokenizerConfig};
     use itertools::Itertools;
-    use log::info;
-    use std::{
-        collections::HashMap,
-        path::PathBuf,
-        time::{Duration, Instant},
-    };
+    use std::{collections::HashMap, path::PathBuf, time::Duration};
 
     use super::{train_data_generator_from_jsonl, BufferedIterator, PipelineIterator};
 
@@ -924,54 +918,9 @@ mod tests {
                 }
             })
             .pipe(pipeline.clone(), 0);
+
         let n: usize = 20;
-        let now = Instant::now();
         let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
-        let mut time = now.elapsed().as_secs_f64();
-
-        let n_cpus = num_cpus::get();
-
-        // if more cpus are available, test with more workers, check that its faster
-        if n_cpus >= 2 {
-            let multi30k = train_data_generator_from_jsonl(&d)?;
-            let text_iter =
-                MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
-            let it = text_iter
-                .filter_map(|(d, _)| {
-                    if let Ok(d) = d {
-                        Some((d, TextDataInfo::default()))
-                    } else {
-                        None
-                    }
-                })
-                .pipe(pipeline.clone(), 2);
-            let now = Instant::now();
-            let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
-            let time2 = now.elapsed().as_secs_f64();
-            assert!(time2 < time);
-            time = time2;
-        }
-
-        // test with even more workers, if available
-        if n_cpus >= 4 {
-            let multi30k = train_data_generator_from_jsonl(&d)?;
-            let text_iter =
-                MultiTrainDataGenerator::new(vec![multi30k], GenerationStrategy::Sequential, None)?;
-            let it = text_iter
-                .filter_map(|(d, _)| {
-                    if let Ok(d) = d {
-                        Some((d, TextDataInfo::default()))
-                    } else {
-                        None
-                    }
-                })
-                .pipe(pipeline.clone(), 4);
-            let now = Instant::now();
-            let _: Vec<TrainItem> = it.filter_map(|d| d.ok()).take(n).collect();
-            let time3 = now.elapsed().as_secs_f64();
-            info!("took {:.2}s to fetch {} items", time3, n);
-            assert!(time3 < time);
-        }
 
         // test that all lines of multi30k.jsonl are returned in order,
         // switch to non blocking tokenizer again

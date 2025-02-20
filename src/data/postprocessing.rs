@@ -150,7 +150,7 @@ fn mask_tokens(
         let mut i = 0;
         let num_maskable_tokens = token_ids.len() - num_pfx_tokens - num_sfx_tokens;
         while i < num_maskable_tokens {
-            if rng.gen::<f64>() > p {
+            if rng.random::<f64>() > p {
                 i += 1;
                 continue;
             }

@@ -372,16 +372,7 @@ mod tests {
     fn test_dictionary_creation() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let path = base.clone().join("resources/test/multi30k.txt");
-        let _d = Dictionary::create(
-            &[path],
-            Some(100),
-            Some(1000),
-            num_cpus::get() as u8,
-            false,
-            1,
-            true,
-        )
-        .unwrap();
+        let _d = Dictionary::create(&[path], Some(100), Some(1000), 0, false, 1, true).unwrap();
     }
 
     #[test]

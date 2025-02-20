@@ -37,7 +37,7 @@ pub fn switch<I: 'static, O: 'static>(
     Box::new(
         move |input: I, info: TextDataInfo| -> anyhow::Result<(O, TextDataInfo)> {
             let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
-            let r: f64 = rng.gen();
+            let r: f64 = rng.random();
             let mut idx = 0;
             while idx < num_fns - 1 && r > cum_p[idx] {
                 idx += 1;

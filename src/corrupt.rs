@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::unicode::CS;
-use rand::Rng;
-use rand_distr::{Distribution, WeightedIndex};
+use rand::{distr::weighted::WeightedIndex, Rng};
+use rand_distr::Distribution;
 
 pub fn replace_word(
     word: &str,
@@ -13,7 +13,7 @@ pub fn replace_word(
     replacements: &HashMap<String, Vec<String>>,
 ) -> String {
     if let Some(replace) = replacements.get(word) {
-        replace[rng.gen_range(0..replace.len())].to_string()
+        replace[rng.random_range(0..replace.len())].to_string()
     } else {
         word.to_string()
     }
@@ -135,7 +135,7 @@ pub fn edit_word<'s>(
     if edit_indices.is_empty() {
         return (word.to_string(), exclude_indices.unwrap_or_default());
     }
-    let edit_idx = edit_indices[rng.gen_range(0..edit_indices.len())];
+    let edit_idx = edit_indices[rng.random_range(0..edit_indices.len())];
 
     let mut exclude_indices = exclude_indices.unwrap_or_default();
     let cs = CS::new(word, use_graphemes);
@@ -158,7 +158,7 @@ pub fn edit_word<'s>(
             if insertions.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let (insert_idx, (edits, weights)) = insertions[rng.gen_range(0..insertions.len())];
+            let (insert_idx, (edits, weights)) = insertions[rng.random_range(0..insertions.len())];
             let insertion = insert.sample_edit(edits, weights, rng);
             let insert_len = CS::new(insertion, use_graphemes).len();
             // we inserted some string, so the length of the word changed
@@ -193,7 +193,7 @@ pub fn edit_word<'s>(
             if delete_indices.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let delete_idx = delete_indices[rng.gen_range(0..delete_indices.len())];
+            let delete_idx = delete_indices[rng.random_range(0..delete_indices.len())];
             // we deleted a character, so the length of the word changed
             // adjust the excluded indices to the right of the delete idx accordingly
             exclude_indices = exclude_indices
@@ -221,7 +221,7 @@ pub fn edit_word<'s>(
                 return (cs.str.to_string(), exclude_indices);
             }
             let (replace_idx, (edits, weights)) =
-                replacements[rng.gen_range(0..replacements.len())];
+                replacements[rng.random_range(0..replacements.len())];
             let replacement = replace.sample_edit(edits, weights, rng);
             let replacement_len = CS::new(replacement, use_graphemes).len();
             // shift all indices that come after the replacement by length of the replacement
@@ -259,7 +259,7 @@ pub fn edit_word<'s>(
             if swap_indices.is_empty() {
                 return (cs.str.to_string(), exclude_indices);
             }
-            let swap_idx = swap_indices[rng.gen_range(0..swap_indices.len())];
+            let swap_idx = swap_indices[rng.random_range(0..swap_indices.len())];
             // length of word did not change, just add the two swapped indices to
             // the excluded indices
             exclude_indices.insert(swap_idx);
@@ -330,7 +330,7 @@ mod tests {
         }
         let swap = SwapEdits { can_swap };
         let w = "täst";
-        let mut rng = ChaCha8Rng::from_entropy();
+        let mut rng = ChaCha8Rng::from_os_rng();
         // test deletion of characters
         let (ew, excluded) = edit_word(
             w,

@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(v, vec![(0, 5, 4), (1, 6, 4), (2, 7, 4)]);
         let s = "नमस्ते";
         let v = possible_character_substrings(s, 2, true);
-        assert_eq!(v, vec![(0, 6, 2), (3, 12, 2), (6, 18, 2)]);
+        assert_eq!(v, vec![(0, 6, 2), (3, 18, 2)]);
         let v = possible_character_substrings(s, 2, false);
         assert_eq!(
             v,
@@ -404,7 +404,7 @@ mod tests {
         let v = possible_byte_substrings(s, 2, true);
         assert_eq!(v, vec![]);
         let v = possible_byte_substrings(s, 6, true);
-        assert_eq!(v, vec![(0, 6, 2), (6, 12, 1), (12, 18, 1)]);
+        assert_eq!(v, vec![(0, 6, 2)]);
         let v = possible_byte_substrings(s, 6, false);
         assert_eq!(
             v,

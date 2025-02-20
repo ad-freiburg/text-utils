@@ -1,45 +1,43 @@
-from typing import Any, Iterator
+import time
+from typing import Generator
 
 import torch
-from torch.nn.utils import rnn
+from torch.nn.utils.rnn import pad_sequence
 
 from text_utils.inference.utils import (
-    DecodeFn,
-    SampleFn,
-    LogitFn,
-    MaskSelectFn,
-    MaskUpdateFn,
     Beam,
-    UpdateFn,
-    StopFn,
+    DecodeFn,
+    LogitFn,
+    SampleFn,
     ScoreFn,
-    identity_update_fn,
-    log_likelihood_score,
+    StopFn,
+    UpdateFn,
+    CacheFn,
     greedy,
+    identity_update,
+    log_likelihood_score,
 )
 
 
 @torch.inference_mode()
 def beam_search(
     decode_fn: DecodeFn,
-    initial: list[list[int]] | list[Beam] | list[list[Beam]],
+    initial: list[list[int]] | list[Beam],
     pad_token_id: int,
     max_length: int,
     stop_fn: StopFn,
     device: torch.device,
     beam_width: int,
     sample_fn: SampleFn = greedy(),
-    update_fn: UpdateFn = identity_update_fn(),
+    update_fn: UpdateFn = identity_update(),
     score_fn: ScoreFn = log_likelihood_score(),
     logit_fns: list[LogitFn] | None = None,
-    kwargs_select_fn: MaskSelectFn | None = None,
-    kwargs_update_fn: MaskUpdateFn | None = None,
+    cache_fn: CacheFn | None = None,
     stop_condition: str = "estimated_score",
     max_new_tokens: int | None = None,
     return_incomplete: bool = False,
     yield_intermediate: bool = False,
-    **kwargs: Any,
-) -> Iterator[list[list[Beam]]]:
+) -> Generator[list[list[Beam]], None, list[list[Beam]]]:
     assert (
         max_new_tokens is None or max_new_tokens > 0
     ), "max_new_tokens must be None or positive"
@@ -48,10 +46,9 @@ def beam_search(
         "estimated_score",
         "max_outputs",
     }, "stop condition must be 'max_score', 'estimated_score' or 'max_outputs'"
+    assert beam_width >= 1, "beam width must be greater than or equal to 1"
     batch_size = len(initial)
 
-    decoder_info: Any | None = None
-    update_info: list[int] = []
     current_beams: list[list[Beam]] = []
     finished_beams: list[list[Beam]] = []
     too_long_beams: list[list[Beam]] = []
@@ -59,22 +56,15 @@ def beam_search(
     for init in initial:
         if isinstance(init, Beam):
             beams = [init]
-        elif len(init) == 0:
-            beams = []
-        elif isinstance(init[0], int):
-            beams = [Beam(init)]  # type: ignore
-        elif isinstance(init[0], Beam):
-            beams = init
         else:
-            raise ValueError("invalid initial beam type")
+            # init beam from token ids
+            beams = [Beam(init)]
 
         current_beams.append(beams)  # type: ignore
-        update_info.append(len(beams))
         finished_beams.append([])
         too_long_beams.append([])
 
-    def filter_beams() -> bool:
-        finished = True
+    def filter_beams() -> tuple[list[Beam], list[int]]:
         for idx in range(batch_size):
             new_beams = []
             for beam in current_beams[idx]:
@@ -88,12 +78,11 @@ def beam_search(
                     new_beams.append(beam)
 
             current_beams[idx] = new_beams
-            if not current_beams[idx]:
+            if not new_beams:
                 # we are done with this batch element
                 continue
 
             elif len(finished_beams[idx]) < beam_width:
-                finished = False
                 continue
 
             elif stop_condition == "max_outputs":
@@ -103,7 +92,8 @@ def beam_search(
                 continue
 
             worst_finished = min(
-                (score_fn(b) for b in finished_beams[idx]), default=float("-inf")
+                (score_fn(b) for b in finished_beams[idx]),
+                default=float("-inf"),
             )
             if stop_condition == "estimated_score":
                 # best current calculated from current length
@@ -114,120 +104,141 @@ def beam_search(
                 # idea: assume all remaining tokens are perfectly predicted
                 # with probability 1.0, can a current active beam be better
                 # than the worst finished beam?
-                current = current_beams[idx][0]
+                current = next(b for b in current_beams[idx])
                 max_decoded_length = max_length - current.initial_length
                 length = min(max_decoded_length, max_new_tokens or max_decoded_length)
-                best_current = max(score_fn(b, length) for b in current_beams[idx])
+                best_current = max(score_fn(b, length) for b in current_beams[idx] if b)
 
             if worst_finished >= best_current:
-                # set current beams to empty list to stop processing
+                # set current beams to None list to stop processing
                 current_beams[idx] = []
-            else:
-                finished = False
 
-        return finished
+        beams = []
+        indices = []
+        for idx in range(batch_size):
+            beams.extend(current_beams[idx])
+            indices.extend([idx] * len(current_beams[idx]))
+        return beams, indices
 
     def get_outputs(intermediate: bool) -> list[list[Beam]]:
         outputs = []
-        for idx in range(batch_size):
-            current = current_beams[idx]
+        for batch_idx in range(batch_size):
+            current = current_beams[batch_idx]
 
             if return_incomplete:
-                finished = finished_beams[idx] + too_long_beams[idx]
+                finished = finished_beams[batch_idx] + too_long_beams[batch_idx]
             else:
-                finished = finished_beams[idx]
+                finished = finished_beams[batch_idx]
 
-            if intermediate:
+            if intermediate and current:
                 # for intermediate outputs we
                 # return the active beams first if available
-                beams = current if current else finished
+                beams = sorted((b for b in current if b), key=score_fn, reverse=True)
             else:
-                beams = finished
+                beams = sorted(finished, key=score_fn, reverse=True)
 
-            beams = sorted(beams, key=score_fn, reverse=True)
             outputs.append(beams[:beam_width])
 
         return outputs
 
-    while not filter_beams():
-        num_beams = []
-        beams = []
-        decoder_mask = []
-        decoder_token_ids = []
-        decoder_lengths = []
-        for idx in range(batch_size):
-            num = len(current_beams[idx])
-            num_beams.append(num)
-            decoder_mask.extend([idx] * num)
-            for beam in current_beams[idx]:
-                beams.append(beam)
-                decoder_lengths.append(len(beam))
-                decoder_token_ids.append(torch.tensor(beam.token_ids, dtype=torch.long))
+    single_beam = beam_width == 1
+    beams, indices = filter_beams()
+    cache = None
+    cache_mask = None
 
-        decoder_token_ids = rnn.pad_sequence(
-            decoder_token_ids, batch_first=True, padding_value=pad_token_id
-        ).to(non_blocking=True, dtype=torch.long, device=device)
-        decoder_mask = torch.tensor(decoder_mask, dtype=torch.long)
-        decoder_lengths_tensor = torch.tensor(decoder_lengths, dtype=torch.long)
+    while beams:
+        if cache is not None and all(beam.cache is not None for beam in beams):
+            assert cache_fn is not None, "cache_fn must be provided if cache is used"
+            new_cache_mask = [beam.cache for beam in beams]
+            if new_cache_mask != cache_mask:
+                # update cache with mask, only if it has changed
+                # (saves lots of unnecessary cache updates)
+                cache = cache_fn(cache, new_cache_mask)  # type: ignore
+                cache_mask = new_cache_mask
 
-        if kwargs_update_fn is not None and decoder_info is not None:
-            update_mask = []
-            for idx in range(batch_size):
-                update_mask.extend([idx] * update_info[idx])
-            kwargs_update_fn(
-                kwargs, decoder_info, torch.tensor(update_mask, dtype=torch.long)
-            )
-
-        if kwargs_select_fn is not None:
-            decoder_kwargs = kwargs_select_fn(kwargs, decoder_mask)
+            # if we have a cache, only the last input token is needed
+            input_ids = torch.tensor(
+                [beam.last_token_id for beam in beams],
+                dtype=torch.long,
+                device=device,
+            ).unsqueeze(1)
         else:
-            decoder_kwargs = {}
-        # lengths are added automatically, do not provide them yourself"
-        decoder_kwargs["lengths"] = decoder_lengths_tensor
+            # is there is no cache or any beam has its cache reset,
+            # provide the full input sequence to the model
+            input_ids = pad_sequence(
+                [torch.tensor(beam.token_ids) for beam in beams],
+                batch_first=True,
+                padding_value=pad_token_id,
+                padding_side="left",
+            ).to(device)
+            if cache is not None:
+                # reset cache
+                cache = None
+                cache_mask = None
+                torch.cuda.empty_cache()
 
-        decoder_outputs, decoder_info = decode_fn(decoder_token_ids, **decoder_kwargs)
-        b, s, _ = decoder_outputs.shape
-        if s == 1:
-            decoder_outputs = decoder_outputs[:, 0]
-        else:
-            decoder_outputs = decoder_outputs[
-                torch.arange(b), decoder_lengths_tensor - 1
-            ]
-
-        raw_log_probs = torch.log_softmax(decoder_outputs, dim=-1)
+        logits, cache = decode_fn(input_ids, cache)
+        log_probs = torch.log_softmax(logits, dim=-1)
 
         # apply logit functions
         for logit_fn in logit_fns or []:
-            decoder_outputs = logit_fn(decoder_token_ids, decoder_outputs, beams)
+            logits = logit_fn(logits, beams)
 
-        log_probs = torch.log_softmax(decoder_outputs, dim=-1)
+        selected_ids, selected_logits = sample_fn(logits, beam_width)
 
-        raw_log_probs = torch.split(raw_log_probs, num_beams)
-        log_probs = torch.split(log_probs, num_beams)
-        for idx, (raw_log_prob, log_prob) in enumerate(zip(raw_log_probs, log_probs)):
-            candidates: list[Beam] = []
-            for beam_idx, beam in enumerate(current_beams[idx]):
-                for token_id in sample_fn(log_prob[beam_idx], beam_width).tolist():
-                    candidate = beam.clone()
-                    candidate.add(token_id, raw_log_prob[beam_idx, token_id].item())
-                    candidates.append(candidate)
+        batch_candidates: list[list[Beam]] = [[] for _ in range(batch_size)]
 
+        for i, batch_idx in enumerate(indices):
+            beam = beams[i]
+            # set cache index for beam
+            beam.cache = i
+
+            # filter out invalid ids by checking logits for -inf
+            # (prob = 0 after softmax)
+            valid_ids = torch.logical_not(torch.isneginf(selected_logits[i]))
+
+            if not torch.any(valid_ids).item():
+                # only invalid continuations
+                continue
+
+            elif single_beam:
+                # no need to clone in single beam case
+                assert (
+                    torch.sum(valid_ids) == 1
+                ), "single beam should have only one valid id"
+                token_id = int(selected_ids[i][0].item())
+                beam.add(token_id, log_probs[i, token_id].item())
+                batch_candidates[batch_idx].append(beam)
+                continue
+
+            for token_id in selected_ids[i][valid_ids]:
+                # must clone here
+                candidate = beam.clone()
+                token_id = int(token_id.item())
+                candidate.add(token_id, log_probs[i, token_id].item())
+                batch_candidates[batch_idx].append(candidate)
+
+        for batch_idx, candidates in enumerate(batch_candidates):
             # reset current beams and fill with best candidates
-            current_beams[idx] = []
-            for candidate in sorted(candidates, key=score_fn, reverse=True):
+            current_beams[batch_idx] = []
+
+            # score and sort candidates
+            candidates = sorted(candidates, key=score_fn, reverse=True)
+
+            for candidate in candidates:
                 # update candidates
                 candidate = update_fn(candidate)
                 if candidate is None:
                     # skip invalid candidates
                     continue
-                elif len(current_beams[idx]) < beam_width:
-                    current_beams[idx].append(candidate)
-                else:
+
+                current_beams[batch_idx].append(candidate)
+                if len(current_beams[batch_idx]) >= beam_width:
                     break
 
-            update_info[idx] = len(current_beams[idx])
+        beams, indices = filter_beams()
 
         if yield_intermediate:
             yield get_outputs(intermediate=True)
 
-    yield get_outputs(intermediate=False)
+    return get_outputs(intermediate=False)

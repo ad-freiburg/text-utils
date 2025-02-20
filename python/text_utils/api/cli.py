@@ -186,7 +186,9 @@ class TextProcessingCli:
         cProfile.runctx("self.run()", globals(), locals(), file)
 
     def process_iter(
-        self, processor: TextProcessor, iter: Iterator[str]
+        self,
+        processor: TextProcessor,
+        iter: Iterator[str],
     ) -> Iterator[Any]:
         raise NotImplementedError
 

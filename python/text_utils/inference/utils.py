@@ -3,14 +3,15 @@ from typing import Any, Callable, Protocol
 import torch
 from grammar_utils.constrain import Constraint
 
-# maps from token ids, length, and other kwargs to distribution over next token id and other info
-DecodeFn = Callable[..., tuple[torch.Tensor, dict[str, Any]]]
+# maps from token ids and optional cache
+# to distribution over next tokens and optional cache
+DecodeFn = Callable[
+    [torch.Tensor, Any | None],
+    tuple[torch.Tensor, Any | None],
+]
 
-# select specific elements for all the kwargs keys given the mask tensor
-MaskSelectFn = Callable[[dict[str, Any], torch.Tensor], dict[str, Any]]
-
-# update specific elements for all the kwargs keys given the mask tensor
-MaskUpdateFn = Callable[[dict[str, Any], dict[str, Any], torch.Tensor], None]
+# update cache according to given mask
+CacheFn = Callable[[Any, list[int]], Any]
 
 
 class Beam:
@@ -18,8 +19,9 @@ class Beam:
         self,
         token_ids: list[int],
         log_probs: list[float] | None = None,
-        info: dict[str, Any] | None = None,
         initial_length: int | None = None,
+        info: dict[str, Any] | None = None,
+        cache: int | None = None,
     ) -> None:
         if log_probs is None:
             log_probs = [0.0] * len(token_ids)
@@ -32,6 +34,7 @@ class Beam:
             initial_length = len(token_ids)
         self.initial_length = initial_length
         self.info: dict[str, Any] = info or {}
+        self.cache = cache
 
     def add(self, token_id: int, log_p: float) -> None:
         self.token_ids.append(token_id)
@@ -41,9 +44,14 @@ class Beam:
         return Beam(
             self.token_ids.copy(),
             self.log_probs.copy(),
-            self.info.copy(),
             self.initial_length,
+            self.info.copy(),
+            self.cache,
         )
+
+    @property
+    def last_token_id(self) -> int:
+        return self.token_ids[-1]
 
     @property
     def initial_token_ids(self) -> list[int]:
@@ -90,8 +98,6 @@ class Beam:
 # processes logits and returns new logits
 LogitFn = Callable[
     [
-        # token ids, shape [batch_size, seq_len]
-        torch.Tensor,
         # logits, shape [batch_size, vocab_size]
         torch.Tensor,
         # beams being processed
@@ -105,13 +111,15 @@ LogitFn = Callable[
 # beam width samples
 SampleFn = Callable[
     [
-        # distribution over next tokens, shape [vocab_size]
+        # logits over next tokens, shape [batch_size, vocab_size]
         torch.Tensor,
-        # beam width
+        # num samples / beam width
         int,
     ],
-    # indices of selected tokens, shape [<= beam_width]
-    torch.Tensor,
+    # indices of selected tokens, shape [batch_size, beam_width]
+    # and logits of selected tokens, shape [batch_size, beam_width]
+    # (can be used to filter for invalid selection with -inf logit)
+    tuple[torch.Tensor, torch.Tensor],
 ]
 
 # checks if beam should be stopped
@@ -124,7 +132,7 @@ StopFn = Callable[
     bool,
 ]
 
-# takes in a beam candidate and returns an updated beam
+# takes in a beam candidate and returns updated beam or None
 UpdateFn = Callable[[Beam], Beam | None]
 
 
@@ -159,16 +167,19 @@ def log_likelihood_score(normalize: bool = True, alpha: float = 1.0) -> ScoreFn:
     return _score
 
 
-def constraint_logit_fn(
-    retrieve_constraint_fn: Callable[[Beam], Constraint | None], eos_token_id: int
+def constrain(
+    get_constraint: Callable[[Beam], Constraint | None],
+    eos_token_id: int,
+    always_allow_eos: bool = False,
 ) -> LogitFn:
-    def _constrain_logits(
-        _: torch.Tensor, logits: torch.Tensor, beams: list[Beam]
+    def _constrain(
+        logits: torch.Tensor,
+        beams: list[Beam],
     ) -> torch.Tensor:
         zeros = torch.full_like(logits, float("-inf"))
 
         for i, beam in enumerate(beams):
-            constraint = retrieve_constraint_fn(beam)
+            constraint = get_constraint(beam)
 
             if constraint is None or constraint.is_invalid():
                 # fallback to unconstrained logits
@@ -178,7 +189,7 @@ def constraint_logit_fn(
             indices = torch.from_numpy(constraint.get()).to(torch.int32)
             zeros[i, indices] = logits[i, indices]
 
-            if constraint.is_match():
+            if constraint.is_match() or always_allow_eos:
                 zeros[i, eos_token_id] = logits[i, eos_token_id]
             else:
                 # eos token might still be valid on non-match beams
@@ -189,15 +200,16 @@ def constraint_logit_fn(
 
         return zeros
 
-    return _constrain_logits
+    return _constrain
 
 
-def allow_tokens_logit_fn(allowed_tokens: list[int]) -> LogitFn:
+def allow_tokens(allowed_tokens: list[int]) -> LogitFn:
     assert len(allowed_tokens) > 0, "allowed_tokens must be non-empty"
     allowed = torch.tensor(allowed_tokens, dtype=torch.long)
 
     def _allow_tokens(
-        _input_ids: torch.Tensor, logits: torch.Tensor, _beams: list[Beam]
+        logits: torch.Tensor,
+        _beams: list[Beam],
     ) -> torch.Tensor:
         zeros = torch.full_like(logits, float("-inf"))
         zeros[:, allowed] = logits[:, allowed]
@@ -206,7 +218,7 @@ def allow_tokens_logit_fn(allowed_tokens: list[int]) -> LogitFn:
     return _allow_tokens
 
 
-def identity_update_fn() -> UpdateFn:
+def identity_update() -> UpdateFn:
     def _update_fn(beam: Beam) -> Beam:
         return beam
 
@@ -214,20 +226,22 @@ def identity_update_fn() -> UpdateFn:
 
 
 def sample() -> SampleFn:
-    def _sample(logits: torch.Tensor, k: int) -> torch.Tensor:
-        assert logits.ndim == 1, "expected logits to be 1D"
-        k = min(k, logits.shape[-1] - torch.isneginf(logits).sum().item())
+    def _sample(logits: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
+        assert logits.ndim == 2, "expected logits to be 2D"
+        k = min(k, logits.shape[-1])
         probs = torch.softmax(logits, dim=-1)
-        return torch.multinomial(probs, k)
+        indices = torch.multinomial(probs, k)
+        return indices, logits.gather(-1, indices)
 
     return _sample
 
 
 def greedy() -> SampleFn:
-    def _greedy(logits: torch.Tensor, k: int) -> torch.Tensor:
-        assert logits.ndim == 1, "expected logits to be 1D"
-        k = min(k, logits.shape[-1] - torch.isneginf(logits).sum().item())
-        return torch.topk(logits, k, dim=-1).indices
+    def _greedy(logits: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
+        assert logits.ndim == 2, "expected logits to be 2D"
+        k = min(k, logits.shape[-1])
+        top_k = torch.topk(logits, k)
+        return top_k.indices, top_k.values
 
     return _greedy
 
@@ -236,11 +250,16 @@ def repeat_penalty(penalty: float) -> LogitFn:
     assert penalty > 0.0, "penalty must be positive"
 
     def _repeat_penalty(
-        input_ids: torch.Tensor, logits: torch.Tensor, _beams: list[Beam]
+        logits: torch.Tensor,
+        beams: list[Beam],
     ) -> torch.Tensor:
-        logit = torch.gather(logits, -1, input_ids)
-        logit = torch.where(logit > 0, logit / penalty, logit * penalty)
-        return logits.scatter(-1, input_ids, logit)
+        logits = logits.clone()
+        for logit, beam in zip(logits, beams):
+            mask = torch.tensor(beam.token_ids, device=logit.device)
+            seen = torch.gather(logit, -1, mask)
+            seen = torch.where(seen > 0, seen / penalty, seen * penalty)
+            logit.scatter_(-1, mask, seen)
+        return logits
 
     return _repeat_penalty
 
@@ -249,7 +268,8 @@ def temperature_scaling(temp: float) -> LogitFn:
     assert temp > 0.0, "temperature must be positive"
 
     def _temperature_scaling(
-        _input_ids: torch.Tensor, logits: torch.Tensor, _beams: list[Beam]
+        logits: torch.Tensor,
+        _beams: list[Beam],
     ) -> torch.Tensor:
         return logits / temp
 
@@ -260,7 +280,8 @@ def top_k_masking(k: int) -> LogitFn:
     assert k > 0, "k must be positive"
 
     def _top_k(
-        _input_ids: torch.Tensor, logits: torch.Tensor, _beams: list[Beam]
+        logits: torch.Tensor,
+        _beams: list[Beam],
     ) -> torch.Tensor:
         topk = torch.full_like(logits, float("-inf"))
         values, indices = torch.topk(logits, min(k, logits.shape[-1]), dim=-1)
@@ -275,7 +296,8 @@ def nucleus_masking(p: float, keep_min: int = 1) -> LogitFn:
     assert keep_min > 0, "keep_min must be positive"
 
     def _nuc(
-        _input_ids: torch.Tensor, logits: torch.Tensor, _: list[Beam]
+        logits: torch.Tensor,
+        _: list[Beam],
     ) -> torch.Tensor:
         keep = min(keep_min, logits.shape[-1])
         probs = torch.softmax(logits, dim=-1)
@@ -297,7 +319,8 @@ def min_p_masking(min_p: float, keep_min: int = 1) -> LogitFn:
     assert keep_min > 0, "keep_min must be positive"
 
     def _min_p(
-        _input_ids: torch.Tensor, logits: torch.Tensor, _: list[Beam]
+        logits: torch.Tensor,
+        _: list[Beam],
     ) -> torch.Tensor:
         probs = torch.softmax(logits, dim=-1)
         max_probs = probs.max(dim=-1, keepdim=True)[0]

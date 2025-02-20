@@ -2342,7 +2342,7 @@ mod tests {
             &out_file,
             None,
             Some(Normalization::NFKC),
-            num_cpus::get() as u8,
+            0,
             true,
         )
         .unwrap();
@@ -2361,7 +2361,7 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(22);
         for _ in 0..200 {
             let s: String = (&mut rng)
-                .sample_iter::<char, _>(rand::distributions::Standard)
+                .sample_iter::<char, _>(rand::distr::StandardUniform)
                 .take(256)
                 .collect();
 

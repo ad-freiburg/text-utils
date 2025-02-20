@@ -340,7 +340,7 @@ fn corrupt_whitespace(iw_p: f64, dw_p: f64, use_graphemes: bool) -> Box<dyn Text
             .chars()
             .enumerate()
             .map(|(idx, c)| {
-                let r: f64 = rng.gen();
+                let r: f64 = rng.random();
                 if c.is_whitespace() {
                     if r < dw_p {
                         "".to_string()
@@ -366,7 +366,7 @@ fn substring<F: Fn(&str) -> anyhow::Result<Vec<(usize, usize, usize)>> + Send + 
     Box::new(move |item, info| {
         let mut rng = ChaCha8Rng::seed_from_u64(info.seed);
         let possible_substrings = substring_fn(&item.input)?;
-        let idx = rng.gen_range(0..possible_substrings.len());
+        let idx = rng.random_range(0..possible_substrings.len());
         let (start, end, _) = possible_substrings[idx];
         let input = item.input[start..end].to_string();
         let target = match find_substring_ignoring_whitespace(&item.target, &input, use_graphemes) {
@@ -608,12 +608,12 @@ fn corrupt_spelling(
         Ok(words
             .into_iter()
             .filter_map(|(word, parts)| {
-                let r: f64 = rng.gen();
+                let r: f64 = rng.random();
                 if r > real_p + art_p {
                     return Some(word.to_string());
                 } else if r < real_p {
                     if let Some(replacements) = misspellings.get(word) {
-                        let idx = rng.gen_range(0..replacements.len());
+                        let idx = rng.random_range(0..replacements.len());
                         return Some(replacements[idx].to_string());
                     } else if let Some(parts) = parts {
                         let replacable_parts: Vec<_> = parts
@@ -627,9 +627,10 @@ fn corrupt_spelling(
                             .collect();
                         if !replacable_parts.is_empty() {
                             let (idx, replacements) =
-                                replacable_parts[rng.gen_range(0..replacable_parts.len())];
+                                replacable_parts[rng.random_range(0..replacable_parts.len())];
                             let (part, start) = parts[idx];
-                            let replacement = &replacements[rng.gen_range(0..replacements.len())];
+                            let replacement =
+                                &replacements[rng.random_range(0..replacements.len())];
                             return Some(
                                 word[..start].to_string()
                                     + replacement
@@ -642,7 +643,7 @@ fn corrupt_spelling(
                 }
                 let word_len = CS::split(word, true).count();
                 let num_edits = (0..word_len)
-                    .filter(|_| rng.gen::<f64>() < art_char_edit_p)
+                    .filter(|_| rng.random::<f64>() < art_char_edit_p)
                     .count()
                     .max(1);
                 let mut exclude: HashSet<usize> = HashSet::new();

@@ -1,4 +1,3 @@
-import time
 from typing import Generator
 
 import torch
@@ -6,13 +5,13 @@ from torch.nn.utils.rnn import pad_sequence
 
 from text_utils.inference.utils import (
     Beam,
+    CacheFn,
     DecodeFn,
     LogitFn,
     SampleFn,
     ScoreFn,
     StopFn,
     UpdateFn,
-    CacheFn,
     greedy,
     identity_update,
     log_likelihood_score,
@@ -35,7 +34,6 @@ def beam_search(
     cache_fn: CacheFn | None = None,
     stop_condition: str = "estimated_score",
     max_new_tokens: int | None = None,
-    return_incomplete: bool = False,
     yield_intermediate: bool = False,
 ) -> Generator[list[list[Beam]], None, list[list[Beam]]]:
     assert (
@@ -55,7 +53,7 @@ def beam_search(
 
     for init in initial:
         if isinstance(init, Beam):
-            beams = [init]
+            beams = [init.clone()]
         else:
             # init beam from token ids
             beams = [Beam(init)]
@@ -64,15 +62,23 @@ def beam_search(
         finished_beams.append([])
         too_long_beams.append([])
 
+    def too_long(beam: Beam) -> bool:
+        if len(beam) >= max_length:
+            return True
+        elif max_new_tokens is None:
+            return False
+        else:
+            return beam.decoded_length >= max_new_tokens
+
     def filter_beams() -> tuple[list[Beam], list[int]]:
         for idx in range(batch_size):
             new_beams = []
             for beam in current_beams[idx]:
                 if stop_fn(beam):
+                    beam.stop_reason = "done"
                     finished_beams[idx].append(beam)
-                elif len(beam) >= max_length or beam.decoded_length >= (
-                    max_new_tokens or (beam.decoded_length + 1)
-                ):
+                elif too_long(beam):
+                    beam.stop_reason = "length"
                     too_long_beams[idx].append(beam)
                 else:
                     new_beams.append(beam)
@@ -120,28 +126,16 @@ def beam_search(
             indices.extend([idx] * len(current_beams[idx]))
         return beams, indices
 
-    def get_outputs(intermediate: bool) -> list[list[Beam]]:
+    def get_outputs() -> list[list[Beam]]:
         outputs = []
         for batch_idx in range(batch_size):
-            current = current_beams[batch_idx]
-
-            if return_incomplete:
-                finished = finished_beams[batch_idx] + too_long_beams[batch_idx]
-            else:
-                finished = finished_beams[batch_idx]
-
-            if intermediate and current:
-                # for intermediate outputs we
-                # return the active beams first if available
-                beams = sorted((b for b in current if b), key=score_fn, reverse=True)
-            else:
-                beams = sorted(finished, key=score_fn, reverse=True)
-
-            outputs.append(beams[:beam_width])
+            output_beams = finished_beams[batch_idx] + too_long_beams[batch_idx]
+            output_beams = sorted(output_beams, key=score_fn, reverse=True)
+            outputs.append(output_beams)
 
         return outputs
 
-    single_beam = beam_width == 1
+    single = beam_width == 1
     beams, indices = filter_beams()
     cache = None
     cache_mask = None
@@ -185,6 +179,9 @@ def beam_search(
             logits = logit_fn(logits, beams)
 
         selected_ids, selected_logits = sample_fn(logits, beam_width)
+        # filter out invalid ids by checking logits for -inf
+        # (prob = 0 after softmax)
+        valid_ids = torch.logical_not(torch.isneginf(selected_logits))
 
         batch_candidates: list[list[Beam]] = [[] for _ in range(batch_size)]
 
@@ -193,27 +190,13 @@ def beam_search(
             # set cache index for beam
             beam.cache = i
 
-            # filter out invalid ids by checking logits for -inf
-            # (prob = 0 after softmax)
-            valid_ids = torch.logical_not(torch.isneginf(selected_logits[i]))
+            for token_id in selected_ids[i, valid_ids[i]]:
+                if single:
+                    candidate = beam
+                else:
+                    # must clone here when beam_width > 1
+                    candidate = beam.clone()
 
-            if not torch.any(valid_ids).item():
-                # only invalid continuations
-                continue
-
-            elif single_beam:
-                # no need to clone in single beam case
-                assert (
-                    torch.sum(valid_ids) == 1
-                ), "single beam should have only one valid id"
-                token_id = int(selected_ids[i][0].item())
-                beam.add(token_id, log_probs[i, token_id].item())
-                batch_candidates[batch_idx].append(beam)
-                continue
-
-            for token_id in selected_ids[i][valid_ids]:
-                # must clone here
-                candidate = beam.clone()
                 token_id = int(token_id.item())
                 candidate.add(token_id, log_probs[i, token_id].item())
                 batch_candidates[batch_idx].append(candidate)
@@ -239,6 +222,6 @@ def beam_search(
         beams, indices = filter_beams()
 
         if yield_intermediate:
-            yield get_outputs(intermediate=True)
+            yield get_outputs()
 
-    return get_outputs(intermediate=False)
+    return get_outputs()

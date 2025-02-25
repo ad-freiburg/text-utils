@@ -22,6 +22,7 @@ class Beam:
         initial_length: int | None = None,
         info: dict[str, Any] | None = None,
         cache: int | None = None,
+        stop_reason: str | None = None,
     ) -> None:
         if log_probs is None:
             log_probs = [0.0] * len(token_ids)
@@ -35,6 +36,7 @@ class Beam:
         self.initial_length = initial_length
         self.info: dict[str, Any] = info or {}
         self.cache = cache
+        self.stop_reason = stop_reason
 
     def add(self, token_id: int, log_p: float) -> None:
         self.token_ids.append(token_id)
@@ -47,6 +49,7 @@ class Beam:
             self.initial_length,
             self.info.copy(),
             self.cache,
+            self.stop_reason,
         )
 
     @property

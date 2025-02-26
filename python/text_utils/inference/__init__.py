@@ -52,6 +52,7 @@ def beam_search(
     too_long_beams: list[list[Beam]] = []
 
     for init in initial:
+        assert len(init) > 0, "initial beam or token ids cannot be empty"
         if isinstance(init, Beam):
             beams = [init.clone()]
         else:
@@ -132,46 +133,51 @@ def beam_search(
             output_beams = finished_beams[batch_idx] + too_long_beams[batch_idx]
             output_beams = sorted(output_beams, key=score_fn, reverse=True)
             outputs.append(output_beams)
-
         return outputs
 
     single = beam_width == 1
     beams, indices = filter_beams()
     cache = None
-    cache_mask = None
 
     while beams:
         if cache is not None and all(beam.cache is not None for beam in beams):
             assert cache_fn is not None, "cache_fn must be provided if cache is used"
-            new_cache_mask = [beam.cache for beam in beams]
-            if new_cache_mask != cache_mask:
-                # update cache with mask, only if it has changed
-                # (saves lots of unnecessary cache updates)
-                cache = cache_fn(cache, new_cache_mask)  # type: ignore
-                cache_mask = new_cache_mask
+            cache_mask = [beam.cache for beam in beams]
+            cache_lengths = [len(beam) - 1 for beam in beams]
+            cache = cache_fn(cache, cache_mask, cache_lengths)  # type: ignore
 
-            # if we have a cache, only the last input token is needed
             input_ids = torch.tensor(
                 [beam.last_token_id for beam in beams],
-                dtype=torch.long,
                 device=device,
-            ).unsqueeze(1)
+            ).unsqueeze(-1)
+            position_ids = torch.tensor(
+                cache_lengths,
+                device=device,
+            ).unsqueeze(-1)
+            max_cache_length = max(cache_lengths) + 1
+            pad_mask = torch.tensor(
+                [   
+                    [False] * (max_cache_length - len(beam)) + [True] * len(beam)
+                    for beam in beams
+                ],
+                device=device,
+            )
         else:
-            # is there is no cache or any beam has its cache reset,
-            # provide the full input sequence to the model
             input_ids = pad_sequence(
                 [torch.tensor(beam.token_ids) for beam in beams],
                 batch_first=True,
                 padding_value=pad_token_id,
                 padding_side="left",
             ).to(device)
+            pad_mask = input_ids != pad_token_id
+            position_ids = torch.cumsum(pad_mask, -1) - 1
+            position_ids[~pad_mask] = 0
+
             if cache is not None:
-                # reset cache
-                cache = None
-                cache_mask = None
+                # clear cache
                 torch.cuda.empty_cache()
 
-        logits, cache = decode_fn(input_ids, cache)
+        logits, cache = decode_fn(input_ids, position_ids, pad_mask, cache)
         log_probs = torch.log_softmax(logits, dim=-1)
 
         # apply logit functions

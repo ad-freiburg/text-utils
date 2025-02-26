@@ -3,15 +3,15 @@ from typing import Any, Callable, Protocol
 import torch
 from grammar_utils.constrain import Constraint
 
-# maps from token ids and optional cache
+# maps from token ids, position ids, padding mask, and optional cache
 # to distribution over next tokens and optional cache
 DecodeFn = Callable[
-    [torch.Tensor, Any | None],
+    [torch.Tensor, torch.Tensor, torch.Tensor, Any | None],
     tuple[torch.Tensor, Any | None],
 ]
 
 # update cache according to given mask
-CacheFn = Callable[[Any, list[int]], Any]
+CacheFn = Callable[[Any, list[int], list[int]], Any]
 
 
 class Beam:

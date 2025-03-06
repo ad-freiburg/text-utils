@@ -35,6 +35,7 @@ def beam_search(
     stop_condition: str = "estimated_score",
     max_new_tokens: int | None = None,
     yield_intermediate: bool = False,
+    return_unfinished: bool = False,
 ) -> Generator[list[list[Beam]], None, list[list[Beam]]]:
     assert (
         max_new_tokens is None or max_new_tokens > 0
@@ -54,7 +55,7 @@ def beam_search(
     for init in initial:
         assert len(init) > 0, "initial beam or token ids cannot be empty"
         if isinstance(init, Beam):
-            beams = [init.clone()]
+            beams = [init]
         else:
             # init beam from token ids
             beams = [Beam(init)]
@@ -130,9 +131,15 @@ def beam_search(
     def get_outputs() -> list[list[Beam]]:
         outputs = []
         for batch_idx in range(batch_size):
-            output_beams = finished_beams[batch_idx] + too_long_beams[batch_idx]
-            output_beams = sorted(output_beams, key=score_fn, reverse=True)
-            outputs.append(output_beams)
+            finished = finished_beams[batch_idx]
+
+            if return_unfinished and len(finished) < beam_width:
+                too_long = sorted(too_long_beams[batch_idx], key=score_fn, reverse=True)
+                finished.extend(too_long[: beam_width - len(finished)])
+
+            finished = sorted(finished, key=score_fn, reverse=True)
+            outputs.append(finished[:beam_width])
+
         return outputs
 
     single = beam_width == 1
@@ -156,7 +163,7 @@ def beam_search(
             ).unsqueeze(-1)
             max_cache_length = max(cache_lengths) + 1
             pad_mask = torch.tensor(
-                [   
+                [
                     [False] * (max_cache_length - len(beam)) + [True] * len(beam)
                     for beam in beams
                 ],
@@ -175,6 +182,7 @@ def beam_search(
 
             if cache is not None:
                 # clear cache
+                cache = None
                 torch.cuda.empty_cache()
 
         logits, cache = decode_fn(input_ids, position_ids, pad_mask, cache)

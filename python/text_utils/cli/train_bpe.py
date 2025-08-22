@@ -1,54 +1,57 @@
 import argparse
 import os
 
-
 from text_utils import tokenization
+from text_utils.api.utils import cpu_cores
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-f", "--files",
+        "-f",
+        "--files",
         type=str,
         nargs="+",
         required=True,
-        help="Files to train BPE on"
+        help="Files to train BPE on",
     )
     parser.add_argument(
         "--vocab-size",
         type=int,
         required=True,
-        help="Vocabulary size for BPE"
+        help="Vocabulary size for BPE",
     )
     parser.add_argument(
         "--num-special-tokens",
         type=int,
         required=True,
-        help="Number of special tokens"
+        help="Number of special tokens",
     )
     parser.add_argument(
-        "-o", "--out",
+        "-o",
+        "--out",
         type=str,
         required=True,
-        help="Output file"
+        help="Output file",
     )
     parser.add_argument(
         "--max-lines-per-file",
         type=int,
         default=None,
-        help="Max lines per file"
+        help="Max lines per file",
     )
     parser.add_argument(
         "--normalization",
         choices=["nfc", "nfd", "nfkc", "nfkd"],
         default="nfkc",
-        help="Normalization to apply to the input"
+        help="Normalization to apply to the input",
     )
     parser.add_argument(
-        "-n", "--num-threads",
+        "-n",
+        "--num-threads",
         type=int,
         default=None,
-        help="Number of threads"
+        help="Number of threads",
     )
     parser.add_argument(
         "--no-progress",
@@ -60,7 +63,7 @@ def parse_args() -> argparse.Namespace:
 
 def train_bpe(args: argparse.Namespace):
     if args.num_threads is None:
-        args.num_threads = min(len(os.sched_getaffinity(0)), 4)
+        args.num_threads = min(cpu_cores(), 4)
 
     if not args.no_progress:
         os.environ["RUST_LOG"] = "info"
@@ -73,7 +76,7 @@ def train_bpe(args: argparse.Namespace):
         args.max_lines_per_file,
         args.normalization,
         args.num_threads,
-        not args.no_progress
+        not args.no_progress,
     )
 
 

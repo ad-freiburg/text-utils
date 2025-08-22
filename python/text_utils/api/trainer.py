@@ -1,56 +1,57 @@
 import argparse
-import math
 import copy
 import functools
-import sys
-import random
-import os
 import hashlib
+import math
+import os
+import random
 import shutil
+import sys
 import time
 import zipfile
-from typing import Dict, Optional, Tuple, Any, List, Callable, Union
-from text_utils.api.utils import get_peft_config
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
-from torch.backends import cuda, cudnn
+import yaml
+from peft import PeftConfig
 from torch import distributed as dist
 from torch import multiprocessing as mp
 from torch import nn
-from torch.optim import lr_scheduler
-from torch.backends import cudnn, cuda  # noqa
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
+from torch.backends import cuda, cudnn  # noqa
 from torch.distributed.fsdp.api import (
+    BackwardPrefetch,
+    CPUOffload,
+    FullOptimStateDictConfig,
+    FullStateDictConfig,
     MixedPrecision,
     ShardingStrategy,
     StateDictType,
-    FullStateDictConfig,
-    FullOptimStateDictConfig,
-    CPUOffload,
-    BackwardPrefetch,
+)
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    FullyShardedDataParallel as FSDP,
 )
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import lr_scheduler
 from torch.utils.tensorboard.writer import SummaryWriter
-from peft import PeftConfig
-import yaml
 
+from text_utils import (
+    api,
+    configuration,
+    data,
+    distributed,
+    io,
+    logging,
+    tensorboard,
+    tokenization,
+)
+from text_utils.api.utils import cpu_cores, get_peft_config
 from text_utils.modules.loss import loss_from_config
+from text_utils.modules.optimizer import optimizer_from_config
 from text_utils.modules.scheduler import (
     lr_scheduler_from_config,
-    max_length_scheduler_from_config
-)
-from text_utils.modules.optimizer import optimizer_from_config
-from text_utils import (
-    distributed,
-    data,
-    configuration,
-    io,
-    tokenization,
-    logging,
-    api,
-    tensorboard
+    max_length_scheduler_from_config,
 )
 
 
@@ -71,14 +72,14 @@ class Trainer:
             type=str,
             required=True,
             help="Path to directory where experiment will be saved. If experiment already exists, \
-training will resume from latest checkpoint."
+training will resume from latest checkpoint.",
         )
         parser.add_argument(
             "-c",
             "--config",
             type=str,
             default=None,
-            help="Path to config file, only required for a new training run."
+            help="Path to config file, only required for a new training run.",
         )
         parser.add_argument(
             "-p",
@@ -87,14 +88,14 @@ training will resume from latest checkpoint."
             choices=["local", "slurm"],
             default="local",
             required=True,
-            help="Platform used for training."
+            help="Platform used for training.",
         )
         parser.add_argument(
             "--profile",
             type=str,
             default=None,
             help="Run cProfile profile on main process and output stats to this file "
-            "(only respected if platform=local)"
+            "(only respected if platform=local)",
         )
         return parser
 
@@ -102,7 +103,7 @@ training will resume from latest checkpoint."
         self,
         cfg: Dict[str, Any],
         directories: Dict[str, str],
-        info: distributed.DistributedInfo
+        info: distributed.DistributedInfo,
     ):
         self.cfg = cfg
         self.directories = directories
@@ -129,7 +130,7 @@ training will resume from latest checkpoint."
         cpu_props = api.cpu_info()
         self.logger.info(
             f"[CPU:{self.info.rank}:{self.info.local_rank}] {cpu_props}, "
-            f"{len(os.sched_getaffinity(0))} cores available"
+            f"{cpu_cores()} cores available"
         )
 
         torch.manual_seed(self.cfg["seed"])
@@ -159,9 +160,7 @@ training will resume from latest checkpoint."
                     f"{yaml.safe_dump(peft)}"
                 )
             model = self._prepare_peft(
-                model,
-                get_peft_config(peft),
-                peft.get("use_8bit", False)
+                model, get_peft_config(peft), peft.get("use_8bit", False)
             )
 
         precision = self.cfg["train"].get("precision", "fp32")
@@ -173,21 +172,18 @@ training will resume from latest checkpoint."
             self.precision_dtype = torch.bfloat16
         else:
             raise ValueError(
-                f"unknown precision {precision}, "
-                f"must be fp32, fp16 or bfp16"
+                f"unknown precision {precision}, must be fp32, fp16 or bfp16"
             )
 
         compile = self.cfg["train"].get("compile", False)
         dist_cfg = self.cfg["train"].get("distributed", {})
         dist_type = dist_cfg["type"]
-        assert dist_type in {"DDP", "FSDP"}, \
+        assert dist_type in {"DDP", "FSDP"}, (
             f"distributed training type must be either DDP or FSDP, but got {dist_type}"
+        )
 
         if dist_type == "DDP":
-            self.model = DDP(
-                model.to(self.info.device),
-                static_graph=compile
-            )
+            self.model = DDP(model.to(self.info.device), static_graph=compile)
         else:
             offload_params = dist_cfg.get("offload", False)
             prefetch = dist_cfg.get("prefetch", True)
@@ -204,7 +200,7 @@ training will resume from latest checkpoint."
                         size_based_auto_wrap_policy,
                         min_num_params=shard_size,
                         force_leaf_modules=None,
-                        exclude_wrap_modules=None
+                        exclude_wrap_modules=None,
                     )
                 elif sharding_policy is None:
                     if self.info.is_main_process:
@@ -225,13 +221,15 @@ training will resume from latest checkpoint."
                 mixed_precision=MixedPrecision(
                     param_dtype=self.precision_dtype,
                     reduce_dtype=self.precision_dtype,
-                    buffer_dtype=self.precision_dtype
+                    buffer_dtype=self.precision_dtype,
                 ),
                 cpu_offload=CPUOffload(offload_params=offload_params),
                 limit_all_gathers=True,
                 sharding_strategy=strategy,
                 forward_prefetch=prefetch,
-                backward_prefetch=BackwardPrefetch.BACKWARD_PRE if prefetch else BackwardPrefetch.BACKWARD_POST,
+                backward_prefetch=BackwardPrefetch.BACKWARD_PRE
+                if prefetch
+                else BackwardPrefetch.BACKWARD_POST,
                 device_id=self.info.device,
                 use_orig_params=compile or (peft is not None),
             )
@@ -239,13 +237,11 @@ training will resume from latest checkpoint."
                 self.model,
                 StateDictType.FULL_STATE_DICT,
                 FullStateDictConfig(
-                    offload_to_cpu=offload_state_dict,
-                    rank0_only=offload_state_dict
+                    offload_to_cpu=offload_state_dict, rank0_only=offload_state_dict
                 ),
                 FullOptimStateDictConfig(
-                    offload_to_cpu=offload_state_dict,
-                    rank0_only=offload_state_dict
-                )
+                    offload_to_cpu=offload_state_dict, rank0_only=offload_state_dict
+                ),
             )
 
         self.model: Union[DDP, FSDP] = torch.compile(self.model, disable=not compile)  # type: ignore
@@ -253,10 +249,12 @@ training will resume from latest checkpoint."
         self.optimizer = optimizer_from_config(
             self.model,
             self.cfg["train"]["optimizer"],
-            additional_optimizer_fn=self._additional_optimizer_fn()
+            additional_optimizer_fn=self._additional_optimizer_fn(),
         )
 
-        self.clip_grad_norm: Optional[float] = self.cfg["train"].get("clip_grad_norm", None)
+        self.clip_grad_norm: Optional[float] = self.cfg["train"].get(
+            "clip_grad_norm", None
+        )
 
         num_epochs = self.cfg["train"]["num_epochs"]
         (
@@ -266,30 +264,28 @@ training will resume from latest checkpoint."
             self.training_items,
             self.max_length,
             self.max_length_scheduler,
-            self.cleanup
+            self.cleanup,
         ) = self._data_from_config(
             self.cfg["train"]["data"],
             self.cfg["val"]["data"],
             self.cfg["input_tokenizer"],
             num_epochs=num_epochs,
             seed=self.cfg["seed"],
-            info=self.info
+            info=self.info,
         )
 
         lower = self.cfg["train"]["data"]["batch_limit"]
         if self.cfg["train"]["data"]["batch_limit_type"] != "batch_size":
             lower = lower // self.cfg["train"]["data"]["max_length"]
         self.log_interval = clamp(
-            self.training_items *
-            self.cfg["train"].get("log_interval", 0.001),
+            self.training_items * self.cfg["train"].get("log_interval", 0.001),
             lower,
-            self.training_items
+            self.training_items,
         )
         self.eval_interval = clamp(
-            self.training_items *
-            self.cfg["train"].get("eval_interval", 0.1),
+            self.training_items * self.cfg["train"].get("eval_interval", 0.1),
             lower,
-            self.training_items
+            self.training_items,
         )
         cooldown = self.cfg["val"].get("cooldown", 0)
         if isinstance(cooldown, float):
@@ -297,16 +293,15 @@ training will resume from latest checkpoint."
         elif isinstance(cooldown, int):
             cooldown_items = cooldown
         else:
-            raise ValueError(f"cooldown must be a float between 0 and 1, but got {cooldown}")
-        if cooldown_items > 0:
-            self.cooldown_items = clamp(
-                cooldown_items,
-                lower,
-                self.training_items
+            raise ValueError(
+                f"cooldown must be a float between 0 and 1, but got {cooldown}"
             )
-            assert self.cooldown_items < self.eval_interval, \
-                f"cooldown items {self.cooldown_items:,} must be smaller " \
+        if cooldown_items > 0:
+            self.cooldown_items = clamp(cooldown_items, lower, self.training_items)
+            assert self.cooldown_items < self.eval_interval, (
+                f"cooldown items {self.cooldown_items:,} must be smaller "
                 f"than evaluation interval {self.eval_interval:,}"
+            )
         else:
             self.cooldown_items = 0
 
@@ -314,10 +309,9 @@ training will resume from latest checkpoint."
 
         if "lr_scheduler" in self.cfg["train"]:
             self.step_interval = clamp(
-                self.training_items *
-                self.cfg["train"].get("step_interval", 0.001),
+                self.training_items * self.cfg["train"].get("step_interval", 0.001),
                 lower,
-                self.training_items
+                self.training_items,
             )
             steps = self.training_items // self.step_interval
             self.lr_scheduler = lr_scheduler_from_config(
@@ -325,7 +319,7 @@ training will resume from latest checkpoint."
                 steps,
                 self.info.world_size,
                 self.cfg["train"]["lr_scheduler"],
-                additional_lr_scheduler_fn=self._additional_lr_scheduler_fn()
+                additional_lr_scheduler_fn=self._additional_lr_scheduler_fn(),
             )
         else:
             self.step_interval = 0
@@ -335,37 +329,31 @@ training will resume from latest checkpoint."
         self.eval_at = self.eval_interval
         self.step_at = self.step_interval
 
-        self.loss_fn = loss_from_config(
-            self.cfg["train"]["loss"],
-            additional_loss_fn=self._additional_loss_fn()
-        ).to(self.info.device).train()
+        self.loss_fn = (
+            loss_from_config(
+                self.cfg["train"]["loss"], additional_loss_fn=self._additional_loss_fn()
+            )
+            .to(self.info.device)
+            .train()
+        )
 
         if self.info.is_main_process:
-            self.summary_writer = SummaryWriter(
-                log_dir=self.directories["tensorboard"]
-            )
+            self.summary_writer = SummaryWriter(log_dir=self.directories["tensorboard"])
 
             self.logger.info(f"Using model:\n{self.model}")
             self.logger.info(f"Model parameters: {api.num_parameters(self.model)}")
             num_params = 0
             param_group_infos = []
             for i, param_group in enumerate(self.optimizer.param_groups):
-                group_num_params = sum(
-                    p.numel()
-                    for p in param_group["params"]
-                )
+                group_num_params = sum(p.numel() for p in param_group["params"])
                 group_cfg = {k: v for k, v in param_group.items() if k != "params"}
                 param_group_infos.append(
-                    f"{i+1}. group: {group_num_params:,} params, other: {group_cfg}"
+                    f"{i + 1}. group: {group_num_params:,} params, other: {group_cfg}"
                 )
                 num_params += group_num_params
             param_group_info = "\n".join(param_group_infos)
-            self.logger.info(
-                f"Optimizer parameter groups:\n{param_group_info}"
-            )
-            self.logger.info(
-                f"Training with {dist_type} and {precision} precision"
-            )
+            self.logger.info(f"Optimizer parameter groups:\n{param_group_info}")
+            self.logger.info(f"Training with {dist_type} and {precision} precision")
             self.logger.info(
                 f"Number of training items: {self.training_items_per_epoch:,} per epoch, "
                 f"{self.training_items:,} total"
@@ -373,7 +361,9 @@ training will resume from latest checkpoint."
             self.logger.info(
                 f"Logging every {self.log_interval:,} items, "
                 f"evaluating every {self.eval_interval:,} items"
-                + f", stepping every {self.step_interval:,} items" if self.lr_scheduler is not None else ""
+                + f", stepping every {self.step_interval:,} items"
+                if self.lr_scheduler is not None
+                else ""
             )
 
             test_sentence = "This is a test sentence."
@@ -394,8 +384,7 @@ training will resume from latest checkpoint."
 
         # resume training from last checkpoint if it exists
         last_checkpoint = os.path.join(
-            self.directories["checkpoints"],
-            "checkpoint_last.pt"
+            self.directories["checkpoints"], "checkpoint_last.pt"
         )
         load_checkpoint = self.cfg["train"].get("load_checkpoint")
         if os.path.exists(last_checkpoint):
@@ -411,27 +400,21 @@ training will resume from latest checkpoint."
         elif load_checkpoint is not None:
             checkpoint = io.load_checkpoint(load_checkpoint)
             wrong_keys = distributed.unwrap_model(self.model).load_state_dict(
-                checkpoint["model_state_dict"],
-                strict=False
+                checkpoint["model_state_dict"], strict=False
             )
-            assert len(wrong_keys.unexpected_keys) == 0, \
-                f"unexpected keys in checkpoint \"{load_checkpoint}\": {wrong_keys.unexpected_keys}"
+            assert len(wrong_keys.unexpected_keys) == 0, (
+                f'unexpected keys in checkpoint "{load_checkpoint}": {wrong_keys.unexpected_keys}'
+            )
 
             self.logger.info(
-                f"initializing model from checkpoint \"{load_checkpoint}\" "
+                f'initializing model from checkpoint "{load_checkpoint}" '
                 f"(missing keys: {wrong_keys.missing_keys})"
             )
 
-        self.grad_scaler = ShardedGradScaler(
-            enabled=precision != "fp32"
-        )
+        self.grad_scaler = ShardedGradScaler(enabled=precision != "fp32")
 
     def _save_checkpoint(
-        self,
-        path: str,
-        val_loss: float,
-        full: bool = True,
-        **kwargs: Any
+        self, path: str, val_loss: float, full: bool = True, **kwargs: Any
     ):
         save = {
             "checkpoint_path": path,
@@ -442,12 +425,11 @@ training will resume from latest checkpoint."
             "epoch_items": self.epoch_items,
             "total_items": self.total_items,
             "val_loss": val_loss,
-            **kwargs
+            **kwargs,
         }
         if full:
             save["optimizer_state_dict"] = distributed.get_optimizer_state_dict(
-                self.model,
-                self.optimizer
+                self.model, self.optimizer
             )
             save["loss_fn_state_dict"] = self.loss_fn.state_dict()
             if self.lr_scheduler is not None:
@@ -462,7 +444,9 @@ training will resume from latest checkpoint."
 
     def _load_checkpoint(self, path: str):
         checkpoint = io.load_checkpoint(path)
-        distributed.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
+        distributed.unwrap_model(self.model).load_state_dict(
+            checkpoint["model_state_dict"]
+        )
         optim_state_dict = checkpoint["optimizer_state_dict"]
         if isinstance(self.model, FSDP):
             optim_state_dict = FSDP.optim_state_dict_to_load(
@@ -471,14 +455,13 @@ training will resume from latest checkpoint."
                 self.optimizer,
             )
         self.optimizer.load_state_dict(optim_state_dict)
-        if self.lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
-            self.lr_scheduler.load_state_dict(
-                checkpoint["lr_scheduler_state_dict"]
-            )
+        if (
+            self.lr_scheduler is not None
+            and checkpoint.get("lr_scheduler_state_dict") is not None
+        ):
+            self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
         if checkpoint.get("loss_fn_state_dict") is not None:
-            self.loss_fn.load_state_dict(
-                checkpoint["loss_fn_state_dict"]
-            )
+            self.loss_fn.load_state_dict(checkpoint["loss_fn_state_dict"])
 
         self.epoch = checkpoint["epoch"]
         self.epoch_step = checkpoint["epoch_step"]
@@ -495,26 +478,28 @@ training will resume from latest checkpoint."
         self.train_loader.set_fast_forward(self.epoch_items)
 
         # reset eval, log, and step counters
-        self.log_at = math.ceil(self.total_items / self.log_interval) * self.log_interval
-        self.eval_at = math.ceil(self.total_items / self.eval_interval) * self.eval_interval
-        self.step_at = math.ceil(self.total_items / self.step_interval) * self.step_interval
+        self.log_at = (
+            math.ceil(self.total_items / self.log_interval) * self.log_interval
+        )
+        self.eval_at = (
+            math.ceil(self.total_items / self.eval_interval) * self.eval_interval
+        )
+        self.step_at = (
+            math.ceil(self.total_items / self.step_interval) * self.step_interval
+        )
 
         # wait until everyone loaded the checkpoint
         dist.barrier()
 
     @classmethod
     def _prepare_peft(
-        cls,
-        model: nn.Module,
-        peft_cfg: PeftConfig,
-        use_8bit: bool = False
+        cls, model: nn.Module, peft_cfg: PeftConfig, use_8bit: bool = False
     ) -> nn.Module:
         raise NotImplementedError
 
     @classmethod
     def _model_from_config(
-        cls,
-        cfg: Dict[str, Any]
+        cls, cfg: Dict[str, Any]
     ) -> Tuple[nn.Module, Optional[ShardingPolicy]]:
         raise NotImplementedError
 
@@ -535,7 +520,9 @@ training will resume from latest checkpoint."
         return None
 
     @classmethod
-    def _copy_file_to_tmp_dir(cls, path: str, dir: str, info: distributed.DistributedInfo) -> str:
+    def _copy_file_to_tmp_dir(
+        cls, path: str, dir: str, info: distributed.DistributedInfo
+    ) -> str:
         path = os.path.abspath(path)
         _, file_name = os.path.split(path)
         # make temp path unique by hashing the full input path, because only
@@ -553,15 +540,13 @@ training will resume from latest checkpoint."
 
     @classmethod
     def _prepare_data_sources(
-        cls,
-        sources: List[Dict[str, Any]],
-        info: distributed.DistributedInfo
+        cls, sources: List[Dict[str, Any]], info: distributed.DistributedInfo
     ) -> Tuple[
         List[Tuple[str, Optional[str]]],
         List[Optional[str]],
         List[Optional[Any]],
         List[Optional[Any]],
-        List[str]
+        List[str],
     ]:
         src_paths = []
         src_preprocessings = []
@@ -604,16 +589,13 @@ training will resume from latest checkpoint."
                 preprocessing = src.get("preprocessing")
                 input_path = src["input_path"]
                 target_path = src["target_path"]
-                assert os.path.isfile(input_path) and os.path.isfile(target_path), \
+                assert os.path.isfile(input_path) and os.path.isfile(target_path), (
                     f"one of {input_path} or {target_path} is not a file"
+                )
                 temp_dir = src.get("temp_dir")
                 if temp_dir is not None:
-                    input_path = cls._copy_file_to_tmp_dir(
-                        input_path, temp_dir, info
-                    )
-                    target_path = cls._copy_file_to_tmp_dir(
-                        target_path, temp_dir, info
-                    )
+                    input_path = cls._copy_file_to_tmp_dir(input_path, temp_dir, info)
+                    target_path = cls._copy_file_to_tmp_dir(target_path, temp_dir, info)
                     cleanup_paths.extend([input_path, target_path])
                 src_preprocessings.append(preprocessing)
                 src_paths.append((input_path, target_path))
@@ -626,7 +608,7 @@ training will resume from latest checkpoint."
             src_langs,
             src_preprocessings,
             src_postprocessings,
-            cleanup_paths
+            cleanup_paths,
         )
 
     @classmethod
@@ -637,7 +619,7 @@ training will resume from latest checkpoint."
         tokenizer_config: Dict[str, Any],
         num_epochs: int,
         seed: Optional[int],
-        info: distributed.DistributedInfo
+        info: distributed.DistributedInfo,
     ) -> Tuple[
         data.DataLoader,
         data.DataLoader,
@@ -645,7 +627,7 @@ training will resume from latest checkpoint."
         int,
         int,
         Optional[Callable[[int], int]],
-        List[str]
+        List[str],
     ]:
         def prepare_data_loader(
             default_language: Optional[str],
@@ -656,38 +638,34 @@ training will resume from latest checkpoint."
             postprocessings: List[Optional[Any]],
             **kwargs: Any,
         ) -> data.DataLoader:
-            num_languages_specified = sum(
-                lang is not None for lang in languages
-            )
+            num_languages_specified = sum(lang is not None for lang in languages)
             if num_languages_specified > 0 and num_languages_specified < len(languages):
-                assert default_language is not None, \
-                    "expected default_language to be specified if some, but not all " \
+                assert default_language is not None, (
+                    "expected default_language to be specified if some, but not all "
                     "individual data sources specify a language"
+                )
                 languages = [
-                    default_language if lang is None else lang
-                    for lang in languages
+                    default_language if lang is None else lang for lang in languages
                 ]
             elif num_languages_specified == 0:
                 languages = None  # type: ignore
 
             pipeline_cfg = copy.deepcopy(pipeline_cfg)
             if "preprocessing" not in pipeline_cfg:
-                assert all(preproc is not None for preproc in preprocessings), \
-                    "expected preprocessing to be specified per data source if not specified " \
+                assert all(preproc is not None for preproc in preprocessings), (
+                    "expected preprocessing to be specified per data source if not specified "
                     "for pipeline"
+                )
                 pipeline_cfg["preprocessing"] = preprocessings
             if "postprocessing" not in pipeline_cfg:
-                assert all(postproc is not None for postproc in postprocessings), \
-                    "expected postprocessing to be specified per data source if not specified " \
+                assert all(postproc is not None for postproc in postprocessings), (
+                    "expected postprocessing to be specified per data source if not specified "
                     "for pipeline"
+                )
                 pipeline_cfg["postprocessing"] = postprocessings
 
             return data.DataLoader.from_files(
-                sources,
-                pipeline_cfg,
-                tokenizer_config,
-                languages,
-                **kwargs
+                sources, pipeline_cfg, tokenizer_config, languages, **kwargs
             )
 
         train_cfg = copy.deepcopy(train_cfg)
@@ -701,12 +679,8 @@ training will resume from latest checkpoint."
         assert max_length is not None, "missing max_length in data config"
         max_length_scheduler_cfg = train_cfg.pop("max_length_scheduler", None)
 
-        (
-            *training,
-            train_cleanup
-        ) = cls._prepare_data_sources(
-            train_cfg.pop("sources"),
-            info
+        (*training, train_cleanup) = cls._prepare_data_sources(
+            train_cfg.pop("sources"), info
         )
 
         default_language = train_cfg.pop("default_language", None)
@@ -716,9 +690,10 @@ training will resume from latest checkpoint."
             # if validation is a split of the training set
             train_limit = train_cfg.get("limit", None)
             if train_limit is not None:
-                assert train_limit > val_cfg, \
-                    f"train limit ({train_limit:,}) cannot be smaller or " \
+                assert train_limit > val_cfg, (
+                    f"train limit ({train_limit:,}) cannot be smaller or "
                     f"equal to val limit ({val_cfg:,})"
+                )
             train_loader = prepare_data_loader(
                 default_language,
                 pipeline_cfg,
@@ -739,7 +714,7 @@ training will resume from latest checkpoint."
                 max_length=max_length,
                 distributed=(info.rank, info.world_size),
                 shuffle=False,
-                sort=True
+                sort=True,
             )
 
         elif isinstance(val_cfg, list):
@@ -753,13 +728,7 @@ training will resume from latest checkpoint."
                 distributed=(info.rank, info.world_size),
                 **train_cfg,
             )
-            (
-                *validation,
-                val_cleanup
-            ) = cls._prepare_data_sources(
-                val_cfg,
-                info
-            )
+            (*validation, val_cleanup) = cls._prepare_data_sources(val_cfg, info)
             train_cleanup.extend(val_cleanup)
             val_loader = prepare_data_loader(
                 default_language,
@@ -768,7 +737,7 @@ training will resume from latest checkpoint."
                 max_length=max_length,
                 distributed=(info.rank, info.world_size),
                 shuffle=False,
-                sort=True
+                sort=True,
             )
 
         else:
@@ -784,7 +753,7 @@ training will resume from latest checkpoint."
                 training_items,
                 max_length,
                 max_length_scheduler_cfg,
-                additional_max_length_scheduler_fn=cls._additional_max_length_scheduler_fn()
+                additional_max_length_scheduler_fn=cls._additional_max_length_scheduler_fn(),
             )
         else:
             max_length_scheduler = None
@@ -796,35 +765,42 @@ training will resume from latest checkpoint."
             training_items,
             max_length,
             max_length_scheduler,
-            train_cleanup
+            train_cleanup,
         )
 
     @classmethod
-    def _setup_experiment(cls, work_dir: str, exp_dir: str, config_path: str, cfg: Dict[str, Any]):
+    def _setup_experiment(
+        cls, work_dir: str, exp_dir: str, config_path: str, cfg: Dict[str, Any]
+    ):
         config_name = os.path.split(config_path)[-1]
         os.makedirs(exp_dir, exist_ok=True)
         # save the resolved config to the experiment directory
         with open(os.path.join(exp_dir, config_name), "w", encoding="utf8") as f:
             f.write(yaml.safe_dump(cfg))
         # make a backup of the raw, unresolved configs in the config directory as zip
-        with zipfile.ZipFile(os.path.join(exp_dir, "configs.zip"), "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(
+            os.path.join(exp_dir, "configs.zip"), "w", zipfile.ZIP_DEFLATED
+        ) as zf:
             root = os.path.dirname(config_path)
             for config_dir, _, files in os.walk(root):
                 for file in files:
                     rel_sub_dir = os.path.relpath(config_dir, root)
                     if not file.endswith(".yaml"):
                         continue
-                    zf.write(os.path.join(config_dir, file),
-                             os.path.join(rel_sub_dir, file))
+                    zf.write(
+                        os.path.join(config_dir, file), os.path.join(rel_sub_dir, file)
+                    )
         with open(os.path.join(exp_dir, "info.yaml"), "w", encoding="utf8") as f:
             f.write(
-                yaml.safe_dump({
-                    "config_name": config_name,
-                    "git": {
-                        "branch": api.git_branch(work_dir),
-                        "commit": api.git_commit(work_dir)
+                yaml.safe_dump(
+                    {
+                        "config_name": config_name,
+                        "git": {
+                            "branch": api.git_branch(work_dir),
+                            "commit": api.git_commit(work_dir),
+                        },
                     }
-                })
+                )
             )
         os.makedirs(os.path.join(exp_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(exp_dir, "tensorboard"), exist_ok=True)
@@ -837,7 +813,7 @@ training will resume from latest checkpoint."
         port: int,
         cfg: Dict[str, Any],
         directories: Dict[str, str],
-        profile: Optional[str] = None
+        profile: Optional[str] = None,
     ):
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = str(port)
@@ -846,14 +822,14 @@ training will resume from latest checkpoint."
             backend=dist.Backend.NCCL,
             init_method="env://",
             rank=rank,
-            world_size=world_size
+            world_size=world_size,
         )
 
         info = distributed.DistributedInfo(
             rank=rank,
             local_rank=rank,
             world_size=world_size,
-            local_world_size=world_size
+            local_world_size=world_size,
         )
         torch.cuda.set_device(info.device)
         cuda.matmul.allow_tf32 = True
@@ -863,11 +839,12 @@ training will resume from latest checkpoint."
 
         if info.is_main_process and profile is not None:
             import cProfile
+
             cProfile.runctx(
                 "cls(cfg, directories, info).run()",
                 globals(),
                 locals(),
-                filename=profile
+                filename=profile,
             )
         else:
             cls(cfg, directories, info).run()
@@ -875,27 +852,38 @@ training will resume from latest checkpoint."
 
     @classmethod
     def train_slurm(cls, work_dir: str, experiment_dir: str, config_path: str):
-        assert torch.cuda.device_count() > 0, "need at least one GPU for training, but found none"
+        assert torch.cuda.device_count() > 0, (
+            "need at least one GPU for training, but found none"
+        )
         assert dist.is_available(), "distributed package must be available for training"
-        assert dist.is_nccl_available(), "nccl backend for distributed training must be available"
+        assert dist.is_nccl_available(), (
+            "nccl backend for distributed training must be available"
+        )
         logger = logging.get_logger("SLURM_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
-        logger.info(f"Found {num_gpus} GPU{'s' * (num_gpus > 1)} "
-                    f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')})")
+        logger.info(
+            f"Found {num_gpus} GPU{'s' * (num_gpus > 1)} "
+            f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')})"
+        )
 
         assert (
             "MASTER_ADDR" in os.environ
             and "MASTER_PORT" in os.environ
             and "WORLD_SIZE" in os.environ
-        ), "could not find at least one of MASTER_ADDR, MASTER_PORT and WORLD_SIZE env variables"
+        ), (
+            "could not find at least one of MASTER_ADDR, MASTER_PORT and WORLD_SIZE env variables"
+        )
         master_addr = os.environ["MASTER_ADDR"]
         master_port = int(os.environ["MASTER_PORT"])
         world_size = int(os.environ["WORLD_SIZE"])
 
-        assert "SLURM_PROCID" in os.environ, "distributed training across multiple nodes is only supported with SLURM"
+        assert "SLURM_PROCID" in os.environ, (
+            "distributed training across multiple nodes is only supported with SLURM"
+        )
         rank = int(os.environ["SLURM_PROCID"])
-        local_world_size = int(os.environ.get(
-            "SLURM_NTASKS_PER_NODE", os.environ["SLURM_NTASKS"]))
+        local_world_size = int(
+            os.environ.get("SLURM_NTASKS_PER_NODE", os.environ["SLURM_NTASKS"])
+        )
         local_rank = rank % local_world_size
         logger.info(
             f"Running on Slurm Cluster: master_addr={master_addr}, master_port={master_port}, "
@@ -906,14 +894,14 @@ training will resume from latest checkpoint."
             backend=dist.Backend.NCCL,
             init_method="env://",
             rank=rank,
-            world_size=world_size
+            world_size=world_size,
         )
 
         info = distributed.DistributedInfo(
             rank=rank,
             local_rank=local_rank,
             world_size=world_size,
-            local_world_size=local_world_size
+            local_world_size=local_world_size,
         )
         torch.cuda.set_device(info.device)
         cuda.matmul.allow_tf32 = True
@@ -925,15 +913,12 @@ training will resume from latest checkpoint."
             os.path.join(experiment_dir, "checkpoints", "checkpoint_last.pt")
         )
         if not resuming:
-            assert config_path is not None, "specify config if not resuming an existing experiment"
+            assert config_path is not None, (
+                "specify config if not resuming an existing experiment"
+            )
             cfg = configuration.load_config(config_path)
             if info.is_main_process:
-                cls._setup_experiment(
-                    work_dir,
-                    experiment_dir,
-                    config_path,
-                    cfg
-                )
+                cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
                 logger.info(
                     f"Starting experiment at {experiment_dir} with config:\n{yaml.safe_dump(cfg)}"
                 )
@@ -947,14 +932,20 @@ training will resume from latest checkpoint."
         directories = {
             "experiment": experiment_dir,
             "checkpoints": os.path.join(experiment_dir, "checkpoints"),
-            "tensorboard": os.path.join(experiment_dir, "tensorboard")
+            "tensorboard": os.path.join(experiment_dir, "tensorboard"),
         }
 
         cls(cfg, directories, info).run()
         dist.destroy_process_group()
 
     @classmethod
-    def train_local(cls, work_dir: str, experiment_dir: str, config_path: str, profile: Optional[str] = None):
+    def train_local(
+        cls,
+        work_dir: str,
+        experiment_dir: str,
+        config_path: str,
+        profile: Optional[str] = None,
+    ):
         logger = logging.get_logger("LOCAL_INITIALIZATION")
         num_gpus = torch.cuda.device_count()
         assert num_gpus > 0, "need at least one GPU for local training"
@@ -965,7 +956,9 @@ training will resume from latest checkpoint."
         )
         if not resuming:
             cfg = configuration.load_config(config_path)
-            assert config_path is not None, "specify config if not resuming an existing experiment"
+            assert config_path is not None, (
+                "specify config if not resuming an existing experiment"
+            )
             cls._setup_experiment(work_dir, experiment_dir, config_path, cfg)
             logger.info(
                 f"Starting experiment at {experiment_dir} with config:\n{yaml.safe_dump(cfg)}"
@@ -978,13 +971,13 @@ training will resume from latest checkpoint."
         directories = {
             "experiment": experiment_dir,
             "checkpoints": os.path.join(experiment_dir, "checkpoints"),
-            "tensorboard": os.path.join(experiment_dir, "tensorboard")
+            "tensorboard": os.path.join(experiment_dir, "tensorboard"),
         }
         mp.spawn(
             fn=cls._train_local_distributed,
             nprocs=num_gpus,
             args=(num_gpus, port, cfg, directories, profile),
-            join=True
+            join=True,
         )
 
     def _prepare_batch(
@@ -996,20 +989,16 @@ training will resume from latest checkpoint."
         token_ids_np, pad_mask_np, lengths, info, labels_np, _ = batch.tensors()
         inputs = {
             "token_ids": torch.from_numpy(token_ids_np).to(
-                non_blocking=True,
-                device=self.info.device
+                non_blocking=True, device=self.info.device
             ),
             "lengths": lengths,
             "padding_mask": torch.from_numpy(pad_mask_np).to(
-                non_blocking=True,
-                device=self.info.device
+                non_blocking=True, device=self.info.device
             ),
-            **api.to(info, self.info.device)
+            **api.to(info, self.info.device),
         }
         labels = torch.from_numpy(labels_np).to(
-            non_blocking=True,
-            dtype=torch.long,
-            device=self.info.device
+            non_blocking=True, dtype=torch.long, device=self.info.device
         )
         return inputs, labels
 
@@ -1018,46 +1007,35 @@ training will resume from latest checkpoint."
         start = time.perf_counter()
 
         mean_loss = tensorboard.DistAverageTracker(
-            "train_loss",
-            self.info.device,
-            fmt=".2e"
+            "train_loss", self.info.device, fmt=".2e"
         )
         mean_fwdbwd_pass = tensorboard.DistAverageTracker(
-            "train_forward_backward_pass",
-            self.info.device
+            "train_forward_backward_pass", self.info.device
         )
         mean_batch_load = tensorboard.DistAverageTracker(
-            "train_batch_load",
-            self.info.device
+            "train_batch_load", self.info.device
         )
         mean_step_time = tensorboard.DistAverageTracker(
-            "train_step_time",
-            self.info.device
+            "train_step_time", self.info.device
         )
         mean_batch_preparation = tensorboard.DistAverageTracker(
-            "train_batch_preparation",
-            self.info.device
+            "train_batch_preparation", self.info.device
         )
         mean_bsz = tensorboard.DistAverageTracker(
             "train_batch_size",
             self.info.device,
         )
         mean_seq_length = tensorboard.DistAverageTracker(
-            "train_sequence_length",
-            self.info.device
+            "train_sequence_length", self.info.device
         )
         mean_seq_length_ratio = tensorboard.DistAverageTracker(
-            "train_sequence_length_ratio",
-            self.info.device
+            "train_sequence_length_ratio", self.info.device
         )
 
         metric_cfg = self.cfg["train"].get("metrics")
         if metric_cfg is not None:
             metrics = tensorboard.metrics_from_config(
-                metric_cfg,
-                self.input_tokenizer,
-                self.output_tokenizer,
-                prefix="train"
+                metric_cfg, self.input_tokenizer, self.output_tokenizer, prefix="train"
             )
         else:
             metrics = []
@@ -1091,7 +1069,7 @@ training will resume from latest checkpoint."
             with torch.autocast(
                 "cuda",
                 dtype=self.precision_dtype,
-                enabled=self.precision_dtype != torch.float32
+                enabled=self.precision_dtype != torch.float32,
             ):
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
@@ -1107,8 +1085,7 @@ training will resume from latest checkpoint."
                     self.model.clip_grad_norm_(self.clip_grad_norm)
                 else:
                     torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.clip_grad_norm
+                        self.model.parameters(), self.clip_grad_norm
                     )
 
             self.grad_scaler.step(self.optimizer)
@@ -1147,9 +1124,7 @@ training will resume from latest checkpoint."
                 if length > max_length:
                     max_length = length
             mean_batch_load.add((end_batch - start_batch) * 1000)
-            mean_batch_preparation.add(
-                (end_preparation - start_preparation) * 1000
-            )
+            mean_batch_preparation.add((end_preparation - start_preparation) * 1000)
             mean_seq_length_ratio.add(max_length / max(1, min_length))
 
             if self.total_items >= self.log_at:
@@ -1169,9 +1144,7 @@ training will resume from latest checkpoint."
 
                     progress = 100 * self.total_items / self.training_items
                     self.summary_writer.add_scalar(
-                        "train_progress",
-                        progress,
-                        self.total_step
+                        "train_progress", progress, self.total_step
                     )
                     self.logger.info(
                         f"[step {self.total_step}] "
@@ -1201,11 +1174,11 @@ training will resume from latest checkpoint."
                     mean_fwdbwd_pass.log_info(self.logger, self.total_step)
 
                     mean_batch_load.log_tensorboard(
-                        self.summary_writer, self.total_step)
+                        self.summary_writer, self.total_step
+                    )
                     mean_batch_load.log_info(self.logger, self.total_step)
 
-                    mean_step_time.log_tensorboard(
-                        self.summary_writer, self.total_step)
+                    mean_step_time.log_tensorboard(self.summary_writer, self.total_step)
                     mean_step_time.log_info(self.logger, self.total_step)
 
                     mean_batch_preparation.log_tensorboard(
@@ -1214,7 +1187,8 @@ training will resume from latest checkpoint."
                     mean_batch_preparation.log_info(self.logger, self.total_step)
 
                     mean_seq_length.log_tensorboard(
-                        self.summary_writer, self.total_step)
+                        self.summary_writer, self.total_step
+                    )
                     mean_seq_length.log_info(self.logger, self.total_step)
 
                     mean_seq_length_ratio.log_tensorboard(
@@ -1225,10 +1199,7 @@ training will resume from latest checkpoint."
                     items = batch.items()
                     for metric in metrics:
                         metric.set_values(items, outputs)
-                        metric.log_tensorboard(
-                            self.summary_writer,
-                            self.total_step
-                        )
+                        metric.log_tensorboard(self.summary_writer, self.total_step)
                         metric.log_info(self.logger, self.total_step)
 
                     self.logger.info(
@@ -1238,7 +1209,7 @@ training will resume from latest checkpoint."
                     eta_msg = logging.eta_minutes_message(
                         (end - begin_of_epoch) / 60,
                         self.epoch_items - start_items,
-                        self.training_items_per_epoch - start_items
+                        self.training_items_per_epoch - start_items,
                     )
                     self.logger.info(
                         f"[step {self.total_step}] [epoch {self.epoch + 1}] {eta_msg}"
@@ -1261,7 +1232,10 @@ training will resume from latest checkpoint."
                 mean_batch_preparation.reset()
                 self.log_at += self.log_interval
 
-            if self.cooldown_items > 0 and self.total_items >= self.eval_at - self.cooldown_items:
+            if (
+                self.cooldown_items > 0
+                and self.total_items >= self.eval_at - self.cooldown_items
+            ):
                 self._start_cooldown()
 
             if self.total_items >= self.eval_at:
@@ -1297,9 +1271,7 @@ training will resume from latest checkpoint."
 
     def _evaluate_and_checkpoint(self):
         mean_loss = tensorboard.DistAverageTracker(
-            "val_loss",
-            self.info.device,
-            fmt=".2e"
+            "val_loss", self.info.device, fmt=".2e"
         )
 
         self.model = self.model.eval()
@@ -1308,10 +1280,7 @@ training will resume from latest checkpoint."
         metric_cfg = self.cfg["val"].get("metrics")
         if metric_cfg is not None:
             metrics = tensorboard.metrics_from_config(
-                metric_cfg,
-                self.input_tokenizer,
-                self.output_tokenizer,
-                prefix="val"
+                metric_cfg, self.input_tokenizer, self.output_tokenizer, prefix="val"
             )
         else:
             metrics = []
@@ -1323,7 +1292,7 @@ training will resume from latest checkpoint."
             with torch.autocast(
                 "cuda",
                 dtype=self.precision_dtype,
-                enabled=self.precision_dtype != torch.float32
+                enabled=self.precision_dtype != torch.float32,
             ), torch.no_grad():
                 outputs, loss_dict = self.model(**inputs)
                 loss = self.loss_fn(outputs, labels)
@@ -1335,10 +1304,7 @@ training will resume from latest checkpoint."
                 items = batch.items()
                 for metric in metrics:
                     metric.set_values(items, outputs)
-                    metric.log_tensorboard(
-                        self.summary_writer,
-                        self.total_step
-                    )
+                    metric.log_tensorboard(self.summary_writer, self.total_step)
                     metric.log_info(self.logger, self.total_step)
 
         end = time.perf_counter()
@@ -1355,18 +1321,14 @@ training will resume from latest checkpoint."
                 f"[step {self.total_step}] validation took {(end - start) / 60:.2f} minutes"
             )
 
-        ckpt_path = os.path.join(
-            self.directories["checkpoints"],
-            "checkpoint_last.pt"
-        )
+        ckpt_path = os.path.join(self.directories["checkpoints"], "checkpoint_last.pt")
         val_loss = mean_loss.value
         self._save_checkpoint(ckpt_path, val_loss)
 
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
             best_ckpt_path = os.path.join(
-                self.directories["checkpoints"],
-                "checkpoint_best.pt"
+                self.directories["checkpoints"], "checkpoint_best.pt"
             )
             self._save_checkpoint(best_ckpt_path, val_loss, full=False)
 
@@ -1383,18 +1345,21 @@ training will resume from latest checkpoint."
         # cooldown scheduler linearly decays lr from
         # current value to 0
         if self.lr_scheduler is not None:
-            factor = self.lr_scheduler.get_last_lr()[0] / self.cfg["train"]["optimizer"]["lr"]
+            factor = (
+                self.lr_scheduler.get_last_lr()[0]
+                / self.cfg["train"]["optimizer"]["lr"]
+            )
         else:
             factor = 1.0
-        steps = max(1, min(self.cooldown_items, self.eval_at - self.total_items) // self.step_interval)
+        steps = max(
+            1,
+            min(self.cooldown_items, self.eval_at - self.total_items)
+            // self.step_interval,
+        )
         self.cooldown_scheduler = lr_scheduler.LambdaLR(
-            self.optimizer,
-            lambda step: (1 - (min(step, steps) / steps)) * factor
+            self.optimizer, lambda step: (1 - (min(step, steps) / steps)) * factor
         )
-        path = os.path.join(
-            self.directories["checkpoints"],
-            "cooldown_checkpoint.pt"
-        )
+        path = os.path.join(self.directories["checkpoints"], "cooldown_checkpoint.pt")
         self._save_checkpoint(path, self.best_val_loss)
 
     def _stop_cooldown(self):
@@ -1402,10 +1367,7 @@ training will resume from latest checkpoint."
         if self.cooldown_scheduler is None:
             return
         self.cooldown_scheduler = None
-        path = os.path.join(
-            self.directories["checkpoints"],
-            "cooldown_checkpoint.pt"
-        )
+        path = os.path.join(self.directories["checkpoints"], "cooldown_checkpoint.pt")
         # load cooldown checkpoint, but pay special attention
         # to best val loss, because it is reset in self._load_checkpoint
         val_loss = self.best_val_loss
@@ -1436,15 +1398,12 @@ training will resume from latest checkpoint."
         finally:
             start = time.perf_counter()
             ckpt_path = os.path.join(
-                self.directories["checkpoints"],
-                "checkpoint_last.pt"
+                self.directories["checkpoints"], "checkpoint_last.pt"
             )
             self._save_checkpoint(ckpt_path, self.best_val_loss)
             end = time.perf_counter()
             if self.info.is_main_process:
-                self.logger.info(
-                    f"final checkpointing took {end - start:.2f}s"
-                )
+                self.logger.info(f"final checkpointing took {end - start:.2f}s")
                 if len(self.cleanup) > 0:
                     self.logger.info(
                         f"deleting temporary data sources on local main process with rank {self.info.rank}"

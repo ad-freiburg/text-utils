@@ -1,30 +1,27 @@
 import collections
 import math
-import sys
 import os
 import pprint
-from typing import Dict, List, Optional, Union, Tuple, Iterator, Any
+import sys
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
-from tqdm import tqdm
 import torch
 from torch import autocast, nn
-from torch.backends import cudnn, cuda
+from torch.backends import cuda, cudnn
+from tqdm import tqdm
 
 from text_utils import (
     api,
-    logging,
     configuration,
-    io,
     data,
+    io,
+    logging,
 )
-from text_utils.api.utils import Device, get_devices
+from text_utils.api.utils import Device, cpu_cores, get_devices
 
 __all__ = ["ModelInfo"]
 
-ModelInfo = collections.namedtuple(
-    "ModelInfo",
-    ["name", "description", "tags"]
-)
+ModelInfo = collections.namedtuple("ModelInfo", ["name", "description", "tags"])
 
 
 class TextProcessor:
@@ -56,11 +53,7 @@ class TextProcessor:
         task_name = cls._task_upper().replace(" ", "_")
         return os.environ.get(
             f"{task_name}_DOWNLOAD_DIR",
-            os.path.join(
-                os.path.dirname(__file__),
-                ".download",
-                task_name
-            )
+            os.path.join(os.path.dirname(__file__), ".download", task_name),
         )
 
     @classmethod
@@ -68,11 +61,7 @@ class TextProcessor:
         task_name = cls._task_upper().replace(" ", "_")
         return os.environ.get(
             f"{task_name}_CACHE_DIR",
-            os.path.join(
-                os.path.dirname(__file__),
-                ".cache",
-                task_name
-            )
+            os.path.join(os.path.dirname(__file__), ".cache", task_name),
         )
 
     @classmethod
@@ -82,14 +71,15 @@ class TextProcessor:
         device: Device = "cuda",
         download_dir: Optional[str] = None,
         cache_dir: Optional[str] = None,
-        force_download: bool = False
+        force_download: bool = False,
     ):
         if model is None:
             model = cls.default_model().name
         assert model is not None
-        assert any(model == m.name for m in cls.available_models()), \
-            f"model {model} does not match any of the available models:\n" \
+        assert any(model == m.name for m in cls.available_models()), (
+            f"model {model} does not match any of the available models:\n"
             f"{pprint.pformat(cls.available_models())}"
+        )
 
         logger = logging.get_logger(f"{cls._task_upper()} DOWNLOAD")
         model_url = cls._model_url(model)
@@ -105,28 +95,23 @@ class TextProcessor:
             cache_dir,
             sub_cache_dir,
             force_download,
-            logger
+            logger,
         )
         sub_dirs = os.listdir(zip_dir)
-        assert len(sub_dirs) == 1, \
-            f"expected extracted zip for model {model} to contain " \
+        assert len(sub_dirs) == 1, (
+            f"expected extracted zip for model {model} to contain "
             f"one subdirectory, but got {len(sub_dirs)}:\n{pprint.pformat(sub_dirs)}"
+        )
         # mark processor as pretrained
         cls.pretrained = True
         return cls.from_experiment(os.path.join(zip_dir, sub_dirs[0]), device)
 
     @classmethod
-    def from_experiment(
-        cls,
-        experiment_dir: str,
-        device: Device = "cuda"
-    ):
+    def from_experiment(cls, experiment_dir: str, device: Device = "cuda"):
         cfg = configuration.load_config_from_experiment(experiment_dir)
         model = cls._model_from_config(cfg, device)
         best_checkpoint_path = os.path.join(
-            experiment_dir,
-            "checkpoints",
-            "checkpoint_best.pt"
+            experiment_dir, "checkpoints", "checkpoint_best.pt"
         )
         if os.path.exists(best_checkpoint_path):
             best_checkpoint = io.load_checkpoint(best_checkpoint_path)
@@ -139,11 +124,7 @@ class TextProcessor:
         raise NotImplementedError
 
     @classmethod
-    def _model_from_config(
-        cls,
-        cfg: Dict[str, Any],
-        device: Device
-    ) -> nn.Module:
+    def _model_from_config(cls, cfg: Dict[str, Any], device: Device) -> nn.Module:
         raise NotImplementedError
 
     @property
@@ -162,14 +143,11 @@ class TextProcessor:
         return cls.supported_input_formats()
 
     def __init__(
-        self,
-        model: nn.Module,
-        cfg: Dict[str, Any],
-        device: Device = "cuda"
+        self, model: nn.Module, cfg: Dict[str, Any], device: Device = "cuda"
     ) -> None:
         self.logger = logging.get_logger(self._task_upper())
 
-        torch.set_num_threads(len(os.sched_getaffinity(0)))
+        torch.set_num_threads(cpu_cores())
         torch.use_deterministic_algorithms(False)
         cudnn.benchmark = True
         cuda.matmul.allow_tf32 = True
@@ -204,30 +182,27 @@ class TextProcessor:
         if self.devices[0].type == "cpu" and self._precision_dtype != torch.bfloat16:
             return self._inference(inputs)
 
-        with autocast(
-            device_type=self.devices[0].type,
-            dtype=self._precision_dtype
-        ):
+        with autocast(device_type=self.devices[0].type, dtype=self._precision_dtype):
             return self._inference(inputs)
 
     def _process_results(
-        self,
-        items: List[data.InferenceItem],
-        outputs: List[Any]
+        self, items: List[data.InferenceItem], outputs: List[Any]
     ) -> data.InferenceData:
         raise NotImplementedError
 
     def _get_loader(
         self,
-        inputs: Union[Tuple[List[str], Optional[List[str]]], Iterator[data.InferenceData]],
+        inputs: Union[
+            Tuple[List[str], Optional[List[str]]], Iterator[data.InferenceData]
+        ],
         batch_size: int = 16,
         batch_max_tokens: Optional[int] = None,
         sort: bool = True,
         num_threads: Optional[int] = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> data.InferenceLoader:
         if num_threads is None:
-            num_threads = min(len(os.sched_getaffinity(0)), 4)
+            num_threads = min(cpu_cores(), 4)
 
         if batch_max_tokens is None:
             batch_limit = max(1, batch_size)
@@ -244,28 +219,27 @@ class TextProcessor:
         else:
             prefetch_factor = 1
 
-        self._inference_loader_cfg.update({
-            "num_threads": num_threads,
-            "batch_limit": batch_limit,
-            "buffer_size": buffer_size,
-            "prefetch_factor": prefetch_factor,
-            "batch_limit_type": batch_limit_type,
-            "sort": sort
-        })
+        self._inference_loader_cfg.update(
+            {
+                "num_threads": num_threads,
+                "batch_limit": batch_limit,
+                "buffer_size": buffer_size,
+                "prefetch_factor": prefetch_factor,
+                "batch_limit_type": batch_limit_type,
+                "sort": sort,
+            }
+        )
         self._inference_loader_cfg.update(kwargs)
         if isinstance(inputs, tuple):
             files, languages = inputs
             loader = data.InferenceLoader.from_files(
-                files=files,
-                languages=languages,
-                **self._inference_loader_cfg
+                files=files, languages=languages, **self._inference_loader_cfg
             )
         elif isinstance(inputs, Iterator):
             # threading currently not supported with python iterators
             self._inference_loader_cfg["num_threads"] = 0
             loader = data.InferenceLoader.from_iterator(
-                inputs,
-                **self._inference_loader_cfg
+                inputs, **self._inference_loader_cfg
             )
         else:
             raise ValueError(
@@ -283,9 +257,13 @@ class TextProcessor:
         show_progress: bool = False,
     ) -> tqdm:
         if progress_unit == "seq":
-            return api.sequence_progress_bar(progress_desc, progress_total, not show_progress)
+            return api.sequence_progress_bar(
+                progress_desc, progress_total, not show_progress
+            )
         elif progress_unit == "byte":
-            return api.byte_progress_bar(progress_desc, progress_total, not show_progress)
+            return api.byte_progress_bar(
+                progress_desc, progress_total, not show_progress
+            )
         else:
             raise ValueError(
                 f"unknown progress unit {progress_unit}, must be either 'seq' or 'byte'"
@@ -300,12 +278,7 @@ class TextProcessor:
         show_progress: bool = False,
     ) -> List[data.InferenceData]:
         results = {}
-        pbar = self._pbar(
-            progress_desc,
-            progress_total,
-            progress_unit,
-            show_progress
-        )
+        pbar = self._pbar(progress_desc, progress_total, progress_unit, show_progress)
         for batch in loader:
             outputs = self._run_model(batch)
             for item, output in zip(batch.items(), outputs):
@@ -338,12 +311,7 @@ class TextProcessor:
         prev_item_idx = 0
         window_items = []
         window_outputs = []
-        pbar = self._pbar(
-            progress_desc,
-            progress_total,
-            progress_unit,
-            show_progress
-        )
+        pbar = self._pbar(progress_desc, progress_total, progress_unit, show_progress)
         for batch in loader:
             outputs = self._run_model(batch)
             for item, output in zip(batch.items(), outputs):
@@ -355,10 +323,7 @@ class TextProcessor:
                 if progress_unit == "seq":
                     pbar.update(1)
                 else:
-                    pbar.update(sum(
-                        item.window_bytes()
-                        for item in window_items
-                    ))
+                    pbar.update(sum(item.window_bytes() for item in window_items))
                 prev_item_idx = item.item_idx
                 window_items = [item]
                 window_outputs = [output]
@@ -367,9 +332,10 @@ class TextProcessor:
 
     def to(self, device: Device) -> "TextProcessor":
         self.devices = get_devices(device)
-        assert len(self.devices) == 1, \
-            "only a single device supported by default, implement custom to() if you need " \
+        assert len(self.devices) == 1, (
+            "only a single device supported by default, implement custom to() if you need "
             "multi-device support"
+        )
         self.model = self.model.to(self.devices[0])
         return self
 

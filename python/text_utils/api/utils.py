@@ -32,10 +32,7 @@ def get_devices(device: Device) -> list[torch.device]:
     return devices
 
 
-def _unpack_zip(
-    zip_file_path: str,
-    directory: str
-) -> None:
+def _unpack_zip(zip_file_path: str, directory: str) -> None:
     with zipfile.ZipFile(zip_file_path, "r") as zip_file:
         zip_file.extractall(directory)
 
@@ -58,11 +55,7 @@ def to(v: Any, device: torch.device) -> Any:
 class ProgressIterator:
     # a utility class capturing the number and total size
     # of items passed through an iterator
-    def __init__(
-        self,
-        it: Iterator[Any],
-        size_fn: Callable[[Any], int]
-    ):
+    def __init__(self, it: Iterator[Any], size_fn: Callable[[Any], int]):
         self.it = it
         self.num_items = 0
         self.total_size = 0
@@ -79,13 +72,13 @@ class ProgressIterator:
 
 
 def download_zip(
-        name: str,
-        url: str,
-        download_dir: str,
-        cache_dir: str,
-        sub_cache_dir: str,
-        force_download: bool,
-        logger: logging.Logger
+    name: str,
+    url: str,
+    download_dir: str,
+    cache_dir: str,
+    sub_cache_dir: str,
+    force_download: bool,
+    logger: logging.Logger,
 ) -> str:
     """
     Downloads and extracts a zip into cache dir and returns the path to the only subdirectory
@@ -105,11 +98,14 @@ def download_zip(
         if directory:
             os.makedirs(directory, exist_ok=True)
         logger.info(
-            f"downloading {name} from {url} to download directory {download_dir}")
+            f"downloading {name} from {url} to download directory {download_dir}"
+        )
         response = requests.get(url, stream=True)
         if not response.ok:
-            raise RuntimeError(f"error downloading {name} from {url}: "
-                               f"status {response.status_code}, {response.reason}")
+            raise RuntimeError(
+                f"error downloading {name} from {url}: "
+                f"status {response.status_code}, {response.reason}"
+            )
 
         try:
             file_size = int(response.headers.get("content-length", 0))
@@ -128,7 +124,8 @@ def download_zip(
             raise e
     else:
         logger.info(
-            f"{name} is already downloaded to download directory {download_dir}")
+            f"{name} is already downloaded to download directory {download_dir}"
+        )
 
     zip_dir = os.path.join(cache_dir, sub_cache_dir)
     not_extracted = not os.path.exists(zip_dir)
@@ -157,9 +154,19 @@ def cpu_info() -> str:
 
 def gpu_info(device: Union[torch.device, str, int]) -> str:
     device_props = torch.cuda.get_device_properties(device)
-    return f"{device_props.name} ({device_props.total_memory // 1024 // 1024:,}MiB memory, " \
-           f"{device_props.major}.{device_props.minor} compute capability, " \
-           f"{device_props.multi_processor_count} multiprocessors)"
+    return (
+        f"{device_props.name} ({device_props.total_memory // 1024 // 1024:,}MiB memory, "
+        f"{device_props.major}.{device_props.minor} compute capability, "
+        f"{device_props.multi_processor_count} multiprocessors)"
+    )
+
+
+def cpu_cores() -> int:
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        # os.sched_getaffinity is not available on Windows
+        return os.cpu_count() or 1
 
 
 def device_info(device: torch.device) -> str:
@@ -168,10 +175,11 @@ def device_info(device: torch.device) -> str:
 
 def _run_cmd(path: str, cmd: List[str]) -> str:
     try:
-        return subprocess.check_output(
-            cmd,
-            cwd=Path(path).resolve()
-        ).strip().decode("utf8")
+        return (
+            subprocess.check_output(cmd, cwd=Path(path).resolve())
+            .strip()
+            .decode("utf8")
+        )
     except subprocess.CalledProcessError:
         return ""
 
@@ -215,11 +223,13 @@ def sequence_progress_bar(desc: str, total: int, disable: bool = False) -> tqdm:
         leave=False,
         unit="Seq",
         unit_scale=True,
-        unit_divisor=1000
+        unit_divisor=1000,
     )
 
 
-def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = False) -> tqdm:
+def byte_progress_bar(
+    desc: str, total: Optional[int] = None, disable: bool = False
+) -> tqdm:
     return tqdm(
         desc=desc,
         total=total,
@@ -228,13 +238,12 @@ def byte_progress_bar(desc: str, total: Optional[int] = None, disable: bool = Fa
         leave=False,
         unit="B",
         unit_scale=True,
-        unit_divisor=1000
+        unit_divisor=1000,
     )
 
 
 def get_peft_config(peft: Dict[str, Any]) -> PeftConfig:
-    assert peft["type"] in {"lora", "ia3"}, \
-        "only lora and ia3 are supported for now"
+    assert peft["type"] in {"lora", "ia3"}, "only lora and ia3 are supported for now"
     if peft["type"] == "lora":
         peft_cfg = LoraConfig(
             r=peft["r"],
